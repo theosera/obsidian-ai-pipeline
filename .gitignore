@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+*.zip
+
+# Environment & Config
+.env
+pipeline_config.json
+
+# Cache & Logs
+reports/
+logs/
+.DS_Store
+.html_cache/
+.chromium-data/
+*.txt
+
+# Ignore all dotfiles and dotfolders as instructed
+.*
+# But specifically allow gitignore itself
+!.gitignore
