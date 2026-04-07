@@ -1,23 +1,18 @@
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import TurndownService from 'turndown';
+import { ArticleData } from './types';
 
 const turndownService = new TurndownService({
   headingStyle: 'atx',
   codeBlockStyle: 'fenced'
 });
 
-/**
- * Extracts the main article from the HTML and converts it to Markdown.
- * @param {string} html 
- * @param {string} url
- * @returns {{ title: string, content: string, textContent: string, byline: string, siteName: string, length: number }}
- */
-export function extractAndConvert(html, url) {
+export function extractAndConvert(html: string, url: string): ArticleData & { length?: number; byline?: string } {
   const dom = new JSDOM(html, { url });
   const document = dom.window.document;
   
-  let publishedDate = null;
+  let publishedDate: string | null = null;
   const publishedMeta = document.querySelector('meta[property="article:published_time"], meta[name="pubdate"], meta[property="og:pubdate"], meta[property="article:published"]');
   if (publishedMeta) {
     publishedDate = publishedMeta.getAttribute('content');
@@ -28,7 +23,7 @@ export function extractAndConvert(html, url) {
     }
   }
 
-  let formattedDate = null;
+  let formattedDate: string | undefined = undefined;
   if (publishedDate) {
     try {
       const d = new Date(publishedDate);

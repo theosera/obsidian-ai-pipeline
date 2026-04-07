@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { ProcessingResult } from './types';
 
 const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
 const RULES_PATH = path.join(VAULT_ROOT, '__skills', 'pipeline', 'folder_rules.json');
@@ -10,7 +11,9 @@ const THRESHOLDS = {
   MONTHLY: 20
 };
 
-export function loadFolderRules() {
+type RulesMap = Record<string, string>;
+
+export function loadFolderRules(): RulesMap {
   if (fs.existsSync(RULES_PATH)) {
     try {
       return JSON.parse(fs.readFileSync(RULES_PATH, 'utf8'));
@@ -22,11 +25,11 @@ export function loadFolderRules() {
   return {};
 }
 
-export function saveFolderRules(rules) {
+export function saveFolderRules(rules: RulesMap): void {
   fs.writeFileSync(RULES_PATH, JSON.stringify(rules, null, 2), 'utf8');
 }
 
-export function getRoutedPath(baseCategory, publishDateStr, rules) {
+export function getRoutedPath(baseCategory: string, publishDateStr: string | undefined, rules: RulesMap): string {
   // EXCEPTION: how/howto folders are completely EXEMPT from quarterly/monthly rules
   if (/(?:\/|^)(how|howto)(?:\/|$)/i.test(baseCategory)) {
     return baseCategory;
@@ -50,13 +53,13 @@ export function getRoutedPath(baseCategory, publishDateStr, rules) {
   return baseCategory;
 }
 
-export function updateThresholds(results, currentRules) {
+export function updateThresholds(results: ProcessingResult[], currentRules: RulesMap): RulesMap {
   let updated = false;
   
   // 今バッチでの各ベースカテゴリの処理予定数
-  const batchCounts = {};
+  const batchCounts: Record<string, number> = {};
   for (const r of results) {
-    if (r.status === 'success') {
+    if (r.status === 'success' && r.classification) {
       const baseCat = r.classification.proposedPath;
       if (baseCat === '__EXCLUDED__') continue;
       if (!batchCounts[baseCat]) batchCounts[baseCat] = 0;
@@ -112,7 +115,7 @@ export function updateThresholds(results, currentRules) {
 /**
  * 既存のファイルを新しいルールに基づいて移動（再編成）する
  */
-function migrateExistingFiles(baseCat, newRule) {
+function migrateExistingFiles(baseCat: string, newRule: string): void {
   const baseDir = path.join(VAULT_ROOT, baseCat);
   if (!fs.existsSync(baseDir)) return;
 
@@ -124,7 +127,7 @@ function migrateExistingFiles(baseCat, newRule) {
       const content = fs.readFileSync(filePath, 'utf8');
       
       // フロントマターから date: または published: 抽出
-      let fileDate = null;
+      let fileDate: string | undefined = undefined;
       const dateMatch = content.match(/^(?:date|published):\s*"?(\d{4}-\d{2}-\d{2})"?/m);
       if (dateMatch && dateMatch[1]) {
         fileDate = dateMatch[1];
@@ -136,7 +139,7 @@ function migrateExistingFiles(baseCat, newRule) {
 
       // 新しいルールに基づいた相対パスを取得 (Engineer/LLM/2026-02 など)
       // モックのルールオブジェクトを渡して解決する
-      const tempRules = { [baseCat]: newRule };
+      const tempRules: RulesMap = { [baseCat]: newRule };
       const newRelativePath = getRoutedPath(baseCat, fileDate, tempRules);
       const newAbsoluteDir = path.join(VAULT_ROOT, newRelativePath);
       
@@ -153,7 +156,7 @@ function migrateExistingFiles(baseCat, newRule) {
          fs.renameSync(filePath, newFilePath);
       }
 
-    } catch (err) {
+    } catch (err: any) {
       console.error(`[Router] Failed to migrate file ${filePath}:`, err.message);
     }
   }
@@ -165,7 +168,7 @@ function migrateExistingFiles(baseCat, newRule) {
 /**
  * 指定ディレクトリ直下の空ディレクトリを削除
  */
-function cleanupEmptyDirectories(dir) {
+function cleanupEmptyDirectories(dir: string): void {
   try {
     const items = fs.readdirSync(dir);
     for (const item of items) {
@@ -183,8 +186,8 @@ function cleanupEmptyDirectories(dir) {
 /**
  * フォルダ内のすべての .md ファイルの絶対パスを配列で返す
  */
-function collectMarkdownFiles(dir) {
-  let results = [];
+function collectMarkdownFiles(dir: string): string[] {
+  let results: string[] = [];
   try {
     const items = fs.readdirSync(dir);
     for (const item of items) {
@@ -202,7 +205,7 @@ function collectMarkdownFiles(dir) {
 /**
  * サブフォルダ内の特定の深さまで.mdファイルを再帰的にカウントする
  */
-function countMarkdownFiles(dir) {
+function countMarkdownFiles(dir: string): number {
   let count = 0;
   try {
     const items = fs.readdirSync(dir);

@@ -1,22 +1,22 @@
-import { chromium } from 'playwright';
+import { chromium, BrowserContext } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
-let browserContext = null;
+let browserContext: BrowserContext | null = null;
 
 const CACHE_DIR = path.resolve(process.cwd(), '.html_cache');
 if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
 }
 
-function getCacheKey(url) {
+function getCacheKey(url: string): string {
   return crypto.createHash('md5').update(url).digest('hex') + '.html';
 }
 
-let initPromise = null;
+let initPromise: Promise<void> | null = null;
 
-export async function initBrowser() {
+export async function initBrowser(): Promise<void> {
   if (browserContext) return;
   if (initPromise) return initPromise;
   
@@ -32,7 +32,7 @@ export async function initBrowser() {
   return initPromise;
 }
 
-export async function closeBrowser() {
+export async function closeBrowser(): Promise<void> {
   if (browserContext) {
     await browserContext.close();
     browserContext = null;
@@ -44,14 +44,14 @@ export async function closeBrowser() {
  * @param {string} url - The URL to fetch
  * @returns {Promise<string>} The rendered HTML string
  */
-export async function fetchRenderedHtml(url) {
+export async function fetchRenderedHtml(url: string): Promise<string> {
   const cachePath = path.join(CACHE_DIR, getCacheKey(url));
   if (fs.existsSync(cachePath)) {
     return fs.readFileSync(cachePath, 'utf8');
   }
 
   if (!browserContext) await initBrowser();
-  const page = await browserContext.newPage();
+  const page = await browserContext!.newPage();
   
   try {
     // Wait for the network to be idle to ensure JS has rendered the page

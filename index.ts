@@ -1,12 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
-import { fetchRenderedHtml, closeBrowser } from './fetcher.js';
-import { extractAndConvert } from './extractor.js';
-import { classifyArticle, tokenUsageMetrics } from './classifier.js';
-import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls } from './storage.js';
-import { loadConfig, runConfigWizard, applyConfigToEnv } from './config.js';
-import { loadFolderRules, updateThresholds, getRoutedPath } from './router.js';
+import { fetchRenderedHtml, closeBrowser } from './fetcher';
+import { extractAndConvert } from './extractor';
+import { classifyArticle, tokenUsageMetrics } from './classifier';
+import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls } from './storage';
+import { loadConfig, runConfigWizard, applyConfigToEnv } from './config';
+import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
+import { ProcessingResult } from './types';
 
 const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
 const REPORTS_DIR = path.join(VAULT_ROOT, '__skills', 'pipeline', 'reports');
@@ -15,7 +16,7 @@ if (!fs.existsSync(REPORTS_DIR)) {
   fs.mkdirSync(REPORTS_DIR, { recursive: true });
 }
 
-function evaluatePolicy(url) {
+function evaluatePolicy(url: string): string {
   const skipList = ['google.com/search', 'x.com', 'youtube.com', 'chatgpt.com', 'grok.com', 'gemini.google.com'];
   if (skipList.some(s => url.includes(s))) return 'manual_skip';
 
@@ -27,7 +28,7 @@ function evaluatePolicy(url) {
   return 'public_auto';
 }
 
-const PRICING_MILLION_TOKENS = {
+const PRICING_MILLION_TOKENS: Record<string, { in: number, out: number }> = {
   'gpt-4o': { in: 5.00, out: 15.00 },
   'gpt-4o-mini': { in: 0.15, out: 0.60 },
   'gemini-2.5-flash': { in: 0.075, out: 0.30 },
@@ -39,9 +40,9 @@ const PRICING_MILLION_TOKENS = {
   'claude-opus-4-6': { in: 15.00, out: 75.00 }
 };
 
-function generateReport(results, usageData = {}) {
+function generateReport(results: ProcessingResult[], usageData: Record<string, any> = {}): string {
   let successResults = results.filter(r => r.status === 'success');
-  let newFolders = successResults.filter(r => r.classification.isNewFolder);
+  let newFolders = successResults.filter(r => r.classification?.isNewFolder);
   let reviewItems = successResults.filter(r => r.policy === 'public_review');
   
   let report = `# OneTab分類結果レポート\n\n`;
@@ -71,28 +72,29 @@ function generateReport(results, usageData = {}) {
   report += `## 📁 分類結果詳細\n\n`;
   
   // Group by folder
-  let groups = {};
+  let groups: Record<string, ProcessingResult[]> = {};
   for (let res of successResults) {
+    if (!res.classification) continue;
     let folder = res.classification.proposedPath;
     if (!groups[folder]) groups[folder] = [];
     groups[folder].push(res);
   }
 
   for (let [folder, items] of Object.entries(groups)) {
-    let isNew = items[0].classification.isNewFolder;
+    let isNew = items[0].classification!.isNewFolder;
     report += `### ${folder} ${isNew ? '✨(新規提案)' : ''}\n`;
     
     // For new folders, add reasoning block at the top
     if (isNew) {
-      if (items[0].classification.trendReasoning) report += `> **対応トレンド**: ${items[0].classification.trendReasoning}\n`;
-      if (items[0].classification.diffReasoning) report += `> **既存との違い**: ${items[0].classification.diffReasoning}\n\n`;
+      if (items[0].classification!.trendReasoning) report += `> **対応トレンド**: ${items[0].classification!.trendReasoning}\n`;
+      if (items[0].classification!.diffReasoning) report += `> **既存との違い**: ${items[0].classification!.diffReasoning}\n\n`;
     }
 
     for (let item of items) {
       const reviewBadge = item.policy === 'public_review' ? ' ⚠️[要完全性チェック]' : '';
       report += `- [${item.id}] [${item.title || 'No Title'}](${item.url})${reviewBadge}\n`;
-      if (item.classification.reasoning && !isNew) {
-         report += `  - *理由: ${item.classification.reasoning}*\n`;
+      if (item.classification!.reasoning && !isNew) {
+         report += `  - *理由: ${item.classification!.reasoning}*\n`;
       }
     }
     report += `\n`;
@@ -105,9 +107,9 @@ const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
 });
-const askQuestion = (q) => new Promise(resolve => rl.question(q, resolve));
+const askQuestion = (q: string): Promise<string> => new Promise(resolve => rl.question(q, resolve));
 
-async function interactiveReviewLoop(results, reportMdPath) {
+async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: string): Promise<void> {
   let reviewing = true;
 
   while (reviewing) {
@@ -121,11 +123,11 @@ async function interactiveReviewLoop(results, reportMdPath) {
     if (cmd === 'y') {
       console.log('\n🚀 Approved! Proceeding to save files to Vault...');
       for (const res of results) {
-        if (res.status === 'success') {
+        if (res.status === 'success' && res.articleContext && res.classification) {
           try {
             const savedPath = saveMarkdown(res.articleContext, res.classification.proposedPath);
             console.log(` ✅ Saved: ${savedPath}`);
-          } catch (e) {
+          } catch (e: any) {
             console.error(` ❌ Error saving ${res.url}: ${e.message}`);
           }
         }
@@ -138,7 +140,7 @@ async function interactiveReviewLoop(results, reportMdPath) {
       const itemId = parseInt(idStr, 10);
       const target = results.find(r => r.id === itemId);
 
-      if (target) {
+      if (target && target.classification) {
         console.log(`Current Path: ${target.classification.proposedPath}`);
         const newPath = await askQuestion('Enter new folder path (leave empty to cancel): ');
         if (newPath.trim() !== '') {
@@ -151,7 +153,7 @@ async function interactiveReviewLoop(results, reportMdPath) {
           fs.writeFileSync(reportMdPath, newReportMd, 'utf8');
         }
       } else {
-        console.log('Item ID not found.');
+        console.log('Item ID not found or already excluded.');
       }
     } else if (cmd === 'q') {
       console.log('Aborted execution.');
@@ -184,9 +186,9 @@ async function main() {
   applyConfigToEnv(config);
 
   console.log('\n======================================================');
-  console.log(`🤖 AI Provider: ${config.provider}`);
-  console.log(`🔹 Step 1 Model (Fast): ${config.fastModel}`);
-  console.log(`🔸 Step 2 Model (Smart): ${config.smartModel}`);
+  console.log(`🤖 AI Provider: ${config?.provider}`);
+  console.log(`🔹 Step 1 Model (Fast): ${config?.fastModel}`);
+  console.log(`🔸 Step 2 Model (Smart): ${config?.smartModel}`);
   console.log('💡 Run with `--config` anytime to change these settings.');
   console.log('======================================================\n');
 
@@ -194,7 +196,7 @@ async function main() {
   updateVaultTreeSnapshot();
 
   if (!filePath) {
-    console.error('Usage: node index.js <path-to-onetab.txt>');
+    console.error('Usage: tsx index.ts <path-to-onetab.txt>');
     process.exit(1);
   }
 
@@ -203,7 +205,7 @@ async function main() {
 
   // Parse lines and pre-filter skips so they don't consume parallel slots
   const parsedEntries = [];
-  const failures = [];
+  const failures: { url: string; title: string; reason: string }[] = [];
   
   // Index existing URLs to avoid duplicates
   console.log(`\n🔍 Indexing existing articles in the Vault...`);
@@ -236,7 +238,7 @@ async function main() {
   console.log(`Starting Phase 3 Pipeline... found ${parsedEntries.length} fetchable URLs (${failures.length} skipped).`);
   console.log(`Performing content fetching and classification (This may take several minutes...)`);
   
-  const results = [];
+  const results: ProcessingResult[] = [];
   let idCounter = 1;
 
   const CONCURRENCY_LIMIT = 5;
@@ -270,7 +272,7 @@ async function main() {
             }
           };
         }
-      } catch (err) {
+      } catch (err: any) {
         console.log(`[${globalIndex}/${parsedEntries.length}] ${title.substring(0, 30)}... Failed: ${err.message}`);
         return { failure: true, url, title, reason: err.message };
       }
@@ -279,9 +281,9 @@ async function main() {
     const chunkResults = await Promise.all(mappedPromises);
     for (const res of chunkResults) {
       if (!res) continue;
-      if (res.failure) {
+      if (res.failure && res.url !== undefined && res.title !== undefined && res.reason !== undefined) {
         failures.push({ url: res.url, title: res.title, reason: res.reason });
-      } else if (res.success) {
+      } else if (res.success && res.data) {
         results.push({
           id: idCounter++,
           status: 'success',
@@ -317,7 +319,7 @@ async function main() {
   const updatedRules = updateThresholds(results, currentRules);
 
   for (const res of results) {
-    if (res.status === 'success') {
+    if (res.status === 'success' && res.classification && res.articleContext) {
       const baseCat = res.classification.proposedPath;
       const pubDate = res.articleContext.date; 
       const finalRoutedPath = getRoutedPath(baseCat, pubDate, updatedRules);

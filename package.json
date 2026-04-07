@@ -2,10 +2,10 @@
   "name": "obsidian-clipper-pipeline",
   "version": "1.0.0",
   "description": "Automated Obsidian Web Clipper pipeline",
-  "main": "index.js",
+  "main": "index.ts",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "tsx index.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
@@ -16,5 +16,13 @@
     "playwright": "^1.50.0",
     "string-similarity": "^4.0.4",
     "turndown": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^28.0.1",
+    "@types/node": "^25.5.2",
+    "@types/string-similarity": "^4.0.2",
+    "@types/turndown": "^5.0.6",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
   }
 }

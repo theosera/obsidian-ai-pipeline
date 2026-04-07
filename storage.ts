@@ -1,18 +1,17 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import { ArticleData } from './types';
 
 // Current Vault root
 const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
 
-export function checkFolderExists(folderPath) {
+export function checkFolderExists(folderPath: string): boolean {
   const fullPath = path.join(VAULT_ROOT, folderPath);
   return fs.existsSync(fullPath);
 }
 
-
-
-export function saveMarkdown(articleData, folderPath) {
+export function saveMarkdown(articleData: ArticleData, folderPath: string): string {
   const date = new Date();
   
   // rely on the AI's classification for Quarterly folder logic
@@ -42,7 +41,7 @@ export function saveMarkdown(articleData, folderPath) {
   const siteLink = articleData.siteName ? `\n  - "[[${escapeFrontmatter(articleData.siteName)}]]"` : '';
 
   const frontmatter = `---
-title: "${(articleData.title || '').replace(/"/g, '\\"')}"
+title: "${escapeFrontmatter(articleData.title || '')}"
 source: "${articleData.url || ''}"
 author:${siteLink}
 published: ${pubDate}
@@ -59,19 +58,19 @@ tags:
   return filePath;
 }
 
-function escapeFrontmatter(str) {
+function escapeFrontmatter(str: string): string {
   if (!str) return '';
   return str.replace(/"/g, '\\"');
 }
 
-let cachedFolders = null;
+let cachedFolders: string[] | null = null;
 
-export function getVaultFolders(forceRefresh = false) {
+export function getVaultFolders(forceRefresh: boolean = false): string[] {
   if (cachedFolders && !forceRefresh) return cachedFolders;
 
-  const folders = [];
+  const folders: string[] = [];
   
-  function scan(dirPath, relativePath = '', depth = 0) {
+  function scan(dirPath: string, relativePath: string = '', depth: number = 0): void {
     if (depth > 6) return; // limit depth to not scan too deep
     
     let entries;
@@ -97,7 +96,7 @@ export function getVaultFolders(forceRefresh = false) {
   return cachedFolders;
 }
 
-export function updateVaultTreeSnapshot() {
+export function updateVaultTreeSnapshot(): void {
   const folders = getVaultFolders(true);
   const treeFilePath = path.join(VAULT_ROOT, '__skills', 'context', 'iCloud Vault 2026.txt');
   const historyDir = path.join(VAULT_ROOT, '__skills', 'context', 'vault_tree_history');
@@ -116,11 +115,11 @@ export function updateVaultTreeSnapshot() {
   fs.writeFileSync(path.join(historyDir, snapshotName), treeContent, 'utf8');
 }
 
-let cachedKnownUrls = null;
+let cachedKnownUrls: Set<string> | null = null;
 
-export function getKnownUrls() {
+export function getKnownUrls(): Set<string> {
   if (cachedKnownUrls) return cachedKnownUrls;
-  const known = new Set();
+  const known = new Set<string>();
   
   try {
     const output = execSync('grep -rhI "^source: \\"" . || true', { 
@@ -138,7 +137,7 @@ export function getKnownUrls() {
         known.add(url);
       }
     }
-  } catch (err) {
+  } catch (err: any) {
     console.warn("[Storage] Failed to grep existing URLs:", err.message);
   }
   

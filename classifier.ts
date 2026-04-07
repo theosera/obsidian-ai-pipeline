@@ -3,8 +3,9 @@ import path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import stringSimilarity from 'string-similarity';
-import { getVaultFolders } from './storage.js';
+import { getVaultFolders } from './storage';
 import { XMLParser } from 'fast-xml-parser';
+import { ClassificationResult } from './types';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || ''
@@ -28,7 +29,7 @@ const geminiClient = process.env.GEMINI_API_KEY ? new OpenAI({
 }) : null;
 
 const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
-let cachedSnippetsArr = null;
+let cachedSnippetsArr: null | { title: string, content: string }[] = null;
 
 function loadSnippetsStructured() {
   if (cachedSnippetsArr) return cachedSnippetsArr;
@@ -39,7 +40,7 @@ function loadSnippetsStructured() {
     const parser = new XMLParser({ ignoreAttributes: false });
     const parsed = parser.parse(xmlData);
 
-    let arr = [];
+    let arr: { title: string, content: string }[] = [];
     const folders = parsed.folders?.folder || [];
     const folderArray = Array.isArray(folders) ? folders : [folders];
 
@@ -54,14 +55,14 @@ function loadSnippetsStructured() {
     }
     cachedSnippetsArr = arr;
     return arr;
-  } catch (err) {
+  } catch (err: any) {
     console.error('[Classifier] Failed to parse snippets.xml:', err.message);
     return [];
   }
 }
 
-function compressFolderTree(folders) {
-  const tree = {};
+function compressFolderTree(folders: string[]): string {
+  const tree: Record<string, any> = {};
   folders.forEach(f => {
     const parts = f.split('/');
     let current = tree;
@@ -71,8 +72,8 @@ function compressFolderTree(folders) {
     });
   });
 
-  let lines = [];
-  function render(node, indent) {
+  let lines: string[] = [];
+  function render(node: Record<string, any>, indent: string) {
     for (const key of Object.keys(node).sort()) {
       if (Object.keys(node[key]).length === 0) {
         lines.push(indent + key);
@@ -86,7 +87,7 @@ function compressFolderTree(folders) {
   return lines.join('\n');
 }
 
-export function getBestMatch(targetPath, validFolders) {
+export function getBestMatch(targetPath: string, validFolders: string[]): string {
   if (!validFolders || validFolders.length === 0) return targetPath;
   if (validFolders.includes(targetPath)) return targetPath;
 
@@ -100,7 +101,7 @@ export function getBestMatch(targetPath, validFolders) {
   return targetPath;
 }
 
-export function ruleBasedClassify(url, title) {
+export function ruleBasedClassify(url?: string, title?: string): string | null {
   const t = (title || '').toLowerCase();
   const u = (url || '').toLowerCase();
 
@@ -184,7 +185,7 @@ export function ruleBasedClassify(url, title) {
   return null;
 }
 
-function extractJson(rawJson) {
+function extractJson(rawJson: string): any {
   try {
     return JSON.parse(rawJson);
   } catch (err) {
@@ -196,9 +197,9 @@ function extractJson(rawJson) {
   }
 }
 
-export const tokenUsageMetrics = {};
+export const tokenUsageMetrics: Record<string, { input: number, output: number }> = {};
 
-function addTokenUsage(modelName, inputRaw, outputRaw) {
+function addTokenUsage(modelName: string, inputRaw: number | undefined, outputRaw: number | undefined): void {
   if (!tokenUsageMetrics[modelName]) {
     tokenUsageMetrics[modelName] = { input: 0, output: 0 };
   }
@@ -206,7 +207,7 @@ function addTokenUsage(modelName, inputRaw, outputRaw) {
   tokenUsageMetrics[modelName].output += outputRaw || 0;
 }
 
-async function askAI(prompt, systemContext = 'Respond exactly with valid JSON only.', taskType = 'fast') {
+async function askAI(prompt: string, systemContext: string = 'Respond exactly with valid JSON only.', taskType: 'fast' | 'smart' = 'fast'): Promise<ClassificationResult> {
   const provider = process.env.AI_PROVIDER || 'local';
 
   try {
@@ -225,7 +226,9 @@ async function askAI(prompt, systemContext = 'Respond exactly with valid JSON on
         ]
       });
       if (response.usage) addTokenUsage(model, response.usage.prompt_tokens, response.usage.completion_tokens);
-      return extractJson(response.choices[0].message.content.trim());
+      if (response.choices[0].message.content) {
+         return extractJson(response.choices[0].message.content.trim());
+      }
     }
 
     if (provider === 'gemini' && geminiClient) {
@@ -243,7 +246,9 @@ async function askAI(prompt, systemContext = 'Respond exactly with valid JSON on
         ]
       });
       if (response.usage) addTokenUsage(model, response.usage.prompt_tokens, response.usage.completion_tokens);
-      return extractJson(response.choices[0].message.content.trim());
+      if (response.choices[0].message.content) {
+         return extractJson(response.choices[0].message.content.trim());
+      }
     }
 
     if ((provider === 'anthropic' || provider === 'claude') && anthropic.apiKey) {
@@ -263,7 +268,9 @@ async function askAI(prompt, systemContext = 'Respond exactly with valid JSON on
         messages: [{ role: 'user', content: prompt }]
       });
       if (response.usage) addTokenUsage(model, response.usage.input_tokens, response.usage.output_tokens);
-      return extractJson(response.content[0].text.trim());
+      if (response.content[0].type === 'text') {
+         return extractJson(response.content[0].text.trim());
+      }
     }
 
     // Default: 'local'
@@ -280,9 +287,11 @@ async function askAI(prompt, systemContext = 'Respond exactly with valid JSON on
       ]
     });
     if (response.usage) addTokenUsage(model, response.usage.prompt_tokens, response.usage.completion_tokens);
-    return extractJson(response.choices[0].message.content.trim());
+    if (response.choices[0].message.content) {
+       return extractJson(response.choices[0].message.content.trim());
+    }
     
-  } catch (e) {
+  } catch (e: any) {
     console.warn(`[Classifier] Request to provider '${provider}' (${taskType}) failed or gave invalid JSON:`, e.message);
   }
 
@@ -304,16 +313,18 @@ async function askAI(prompt, systemContext = 'Respond exactly with valid JSON on
         messages: [{ role: 'user', content: prompt }]
       });
       if (response.usage) addTokenUsage(fallbackModel, response.usage.input_tokens, response.usage.output_tokens);
-      return extractJson(response.content[0].text.trim());
-    } catch (error) {
+      if (response.content[0].type === 'text') {
+         return extractJson(response.content[0].text.trim());
+      }
+    } catch (error: any) {
        console.error(`[Classifier] Fallback Anthropic API failed:`, error.message);
     }
   }
 
-  return { proposedPath: 'Clippings/Inbox', isNewFolderRequired: false, reasoning: 'Fallback due to classification errors', confidence: 0 };
+  return { proposedPath: 'Clippings/Inbox', isNewFolderRequired: false, isNewFolder: false, reasoning: 'Fallback due to classification errors', confidence: 0 };
 }
 
-export async function classifyArticle(url, title, content) {
+export async function classifyArticle(url: string | undefined, title: string | undefined, content: string | undefined): Promise<ClassificationResult> {
   const resultObj = await _classifyInternal(url, title, content);
   
   const t = (title || '').toLowerCase();
@@ -343,7 +354,7 @@ export async function classifyArticle(url, title, content) {
   return resultObj;
 }
 
-async function _classifyInternal(url, title, content) {
+async function _classifyInternal(url: string | undefined, title: string | undefined, content: string | undefined): Promise<ClassificationResult> {
   const ruleResult = ruleBasedClassify(url, title);
   if (ruleResult) {
     return { proposedPath: ruleResult, isNewFolder: false, reasoning: "Rule-based match" };
