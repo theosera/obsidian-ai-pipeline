@@ -5,16 +5,9 @@ import { fetchRenderedHtml, closeBrowser } from './fetcher';
 import { extractAndConvert } from './extractor';
 import { classifyArticle, tokenUsageMetrics } from './classifier';
 import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls, ensureSafePath } from './storage';
-import { loadConfig, runConfigWizard, applyConfigToEnv } from './config';
+import { loadConfig, runConfigWizard, applyConfigToEnv, getVaultRoot, setDryRun } from './config';
 import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
 import { ProcessingResult } from './types';
-
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
-const REPORTS_DIR = path.join(VAULT_ROOT, '__skills', 'pipeline', 'reports');
-
-if (!fs.existsSync(REPORTS_DIR)) {
-  fs.mkdirSync(REPORTS_DIR, { recursive: true });
-}
 
 function evaluatePolicy(url: string): string {
   const skipList = ['google.com/search', 'x.com', 'youtube.com', 'chatgpt.com', 'grok.com', 'gemini.google.com'];
@@ -169,7 +162,12 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
 async function main() {
   const args = process.argv.slice(2);
   const isConfigMode = args.includes('--config');
+  const isDryRunMode = args.includes('--dry-run');
   const filePath = args.find(a => !a.startsWith('--'));
+
+  if (isDryRunMode) {
+    setDryRun(true);
+  }
 
   let config = loadConfig();
 
@@ -195,6 +193,12 @@ async function main() {
   console.log(`🔸 Step 2 Model (Smart): ${config?.smartModel}`);
   console.log('💡 Run with `--config` anytime to change these settings.');
   console.log('======================================================\n');
+
+  // REPORTS_DIR はコンフィグ読み込み後に初期化
+  const REPORTS_DIR = path.join(getVaultRoot(), '__skills', 'pipeline', 'reports');
+  if (!fs.existsSync(REPORTS_DIR)) {
+    fs.mkdirSync(REPORTS_DIR, { recursive: true });
+  }
 
   // Update vault tree snapshot at startup to capture any manual user changes
   updateVaultTreeSnapshot();

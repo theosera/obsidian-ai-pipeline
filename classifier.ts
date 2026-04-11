@@ -6,6 +6,7 @@ import stringSimilarity from 'string-similarity';
 import { getVaultFolders, ensureSafePath } from './storage';
 import { XMLParser } from 'fast-xml-parser';
 import { ClassificationResult } from './types';
+import { getVaultRoot } from './config';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || ''
@@ -28,13 +29,12 @@ const geminiClient = process.env.GEMINI_API_KEY ? new OpenAI({
   baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/'
 }) : null;
 
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
 let cachedSnippetsArr: null | { title: string, content: string }[] = null;
 
 function loadSnippetsStructured() {
   if (cachedSnippetsArr) return cachedSnippetsArr;
   try {
-    const xmlPath = path.join(VAULT_ROOT, '__skills', 'context', 'snippets.xml');
+    const xmlPath = path.join(getVaultRoot(), '__skills', 'context', 'snippets.xml');
     if (!fs.existsSync(xmlPath)) return [];
     const xmlData = fs.readFileSync(xmlPath, 'utf8');
     const parser = new XMLParser({ ignoreAttributes: false });
