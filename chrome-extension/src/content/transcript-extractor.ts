@@ -55,7 +55,7 @@ function extractTracksFromResponse(playerResponse: Record<string, unknown>): Cap
  * 利用可能な言語コードのリストを返す。
  */
 export function getAvailableLanguages(tracks: CaptionTrack[]): string[] {
-  return tracks.map(t => t.languageCode);
+  return [...new Set(tracks.map(t => t.languageCode))];
 }
 
 /**

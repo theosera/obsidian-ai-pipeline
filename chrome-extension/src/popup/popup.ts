@@ -1,10 +1,10 @@
-import { STORAGE_KEYS, FAST_MODEL_CHAR_THRESHOLD, MODELS, MODEL_PRICING } from '../shared/constants';
+import { FAST_MODEL_CHAR_THRESHOLD, MODELS, MODEL_PRICING } from '../shared/constants';
+import { loadConfig } from '../shared/config';
 import type {
   Message,
   VideoInfoPayload,
   TranscriptPayload,
   VideoMetadata,
-  ExtensionConfig,
 } from '../shared/types';
 
 // --- DOM Elements ---
@@ -62,18 +62,6 @@ function showSubState(
 
 async function sendMessage<T = unknown>(message: Message): Promise<Message<T>> {
   return chrome.runtime.sendMessage(message);
-}
-
-async function loadConfig(): Promise<ExtensionConfig> {
-  const result = await chrome.storage.local.get([STORAGE_KEYS.API_KEY, STORAGE_KEYS.CONFIG]);
-  const config = result[STORAGE_KEYS.CONFIG] || {};
-  return {
-    apiKey: result[STORAGE_KEYS.API_KEY] || '',
-    fastModel: config.fastModel || MODELS.fast.id,
-    smartModel: config.smartModel || MODELS.smart.id,
-    autoSelectModel: config.autoSelectModel !== false,
-    includeRawTranscript: config.includeRawTranscript !== false,
-  };
 }
 
 // --- Initialization ---

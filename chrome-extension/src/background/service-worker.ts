@@ -1,35 +1,16 @@
-import { analyzeTranscript, estimateCost } from './ai-client';
+import { analyzeTranscript } from './ai-client';
 import { buildMarkdownFile } from './markdown-generator';
-import { STORAGE_KEYS } from '../shared/constants';
+import { loadConfig } from '../shared/config';
 import type {
   Message,
-  ExtensionConfig,
-  DEFAULT_CONFIG,
-  VideoInfoPayload,
-  TranscriptPayload,
   AnalyzePayload,
   DownloadPayload,
-  AnalysisResult,
 } from '../shared/types';
 
 /**
  * Service Worker: Chrome拡張のバックグラウンドプロセス。
  * content script ↔ popup 間のメッセージルーティングとAPI呼び出しを担当。
  */
-
-// --- Config Management ---
-
-async function loadConfig(): Promise<ExtensionConfig> {
-  const result = await chrome.storage.local.get([STORAGE_KEYS.API_KEY, STORAGE_KEYS.CONFIG]);
-  const config = result[STORAGE_KEYS.CONFIG] || {};
-  return {
-    apiKey: result[STORAGE_KEYS.API_KEY] || '',
-    fastModel: config.fastModel || 'claude-haiku-4-5-20251001',
-    smartModel: config.smartModel || 'claude-sonnet-4-6',
-    autoSelectModel: config.autoSelectModel !== false,
-    includeRawTranscript: config.includeRawTranscript !== false,
-  };
-}
 
 // --- Message Routing ---
 

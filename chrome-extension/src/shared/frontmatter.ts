@@ -14,7 +14,7 @@ export function generateFrontmatter(video: VideoMetadata): string {
 
   return `---
 title: "${escapeFrontmatter(video.title)}"
-source: "${video.url}"
+source: "${escapeFrontmatter(video.url)}"
 author:
   - "[[${escapeFrontmatter(video.channel)}]]"
 published: ${video.publishedDate || today}
@@ -35,11 +35,11 @@ export function generateFilename(title: string): string {
   const today = new Date().toISOString().split('T')[0];
   const mmDd = today.substring(5); // MM-DD
 
-  const safeTitle = (title || 'Untitled')
+  const safeTitle = (title || '')
     .replace(/[\x00-\x1f\x7f]/g, '')
     .replace(/[\/\\*?:"<>|／＼]/g, '')
     .trim()
-    .slice(0, 100);
+    .slice(0, 100) || 'Untitled';
 
   return `${safeTitle}_${mmDd}.md`;
 }

@@ -1,4 +1,4 @@
-import { ANTHROPIC_API_URL, ANTHROPIC_VERSION, FAST_MODEL_CHAR_THRESHOLD, MODELS } from '../shared/constants';
+import { ANTHROPIC_API_URL, ANTHROPIC_VERSION, FAST_MODEL_CHAR_THRESHOLD, MODELS, MODEL_PRICING } from '../shared/constants';
 import { SYSTEM_PROMPT, buildUserPrompt } from '../shared/prompts/transcript-analysis';
 import type { AnalysisResult, ExtensionConfig } from '../shared/types';
 
@@ -14,21 +14,36 @@ export async function analyzeTranscript(
   const model = selectModel(transcriptText, config);
   const userPrompt = buildUserPrompt(transcriptText);
 
-  const response = await fetch(ANTHROPIC_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 8192,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userPrompt }],
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120_000); // 2分タイムアウト
+
+  let response: Response;
+  try {
+    response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': config.apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 8192,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error('APIリクエストがタイムアウトしました（2分）。再試行してください。');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
@@ -91,7 +106,7 @@ export function estimateCost(transcriptText: string, config: ExtensionConfig): {
   const tokensPerChar = isJapanese ? 1.5 : 0.4;
   const estimatedInputTokens = Math.ceil(transcriptText.length * tokensPerChar) + 500; // +system prompt
 
-  const modelInfo = model === MODELS.fast.id ? MODELS.fast : MODELS.smart;
+  const modelInfo = MODEL_PRICING[model] || (model === MODELS.fast.id ? MODELS.fast : MODELS.smart);
   const inputCost = (estimatedInputTokens / 1_000_000) * modelInfo.inputPricePer1M;
   const outputEstimate = 4000; // 概算出力トークン
   const outputCost = (outputEstimate / 1_000_000) * modelInfo.outputPricePer1M;

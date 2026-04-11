@@ -189,7 +189,7 @@ header h1 {
   overflow-y: auto;
   margin-bottom: 12px;
   white-space: pre-wrap;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
   line-height: 1.4;
 }
 

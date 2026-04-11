@@ -5,8 +5,9 @@ import type { VideoMetadata } from '../shared/types';
  * og:タグ、microdata、ytInitialDataから取得。
  */
 export function extractVideoMetadata(): VideoMetadata {
-  const url = window.location.href;
-  const videoId = new URL(url).searchParams.get('v') || '';
+  const pageUrl = window.location.href;
+  const rawVideoId = new URL(pageUrl).searchParams.get('v') || '';
+  const videoId = /^[a-zA-Z0-9_-]{11}$/.test(rawVideoId) ? rawVideoId : '';
 
   const title = getMetaContent('og:title')
     || document.title.replace(/ - YouTube$/, '')
@@ -22,7 +23,7 @@ export function extractVideoMetadata(): VideoMetadata {
     title,
     channel,
     publishedDate,
-    url: `https://www.youtube.com/watch?v=${videoId}`,
+    url: videoId ? `https://www.youtube.com/watch?v=${videoId}` : pageUrl,
     description,
     duration,
     language: '',

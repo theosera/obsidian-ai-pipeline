@@ -7,7 +7,6 @@ export function sanitizeUntrustedText(raw: string, maxLength: number): string {
   return raw
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')  // 制御文字（改行・タブは保持）
     .replace(/[\u200b-\u200f\u2028-\u202f\u2060\ufeff\ufff9-\ufffb]/g, '') // ゼロ幅・不可視Unicode
-    .replace(/[\u0000]/g, '')  // nullバイト
     .slice(0, maxLength);
 }
 
