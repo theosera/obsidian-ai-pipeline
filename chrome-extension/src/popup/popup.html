@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YT Transcript Analyzer</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>YT Transcript Analyzer</h1>
+    </header>
+
+    <!-- 動画未検出時 -->
+    <div id="no-video" class="state">
+      <p class="message">YouTube動画ページで使用してください。</p>
+    </div>
+
+    <!-- 動画情報表示 -->
+    <div id="video-info" class="state" hidden>
+      <div class="video-card">
+        <h2 id="video-title" class="video-title"></h2>
+        <div class="meta-row">
+          <span id="video-channel" class="meta-tag channel"></span>
+          <span id="video-duration" class="meta-tag"></span>
+          <span id="video-lang" class="meta-tag"></span>
+        </div>
+      </div>
+
+      <!-- トランスクリプト未検出 -->
+      <div id="no-transcript" hidden>
+        <p class="message warning">この動画にはトランスクリプト（字幕）がありません。</p>
+      </div>
+
+      <!-- 分析前 -->
+      <div id="pre-analysis" hidden>
+        <div class="cost-estimate">
+          <span id="estimate-model" class="estimate-label"></span>
+          <span id="estimate-cost" class="estimate-value"></span>
+        </div>
+        <button id="analyze-btn" class="primary-btn">分析開始</button>
+      </div>
+
+      <!-- 分析中 -->
+      <div id="analyzing" hidden>
+        <div class="spinner"></div>
+        <p class="message">AIが分析中です...</p>
+      </div>
+
+      <!-- 分析完了 -->
+      <div id="analysis-done" hidden>
+        <div class="result-summary">
+          <span id="result-model" class="meta-tag"></span>
+          <span id="result-tokens" class="meta-tag"></span>
+        </div>
+        <div id="preview" class="preview"></div>
+        <button id="download-btn" class="primary-btn">マークダウンをダウンロード</button>
+        <button id="copy-btn" class="secondary-btn">クリップボードにコピー</button>
+      </div>
+
+      <!-- エラー -->
+      <div id="error-state" hidden>
+        <p id="error-message" class="message error"></p>
+        <button id="retry-btn" class="secondary-btn">再試行</button>
+      </div>
+    </div>
+
+    <footer>
+      <a id="settings-link" href="#">設定</a>
+    </footer>
+  </div>
+
+  <script type="module" src="popup.ts"></script>
+</body>
+</html>
