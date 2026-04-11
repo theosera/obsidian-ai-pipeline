@@ -16,6 +16,13 @@ export const MODELS = {
   },
 } as const;
 
+/** モデルIDから価格情報を取得するルックアップテーブル */
+export const MODEL_PRICING: Record<string, { label: string; inputPricePer1M: number; outputPricePer1M: number }> = {
+  'claude-haiku-4-5-20251001': { label: 'Claude Haiku 4.5', inputPricePer1M: 0.25, outputPricePer1M: 1.25 },
+  'claude-sonnet-4-6': { label: 'Claude Sonnet 4.6', inputPricePer1M: 3.00, outputPricePer1M: 15.00 },
+  'claude-opus-4-6': { label: 'Claude Opus 4.6', inputPricePer1M: 15.00, outputPricePer1M: 75.00 },
+};
+
 /** 短い動画のトランスクリプト文字数の閾値 (これ以下ならFastモデル) */
 export const FAST_MODEL_CHAR_THRESHOLD = 5000;
 

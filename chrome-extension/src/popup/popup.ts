@@ -1,4 +1,4 @@
-import { STORAGE_KEYS, FAST_MODEL_CHAR_THRESHOLD, MODELS } from '../shared/constants';
+import { STORAGE_KEYS, FAST_MODEL_CHAR_THRESHOLD, MODELS, MODEL_PRICING } from '../shared/constants';
 import type {
   Message,
   VideoInfoPayload,
@@ -135,7 +135,8 @@ async function updateCostEstimate(): Promise<void> {
   const estimatedInputTokens = Math.ceil(charCount * tokensPerChar) + 500;
 
   const useSmartModel = !config.autoSelectModel || charCount > FAST_MODEL_CHAR_THRESHOLD;
-  const modelInfo = useSmartModel ? MODELS.smart : MODELS.fast;
+  const selectedModelId = useSmartModel ? config.smartModel : config.fastModel;
+  const modelInfo = MODEL_PRICING[selectedModelId] || (useSmartModel ? MODELS.smart : MODELS.fast);
   const inputCost = (estimatedInputTokens / 1_000_000) * modelInfo.inputPricePer1M;
   const outputCost = (4000 / 1_000_000) * modelInfo.outputPricePer1M;
 
