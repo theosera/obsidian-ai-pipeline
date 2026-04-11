@@ -6,16 +6,73 @@ import { ArticleData } from './types';
 // Current Vault root
 const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
 
+const FALLBACK_PATH = 'Clippings/Inbox';
+
+/**
+ * パストラバーサル防止: resolvedパスがVAULT_ROOT配下であることを保証する。
+ * nullバイト除去、セグメント検証、resolve後のプレフィックス検証、
+ * さらに実体パス(realpath)によるsymlink追跡を行う。
+ * 違反時は安全なフォールバックパスを返す。
+ */
+export function ensureSafePath(proposedRelative: string): string {
+  if (!proposedRelative || typeof proposedRelative !== 'string') {
+    return FALLBACK_PATH;
+  }
+
+  // Phase 1: nullバイト・制御文字の除去
+  const noNull = proposedRelative.replace(/[\x00-\x1f\x7f]/g, '');
+
+  // Phase 2: パスセグメント単位でのサニタイズ
+  const sanitized = noNull
+    .split(/[\/\\]/)
+    .filter(seg => seg !== '..' && seg !== '.' && seg !== '')
+    .join(path.sep);
+
+  if (!sanitized) {
+    return FALLBACK_PATH;
+  }
+
+  // Phase 3: resolve後のプレフィックス検証
+  const resolved = path.resolve(VAULT_ROOT, sanitized);
+  if (!resolved.startsWith(VAULT_ROOT + path.sep) && resolved !== VAULT_ROOT) {
+    console.error(`[Security] パストラバーサル検出 (resolve): "${proposedRelative}" -> "${resolved}"`);
+    return FALLBACK_PATH;
+  }
+
+  // Phase 4: 既存パスの場合、realpath(symlink解決済み)でも検証
+  if (fs.existsSync(resolved)) {
+    try {
+      const real = fs.realpathSync(resolved);
+      const realVault = fs.realpathSync(VAULT_ROOT);
+      if (!real.startsWith(realVault + path.sep) && real !== realVault) {
+        console.error(`[Security] symlink経由のパストラバーサル検出: "${resolved}" -> realpath "${real}"`);
+        return FALLBACK_PATH;
+      }
+    } catch {
+      // realpathSync失敗は無視（パスが存在しない場合はPhase 3で十分）
+    }
+  }
+
+  // Phase 5: パス長制限（極端に長いパスはOSレベルの問題を引き起こす）
+  if (sanitized.length > 500) {
+    console.error(`[Security] パス長超過 (${sanitized.length} chars): "${sanitized.substring(0, 80)}..."`);
+    return FALLBACK_PATH;
+  }
+
+  return sanitized;
+}
+
 export function checkFolderExists(folderPath: string): boolean {
-  const fullPath = path.join(VAULT_ROOT, folderPath);
+  const safePath = ensureSafePath(folderPath);
+  const fullPath = path.join(VAULT_ROOT, safePath);
   return fs.existsSync(fullPath);
 }
 
 export function saveMarkdown(articleData: ArticleData, folderPath: string): string {
   const date = new Date();
-  
-  // rely on the AI's classification for Quarterly folder logic
-  let finalPath = folderPath;
+
+  // パストラバーサル防止: AI出力パスを検証
+  let finalPath = ensureSafePath(folderPath);
 
   const fullDirPath = path.join(VAULT_ROOT, finalPath);
   
@@ -33,7 +90,11 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
       mm_dd = createdMatch[1];
   }
 
-  const safeTitle = (articleData.title || 'Untitled').replace(/[\/\\*?:""<>|]/g, '').slice(0, 100);
+  const safeTitle = (articleData.title || 'Untitled')
+    .replace(/[\x00-\x1f\x7f]/g, '')       // 制御文字・ヌル文字を除去
+    .replace(/[\/\\*?:""<>|／＼]/g, '')      // パス区切り文字（半角・全角）を除去
+    .trim()
+    .slice(0, 100);
   const fileName = `${safeTitle}_${mm_dd}.md`;
   const filePath = path.join(fullDirPath, fileName);
 
@@ -60,7 +121,12 @@ tags:
 
 function escapeFrontmatter(str: string): string {
   if (!str) return '';
-  return str.replace(/"/g, '\\"');
+  return str
+    .replace(/\\/g, '\\\\')          // バックスラッシュをエスケープ（先にやる）
+    .replace(/"/g, '\\"')             // ダブルクォートをエスケープ
+    .replace(/\n/g, ' ')              // 改行をスペースに変換（YAML構造破壊防止）
+    .replace(/\r/g, '')               // CRを除去
+    .replace(/---/g, '\\-\\-\\-');    // YAMLセパレータを無害化
 }
 
 let cachedFolders: string[] | null = null;

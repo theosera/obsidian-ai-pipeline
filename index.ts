@@ -4,7 +4,7 @@ import readline from 'readline';
 import { fetchRenderedHtml, closeBrowser } from './fetcher';
 import { extractAndConvert } from './extractor';
 import { classifyArticle, tokenUsageMetrics } from './classifier';
-import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls } from './storage';
+import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls, ensureSafePath } from './storage';
 import { loadConfig, runConfigWizard, applyConfigToEnv } from './config';
 import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
 import { ProcessingResult } from './types';
@@ -144,8 +144,12 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
         console.log(`Current Path: ${target.classification.proposedPath}`);
         const newPath = await askQuestion('Enter new folder path (leave empty to cancel): ');
         if (newPath.trim() !== '') {
-          target.classification.proposedPath = newPath.trim();
-          target.classification.isNewFolder = false; // Disable new folder badging manually overridden
+          const safePath = ensureSafePath(newPath.trim());
+          if (safePath !== newPath.trim()) {
+            console.log(`[Security] パスがサニタイズされました: "${newPath.trim()}" -> "${safePath}"`);
+          }
+          target.classification.proposedPath = safePath;
+          target.classification.isNewFolder = false;
           console.log(`Updated!`);
           
           // Re-write the report file

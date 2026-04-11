@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fetchRenderedHtml, closeBrowser } from './fetcher.js';
 import { extractAndConvert } from './extractor.js';
-import { saveMarkdown, updateVaultTreeSnapshot } from './storage.js';
+import { saveMarkdown, updateVaultTreeSnapshot, ensureSafePath } from './storage.js';
 
 const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
 
@@ -35,15 +35,15 @@ async function main() {
       continue;
     }
 
-    // Match Links: - [1] [タイトル](https://example.com) ⚠️[要完全性チェック]
     const linkMatch = line.match(/^- \[\d+\] \[(.*?)\]\((.*?)\)/);
     if (linkMatch && currentFolder) {
       const title = linkMatch[1];
       const url = linkMatch[2];
+      const safeFolder = ensureSafePath(currentFolder);
       targetItems.push({
         url,
         title,
-        folder: currentFolder
+        folder: safeFolder
       });
     }
   }

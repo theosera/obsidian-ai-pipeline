@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { ProcessingResult } from './types';
+import { ensureSafePath } from './storage';
 
 const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
 const RULES_PATH = path.join(VAULT_ROOT, '__skills', 'pipeline', 'folder_rules.json');
@@ -30,27 +31,30 @@ export function saveFolderRules(rules: RulesMap): void {
 }
 
 export function getRoutedPath(baseCategory: string, publishDateStr: string | undefined, rules: RulesMap): string {
+  // パストラバーサル防止: baseCategoryを検証
+  const safeBase = ensureSafePath(baseCategory);
+
   // EXCEPTION: how/howto folders are completely EXEMPT from quarterly/monthly rules
-  if (/(?:\/|^)(how|howto)(?:\/|$)/i.test(baseCategory)) {
-    return baseCategory;
+  if (/(?:\/|^)(how|howto)(?:\/|$)/i.test(safeBase)) {
+    return safeBase;
   }
 
-  const rule = rules[baseCategory] || 'none';
+  const rule = rules[safeBase] || 'none';
   const dateObj = publishDateStr ? new Date(publishDateStr) : new Date();
-  
+
   if (rule === 'monthly') {
     const year = dateObj.getFullYear();
     const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-    return `${baseCategory}/${year}-${month}`;
+    return `${safeBase}/${year}-${month}`;
   }
-  
+
   if (rule === 'quarterly') {
     const year = dateObj.getFullYear();
     const quarter = Math.floor(dateObj.getMonth() / 3) + 1;
-    return `${baseCategory}/${year}-Q${quarter}`;
+    return `${safeBase}/${year}-Q${quarter}`;
   }
-  
-  return baseCategory;
+
+  return safeBase;
 }
 
 export function updateThresholds(results: ProcessingResult[], currentRules: RulesMap): RulesMap {
