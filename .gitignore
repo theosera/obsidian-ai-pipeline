@@ -14,6 +14,10 @@ logs/
 .chromium-data/
 *.txt
 
+# Chrome Extension build output
+chrome-extension/dist/
+chrome-extension/node_modules/
+
 # Ignore all dotfiles and dotfolders as instructed
 .*
 # But specifically allow gitignore itself
