@@ -4,8 +4,14 @@ import path from 'path';
 import { fetchRenderedHtml, closeBrowser } from './fetcher.js';
 import { extractAndConvert } from './extractor.js';
 import { saveMarkdown, updateVaultTreeSnapshot, ensureSafePath } from './storage.js';
+import { loadConfig } from './config.js';
 
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
+// コンフィグからVAULT_ROOTを読み込む
+const config = loadConfig();
+if (!config) {
+  console.error('pipeline_config.json が見つかりません。先に npm run start -- --config を実行してください。');
+  process.exit(1);
+}
 
 async function main() {
   const args = process.argv.slice(2);
@@ -62,14 +68,14 @@ async function main() {
 
   for (let i = 0; i < targetItems.length; i += CONCURRENCY_LIMIT) {
     const chunkItems = targetItems.slice(i, i + CONCURRENCY_LIMIT);
-    
+
     const mappedPromises = chunkItems.map(async (item, indexInChunk) => {
       const globalIndex = i + indexInChunk + 1;
-      
+
       try {
         const html = await fetchRenderedHtml(item.url);
         const article = extractAndConvert(html, item.url);
-        
+
         saveMarkdown(article, item.folder);
         console.log(`[${globalIndex}/${targetItems.length}] ${item.title.substring(0, 30)}... ✅ Saved to ${item.folder}`);
         return true;
@@ -86,7 +92,7 @@ async function main() {
   }
 
   await closeBrowser();
-  
+
   if (successCount > 0) {
      updateVaultTreeSnapshot();
      console.log(`\n🎉 Rescue Complete! ${successCount}/${targetItems.length} articles successfully saved to Vault.`);

@@ -2,16 +2,23 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { ArticleData } from './types';
-
-// Current Vault root
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
+import { getVaultRoot, isDryRun } from './config';
 
 const FALLBACK_PATH = 'Clippings/Inbox';
 
 /**
  * パストラバーサル防止: resolvedパスがVAULT_ROOT配下であることを保証する。
- * nullバイト除去、セグメント検証、resolve後のプレフィックス検証、
- * さらに実体パス(realpath)によるsymlink追跡を行う。
+ *
+ * 防御フェーズ:
+ *   0. URL デコード（%2e%2e 等のエンコード済みトラバーサル対策）
+ *   1. 絶対パス拒否（/, ~, ドライブレター）
+ *   2. nullバイト・制御文字の除去
+ *   3. Unicode NFC 正規化（macOS NFD 差異による迂回防止）
+ *   4. パスセグメント検証（.. を検出したら即座に拒否）
+ *   5. resolve 後のプレフィックス検証
+ *   6. 既存パスの場合 realpath(symlink解決済み)でも検証
+ *   7. パス長制限
+ *
  * 違反時は安全なフォールバックパスを返す。
  */
 export function ensureSafePath(proposedRelative: string): string {
@@ -19,41 +26,68 @@ export function ensureSafePath(proposedRelative: string): string {
     return FALLBACK_PATH;
   }
 
-  // Phase 1: nullバイト・制御文字の除去
-  const noNull = proposedRelative.replace(/[\x00-\x1f\x7f]/g, '');
+  const vaultRoot = getVaultRoot();
 
-  // Phase 2: パスセグメント単位でのサニタイズ
-  const sanitized = noNull
-    .split(/[\/\\]/)
-    .filter(seg => seg !== '..' && seg !== '.' && seg !== '')
+  // Phase 0: URLデコード（%2e%2e などのエンコード済みトラバーサル対策）
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(proposedRelative);
+  } catch {
+    decoded = proposedRelative;
+  }
+
+  // Phase 1: 絶対パス拒否
+  if (/^[\/\\~]|^[a-zA-Z]:/.test(decoded)) {
+    console.error(`[Security] 絶対パスが検出されました: "${proposedRelative}"`);
+    return FALLBACK_PATH;
+  }
+
+  // Phase 2: nullバイト・制御文字の除去
+  const noControl = decoded.replace(/[\x00-\x1f\x7f]/g, '');
+
+  // Phase 3: Unicode NFC 正規化（macOS HFS+ は NFD を使うため、NFC/NFD 差異を統一）
+  const normalized = noControl.normalize('NFC');
+
+  // Phase 4: パスセグメント単位での検証
+  const segments = normalized.split(/[\/\\]/);
+
+  // ".." が含まれていれば即座に拒否（sanitize ではなく reject）
+  if (segments.some(seg => seg === '..')) {
+    console.error(`[Security] パストラバーサル検出 (..): "${proposedRelative}"`);
+    return FALLBACK_PATH;
+  }
+
+  // "." と空文字列はフィルタ（ドットファイル名 ".hidden" は通す）
+  const sanitized = segments
+    .filter(seg => seg !== '.' && seg !== '')
     .join(path.sep);
 
   if (!sanitized) {
     return FALLBACK_PATH;
   }
 
-  // Phase 3: resolve後のプレフィックス検証
-  const resolved = path.resolve(VAULT_ROOT, sanitized);
-  if (!resolved.startsWith(VAULT_ROOT + path.sep) && resolved !== VAULT_ROOT) {
+  // Phase 5: resolve後のプレフィックス検証
+  const resolved = path.resolve(vaultRoot, sanitized);
+  if (!resolved.startsWith(vaultRoot + path.sep) && resolved !== vaultRoot) {
     console.error(`[Security] パストラバーサル検出 (resolve): "${proposedRelative}" -> "${resolved}"`);
     return FALLBACK_PATH;
   }
 
-  // Phase 4: 既存パスの場合、realpath(symlink解決済み)でも検証
+  // Phase 6: 既存パスの場合、realpath(symlink解決済み)でも検証
   if (fs.existsSync(resolved)) {
     try {
       const real = fs.realpathSync(resolved);
-      const realVault = fs.realpathSync(VAULT_ROOT);
+      const realVault = fs.realpathSync(vaultRoot);
       if (!real.startsWith(realVault + path.sep) && real !== realVault) {
         console.error(`[Security] symlink経由のパストラバーサル検出: "${resolved}" -> realpath "${real}"`);
         return FALLBACK_PATH;
       }
     } catch {
-      // realpathSync失敗は無視（パスが存在しない場合はPhase 3で十分）
+      // realpathSync失敗は無視（パスが存在しない場合はPhase 5で十分）
     }
   }
 
-  // Phase 5: パス長制限（極端に長いパスはOSレベルの問題を引き起こす）
+  // Phase 7: パス長制限（極端に長いパスはOSレベルの問題を引き起こす）
   if (sanitized.length > 500) {
     console.error(`[Security] パス長超過 (${sanitized.length} chars): "${sanitized.substring(0, 80)}..."`);
     return FALLBACK_PATH;
@@ -62,20 +96,37 @@ export function ensureSafePath(proposedRelative: string): string {
   return sanitized;
 }
 
+/**
+ * dry-run 対応のファイル移動。
+ * isDryRun() が true の場合、ログ出力のみでファイルは移動しない。
+ */
+export function safeRename(src: string, dest: string): void {
+  const vaultRoot = getVaultRoot();
+  const relSrc = path.relative(vaultRoot, src);
+  const relDest = path.relative(vaultRoot, dest);
+
+  if (isDryRun()) {
+    console.log(`  [DRY-RUN] ${relSrc} -> ${relDest}`);
+    return;
+  }
+  fs.renameSync(src, dest);
+}
+
 export function checkFolderExists(folderPath: string): boolean {
   const safePath = ensureSafePath(folderPath);
-  const fullPath = path.join(VAULT_ROOT, safePath);
+  const fullPath = path.join(getVaultRoot(), safePath);
   return fs.existsSync(fullPath);
 }
 
 export function saveMarkdown(articleData: ArticleData, folderPath: string): string {
+  const vaultRoot = getVaultRoot();
   const date = new Date();
 
   // パストラバーサル防止: AI出力パスを検証
   let finalPath = ensureSafePath(folderPath);
 
-  const fullDirPath = path.join(VAULT_ROOT, finalPath);
-  
+  const fullDirPath = path.join(vaultRoot, finalPath);
+
   if (!fs.existsSync(fullDirPath)) {
     fs.mkdirSync(fullDirPath, { recursive: true });
   }
@@ -134,11 +185,12 @@ let cachedFolders: string[] | null = null;
 export function getVaultFolders(forceRefresh: boolean = false): string[] {
   if (cachedFolders && !forceRefresh) return cachedFolders;
 
+  const vaultRoot = getVaultRoot();
   const folders: string[] = [];
-  
+
   function scan(dirPath: string, relativePath: string = '', depth: number = 0): void {
     if (depth > 6) return; // limit depth to not scan too deep
-    
+
     let entries;
     try {
       entries = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -157,15 +209,16 @@ export function getVaultFolders(forceRefresh: boolean = false): string[] {
     }
   }
 
-  scan(VAULT_ROOT);
+  scan(vaultRoot);
   cachedFolders = folders;
   return cachedFolders;
 }
 
 export function updateVaultTreeSnapshot(): void {
+  const vaultRoot = getVaultRoot();
   const folders = getVaultFolders(true);
-  const treeFilePath = path.join(VAULT_ROOT, '__skills', 'context', 'iCloud Vault 2026.txt');
-  const historyDir = path.join(VAULT_ROOT, '__skills', 'context', 'vault_tree_history');
+  const treeFilePath = path.join(vaultRoot, '__skills', 'context', 'iCloud Vault 2026.txt');
+  const historyDir = path.join(vaultRoot, '__skills', 'context', 'vault_tree_history');
 
   if (!fs.existsSync(historyDir)) {
     fs.mkdirSync(historyDir, { recursive: true });
@@ -175,7 +228,7 @@ export function updateVaultTreeSnapshot(): void {
   fs.writeFileSync(treeFilePath, treeContent, 'utf8');
 
   // Save timestamped snapshot (e.g., 2026-03-29_095315)
-  const dateStr = new Date().toISOString().replace(/[:.]/g, '-').split('T'); 
+  const dateStr = new Date().toISOString().replace(/[:.]/g, '-').split('T');
   const timeStr = dateStr[1].substring(0,6);
   const snapshotName = `vault_tree_${dateStr[0]}_${timeStr}.txt`;
   fs.writeFileSync(path.join(historyDir, snapshotName), treeContent, 'utf8');
@@ -185,15 +238,16 @@ let cachedKnownUrls: Set<string> | null = null;
 
 export function getKnownUrls(): Set<string> {
   if (cachedKnownUrls) return cachedKnownUrls;
+  const vaultRoot = getVaultRoot();
   const known = new Set<string>();
-  
+
   try {
-    const output = execSync('grep -rhI "^source: \\"" . || true', { 
-      cwd: VAULT_ROOT, 
-      encoding: 'utf8', 
-      stdio: ['pipe', 'pipe', 'ignore'] 
+    const output = execSync('grep -rhI "^source: \\"" . || true', {
+      cwd: vaultRoot,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore']
     });
-    
+
     const lines = output.split('\n');
     for (const line of lines) {
       const match = line.match(/^source:\s*"?(https?:\/\/[^"]+)"?/);
@@ -206,7 +260,7 @@ export function getKnownUrls(): Set<string> {
   } catch (err: any) {
     console.warn("[Storage] Failed to grep existing URLs:", err.message);
   }
-  
+
   cachedKnownUrls = known;
   return cachedKnownUrls;
 }

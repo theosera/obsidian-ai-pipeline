@@ -3,8 +3,22 @@ import fs from 'fs';
 import path from 'path';
 import { ruleBasedClassify } from './classifier.js';
 import { loadFolderRules, saveFolderRules, getRoutedPath } from './router.js';
+import { loadConfig, getVaultRoot, setDryRun, isDryRun } from './config.js';
+import { safeRename } from './storage.js';
 
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
+// コンフィグからVAULT_ROOTを読み込む
+const config = loadConfig();
+if (!config) {
+  console.error('pipeline_config.json が見つかりません。先に npm run start -- --config を実行してください。');
+  process.exit(1);
+}
+
+// --dry-run サポート
+if (process.argv.includes('--dry-run')) {
+  setDryRun(true);
+}
+
+const VAULT_ROOT = getVaultRoot();
 
 // Search Targets
 const TARGET_FOLDERS = [
@@ -52,7 +66,7 @@ for (const filePath of allFiles) {
 
   const titleMatch = content.match(/^title:\s*"?([^"]*)"?/m);
   if (titleMatch) title = titleMatch[1];
-  
+
   const sourceMatch = content.match(/^source:\s*"?([^"]*)"?/m);
   if (sourceMatch) source = sourceMatch[1];
 
@@ -77,48 +91,51 @@ for (const filePath of allFiles) {
   if (!folderAnalysis[newBaseCat]) {
     folderAnalysis[newBaseCat] = { pendingFiles: [] };
   }
-  
+
   folderAnalysis[newBaseCat].pendingFiles.push({ filePath, fileName, publishedDate });
 }
 
 // Create directories and apply router logic dynamically
 for (const [baseCat, data] of Object.entries(folderAnalysis)) {
-  let totalCount = data.pendingFiles.length; 
-  
+  let totalCount = data.pendingFiles.length;
+
   let currentRule = rules[baseCat] || 'none';
   let newRule = currentRule;
-  
+
   if (currentRule !== 'monthly') {
      if (totalCount >= 20) newRule = 'monthly';
      else if (totalCount >= 10 && currentRule !== 'quarterly') newRule = 'quarterly';
   }
-  
+
   if (newRule !== currentRule) {
       console.log(`[Threshold] '${baseCat}' rule upgraded to: ${newRule} (${totalCount} articles)`);
       rules[baseCat] = newRule;
   }
-  
+
   // Physically move files
   let tempRule = { [baseCat]: newRule };
-  data.pendingFiles.forEach(fileMeta => {     
+  data.pendingFiles.forEach(fileMeta => {
      let routedRel = getRoutedPath(baseCat, fileMeta.publishedDate, tempRule);
      let newAbsoluteDir = path.join(VAULT_ROOT, routedRel);
-     
-     if (!fs.existsSync(newAbsoluteDir)) {
+
+     if (!isDryRun() && !fs.existsSync(newAbsoluteDir)) {
         fs.mkdirSync(newAbsoluteDir, { recursive: true });
      }
-     
+
      let targetPath = path.join(newAbsoluteDir, fileMeta.fileName);
      if (fileMeta.filePath !== targetPath) {
-        fs.renameSync(fileMeta.filePath, targetPath);
+        safeRename(fileMeta.filePath, targetPath);
      }
   });
 }
 
-saveFolderRules(rules);
+if (!isDryRun()) {
+  saveFolderRules(rules);
+}
 
-// Cleanup
+// Cleanup (dry-run時はスキップ)
 function cleanupEmpty(dir) {
+  if (isDryRun()) return;
   if (!fs.existsSync(dir)) return;
   const items = fs.readdirSync(dir);
   for (const item of items) {
@@ -136,4 +153,8 @@ console.log(`\n[Reorganize Complete]`);
 console.log(`📊 Category Distribution:`);
 console.log(`- 🟣 Vibe Coding: ${countVibe} files`);
 console.log(`- 🔵 Agentic Engineering: ${countAgentic} files`);
-console.log(`Empty/old folders cleared. Folder thresholds saved. ✅`);
+if (isDryRun()) {
+  console.log(`\n🔍 [DRY-RUN] 上記は実際の移動を行っていません。`);
+} else {
+  console.log(`Empty/old folders cleared. Folder thresholds saved. ✅`);
+}
