@@ -33,7 +33,7 @@ export function getVaultRoot(): string {
   throw new Error(
     'VAULT_ROOT が設定されていません。\n' +
     '以下のいずれかで設定してください:\n' +
-    '  1. npm run start -- --config で設定ウィザードを実行\n' +
+    '  1. pnpm start -- --config で設定ウィザードを実行\n' +
     '  2. 環境変数 VAULT_ROOT を設定'
   );
 }

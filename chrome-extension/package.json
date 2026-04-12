@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "YouTube動画を文字起こし・AI分析し、Obsidian用マークダウンを生成するChrome拡張",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=9"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
