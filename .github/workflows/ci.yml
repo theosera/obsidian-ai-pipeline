@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+# GITHUB_TOKEN は read-only に制限（least privilege）
+permissions:
+  contents: read
+
 # 同一PR/ブランチで連続push時に古いジョブをキャンセル
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
