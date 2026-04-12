@@ -9,7 +9,7 @@ import { loadConfig } from './config.js';
 // コンフィグからVAULT_ROOTを読み込む
 const config = loadConfig();
 if (!config) {
-  console.error('pipeline_config.json が見つかりません。先に npm run start -- --config を実行してください。');
+  console.error('pipeline_config.json が見つかりません。先に pnpm start -- --config を実行してください。');
   process.exit(1);
 }
 

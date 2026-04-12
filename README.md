@@ -51,8 +51,9 @@ OneTab.txt（URL一覧）
 | ツール | バージョン |
 |---|---|
 | Node.js | v18+ （推奨: v22） |
-| tsx | `npm install` で自動インストール |
-| Playwright Chromium | `npx playwright install chromium` |
+| pnpm | v9+ （推奨: v10、`packageManager` で固定） |
+| tsx | `pnpm install` で自動インストール |
+| Playwright Chromium | `pnpm exec playwright install chromium` |
 | API キー | Anthropic / OpenAI / Gemini のいずれか（またはローカル LLM） |
 
 ---
@@ -61,9 +62,11 @@ OneTab.txt（URL一覧）
 
 ```bash
 cd pipeline
-npm install
-npx playwright install chromium
+pnpm install
+pnpm exec playwright install chromium
 ```
+
+> pnpm は [Corepack](https://nodejs.org/api/corepack.html) で `corepack enable` から導入できます。本リポジトリは `package.json` の `packageManager` フィールドで pnpm のバージョンを固定しています。
 
 ---
 
@@ -72,7 +75,7 @@ npx playwright install chromium
 ### 初回設定ウィザード
 
 ```bash
-npm run start -- --config
+pnpm start -- --config
 ```
 
 プロバイダー（`local` / `anthropic` / `openai` / `gemini`）、Vault Root パス、使用モデルを対話形式で設定。
@@ -81,31 +84,31 @@ npm run start -- --config
 ### 通常実行
 
 ```bash
-npm run start ../context/OneTab.txt
+pnpm start ../context/OneTab.txt
 ```
 
 ### dry-run（ファイル書き込みなし）
 
 ```bash
-npm run start ../context/OneTab.txt --dry-run
+pnpm start ../context/OneTab.txt --dry-run
 ```
 
 ### 中断からの再開（API コスト $0）
 
 ```bash
-npm run start -- --rescue "reports/OneTab分類結果レポート-YYYYMMDD.md"
+pnpm start -- --rescue "reports/OneTab分類結果レポート-YYYYMMDD.md"
 ```
 
 ### セキュリティテスト
 
 ```bash
-npm test
+pnpm test
 ```
 
 ### 複数記事のナレッジ統合
 
 ```bash
-tsx merge-articles.ts "../Engineer/AGENT_assistant_VibeCoding/ClaudeCode/2026-Q1"
+pnpm exec tsx merge-articles.ts "../Engineer/AGENT_assistant_VibeCoding/ClaudeCode/2026-Q1"
 ```
 
 ---
