@@ -22,3 +22,6 @@ chrome-extension/node_modules/
 .*
 # But specifically allow gitignore itself
 !.gitignore
+# Allow GitHub Actions workflows (CI)
+!.github/
+!.github/**
