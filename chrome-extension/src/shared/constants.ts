@@ -5,8 +5,8 @@ export const MODELS = {
   fast: {
     id: 'claude-haiku-4-5-20251001',
     label: 'Claude Haiku 4.5 (Fast)',
-    inputPricePer1M: 0.25,
-    outputPricePer1M: 1.25,
+    inputPricePer1M: 1.00,
+    outputPricePer1M: 5.00,
   },
   smart: {
     id: 'claude-sonnet-4-6',
