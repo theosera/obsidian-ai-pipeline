@@ -93,6 +93,27 @@ pnpm start ../context/OneTab.txt
 pnpm start ../context/OneTab.txt --dry-run
 ```
 
+### X (Twitter) ブックマークの取り込み
+
+X API v2 経由で**ログイン中アカウントのブックマークを取得**し、fetcher/extractor をスキップして直接 Classifier → Router → Vault 保存まで流します。
+
+```bash
+# 全件取得
+export X_USER_BEARER_TOKEN="<OAuth 2.0 User Access Token>"
+pnpm start -- --x-bookmarks
+
+# 件数制限（テスト用）
+pnpm start -- --x-bookmarks --x-limit=20 --dry-run
+```
+
+必要スコープ（OAuth 2.0 User Context）:
+- `bookmark.read`
+- `tweet.read`
+- `users.read`
+
+> App-only Bearer では `/2/users/:id/bookmarks` は 403 になります。必ず**ユーザーアクセストークン**を使用してください。
+> ツイートは `x.com` ドメインですが、`--x-bookmarks` モードでは `evaluatePolicy` の `manual_skip` を**意図的にバイパス**します（API 経由なのでスクレイプ規約には抵触しません）。
+
 ### 中断からの再開（API コスト $0）
 
 ```bash
@@ -133,6 +154,7 @@ pipeline/
 ├── config.ts             設定管理（Vault Root / dry-run / ウィザード）
 ├── fetcher.ts            Playwright Web フェッチ
 ├── extractor.ts          Readability + Turndown 抽出
+├── x_bookmarks.ts        X API v2 経由でのブックマーク取り込み
 ├── classifier.ts         AI 分類エンジン（Fast / Smart Pass）
 ├── router.ts             動的フォルダルーティング
 ├── storage.ts            Vault 保存（セキュリティ防御層）

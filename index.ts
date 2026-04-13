@@ -7,7 +7,21 @@ import { classifyArticle, tokenUsageMetrics } from './classifier';
 import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls, ensureSafePath } from './storage';
 import { loadConfig, runConfigWizard, applyConfigToEnv, getVaultRoot, setDryRun } from './config';
 import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
-import { ProcessingResult } from './types';
+import { ArticleData, ProcessingResult } from './types';
+import { fetchBookmarks } from './x_bookmarks';
+
+/**
+ * 1 本の処理対象。通常の OneTab URL は preFetched=undefined で、
+ * fetcher/extractor を通して HTML → ArticleData に変換する。
+ * X ブックマークなど API 経由で既に構造化済みのソースは preFetched に
+ * ArticleData を詰めておけば、後段はそのまま Classifier に流れる。
+ */
+type ParsedEntry = {
+  url: string;
+  title: string;
+  policy: string;
+  preFetched?: ArticleData;
+};
 
 function evaluatePolicy(url: string): string {
   const skipList = ['google.com/search', 'x.com', 'youtube.com', 'chatgpt.com', 'grok.com', 'gemini.google.com'];
@@ -163,6 +177,9 @@ async function main() {
   const args = process.argv.slice(2);
   const isConfigMode = args.includes('--config');
   const isDryRunMode = args.includes('--dry-run');
+  const isXBookmarksMode = args.includes('--x-bookmarks');
+  const xLimitArg = args.find(a => a.startsWith('--x-limit='));
+  const xLimit = xLimitArg ? parseInt(xLimitArg.split('=')[1], 10) : undefined;
   const filePath = args.find(a => !a.startsWith('--'));
 
   if (isDryRunMode) {
@@ -173,12 +190,13 @@ async function main() {
 
   // If no config found or user explicitly requests config, run wizard
   if (!config || isConfigMode) {
-    if (!filePath && !isConfigMode) {
-      console.error('Usage: node index.js <path-to-onetab.txt> [--config]');
+    if (!filePath && !isConfigMode && !isXBookmarksMode) {
+      console.error('Usage: tsx index.ts <path-to-onetab.txt> [--config] [--dry-run]');
+      console.error('       tsx index.ts --x-bookmarks [--x-limit=N] [--dry-run]');
       process.exit(1);
     }
     config = await runConfigWizard(askQuestion);
-    if (isConfigMode && !filePath) {
+    if (isConfigMode && !filePath && !isXBookmarksMode) {
       console.log('Configuration finished. Exiting.');
       process.exit(0);
     }
@@ -203,43 +221,72 @@ async function main() {
   // Update vault tree snapshot at startup to capture any manual user changes
   updateVaultTreeSnapshot();
 
-  if (!filePath) {
+  if (!filePath && !isXBookmarksMode) {
     console.error('Usage: tsx index.ts <path-to-onetab.txt>');
+    console.error('   or: tsx index.ts --x-bookmarks [--x-limit=N]');
     process.exit(1);
   }
 
-  const content = fs.readFileSync(filePath, 'utf-8');
-  const allLines = content.split('\n').filter(l => l.trim() !== '');
-
-  // Parse lines and pre-filter skips so they don't consume parallel slots
-  const parsedEntries = [];
+  const parsedEntries: ParsedEntry[] = [];
   const failures: { url: string; title: string; reason: string }[] = [];
-  
+
   // Index existing URLs to avoid duplicates
   console.log(`\n🔍 Indexing existing articles in the Vault...`);
   const knownUrls = getKnownUrls();
   console.log(`Found ${knownUrls.size} unique URLs already saved.\n`);
 
-  for (let i = 0; i < allLines.length; i++) {
-    const line = allLines[i];
-    const pipeIdx = line.indexOf(' | ');
-    if (pipeIdx === -1) continue;
-    const url = line.substring(0, pipeIdx).trim();
-    const title = line.substring(pipeIdx + 3).trim();
-
-    const checkUrl = url.endsWith('/') ? url.slice(0, -1) : url;
-    if (knownUrls.has(checkUrl)) {
-      console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (Duplicate in Vault)`);
-      failures.push({ url, title, reason: 'Duplicate: Already exists in Vault' });
-      continue;
+  if (isXBookmarksMode) {
+    // ==========================================
+    // X (Twitter) API 経由でブックマークを取得し、
+    // fetcher/extractor をスキップして Classifier に直接流し込む。
+    // ==========================================
+    console.log('🔖 X API 経由でブックマークを取得します...');
+    let bookmarks: ArticleData[];
+    try {
+      bookmarks = await fetchBookmarks({ maxItems: xLimit });
+    } catch (e: any) {
+      console.error(`❌ X ブックマーク取得失敗: ${e.message}`);
+      process.exit(1);
     }
 
-    const policy = evaluatePolicy(url);
-    if (policy === 'manual_skip') {
-      console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (manual_skip)`);
-      failures.push({ url, title, reason: 'Site Policy: manual_skip' });
-    } else {
-      parsedEntries.push({ url, title, policy });
+    for (let i = 0; i < bookmarks.length; i++) {
+      const bm = bookmarks[i];
+      const url = bm.url;
+      const title = bm.title || `X post ${i + 1}`;
+      const checkUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+      if (knownUrls.has(checkUrl)) {
+        console.log(`[${i + 1}/${bookmarks.length}] ${title.substring(0, 40)}... Skipped (Duplicate in Vault)`);
+        failures.push({ url, title, reason: 'Duplicate: Already exists in Vault' });
+        continue;
+      }
+      // X ブックマークは evaluatePolicy をバイパス（x.com は通常 manual_skip）
+      parsedEntries.push({ url, title, policy: 'x_bookmark', preFetched: bm });
+    }
+  } else {
+    const content = fs.readFileSync(filePath!, 'utf-8');
+    const allLines = content.split('\n').filter(l => l.trim() !== '');
+
+    for (let i = 0; i < allLines.length; i++) {
+      const line = allLines[i];
+      const pipeIdx = line.indexOf(' | ');
+      if (pipeIdx === -1) continue;
+      const url = line.substring(0, pipeIdx).trim();
+      const title = line.substring(pipeIdx + 3).trim();
+
+      const checkUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+      if (knownUrls.has(checkUrl)) {
+        console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (Duplicate in Vault)`);
+        failures.push({ url, title, reason: 'Duplicate: Already exists in Vault' });
+        continue;
+      }
+
+      const policy = evaluatePolicy(url);
+      if (policy === 'manual_skip') {
+        console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (manual_skip)`);
+        failures.push({ url, title, reason: 'Site Policy: manual_skip' });
+      } else {
+        parsedEntries.push({ url, title, policy });
+      }
     }
   }
 
@@ -255,11 +302,13 @@ async function main() {
     
     const mappedPromises = chunkEntries.map(async (entry, indexInChunk) => {
       const globalIndex = i + indexInChunk + 1;
-      const { url, title, policy } = entry;
+      const { url, title, policy, preFetched } = entry;
 
       try {
-        const html = await fetchRenderedHtml(url);
-        const article = extractAndConvert(html, url);
+        // X ブックマーク等、構造化済みソースは preFetched を使い fetch/extract を飛ばす
+        const article = preFetched
+          ? preFetched
+          : extractAndConvert(await fetchRenderedHtml(url), url);
         const finalTitle = article.title || title;
 
         const classification = await classifyArticle(url, finalTitle, article.textContent);
