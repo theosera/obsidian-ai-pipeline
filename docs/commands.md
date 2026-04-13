@@ -77,5 +77,5 @@ export GEMINI_API_KEY="AIza..."
 何らかの環境変化により `Executable doesn't exist` などのエラーが発生し、HTML取得用ブラウザ(Playwright)が起動できなくなった場合の修復コマンドです。（※本プロジェクトディレクトリ直下で実行）
 
 ```bash
-npx playwright install chromium
+pnpm exec playwright install chromium
 ```
