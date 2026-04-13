@@ -141,11 +141,17 @@ pipeline/
 ├── rescue-from-report.ts レポートからの中断再開
 ├── fix_agentic_move.ts   フォルダ移行スクリプト
 ├── reorganize_agents.ts  エージェント関連ファイル再編成
-├── test_security.ts      セキュリティテスト（24項目）
+├── test_runner.ts        統合テストランナー（security/classifier/router/storage）
+├── test/                 テストスイート（67項目）
+│   ├── helpers.ts        共通ヘルパー（TestRunner）
+│   ├── security.ts       ensureSafePath / safeRename / getVaultRoot
+│   ├── classifier.ts     ruleBasedClassify (structural) + getBestMatch
+│   ├── router.ts         getRoutedPath（ルール/日付境界/例外）
+│   └── storage.ts        escapeFrontmatter + saveMarkdown e2e
 ├── folder_rules.json     動的フォルダルール永続化
 ├── tsconfig.json
 ├── package.json
-├── scripts/              ビルド生成物 JS（参照用バックアップ）
+├── scripts/              旧JS版アーカイブ（参照用・実行非推奨、詳細は scripts/README.md）
 ├── utils/
 │   └── rename_vault.cjs  Vault 一括リネームユーティリティ
 └── docs/

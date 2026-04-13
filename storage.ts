@@ -170,7 +170,7 @@ tags:
   return filePath;
 }
 
-function escapeFrontmatter(str: string): string {
+export function escapeFrontmatter(str: string): string {
   if (!str) return '';
   return str
     .replace(/\\/g, '\\\\')          // バックスラッシュをエスケープ（先にやる）
