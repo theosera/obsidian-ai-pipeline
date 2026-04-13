@@ -142,11 +142,13 @@ export function run(): TestSuiteResult {
       };
       const filePath = saveMarkdown(article, '../../../etc/passwd');
       // ensureSafePath により Clippings/Inbox に置換される
-      assert.ok(
-        filePath.includes(path.join('Clippings', 'Inbox')),
+      // 親ディレクトリを完全一致で検証 (部分一致ではない)
+      const expectedDir = path.join(tmpDir, 'Clippings', 'Inbox');
+      assert.strictEqual(
+        path.dirname(filePath),
+        expectedDir,
         `fallback パスが Clippings/Inbox に解決されていない: ${filePath}`
       );
-      assert.ok(filePath.startsWith(tmpDir), 'vault 外に書き出されている');
     });
 
     runner.test('タイトルの "(ダブルクォート)" が YAML エスケープされる', () => {

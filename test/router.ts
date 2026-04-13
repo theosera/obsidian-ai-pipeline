@@ -94,31 +94,25 @@ export function run(): TestSuiteResult {
     runner.section('getRoutedPath - howto/how 例外');
 
     runner.test('howto を含むパスは quarterly ルールでも昇格しない', () => {
-      const result = getRoutedPath(
-        'Engineer/AGENT_assistant_VibeCoding/ClaudeCode/howto',
-        '2026-04-15',
-        { 'Engineer/AGENT_assistant_VibeCoding/ClaudeCode/howto': 'quarterly' }
-      );
-      assert.ok(
-        !result.includes('2026-Q2'),
-        'howto フォルダは日付フォルダが追加されてはいけない'
-      );
+      const base = 'Engineer/AGENT_assistant_VibeCoding/ClaudeCode/howto';
+      const result = getRoutedPath(base, '2026-04-15', { [base]: 'quarterly' });
+      // ensureSafePath 経由で path.sep 区切りに正規化された形で完全一致する
+      const expected = base.split('/').join(path.sep);
+      assert.strictEqual(result, expected);
     });
 
     runner.test('howto の途中パスも例外扱い', () => {
-      const result = getRoutedPath(
-        'Engineer/ClaudeCode/howto/HandsOn',
-        '2026-04-15',
-        { 'Engineer/ClaudeCode/howto/HandsOn': 'monthly' }
-      );
-      assert.ok(!result.includes('2026-04'));
+      const base = 'Engineer/ClaudeCode/howto/HandsOn';
+      const result = getRoutedPath(base, '2026-04-15', { [base]: 'monthly' });
+      const expected = base.split('/').join(path.sep);
+      assert.strictEqual(result, expected);
     });
 
     runner.test('how 単体 (howtoではない) も例外扱い', () => {
-      const result = getRoutedPath('Engineer/Tips/how', '2026-04-15', {
-        'Engineer/Tips/how': 'monthly',
-      });
-      assert.ok(!result.includes('2026-04'));
+      const base = 'Engineer/Tips/how';
+      const result = getRoutedPath(base, '2026-04-15', { [base]: 'monthly' });
+      const expected = base.split('/').join(path.sep);
+      assert.strictEqual(result, expected);
     });
 
     // =====================================================
