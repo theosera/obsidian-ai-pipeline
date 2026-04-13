@@ -19,6 +19,10 @@ export async function analyzeTranscript(
 
   let response: Response;
   try {
+    // NOTE: `anthropic-dangerous-direct-browser-access: true` は意図的に有効化している。
+    // このヘッダーが想定する脅威モデル (SPA での DevTools 露出・XSS・キーのハードコード配布) は
+    // Service Worker では該当しない (page context から完全隔離されており、配布もしない前提)。
+    // リスク分析と採用条件は chrome-extension/README.md を参照。
     response = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
       headers: {
