@@ -142,7 +142,10 @@ export function run(): TestSuiteResult {
       };
       const filePath = saveMarkdown(article, '../../../etc/passwd');
       // ensureSafePath により Clippings/Inbox に置換される
-      assert.ok(filePath.includes('Clippings'));
+      assert.ok(
+        filePath.includes(path.join('Clippings', 'Inbox')),
+        `fallback パスが Clippings/Inbox に解決されていない: ${filePath}`
+      );
       assert.ok(filePath.startsWith(tmpDir), 'vault 外に書き出されている');
     });
 

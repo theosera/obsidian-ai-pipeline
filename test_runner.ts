@@ -28,7 +28,15 @@ const suiteResults: { name: string; passed: number; failed: number }[] = [];
 
 for (const suite of suites) {
   console.log(`\n======== ${suite.name} ========`);
-  const result = suite.run();
+  let result: { passed: number; failed: number };
+  try {
+    result = suite.run();
+  } catch (err: any) {
+    // suite 自身が throw した場合でも集計サマリーが出力されるようにガードする
+    console.error(`  ❌ ${suite.name} suite crashed`);
+    console.error(`     ${err?.message ?? String(err)}`);
+    result = { passed: 0, failed: 1 };
+  }
   totalPassed += result.passed;
   totalFailed += result.failed;
   suiteResults.push({ name: suite.name, ...result });

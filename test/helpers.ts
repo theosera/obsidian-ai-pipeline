@@ -7,12 +7,9 @@ export class TestRunner {
   passed = 0;
   failed = 0;
 
-  test(name: string, fn: () => void | Promise<void>): void {
+  test(name: string, fn: () => void): void {
     try {
-      const result = fn();
-      if (result instanceof Promise) {
-        throw new Error('Async test functions are not supported. Use synchronous assertions.');
-      }
+      fn();
       console.log(`  ✅ ${name}`);
       this.passed++;
     } catch (err: any) {

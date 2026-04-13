@@ -131,7 +131,8 @@ export function run(): TestSuiteResult {
         'Engineer/LLM': 'quarterly',
       });
       // 現在日から四半期が計算されるので、'Engineer/LLM/YYYY-Qn' 形式
-      assert.match(result, /Engineer.LLM\/\d{4}-Q[1-4]$/);
+      // path separator を正確にマッチさせる (. を使わない)
+      assert.match(result, /^Engineer[\\/]LLM[\\/]\d{4}-Q[1-4]$/);
     });
 
     // =====================================================
