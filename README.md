@@ -93,6 +93,29 @@ pnpm start ../context/OneTab.txt
 pnpm start ../context/OneTab.txt --dry-run
 ```
 
+### X (Twitter) ブックマークの取り込み
+
+X API v2 経由で**ログイン中アカウントのブックマークを取得**し、fetcher/extractor と Classifier をスキップして**専用フォルダへ一括集約**します。
+
+- **保存先**: `Clippings/X-Bookmarks/`（既存記事とは完全に別系統）
+  - 環境変数 `X_BOOKMARKS_FOLDER` で上書き可能
+  - Router の日付昇格ルール（QUARTERLY=10 / MONTHLY=20）に従い、件数が増えると `Clippings/X-Bookmarks/2026-Q2` のようなサブフォルダへ自動再編成
+- **Classifier を通さない**: 短いツイート本文に対する AI 分類は不経済かつノイズ源になるため、固定ルーティング
+- **重複排除**: 既存 URL と同じツイートは `knownUrls` により自動スキップ
+
+トークンは他の API キーと同様に `~/.zshrc` で永続化します（下の **API キーの設定** 参照）。
+
+```bash
+# 全件取得
+pnpm start -- --x-bookmarks
+
+# 件数制限（テスト用）
+pnpm start -- --x-bookmarks --x-limit=20 --dry-run
+```
+
+> App-only Bearer では `/2/users/:id/bookmarks` は 403 になります。必ず**ユーザーアクセストークン**を使用してください。
+> ツイートは `x.com` ドメインですが、`--x-bookmarks` モードでは `evaluatePolicy` の `manual_skip` を**意図的にバイパス**します（API 経由なのでスクレイプ規約には抵触しません）。
+
 ### 中断からの再開（API コスト $0）
 
 ```bash
@@ -133,6 +156,7 @@ pipeline/
 ├── config.ts             設定管理（Vault Root / dry-run / ウィザード）
 ├── fetcher.ts            Playwright Web フェッチ
 ├── extractor.ts          Readability + Turndown 抽出
+├── x_bookmarks.ts        X API v2 経由でのブックマーク取り込み
 ├── classifier.ts         AI 分類エンジン（Fast / Smart Pass）
 ├── router.ts             動的フォルダルーティング
 ├── storage.ts            Vault 保存（セキュリティ防御層）
@@ -174,9 +198,15 @@ export OPENAI_API_KEY="sk-proj-..."
 
 # Google Gemini
 export GEMINI_API_KEY="AIza..."
+
+# X (Twitter) API — --x-bookmarks モードで使用
+# OAuth 2.0 User Context のアクセストークン (bookmark.read / tweet.read / users.read スコープ)
+export X_USER_BEARER_TOKEN="..."
 ```
 
-`~/.zshrc` への追記を推奨します。
+`~/.zshrc` への追記を推奨します。`source ~/.zshrc` 後に `pnpm start -- --x-bookmarks` で取り込みが走ります。
+
+> **X_USER_BEARER_TOKEN の取得方法**: X Developer Portal で OAuth 2.0 Client を作成し、`bookmark.read` / `tweet.read` / `users.read` スコープ付きで User Access Token を取得します。App-only の Bearer Token では bookmarks エンドポイントは 403 になります。
 
 ---
 
