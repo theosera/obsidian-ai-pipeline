@@ -97,19 +97,15 @@ pnpm start ../context/OneTab.txt --dry-run
 
 X API v2 経由で**ログイン中アカウントのブックマークを取得**し、fetcher/extractor をスキップして直接 Classifier → Router → Vault 保存まで流します。
 
+トークンは他の API キーと同様に `~/.zshrc` で永続化します（下の **API キーの設定** 参照）。
+
 ```bash
 # 全件取得
-export X_USER_BEARER_TOKEN="<OAuth 2.0 User Access Token>"
 pnpm start -- --x-bookmarks
 
 # 件数制限（テスト用）
 pnpm start -- --x-bookmarks --x-limit=20 --dry-run
 ```
-
-必要スコープ（OAuth 2.0 User Context）:
-- `bookmark.read`
-- `tweet.read`
-- `users.read`
 
 > App-only Bearer では `/2/users/:id/bookmarks` は 403 になります。必ず**ユーザーアクセストークン**を使用してください。
 > ツイートは `x.com` ドメインですが、`--x-bookmarks` モードでは `evaluatePolicy` の `manual_skip` を**意図的にバイパス**します（API 経由なのでスクレイプ規約には抵触しません）。
@@ -190,9 +186,15 @@ export OPENAI_API_KEY="sk-proj-..."
 
 # Google Gemini
 export GEMINI_API_KEY="AIza..."
+
+# X (Twitter) API — --x-bookmarks モードで使用
+# OAuth 2.0 User Context のアクセストークン (bookmark.read / tweet.read / users.read スコープ)
+export X_USER_BEARER_TOKEN="..."
 ```
 
-`~/.zshrc` への追記を推奨します。
+`~/.zshrc` への追記を推奨します。`source ~/.zshrc` 後に `pnpm start -- --x-bookmarks` で取り込みが走ります。
+
+> **X_USER_BEARER_TOKEN の取得方法**: X Developer Portal で OAuth 2.0 Client を作成し、`bookmark.read` / `tweet.read` / `users.read` スコープ付きで User Access Token を取得します。App-only の Bearer Token では bookmarks エンドポイントは 403 になります。
 
 ---
 
