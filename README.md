@@ -145,7 +145,7 @@ pipeline/
 ├── folder_rules.json     動的フォルダルール永続化
 ├── tsconfig.json
 ├── package.json
-├── scripts/              ビルド生成物 JS（参照用バックアップ）
+├── scripts/              旧JS版アーカイブ（参照用・実行非推奨、詳細は scripts/README.md）
 ├── utils/
 │   └── rename_vault.cjs  Vault 一括リネームユーティリティ
 └── docs/
