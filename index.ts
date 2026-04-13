@@ -7,8 +7,19 @@ import { classifyArticle, tokenUsageMetrics } from './classifier';
 import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls, ensureSafePath } from './storage';
 import { loadConfig, runConfigWizard, applyConfigToEnv, getVaultRoot, setDryRun } from './config';
 import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
-import { ArticleData, ProcessingResult } from './types';
+import { ArticleData, ClassificationResult, ProcessingResult } from './types';
 import { fetchBookmarks } from './x_bookmarks';
+
+/**
+ * X API ブックマーク専用のベースフォルダ。
+ * 通常記事の Classifier によるフォルダ分類とは別系統で、
+ * すべての X ブックマークをここに集約する（混入防止・監査容易化）。
+ *
+ * 環境変数 X_BOOKMARKS_FOLDER で上書き可能。
+ * Router の閾値 (QUARTERLY=10 / MONTHLY=20) を超えると、
+ * 自動で `Clippings/X-Bookmarks/2026-Q2` のような日付サブフォルダへ昇格する。
+ */
+const X_BOOKMARKS_BASE_FOLDER = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
 
 /**
  * 1 本の処理対象。通常の OneTab URL は preFetched=undefined で、
@@ -311,7 +322,19 @@ async function main() {
           : extractAndConvert(await fetchRenderedHtml(url), url);
         const finalTitle = article.title || title;
 
-        const classification = await classifyArticle(url, finalTitle, article.textContent);
+        // X ブックマークは Classifier を通さず専用フォルダに固定ルーティングする。
+        //   - 他ジャンルへの混入を防ぐ（監査性）
+        //   - 短いツイート本文に対する分類 API コストを削減
+        //   - Router の日付ベース昇格は通常通り適用される
+        const classification: ClassificationResult =
+          policy === 'x_bookmark'
+            ? {
+                proposedPath: X_BOOKMARKS_BASE_FOLDER,
+                isNewFolder: false,
+                confidence: 1.0,
+                reasoning: 'X API bookmark → 専用フォルダへ固定ルーティング',
+              }
+            : await classifyArticle(url, finalTitle, article.textContent);
         
         if (classification.proposedPath === '__EXCLUDED__') {
           console.log(`[${globalIndex}/${parsedEntries.length}] ${finalTitle.substring(0, 30)}... Skipped (Excluded by Rule)`);

@@ -95,7 +95,13 @@ pnpm start ../context/OneTab.txt --dry-run
 
 ### X (Twitter) ブックマークの取り込み
 
-X API v2 経由で**ログイン中アカウントのブックマークを取得**し、fetcher/extractor をスキップして直接 Classifier → Router → Vault 保存まで流します。
+X API v2 経由で**ログイン中アカウントのブックマークを取得**し、fetcher/extractor と Classifier をスキップして**専用フォルダへ一括集約**します。
+
+- **保存先**: `Clippings/X-Bookmarks/`（既存記事とは完全に別系統）
+  - 環境変数 `X_BOOKMARKS_FOLDER` で上書き可能
+  - Router の日付昇格ルール（QUARTERLY=10 / MONTHLY=20）に従い、件数が増えると `Clippings/X-Bookmarks/2026-Q2` のようなサブフォルダへ自動再編成
+- **Classifier を通さない**: 短いツイート本文に対する AI 分類は不経済かつノイズ源になるため、固定ルーティング
+- **重複排除**: 既存 URL と同じツイートは `knownUrls` により自動スキップ
 
 トークンは他の API キーと同様に `~/.zshrc` で永続化します（下の **API キーの設定** 参照）。
 
