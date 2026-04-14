@@ -126,7 +126,27 @@ const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
 });
-const askQuestion = (q: string): Promise<string> => new Promise(resolve => rl.question(q, resolve));
+
+/**
+ * stdin が閉じられた (EOF / パイプ終了) 後にも安全に呼べる質問ヘルパー。
+ * - rl.close() / stdin close 後は rl.question が ERR_USE_AFTER_CLOSE で throw するため、
+ *   その場合は空文字を resolve してフローに「入力なし」を伝える。
+ * - インタラクティブループ側で空文字 = quit 扱いに正規化する。
+ */
+let rlClosed = false;
+rl.on('close', () => { rlClosed = true; });
+
+const askQuestion = (q: string): Promise<string> => new Promise(resolve => {
+  if (rlClosed) {
+    resolve('');
+    return;
+  }
+  try {
+    rl.question(q, (answer) => resolve(answer ?? ''));
+  } catch {
+    resolve('');
+  }
+});
 
 async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: string): Promise<void> {
   let reviewing = true;
@@ -180,6 +200,15 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
       }
     } else if (cmd === 'q') {
       console.log('Aborted execution.');
+      reviewing = false;
+    } else if (cmd === '' && rlClosed) {
+      // stdin EOF: 非対話環境（パイプ実行等）。レポートは既に生成済みなので、
+      // Vault への保存はスキップして安全に終了する。
+      // 後で `pnpm start -- --rescue <reportPath>` で API コスト 0 で再開可能。
+      console.log('\n⚠️ stdin が閉じられました（非対話実行）。');
+      console.log(`   レポートは生成済み: ${reportMdPath}`);
+      console.log('   レビュー後、以下で Vault への保存を実行できます:');
+      console.log(`   pnpm start -- --rescue "${reportMdPath}"`);
       reviewing = false;
     }
   }
