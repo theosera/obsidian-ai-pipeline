@@ -33,6 +33,25 @@ export function saveFolderRules(rules: RulesMap): void {
   fs.writeFileSync(getRulesPath(), JSON.stringify(rules, null, 2), 'utf8');
 }
 
+/**
+ * proposedPath の末尾が日付サブフォルダ (`/YYYY-Qn` または `/YYYY-MM`) の場合、
+ * その suffix を剥がしたベースパスを返す。日付 suffix がなければそのまま返す。
+ *
+ * 用途: 分類結果レポートで「新規フォルダ提案」を判定する際、
+ * 既存カテゴリ配下に router が自動付与した日付サブフォルダを「新規」扱いしないため。
+ */
+export function stripDateSuffix(proposedPath: string): string {
+  // /YYYY-Qn (Q1〜Q9 を許容、現実は Q1〜Q4 のみ)
+  const quarterMatch = proposedPath.match(/^(.+)\/\d{4}-Q\d$/);
+  if (quarterMatch) return quarterMatch[1];
+
+  // /YYYY-MM (01〜12)
+  const monthMatch = proposedPath.match(/^(.+)\/\d{4}-(0[1-9]|1[0-2])$/);
+  if (monthMatch) return monthMatch[1];
+
+  return proposedPath;
+}
+
 export function getRoutedPath(baseCategory: string, publishDateStr: string | undefined, rules: RulesMap): string {
   // パストラバーサル防止: baseCategoryを検証
   const safeBase = ensureSafePath(baseCategory);

@@ -4,9 +4,9 @@ import readline from 'readline';
 import { fetchRenderedHtml, closeBrowser } from './fetcher';
 import { extractAndConvert } from './extractor';
 import { classifyArticle, tokenUsageMetrics } from './classifier';
-import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls, ensureSafePath } from './storage';
+import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls, ensureSafePath, getVaultFolders } from './storage';
 import { loadConfig, runConfigWizard, applyConfigToEnv, getVaultRoot, setDryRun } from './config';
-import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
+import { loadFolderRules, updateThresholds, getRoutedPath, stripDateSuffix } from './router';
 import { syncRulesFromSnippets } from './sync-rules';
 import { ArticleData, ClassificationResult, ProcessingResult } from './types';
 import { fetchBookmarks } from './x_bookmarks';
@@ -59,8 +59,35 @@ const PRICING_MILLION_TOKENS: Record<string, { in: number, out: number }> = {
   'claude-opus-4-6': { in: 15.00, out: 75.00 }
 };
 
+/**
+ * 日付サブフォルダ (`/YYYY-Qn` or `/YYYY-MM`) を剥がしたベースカテゴリが
+ * 既に Vault に存在するなら「新規ジャンルではない」(= router が自動付与した
+ * 日付サブフォルダにすぎない) と判定する。
+ *
+ * これにより、レポートの ✨(新規提案) は純粋な新カテゴリだけに限定され、
+ * 既にルールベースで承認済みの日付サブフォルダは「新規」扱いされない。
+ */
+function isGenuinelyNewFolder(proposedPath: string, vaultFolders: string[]): boolean {
+  const base = stripDateSuffix(proposedPath);
+  // 日付 suffix がなかった (= proposedPath そのまま) ならベース判定に意味がない
+  if (base === proposedPath) return true;
+  // ベースが既存なら「新規」ではない
+  return !vaultFolders.includes(base);
+}
+
 function generateReport(results: ProcessingResult[], usageData: Record<string, any> = {}): string {
   let successResults = results.filter(r => r.status === 'success');
+  const vaultFolders = getVaultFolders();
+
+  // classifier が isNewFolder=true でも、日付サブフォルダで親カテゴリが既存なら新規扱いしない
+  for (const r of successResults) {
+    if (r.classification?.isNewFolder && r.classification.proposedPath) {
+      if (!isGenuinelyNewFolder(r.classification.proposedPath, vaultFolders)) {
+        r.classification.isNewFolder = false;
+      }
+    }
+  }
+
   let newFolders = successResults.filter(r => r.classification?.isNewFolder);
   let reviewItems = successResults.filter(r => r.policy === 'public_review');
   
