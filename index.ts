@@ -7,6 +7,7 @@ import { classifyArticle, tokenUsageMetrics } from './classifier';
 import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls, ensureSafePath } from './storage';
 import { loadConfig, runConfigWizard, applyConfigToEnv, getVaultRoot, setDryRun } from './config';
 import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
+import { syncRulesFromSnippets } from './sync-rules';
 import { ArticleData, ClassificationResult, ProcessingResult } from './types';
 import { fetchBookmarks } from './x_bookmarks';
 
@@ -188,6 +189,7 @@ async function main() {
   const args = process.argv.slice(2);
   const isConfigMode = args.includes('--config');
   const isDryRunMode = args.includes('--dry-run');
+  const isSyncRulesMode = args.includes('--sync-rules');
   const isXBookmarksMode = args.includes('--x-bookmarks');
   const xLimitArg = args.find(a => a.startsWith('--x-limit='));
   const xLimit = xLimitArg ? parseInt(xLimitArg.split('=')[1], 10) : undefined;
@@ -216,6 +218,12 @@ async function main() {
   // Apply to process.env dynamically
   applyConfigToEnv(config);
 
+  // --sync-rules: snippets.xml → folder_rules.json を同期して終了
+  if (isSyncRulesMode) {
+    syncRulesFromSnippets();
+    process.exit(0);
+  }
+
   console.log('\n======================================================');
   console.log(`🤖 AI Provider: ${config?.provider}`);
   console.log(`🔹 Step 1 Model (Fast): ${config?.fastModel}`);
@@ -223,10 +231,15 @@ async function main() {
   console.log('💡 Run with `--config` anytime to change these settings.');
   console.log('======================================================\n');
 
-  // REPORTS_DIR はコンフィグ読み込み後に初期化
-  const REPORTS_DIR = path.join(getVaultRoot(), '__skills', 'pipeline', 'reports');
+  // 分類結果レポートの出力先: context/分類結果レポート/
+  const REPORTS_DIR = path.join(getVaultRoot(), '__skills', 'context', '分類結果レポート');
   if (!fs.existsSync(REPORTS_DIR)) {
     fs.mkdirSync(REPORTS_DIR, { recursive: true });
+  }
+  // パイプライン内部ログ（failed 等）の出力先: pipeline/reports/
+  const INTERNAL_LOGS_DIR = path.join(getVaultRoot(), '__skills', 'pipeline', 'reports');
+  if (!fs.existsSync(INTERNAL_LOGS_DIR)) {
+    fs.mkdirSync(INTERNAL_LOGS_DIR, { recursive: true });
   }
 
   // Update vault tree snapshot at startup to capture any manual user changes
@@ -301,7 +314,22 @@ async function main() {
     }
   }
 
-  console.log(`Starting Phase 3 Pipeline... found ${parsedEntries.length} fetchable URLs (${failures.length} skipped).`);
+  // ==========================================
+  // 実行前ユーザー確認（フェッチ開始前）
+  // ==========================================
+  console.log(`\n📋 処理予定: ${parsedEntries.length} 件 / スキップ: ${failures.length} 件`);
+  console.log(`📁 分類結果レポート出力先: ${REPORTS_DIR}`);
+  if (isDryRunMode) console.log('🧪 dry-run モード: Vault へのファイル書き込みはスキップされます。');
+  if (isXBookmarksMode) console.log('🔖 X ブックマークモード');
+  const preConfirm = (await askQuestion('\nパイプラインを実行しますか？ [y/n]: ')).toLowerCase().trim();
+  if (preConfirm !== 'y') {
+    console.log('キャンセルしました。');
+    await closeBrowser();
+    rl.close();
+    process.exit(0);
+  }
+
+  console.log(`\nStarting Phase 3 Pipeline... found ${parsedEntries.length} fetchable URLs (${failures.length} skipped).`);
   console.log(`Performing content fetching and classification (This may take several minutes...)`);
   
   const results: ProcessingResult[] = [];
@@ -381,7 +409,7 @@ async function main() {
   // Output Failures to failure log
   if (failures.length > 0) {
     const failedContent = failures.map(f => `${f.url} | ${f.title}`).join('\n');
-    const failedPath = path.join(REPORTS_DIR, `failed_onetab_${dateStr}.txt`);
+    const failedPath = path.join(INTERNAL_LOGS_DIR, `failed_onetab_${dateStr}.txt`);
     fs.writeFileSync(failedPath, failedContent, 'utf8');
     console.log(`\n⚠️ Saved ${failures.length} failed/skipped items to ${failedPath}`);
   }

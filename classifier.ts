@@ -31,11 +31,22 @@ const geminiClient = process.env.GEMINI_API_KEY ? new OpenAI({
 
 let cachedSnippetsArr: null | { title: string, content: string }[] = null;
 
+/** _分析コンテキスト/ 内の最新 snippets_YYYYMMDD.xml を返す */
+function findLatestSnippetsFile(): string | null {
+  const analysisDir = path.join(getVaultRoot(), '__skills', 'context', '_分析コンテキスト');
+  if (!fs.existsSync(analysisDir)) return null;
+  const files = fs.readdirSync(analysisDir)
+    .filter(f => /^snippets_\d{8}\.xml$/.test(f))
+    .sort()
+    .reverse();
+  return files.length > 0 ? path.join(analysisDir, files[0]) : null;
+}
+
 function loadSnippetsStructured() {
   if (cachedSnippetsArr) return cachedSnippetsArr;
   try {
-    const xmlPath = path.join(getVaultRoot(), '__skills', 'context', 'snippets.xml');
-    if (!fs.existsSync(xmlPath)) return [];
+    const xmlPath = findLatestSnippetsFile();
+    if (!xmlPath) return [];
     const xmlData = fs.readFileSync(xmlPath, 'utf8');
     const parser = new XMLParser({ ignoreAttributes: false });
     const parsed = parser.parse(xmlData);

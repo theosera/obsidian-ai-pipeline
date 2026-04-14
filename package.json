@@ -11,6 +11,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx index.ts",
+    "sync-rules": "tsx sync-rules.ts",
     "test": "tsx test_runner.ts"
   },
   "dependencies": {
