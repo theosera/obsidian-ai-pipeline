@@ -7,42 +7,75 @@
 
 ### 通常実行
 OneTabからエクスポートしたURLリストを読み込み、記事のフェッチからAIによる分類までを自動で実行します。
+実行前に「処理件数・出力先」を表示してユーザー確認を求めます（[y/n]）。
+
 ```bash
-node index.js <処理したいOneTab.txtのパス>
+pnpm start <処理したいOneTab.txtのパス>
 
 # （例）
-node index.js ../context/OneTab.txt
+pnpm start ../context/_分析コンテキスト/OneTab_20260414.txt
+```
+
+> **分類結果レポート**は `context/分類結果レポート/OneTab分類結果レポート-YYYYMMDD.md` に出力されます。
+> Obsidian 上で内容を確認してから、ターミナルの `[y/e/q]` プロンプトで承認・修正・キャンセルを選択してください。
+
+### フォルダルール同期（`--sync-rules` / `pnpm run sync-rules`）
+`context/_分析コンテキスト/` 内の最新 `snippets_YYYYMMDD.xml` を解析し、四半期・月次パターンを自動検出して `folder_rules.json` へマージします。新しい snippets.xml を取り込んだ後に必ず実行してください。
+
+```bash
+# 推奨: 専用スクリプト
+pnpm run sync-rules
+
+# または pipeline 実行のついでに
+pnpm start ../context/_分析コンテキスト/OneTab_20260414.txt --sync-rules
 ```
 
 ### 設定ウィザードの呼び出し（`--config`）
 AIプロバイダー（Local, Anthropic, OpenAI, Gemini 等）や、Step1(軽量モデル)・Step2(高性能モデル)で使用するモデルの構成設定ウィザードを立ち上げます。
 ※二回目以降はこの設定が自動で保持されますが、使いたいAIを変えたい時に使用します。
 ```bash
-node index.js ../context/OneTab.txt --config
+pnpm start ../context/_分析コンテキスト/OneTab_20260414.txt --config
 ```
 
 ### プロセス中断時の一括復旧・取得スクリプト (Rescue Command)
-`node index.js` が中断したりタイムアウトで終わってしまった場合でも、既に生成された「分類結果レポート（マークダウン）」さえあれば、AI推論をスキップ（API課金ゼロ）して高速に記事取得と保存を再開できます。
+`pnpm start` が中断したりタイムアウトで終わってしまった場合でも、既に生成された「分類結果レポート（マークダウン）」さえあれば、AI推論をスキップ（API課金ゼロ）して高速に記事取得と保存を再開できます。
 ```bash
-node rescue-from-report.js <分類結果レポートのパス>
+pnpm start -- --rescue <分類結果レポートのパス>
 
-# （例）
-node rescue-from-report.js "reports/OneTab分類結果レポート-20260402.md"
+# （例）: context/分類結果レポート/ 以下のレポートを指定
+pnpm start -- --rescue "../context/分類結果レポート/OneTab分類結果レポート-20260414.md"
 ```
 
 ### 複数記事のナレッジ統合・軽量化（マージ機能）
 指定したVaultフォルダ内に溜まった複数のマークダウン記事を、高性能AI（Sonnet等）が読み込み、コードや著者の苦労などの文脈を残したまま「1つのハンズオン・知見ガイド」に圧縮します。
 ```bash
-node merge-articles.js "対象フォルダの絶対/相対パス"
+pnpm exec tsx merge-articles.ts "対象フォルダの絶対/相対パス"
 
 # （例）
-node merge-articles.js "../Engineer/AGENT_Development_Kit/2026-Q1"
+pnpm exec tsx merge-articles.ts "../Engineer/AGENT_Development_Kit/2026-Q2"
 ```
 
 ---
 
 ## 2. 対話インタフェース中のコマンド (CLI メニュー)
-`node index.js` の分析フェーズが完了し、レポート（マークダウン形式）が `reports/` 下に生成されると、以下のプロンプトが表示されユーザー指示待ちになります。
+`pnpm start` の実行フローには **2段階** のユーザー確認が入ります。
+
+### 第1確認（実行前）
+URL解析・重複チェック後、フェッチ開始前に確認を求めます。
+
+```
+📋 処理予定: XX 件 / スキップ: XX 件
+📁 分類結果レポート出力先: .../context/分類結果レポート
+パイプラインを実行しますか？ [y/n]:
+```
+
+`n` で安全にキャンセルできます（Vault・レポートへの書き込み一切なし）。
+
+### 第2確認（分類完了後）
+分析フェーズが完了し、`context/分類結果レポート/OneTab分類結果レポート-YYYYMMDD.md` が生成されると、以下のプロンプトが表示されユーザー指示待ちになります。
+
+> **Obsidian でレポートを開いて内容を確認してから操作してください。**
+
 \`Command [y/e/q]:\`
 
 ここで使用できる操作キーは以下の通りです：
