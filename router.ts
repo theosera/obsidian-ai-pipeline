@@ -1,8 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { ProcessingResult } from './types';
-
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
+import { sanitizeRelativePath, safePath, validateDateString, VAULT_ROOT } from './utils/security';
 const RULES_PATH = path.join(VAULT_ROOT, '__skills', 'pipeline', 'folder_rules.json');
 
 // デフォルトの閾値 (The user can edit this file later if they want to adjust, or we might add a config prompt)
@@ -30,27 +29,32 @@ export function saveFolderRules(rules: RulesMap): void {
 }
 
 export function getRoutedPath(baseCategory: string, publishDateStr: string | undefined, rules: RulesMap): string {
+  // Sanitize the base category to prevent path traversal
+  const sanitizedCategory = sanitizeRelativePath(baseCategory);
+
   // EXCEPTION: how/howto folders are completely EXEMPT from quarterly/monthly rules
-  if (/(?:\/|^)(how|howto)(?:\/|$)/i.test(baseCategory)) {
-    return baseCategory;
+  if (/(?:\/|^)(how|howto)(?:\/|$)/i.test(sanitizedCategory)) {
+    return sanitizedCategory;
   }
 
-  const rule = rules[baseCategory] || 'none';
-  const dateObj = publishDateStr ? new Date(publishDateStr) : new Date();
+  const rule = rules[sanitizedCategory] || 'none';
+  // Validate date to prevent injection via malformed date strings
+  const validatedDate = validateDateString(publishDateStr);
+  const dateObj = validatedDate ? new Date(validatedDate) : new Date();
   
   if (rule === 'monthly') {
     const year = dateObj.getFullYear();
     const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-    return `${baseCategory}/${year}-${month}`;
+    return `${sanitizedCategory}/${year}-${month}`;
   }
-  
+
   if (rule === 'quarterly') {
     const year = dateObj.getFullYear();
     const quarter = Math.floor(dateObj.getMonth() / 3) + 1;
-    return `${baseCategory}/${year}-Q${quarter}`;
+    return `${sanitizedCategory}/${year}-Q${quarter}`;
   }
-  
-  return baseCategory;
+
+  return sanitizedCategory;
 }
 
 export function updateThresholds(results: ProcessingResult[], currentRules: RulesMap): RulesMap {
@@ -72,7 +76,7 @@ export function updateThresholds(results: ProcessingResult[], currentRules: Rule
     let currentRule = currentRules[baseCat] || 'none';
     
     // Vault内の対象ジャンルの既存ファイル数をカウント
-    const catPath = path.join(VAULT_ROOT, baseCat);
+    const catPath = safePath(baseCat);
     let vaultCount = batchCount; 
     
     if (fs.existsSync(catPath) && fs.statSync(catPath).isDirectory()) {
@@ -116,7 +120,7 @@ export function updateThresholds(results: ProcessingResult[], currentRules: Rule
  * 既存のファイルを新しいルールに基づいて移動（再編成）する
  */
 function migrateExistingFiles(baseCat: string, newRule: string): void {
-  const baseDir = path.join(VAULT_ROOT, baseCat);
+  const baseDir = safePath(baseCat);
   if (!fs.existsSync(baseDir)) return;
 
   // 再帰的にすべてのマークダウンファイルを収集
@@ -141,7 +145,7 @@ function migrateExistingFiles(baseCat: string, newRule: string): void {
       // モックのルールオブジェクトを渡して解決する
       const tempRules: RulesMap = { [baseCat]: newRule };
       const newRelativePath = getRoutedPath(baseCat, fileDate, tempRules);
-      const newAbsoluteDir = path.join(VAULT_ROOT, newRelativePath);
+      const newAbsoluteDir = safePath(newRelativePath);
       
       // 移動先ディレクトリの作成
       if (!fs.existsSync(newAbsoluteDir)) {

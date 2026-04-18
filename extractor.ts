@@ -2,6 +2,7 @@ import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import TurndownService from 'turndown';
 import { ArticleData } from './types';
+import { validateDateString } from './utils/security';
 
 const turndownService = new TurndownService({
   headingStyle: 'atx',
@@ -28,7 +29,8 @@ export function extractAndConvert(html: string, url: string): ArticleData & { le
     try {
       const d = new Date(publishedDate);
       if (!isNaN(d.getTime())) {
-        formattedDate = d.toISOString().split('T')[0];
+        const isoDate = d.toISOString().split('T')[0];
+        formattedDate = validateDateString(isoDate);
       }
     } catch(e){}
   }

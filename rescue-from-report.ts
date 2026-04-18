@@ -4,8 +4,7 @@ import path from 'path';
 import { fetchRenderedHtml, closeBrowser } from './fetcher.js';
 import { extractAndConvert } from './extractor.js';
 import { saveMarkdown, updateVaultTreeSnapshot } from './storage.js';
-
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
+import { sanitizeRelativePath, VAULT_ROOT } from './utils/security.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -40,11 +39,17 @@ async function main() {
     if (linkMatch && currentFolder) {
       const title = linkMatch[1];
       const url = linkMatch[2];
-      targetItems.push({
-        url,
-        title,
-        folder: currentFolder
-      });
+      // Validate folder path from report to prevent path traversal
+      try {
+        const safeFolder = sanitizeRelativePath(currentFolder);
+        targetItems.push({
+          url,
+          title,
+          folder: safeFolder
+        });
+      } catch (e) {
+        console.warn(`[Rescue] Skipping item with unsafe folder path: ${currentFolder}`);
+      }
     }
   }
 

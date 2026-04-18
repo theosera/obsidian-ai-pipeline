@@ -8,6 +8,7 @@ import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls } from './storage';
 import { loadConfig, runConfigWizard, applyConfigToEnv } from './config';
 import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
 import { ProcessingResult } from './types';
+import { sanitizeRelativePath } from './utils/security';
 
 const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
 const REPORTS_DIR = path.join(VAULT_ROOT, '__skills', 'pipeline', 'reports');
@@ -144,7 +145,13 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
         console.log(`Current Path: ${target.classification.proposedPath}`);
         const newPath = await askQuestion('Enter new folder path (leave empty to cancel): ');
         if (newPath.trim() !== '') {
-          target.classification.proposedPath = newPath.trim();
+          try {
+            const safeFolderPath = sanitizeRelativePath(newPath.trim());
+            target.classification.proposedPath = safeFolderPath;
+          } catch (e: any) {
+            console.log(`Error: ${e.message}`);
+            continue;
+          }
           target.classification.isNewFolder = false; // Disable new folder badging manually overridden
           console.log(`Updated!`);
           

@@ -2,9 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { ArticleData } from './types';
-
-// Current Vault root
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
+import { safePath, sanitizeRelativePath, VAULT_ROOT } from './utils/security';
 
 export function checkFolderExists(folderPath: string): boolean {
   const fullPath = path.join(VAULT_ROOT, folderPath);
@@ -13,11 +11,11 @@ export function checkFolderExists(folderPath: string): boolean {
 
 export function saveMarkdown(articleData: ArticleData, folderPath: string): string {
   const date = new Date();
-  
-  // rely on the AI's classification for Quarterly folder logic
-  let finalPath = folderPath;
 
-  const fullDirPath = path.join(VAULT_ROOT, finalPath);
+  // Sanitize and validate the folder path to prevent path traversal
+  let finalPath = sanitizeRelativePath(folderPath);
+
+  const fullDirPath = safePath(finalPath);
   
   if (!fs.existsSync(fullDirPath)) {
     fs.mkdirSync(fullDirPath, { recursive: true });

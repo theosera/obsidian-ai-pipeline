@@ -5,6 +5,7 @@ import readline from 'readline';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { loadConfig, applyConfigToEnv } from './config.js';
+import { VAULT_ROOT } from './utils/security.js';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -81,6 +82,13 @@ async function main() {
 
   if (!targetDir || !fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
     console.error('Usage: node merge-articles.js <absolute-or-relative-path-to-vault-folder>');
+    process.exit(1);
+  }
+
+  // Ensure targetDir is within VAULT_ROOT to prevent operating on arbitrary directories
+  const resolvedTargetDir = path.resolve(targetDir);
+  if (!resolvedTargetDir.startsWith(VAULT_ROOT + path.sep) && resolvedTargetDir !== VAULT_ROOT) {
+    console.error(`[Security] Target directory must be within the Vault: ${VAULT_ROOT}`);
     process.exit(1);
   }
 
