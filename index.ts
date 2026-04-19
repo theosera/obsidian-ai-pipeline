@@ -9,7 +9,15 @@ import { loadConfig, runConfigWizard, applyConfigToEnv, getVaultRoot, setDryRun 
 import { loadFolderRules, updateThresholds, getRoutedPath, stripDateSuffix } from './router';
 import { syncRulesFromSnippets } from './sync-rules';
 import { ArticleData, ClassificationResult, ProcessingResult } from './types';
-import { fetchBookmarks } from './x_bookmarks';
+import { scrapeBookmarksByFolder, ScrapedBookmark } from './x_bookmarks_scraper';
+import {
+  loadForcedParents,
+  loadApprovedMappings,
+  mapFolderToVaultPath,
+  detectCommonKeywords,
+  writeGroupingProposal,
+} from './x_folder_mapper';
+import { getDb, closeDb } from './x_bookmarks_db';
 
 /**
  * X API ブックマーク専用のベースフォルダ。
@@ -193,6 +201,22 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
           try {
             const savedPath = saveMarkdown(res.articleContext, res.classification.proposedPath);
             console.log(` ✅ Saved: ${savedPath}`);
+            // X ブックマーク経由なら SQLite メタデータキャッシュにも反映 (差分スクレイプ用)
+            const ax = res.articleContext as ScrapedBookmark;
+            if (res.policy === 'x_bookmark' && ax.xTweetId) {
+              try {
+                getDb().upsertBookmark({
+                  tweetId: ax.xTweetId,
+                  url: ax.url,
+                  tweetText: ax.textContent,
+                  createdAt: ax.date,
+                  xFolderName: ax.xFolderName,
+                  vaultPath: savedPath,
+                });
+              } catch (dbErr: any) {
+                console.warn(`   ⚠️  DB upsert 失敗 (続行): ${dbErr.message}`);
+              }
+            }
           } catch (e: any) {
             console.error(` ❌ Error saving ${res.url}: ${e.message}`);
           }
@@ -200,6 +224,7 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
       }
       console.log('🎉 All files saved.');
       updateVaultTreeSnapshot(); // Update to capture any newly created folders
+      closeDb();
       reviewing = false;
     } else if (cmd === 'e') {
       const idStr = await askQuestion('Enter the item ID (e.g., 1): ');
@@ -317,16 +342,33 @@ async function main() {
 
   if (isXBookmarksMode) {
     // ==========================================
-    // X (Twitter) API 経由でブックマークを取得し、
+    // X (Twitter) Playwright スクレイピングでブックマークを取得し、
+    // フォルダ構造を保持したまま Vault にマッピングする。
     // fetcher/extractor をスキップして Classifier に直接流し込む。
     // ==========================================
-    console.log('🔖 X API 経由でブックマークを取得します...');
-    let bookmarks: ArticleData[];
+    console.log('🔖 X Playwright スクレイピングでブックマークを取得します...');
+    const db = getDb();
+    const knownTweetIds = db.getKnownTweetIds();
+    const forcedParents = loadForcedParents();
+    const approvedMap = loadApprovedMappings();
+    console.log(`🔖 強制親フォルダキーワード: ${forcedParents.length > 0 ? forcedParents.join(', ') : '(未設定)'}`);
+    console.log(`🔖 既知ツイートID: ${knownTweetIds.size} 件 (DB キャッシュ)`);
+
+    let bookmarks: ScrapedBookmark[];
     try {
-      bookmarks = await fetchBookmarks({ maxItems: xLimit });
+      bookmarks = await scrapeBookmarksByFolder({ maxItems: xLimit, skipKnownIds: knownTweetIds });
     } catch (e: any) {
       console.error(`❌ X ブックマーク取得失敗: ${e.message}`);
       process.exit(1);
+    }
+
+    // 共通キーワード提案レポート (未マッチフォルダのみ対象)
+    const folderNamesRaw = [...new Set(bookmarks.map(b => b.xFolderName))];
+    const proposals = detectCommonKeywords(folderNamesRaw, forcedParents);
+    if (proposals.length > 0) {
+      const reportPath = writeGroupingProposal(proposals);
+      console.log(`📋 共通キーワード提案レポート: ${reportPath}`);
+      console.log(`   → 親フォルダとして承認するなら x_forced_parents.json に追記してください。`);
     }
 
     for (let i = 0; i < bookmarks.length; i++) {
@@ -339,6 +381,12 @@ async function main() {
         failures.push({ url, title, reason: 'Duplicate: Already exists in Vault' });
         continue;
       }
+
+      // X 側フォルダ名 → Vault 階層パスに変換 (Tier 1: 強制親 / Tier 2: 承認済みマップ / Tier 3: そのまま)
+      const vaultSubPath = mapFolderToVaultPath(bm.xFolderName, forcedParents, approvedMap);
+      // 後段の Classifier バイパス側でこのパスを参照する
+      bm.xFolderName = vaultSubPath;
+
       // X ブックマークは evaluatePolicy をバイパス（x.com は通常 manual_skip）
       parsedEntries.push({ url, title, policy: 'x_bookmark', preFetched: bm });
     }
@@ -410,13 +458,19 @@ async function main() {
         //   - 他ジャンルへの混入を防ぐ（監査性）
         //   - 短いツイート本文に対する分類 API コストを削減
         //   - Router の日付ベース昇格は通常通り適用される
+        //   - フォルダ階層は x_folder_mapper で X 側フォルダ名から事前変換済み (article.xFolderName)
+        const xFolderSubPath = (article as ScrapedBookmark).xFolderName;
         const classification: ClassificationResult =
           policy === 'x_bookmark'
             ? {
-                proposedPath: X_BOOKMARKS_BASE_FOLDER,
+                proposedPath: xFolderSubPath
+                  ? `${X_BOOKMARKS_BASE_FOLDER}/${xFolderSubPath}`
+                  : X_BOOKMARKS_BASE_FOLDER,
                 isNewFolder: false,
                 confidence: 1.0,
-                reasoning: 'X API bookmark → 専用フォルダへ固定ルーティング',
+                reasoning: xFolderSubPath
+                  ? `X bookmark folder → ${xFolderSubPath}`
+                  : 'X bookmark → 専用フォルダへ固定ルーティング',
               }
             : await classifyArticle(url, finalTitle, article.textContent);
         

@@ -14,6 +14,11 @@ logs/
 .chromium-data/
 *.txt
 
+# X bookmarks SQLite metadata cache (個人データ。.md が source of truth)
+x_bookmarks.db
+x_bookmarks.db-*
+*.corrupted_*
+
 # Chrome Extension build output
 chrome-extension/dist/
 chrome-extension/node_modules/
