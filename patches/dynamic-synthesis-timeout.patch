@@ -1,0 +1,553 @@
+From 774ead6b3a6c543651d05c86dce000c12db15da3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 19 Apr 2026 19:55:36 +0000
+Subject: [PATCH] feat(synthesis): dynamic timeout scaling + early preflight
+ estimation
+
+Synthesis agent timeouts now auto-scale with video count (300s + 60s per
+video) instead of a fixed 1800s. Override via --synthesis-timeout CLI
+flag or config.json synthesis_timeout key. Two estimation checkpoints
+log timeout/input-size info: immediately after playlist fetch (early
+warning) and before Stage 05 (precise fill ratio + truncation check).
+
+https://claude.ai/code/session_01RxnSjdy7R88RZt5uMdjbBH
+---
+ config.example.json                  |   3 +-
+ pipeline_youtube/main.py             |  51 +++++++-
+ pipeline_youtube/stages/synthesis.py |  49 +++++++-
+ pipeline_youtube/synthesis/agents.py |  43 ++++++-
+ tests/test_synthesis_timeout.py      | 169 +++++++++++++++++++++++++++
+ 5 files changed, 307 insertions(+), 8 deletions(-)
+ create mode 100644 tests/test_synthesis_timeout.py
+
+diff --git a/config.example.json b/config.example.json
+index d1c26d2..6914635 100644
+--- a/config.example.json
++++ b/config.example.json
+@@ -8,5 +8,6 @@
+     "leader": "opus"
+   },
+   "capture_backend": "host",
+-  "capture_docker_image": "pipeline-youtube-capture:latest"
++  "capture_docker_image": "pipeline-youtube-capture:latest",
++  "synthesis_timeout": "auto"
+ }
+diff --git a/pipeline_youtube/main.py b/pipeline_youtube/main.py
+index 1e0eba1..218d3b6 100644
+--- a/pipeline_youtube/main.py
++++ b/pipeline_youtube/main.py
+@@ -45,8 +45,9 @@ from .stages.capture_backend import DockerBackendNotReady, DockerCaptureBackend
+ from .stages.learning import run_stage_learning
+ from .stages.scripts import run_stage_scripts
+ from .stages.summary import run_stage_summary
+-from .stages.synthesis import MIN_PLAYLIST_SIZE, run_stage_synthesis
++from .stages.synthesis import MIN_PLAYLIST_SIZE, log_synthesis_preflight, run_stage_synthesis
+ from .stats import record_transcript_stat
++from .synthesis.agents import compute_synthesis_timeouts
+ 
+ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+ 
+@@ -69,6 +70,7 @@ class CliConfig:
+     # docker/Dockerfile.capture. See docs/docker.md.
+     capture_backend: str = "host"
+     capture_docker_image: str = "pipeline-youtube-capture:latest"
++    synthesis_timeout: int | None = None
+ 
+ 
+ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
+@@ -121,12 +123,24 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
+         data.get("capture_docker_image") or "pipeline-youtube-capture:latest"
+     )
+ 
++    synthesis_timeout_raw = data.get("synthesis_timeout")
++    if synthesis_timeout_raw is None or synthesis_timeout_raw == "auto":
++        synthesis_timeout: int | None = None
++    elif isinstance(synthesis_timeout_raw, int) and synthesis_timeout_raw > 0:
++        synthesis_timeout = synthesis_timeout_raw
++    else:
++        raise click.UsageError(
++            f"config.json: synthesis_timeout must be a positive integer or \"auto\", "
++            f"got {synthesis_timeout_raw!r}"
++        )
++
+     return CliConfig(
+         vault_root=path,
+         models=models,
+         filler_words=filler,
+         capture_backend=capture_backend,
+         capture_docker_image=capture_docker_image,
++        synthesis_timeout=synthesis_timeout,
+     )
+ 
+ 
+@@ -592,6 +606,15 @@ async def _run_videos_concurrent(
+         "pipeline-youtube-capture:latest .`. Overrides config.json."
+     ),
+ )
++@click.option(
++    "--synthesis-timeout",
++    type=click.IntRange(60),
++    default=None,
++    help=(
++        "Per-agent timeout for Stage 05 in seconds. "
++        "Default: auto (300 + 60 × video_count). Overrides config.json."
++    ),
++)
+ def cli(
+     url: str | None,
+     dry_run: bool,
+@@ -607,6 +630,7 @@ def cli(
+     stop_after_capture: bool,
+     resume_reviewed: bool,
+     capture_backend: str | None,
++    synthesis_timeout: int | None,
+ ) -> None:
+     """Process a YouTube playlist or single-video URL end-to-end."""
+     if not url:
+@@ -683,6 +707,8 @@ def cli(
+     else:
+         click.echo("capture_backend: host")
+ 
++    effective_synthesis_timeout = synthesis_timeout or cfg.synthesis_timeout
++
+     click.echo(f"vault_root: {vault_root}")
+     click.echo(f"dry_run: {dry_run}")
+     click.echo(f"model: {model}")
+@@ -690,6 +716,11 @@ def cli(
+     click.echo(f"concurrency: {concurrency}")
+     click.echo(f"min_playlist_size: {min_playlist_size}")
+     click.echo(f"max_chapters: {max_chapters if max_chapters is not None else 'auto'}")
++    click.echo(
++        f"synthesis_timeout: {effective_synthesis_timeout}s"
++        if effective_synthesis_timeout
++        else "synthesis_timeout: auto"
++    )
+ 
+     click.echo("fetching metadata...")
+     videos = fetch_metadata(url)
+@@ -701,6 +732,17 @@ def cli(
+     click.echo(f"playlist: {playlist_title!r}")
+     click.echo(f"videos: {len(videos)}")
+ 
++    est_timeouts = compute_synthesis_timeouts(
++        len(videos), override=effective_synthesis_timeout
++    )
++    total_duration = sum(v.duration or 0 for v in videos)
++    click.echo(
++        f"synthesis_estimate: {len(videos)} videos"
++        f" → timeout α={est_timeouts['alpha']}s β={est_timeouts['beta']}s"
++        f" leader={est_timeouts['leader']}s"
++        + (f", total_duration={total_duration // 60}min" if total_duration else "")
++    )
++
+     run_time = datetime.now()
+     click.echo(f"run_time: {run_time.isoformat(timespec='seconds')}")
+ 
+@@ -805,6 +847,12 @@ def cli(
+         synthesis_bodies = [r.learning_md_body or "" for r in succeeded]
+ 
+     click.echo("\n=== Stage 05 Synthesis (Agent Teams) ===")
++    synth_timeouts = compute_synthesis_timeouts(
++        len(synthesis_videos), override=effective_synthesis_timeout
++    )
++    click.echo(log_synthesis_preflight(
++        len(synthesis_videos), synthesis_bodies, synth_timeouts
++    ))
+     synthesis_result = run_stage_synthesis(
+         synthesis_videos,
+         synthesis_bodies,
+@@ -816,6 +864,7 @@ def cli(
+         max_chapters=max_chapters,
+         dry_run=dry_run,
+         folder_name_override=folder_override,
++        synthesis_timeout=effective_synthesis_timeout,
+     )
+ 
+     if synthesis_result.skipped:
+diff --git a/pipeline_youtube/stages/synthesis.py b/pipeline_youtube/stages/synthesis.py
+index 3d3cb9a..388ca4c 100644
+--- a/pipeline_youtube/stages/synthesis.py
++++ b/pipeline_youtube/stages/synthesis.py
+@@ -40,11 +40,13 @@ from ..obsidian import format_playlist_folder_name
+ from ..path_safety import ensure_safe_path
+ from ..playlist import VideoMeta
+ from ..synthesis.agents import (
++    _MAX_INPUT_CHARS,
+     AgentCallResult,
+     call_alpha,
+     call_beta,
+     call_leader,
+     compute_coverage,
++    compute_synthesis_timeouts,
+ )
+ from ..synthesis.body_validator import extract_allowed_embeds
+ from ..synthesis.chapter import write_chapter
+@@ -102,6 +104,34 @@ class SynthesisStageResult:
+         return sum(r.duration_ms or 0 for r in self.agent_results)
+ 
+ 
++def log_synthesis_preflight(
++    n_videos: int,
++    learning_md_bodies: list[str],
++    timeouts: dict[str, int],
++) -> str:
++    """Build a preflight summary string for Stage 05.
++
++    Compares actual input sizes against ``_MAX_INPUT_CHARS`` and reports
++    whether any per-video truncation will occur.
++    """
++    per_video_limit = _MAX_INPUT_CHARS // max(n_videos, 1)
++    total_chars = sum(len(b) for b in learning_md_bodies)
++    truncated = sum(1 for b in learning_md_bodies if len(b) > per_video_limit)
++    fill_pct = total_chars / _MAX_INPUT_CHARS * 100
++
++    lines = [
++        f"  videos: {n_videos}",
++        f"  timeout: α={timeouts['alpha']}s β={timeouts['beta']}s leader={timeouts['leader']}s",
++        f"  input: {total_chars:,}/{_MAX_INPUT_CHARS:,} chars ({fill_pct:.0f}%)",
++        f"  per_video_limit: {per_video_limit:,} chars",
++    ]
++    if truncated:
++        lines.append(f"  truncated: {truncated}/{n_videos} videos exceed per-video limit")
++    else:
++        lines.append("  truncation: none")
++    return "\n".join(lines)
++
++
+ def run_stage_synthesis(
+     videos: list[VideoMeta],
+     learning_md_bodies: list[str],
+@@ -114,8 +144,9 @@ def run_stage_synthesis(
+     max_chapters: int | None = None,
+     dry_run: bool = False,
+     folder_name_override: str | None = None,
++    synthesis_timeout: int | None = None,
+ ) -> SynthesisStageResult:
+-    """Orchestrate α→β→γ→leader and write MOC + chapter md files.
++    """Orchestrate α→β→Leader and write MOC + chapter md files.
+ 
+     Parameters
+     ----------
+@@ -136,12 +167,17 @@ def run_stage_synthesis(
+         Missing keys fall back to `model`. (`gamma` accepted for
+         config backward-compat but ignored — coverage is now a Python
+         set diff, no LLM.)
++    synthesis_timeout:
++        Per-agent timeout override in seconds. ``None`` = auto-compute
++        from video count (``300 + 60 × n_videos``).
+     """
+     am = agent_models or {}
+     alpha_model = am.get("alpha", model)
+     beta_model = am.get("beta", model)
+     leader_model = am.get("leader", model)
+ 
++    timeouts = compute_synthesis_timeouts(len(videos), override=synthesis_timeout)
++
+     if len(videos) != len(learning_md_bodies):
+         return SynthesisStageResult(
+             error=f"length mismatch: {len(videos)} videos vs {len(learning_md_bodies)} bodies"
+@@ -165,14 +201,20 @@ def run_stage_synthesis(
+ 
+     try:
+         topics, alpha_res = call_alpha(
+-            videos, learning_md_bodies, model=alpha_model, playlist_title=playlist_title
++            videos,
++            learning_md_bodies,
++            model=alpha_model,
++            playlist_title=playlist_title,
++            timeout=timeouts["alpha"],
+         )
+     except SynthesisParseError as e:
+         return SynthesisStageResult(error=f"alpha_parse_failed: {e}")
+     agent_results.append(alpha_res)
+ 
+     try:
+-        chapters, beta_res = call_beta(topics, model=beta_model, max_chapters=max_chapters)
++        chapters, beta_res = call_beta(
++            topics, model=beta_model, max_chapters=max_chapters, timeout=timeouts["beta"]
++        )
+     except SynthesisParseError as e:
+         return SynthesisStageResult(
+             topics=topics, agent_results=agent_results, error=f"beta_parse_failed: {e}"
+@@ -190,6 +232,7 @@ def run_stage_synthesis(
+             coverage,
+             model=leader_model,
+             playlist_title=playlist_title,
++            timeout=timeouts["leader"],
+         )
+     except SynthesisParseError as e:
+         return SynthesisStageResult(
+diff --git a/pipeline_youtube/synthesis/agents.py b/pipeline_youtube/synthesis/agents.py
+index 5fb3ea9..ba40e51 100644
+--- a/pipeline_youtube/synthesis/agents.py
++++ b/pipeline_youtube/synthesis/agents.py
+@@ -33,6 +33,40 @@ from .scoring import (
+     parse_leader_output,
+ )
+ 
++# =====================================================
++# Dynamic timeout computation
++# =====================================================
++
++SYNTHESIS_TIMEOUT_BASE = 300
++SYNTHESIS_TIMEOUT_PER_VIDEO = 60
++_BETA_TIMEOUT_CAP = 600
++
++
++def compute_synthesis_timeouts(
++    n_videos: int,
++    *,
++    override: int | None = None,
++) -> dict[str, int]:
++    """Return per-agent timeouts keyed by role name.
++
++    When *override* is given (from CLI / config.json) it is used for
++    α and Leader directly; β is capped at ``_BETA_TIMEOUT_CAP`` because
++    it only receives compact topic JSON — never the full learning
++    materials.
++
++    When *override* is ``None`` the formula
++    ``base(300) + 60 × n_videos`` applies to α/Leader.
++    """
++    if override is not None:
++        heavy = override
++    else:
++        heavy = SYNTHESIS_TIMEOUT_BASE + SYNTHESIS_TIMEOUT_PER_VIDEO * n_videos
++    return {
++        "alpha": heavy,
++        "beta": min(heavy, _BETA_TIMEOUT_CAP),
++        "leader": heavy,
++    }
++
+ # =====================================================
+ # System prompts (one per role)
+ # =====================================================
+@@ -270,6 +304,7 @@ def call_alpha(
+     *,
+     model: str = "sonnet",
+     playlist_title: str | None = None,
++    timeout: int = 1800,
+ ) -> tuple[list[Topic], AgentCallResult]:
+     """Run the TopicExtractor agent."""
+     materials = format_learning_materials(videos, learning_md_bodies)
+@@ -280,7 +315,7 @@ def call_alpha(
+         prompt=prompt,
+         append_system_prompt=ALPHA_SYSTEM_PROMPT,
+         model=model,
+-        timeout=1800,
++        timeout=timeout,
+     )
+     topics = parse_alpha_topics(response.text)
+     return topics, _wrap_result(response)
+@@ -291,6 +326,7 @@ def call_beta(
+     *,
+     model: str = "sonnet",
+     max_chapters: int | None = None,
++    timeout: int = 600,
+ ) -> tuple[list[ChapterPlan], AgentCallResult]:
+     """Run the ChapterArchitect agent.
+ 
+@@ -313,7 +349,7 @@ def call_beta(
+         prompt=prompt,
+         append_system_prompt=BETA_SYSTEM_PROMPT,
+         model=model,
+-        timeout=1800,
++        timeout=timeout,
+     )
+     chapters = parse_beta_chapters(response.text)
+     return chapters, _wrap_result(response)
+@@ -350,6 +386,7 @@ def call_leader(
+     *,
+     model: str = "sonnet",
+     playlist_title: str | None = None,
++    timeout: int = 1800,
+ ) -> tuple[LeaderOutput, AgentCallResult]:
+     """Run the Leader agent to produce the final MOC + chapter bodies."""
+     materials = format_learning_materials(videos, learning_md_bodies)
+@@ -372,7 +409,7 @@ def call_leader(
+         prompt=prompt,
+         append_system_prompt=LEADER_SYSTEM_PROMPT,
+         model=model,
+-        timeout=1800,
++        timeout=timeout,
+     )
+     leader_output = parse_leader_output(response.text)
+     return leader_output, _wrap_result(response)
+diff --git a/tests/test_synthesis_timeout.py b/tests/test_synthesis_timeout.py
+new file mode 100644
+index 0000000..f0e217c
+--- /dev/null
++++ b/tests/test_synthesis_timeout.py
+@@ -0,0 +1,169 @@
++"""Tests for dynamic synthesis timeout computation and preflight estimation."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import click
++import pytest
++
++from pipeline_youtube.main import _load_config
++from pipeline_youtube.stages.synthesis import log_synthesis_preflight
++from pipeline_youtube.synthesis.agents import (
++    _BETA_TIMEOUT_CAP,
++    SYNTHESIS_TIMEOUT_BASE,
++    SYNTHESIS_TIMEOUT_PER_VIDEO,
++    compute_synthesis_timeouts,
++)
++
++# =====================================================
++# compute_synthesis_timeouts
++# =====================================================
++
++
++class TestComputeSynthesisTimeouts:
++    def test_auto_scales_with_video_count(self):
++        t = compute_synthesis_timeouts(10)
++        expected_heavy = SYNTHESIS_TIMEOUT_BASE + SYNTHESIS_TIMEOUT_PER_VIDEO * 10
++        assert t["alpha"] == expected_heavy
++        assert t["leader"] == expected_heavy
++        assert t["beta"] == min(expected_heavy, _BETA_TIMEOUT_CAP)
++
++    def test_auto_small_playlist(self):
++        t = compute_synthesis_timeouts(3)
++        expected = SYNTHESIS_TIMEOUT_BASE + SYNTHESIS_TIMEOUT_PER_VIDEO * 3
++        assert t["alpha"] == expected
++        assert t["leader"] == expected
++        assert t["beta"] == min(expected, _BETA_TIMEOUT_CAP)
++
++    def test_auto_large_playlist(self):
++        t = compute_synthesis_timeouts(50)
++        expected = SYNTHESIS_TIMEOUT_BASE + SYNTHESIS_TIMEOUT_PER_VIDEO * 50
++        assert t["alpha"] == expected
++        assert t["leader"] == expected
++        assert t["beta"] == _BETA_TIMEOUT_CAP
++
++    def test_override_applied(self):
++        t = compute_synthesis_timeouts(10, override=3600)
++        assert t["alpha"] == 3600
++        assert t["leader"] == 3600
++        assert t["beta"] == _BETA_TIMEOUT_CAP
++
++    def test_override_small_caps_beta(self):
++        t = compute_synthesis_timeouts(3, override=300)
++        assert t["alpha"] == 300
++        assert t["leader"] == 300
++        assert t["beta"] == 300
++
++    def test_zero_videos(self):
++        t = compute_synthesis_timeouts(0)
++        assert t["alpha"] == SYNTHESIS_TIMEOUT_BASE
++        assert t["leader"] == SYNTHESIS_TIMEOUT_BASE
++
++    def test_default_formula_matches_legacy_24_videos(self):
++        """24 videos was the playlist that originally timed out at 1800s.
++        The auto formula should produce a comparable timeout."""
++        t = compute_synthesis_timeouts(24)
++        assert t["alpha"] >= 1740
++        assert t["leader"] >= 1740
++
++
++# =====================================================
++# log_synthesis_preflight
++# =====================================================
++
++
++class TestLogSynthesisPreflight:
++    def test_no_truncation(self):
++        bodies = ["x" * 1000] * 5
++        timeouts = {"alpha": 600, "beta": 600, "leader": 600}
++        msg = log_synthesis_preflight(5, bodies, timeouts)
++        assert "videos: 5" in msg
++        assert "α=600s" in msg
++        assert "truncation: none" in msg
++
++    def test_truncation_detected(self):
++        # 400_000 / 2 = 200_000 per video; make one body exceed that
++        bodies = ["x" * 300_000, "y" * 100]
++        timeouts = {"alpha": 600, "beta": 600, "leader": 600}
++        msg = log_synthesis_preflight(2, bodies, timeouts)
++        assert "truncated: 1/2" in msg
++
++    def test_fill_percentage(self):
++        bodies = ["x" * 200_000, "y" * 200_000]
++        timeouts = {"alpha": 1200, "beta": 600, "leader": 1200}
++        msg = log_synthesis_preflight(2, bodies, timeouts)
++        assert "100%" in msg
++
++
++# =====================================================
++# config.json synthesis_timeout loading
++# =====================================================
++
++
++def _write_config(path: Path, payload: dict) -> Path:
++    path.write_text(json.dumps(payload), encoding="utf-8")
++    return path
++
++
++class TestConfigSynthesisTimeout:
++    def test_auto_string(self, tmp_path: Path):
++        vault = tmp_path / "vault"
++        vault.mkdir()
++        cfg = _write_config(
++            tmp_path / "config.json",
++            {"vault_root": str(vault), "synthesis_timeout": "auto"},
++        )
++        result = _load_config(cfg, fallback_model="sonnet")
++        assert result.synthesis_timeout is None
++
++    def test_omitted_defaults_to_auto(self, tmp_path: Path):
++        vault = tmp_path / "vault"
++        vault.mkdir()
++        cfg = _write_config(
++            tmp_path / "config.json",
++            {"vault_root": str(vault)},
++        )
++        result = _load_config(cfg, fallback_model="sonnet")
++        assert result.synthesis_timeout is None
++
++    def test_integer_accepted(self, tmp_path: Path):
++        vault = tmp_path / "vault"
++        vault.mkdir()
++        cfg = _write_config(
++            tmp_path / "config.json",
++            {"vault_root": str(vault), "synthesis_timeout": 3600},
++        )
++        result = _load_config(cfg, fallback_model="sonnet")
++        assert result.synthesis_timeout == 3600
++
++    def test_invalid_string_rejected(self, tmp_path: Path):
++        vault = tmp_path / "vault"
++        vault.mkdir()
++        cfg = _write_config(
++            tmp_path / "config.json",
++            {"vault_root": str(vault), "synthesis_timeout": "fast"},
++        )
++        with pytest.raises(click.UsageError, match="synthesis_timeout"):
++            _load_config(cfg, fallback_model="sonnet")
++
++    def test_zero_rejected(self, tmp_path: Path):
++        vault = tmp_path / "vault"
++        vault.mkdir()
++        cfg = _write_config(
++            tmp_path / "config.json",
++            {"vault_root": str(vault), "synthesis_timeout": 0},
++        )
++        with pytest.raises(click.UsageError, match="synthesis_timeout"):
++            _load_config(cfg, fallback_model="sonnet")
++
++    def test_negative_rejected(self, tmp_path: Path):
++        vault = tmp_path / "vault"
++        vault.mkdir()
++        cfg = _write_config(
++            tmp_path / "config.json",
++            {"vault_root": str(vault), "synthesis_timeout": -100},
++        )
++        with pytest.raises(click.UsageError, match="synthesis_timeout"):
++            _load_config(cfg, fallback_model="sonnet")
+-- 
+2.43.0
+
