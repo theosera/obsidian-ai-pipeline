@@ -4,7 +4,7 @@ import path from 'path';
 import readline from 'readline';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { loadConfig, applyConfigToEnv, isDryRun, setDryRun } from './config.js';
+import { loadConfig, applyConfigToEnv, isDryRun, setDryRun, getVaultRoot } from './config.js';
 import { safeRename } from './storage.js';
 
 const rl = readline.createInterface({
@@ -92,6 +92,14 @@ async function main() {
 
   const config = loadConfig();
   applyConfigToEnv(config);
+
+  // Ensure targetDir is within VAULT_ROOT to prevent operating on arbitrary directories
+  const vaultRoot = getVaultRoot();
+  const resolvedTargetDir = path.resolve(targetDir);
+  if (!resolvedTargetDir.startsWith(vaultRoot + path.sep) && resolvedTargetDir !== vaultRoot) {
+    console.error(`[Security] Target directory must be within the Vault: ${vaultRoot}`);
+    process.exit(1);
+  }
 
   const files = fs.readdirSync(targetDir).filter(f => f.endsWith('.md') && !f.startsWith('_'));
 
