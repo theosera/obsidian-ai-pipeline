@@ -36,6 +36,7 @@ export interface FolderRules {
 }
 
 export interface PipelineConfig {
+  vaultRoot: string;
   provider: 'local' | 'openai' | 'anthropic' | 'gemini';
   fastModel: string;
   smartModel: string;

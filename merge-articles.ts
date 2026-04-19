@@ -4,8 +4,8 @@ import path from 'path';
 import readline from 'readline';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { loadConfig, applyConfigToEnv } from './config.js';
-import { VAULT_ROOT } from './utils/security.js';
+import { loadConfig, applyConfigToEnv, isDryRun, setDryRun, getVaultRoot } from './config.js';
+import { safeRename } from './storage.js';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -78,25 +78,31 @@ async function callSmartModel(promptText, systemPrompt) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const targetDir = args[0];
+  const targetDir = args.find(a => !a.startsWith('--'));
+
+  // --dry-run サポート
+  if (args.includes('--dry-run')) {
+    setDryRun(true);
+  }
 
   if (!targetDir || !fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
     console.error('Usage: node merge-articles.js <absolute-or-relative-path-to-vault-folder>');
     process.exit(1);
   }
 
+  const config = loadConfig();
+  applyConfigToEnv(config);
+
   // Ensure targetDir is within VAULT_ROOT to prevent operating on arbitrary directories
+  const vaultRoot = getVaultRoot();
   const resolvedTargetDir = path.resolve(targetDir);
-  if (!resolvedTargetDir.startsWith(VAULT_ROOT + path.sep) && resolvedTargetDir !== VAULT_ROOT) {
-    console.error(`[Security] Target directory must be within the Vault: ${VAULT_ROOT}`);
+  if (!resolvedTargetDir.startsWith(vaultRoot + path.sep) && resolvedTargetDir !== vaultRoot) {
+    console.error(`[Security] Target directory must be within the Vault: ${vaultRoot}`);
     process.exit(1);
   }
 
-  const config = loadConfig();
-  applyConfigToEnv(config);
-  
   const files = fs.readdirSync(targetDir).filter(f => f.endsWith('.md') && !f.startsWith('_'));
-  
+
   if (files.length < 2) {
     console.log('統合するファイルが2つ以上見つかりません（_で始まるファイルは無視されます）。');
     process.exit(0);
@@ -157,7 +163,7 @@ async function main() {
 
   try {
     const resultMarkdown = await callSmartModel(userPrompt, systemPrompt);
-    
+
     // === 統合ファイル用のYAMLフロントマターを生成 ===
     let frontmatter = `---\n`;
     frontmatter += `title: "【ナレッジ統合】${path.basename(targetDir)}"\n`;
@@ -179,7 +185,7 @@ async function main() {
     if (/\/\d{4}-(?:Q\d|\d{2})$/.test(targetDir)) {
       outputBaseDir = path.dirname(targetDir);
     }
-    
+
     let finalTargetDir = outputBaseDir;
     const howMatch = finalTargetDir.match(/(.*?\/(?:howto|how))(\/.*)?$/i);
     if (howMatch) {
@@ -195,7 +201,7 @@ async function main() {
 
     const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
     const outputPath = path.join(finalTargetDir, `_知見まとめ_${dateStr}.md`);
-    
+
     fs.writeFileSync(outputPath, finalOutput, 'utf8');
     console.log(`\n🎉 統合ファイルの生成に成功しました！ -> ${outputPath}`);
 
@@ -208,11 +214,15 @@ async function main() {
 
     if (action.toLowerCase() === 'a') {
       const archiveDir = path.join(targetDir, '_Archive');
-      if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir);
+      if (!isDryRun() && !fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir);
       for (const f of fileData) {
-        fs.renameSync(f.path, path.join(archiveDir, f.name));
+        safeRename(f.path, path.join(archiveDir, f.name));
       }
-      console.log(`✅ ${fileData.length} 件のファイルを _Archive に退避しました。`);
+      if (isDryRun()) {
+        console.log(`🔍 [DRY-RUN] ${fileData.length} 件のファイルの退避をシミュレーションしました。`);
+      } else {
+        console.log(`✅ ${fileData.length} 件のファイルを _Archive に退避しました。`);
+      }
     } else if (action.toLowerCase() === 'd') {
       const confirm = await askQuestion('本当に削除してもよろしいですか？（復元できません） [y/N]: ');
       if (confirm.toLowerCase() === 'y') {

@@ -4,18 +4,36 @@ import readline from 'readline';
 import { fetchRenderedHtml, closeBrowser } from './fetcher';
 import { extractAndConvert } from './extractor';
 import { classifyArticle, tokenUsageMetrics } from './classifier';
-import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls } from './storage';
-import { loadConfig, runConfigWizard, applyConfigToEnv } from './config';
-import { loadFolderRules, updateThresholds, getRoutedPath } from './router';
-import { ProcessingResult } from './types';
-import { sanitizeRelativePath } from './utils/security';
+import { saveMarkdown, updateVaultTreeSnapshot, getKnownUrls, ensureSafePath, getVaultFolders } from './storage';
+import { loadConfig, runConfigWizard, applyConfigToEnv, getVaultRoot, setDryRun } from './config';
+import { loadFolderRules, updateThresholds, getRoutedPath, stripDateSuffix } from './router';
+import { syncRulesFromSnippets } from './sync-rules';
+import { ArticleData, ClassificationResult, ProcessingResult } from './types';
+import { fetchBookmarks } from './x_bookmarks';
 
-const VAULT_ROOT = '/Users/theosera/Library/Mobile Documents/iCloud~md~obsidian/Documents/iCloud Vault 2026';
-const REPORTS_DIR = path.join(VAULT_ROOT, '__skills', 'pipeline', 'reports');
+/**
+ * X API ブックマーク専用のベースフォルダ。
+ * 通常記事の Classifier によるフォルダ分類とは別系統で、
+ * すべての X ブックマークをここに集約する（混入防止・監査容易化）。
+ *
+ * 環境変数 X_BOOKMARKS_FOLDER で上書き可能。
+ * Router の閾値 (QUARTERLY=10 / MONTHLY=20) を超えると、
+ * 自動で `Clippings/X-Bookmarks/2026-Q2` のような日付サブフォルダへ昇格する。
+ */
+const X_BOOKMARKS_BASE_FOLDER = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
 
-if (!fs.existsSync(REPORTS_DIR)) {
-  fs.mkdirSync(REPORTS_DIR, { recursive: true });
-}
+/**
+ * 1 本の処理対象。通常の OneTab URL は preFetched=undefined で、
+ * fetcher/extractor を通して HTML → ArticleData に変換する。
+ * X ブックマークなど API 経由で既に構造化済みのソースは preFetched に
+ * ArticleData を詰めておけば、後段はそのまま Classifier に流れる。
+ */
+type ParsedEntry = {
+  url: string;
+  title: string;
+  policy: string;
+  preFetched?: ArticleData;
+};
 
 function evaluatePolicy(url: string): string {
   const skipList = ['google.com/search', 'x.com', 'youtube.com', 'chatgpt.com', 'grok.com', 'gemini.google.com'];
@@ -41,8 +59,35 @@ const PRICING_MILLION_TOKENS: Record<string, { in: number, out: number }> = {
   'claude-opus-4-6': { in: 15.00, out: 75.00 }
 };
 
+/**
+ * 日付サブフォルダ (`/YYYY-Qn` or `/YYYY-MM`) を剥がしたベースカテゴリが
+ * 既に Vault に存在するなら「新規ジャンルではない」(= router が自動付与した
+ * 日付サブフォルダにすぎない) と判定する。
+ *
+ * これにより、レポートの ✨(新規提案) は純粋な新カテゴリだけに限定され、
+ * 既にルールベースで承認済みの日付サブフォルダは「新規」扱いされない。
+ */
+function isGenuinelyNewFolder(proposedPath: string, vaultFolders: string[]): boolean {
+  const base = stripDateSuffix(proposedPath);
+  // 日付 suffix がなかった (= proposedPath そのまま) ならベース判定に意味がない
+  if (base === proposedPath) return true;
+  // ベースが既存なら「新規」ではない
+  return !vaultFolders.includes(base);
+}
+
 function generateReport(results: ProcessingResult[], usageData: Record<string, any> = {}): string {
   let successResults = results.filter(r => r.status === 'success');
+  const vaultFolders = getVaultFolders();
+
+  // classifier が isNewFolder=true でも、日付サブフォルダで親カテゴリが既存なら新規扱いしない
+  for (const r of successResults) {
+    if (r.classification?.isNewFolder && r.classification.proposedPath) {
+      if (!isGenuinelyNewFolder(r.classification.proposedPath, vaultFolders)) {
+        r.classification.isNewFolder = false;
+      }
+    }
+  }
+
   let newFolders = successResults.filter(r => r.classification?.isNewFolder);
   let reviewItems = successResults.filter(r => r.policy === 'public_review');
   
@@ -108,7 +153,27 @@ const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
 });
-const askQuestion = (q: string): Promise<string> => new Promise(resolve => rl.question(q, resolve));
+
+/**
+ * stdin が閉じられた (EOF / パイプ終了) 後にも安全に呼べる質問ヘルパー。
+ * - rl.close() / stdin close 後は rl.question が ERR_USE_AFTER_CLOSE で throw するため、
+ *   その場合は空文字を resolve してフローに「入力なし」を伝える。
+ * - インタラクティブループ側で空文字 = quit 扱いに正規化する。
+ */
+let rlClosed = false;
+rl.on('close', () => { rlClosed = true; });
+
+const askQuestion = (q: string): Promise<string> => new Promise(resolve => {
+  if (rlClosed) {
+    resolve('');
+    return;
+  }
+  try {
+    rl.question(q, (answer) => resolve(answer ?? ''));
+  } catch {
+    resolve('');
+  }
+});
 
 async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: string): Promise<void> {
   let reviewing = true;
@@ -145,14 +210,12 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
         console.log(`Current Path: ${target.classification.proposedPath}`);
         const newPath = await askQuestion('Enter new folder path (leave empty to cancel): ');
         if (newPath.trim() !== '') {
-          try {
-            const safeFolderPath = sanitizeRelativePath(newPath.trim());
-            target.classification.proposedPath = safeFolderPath;
-          } catch (e: any) {
-            console.log(`Error: ${e.message}`);
-            continue;
+          const safePath = ensureSafePath(newPath.trim());
+          if (safePath !== newPath.trim()) {
+            console.log(`[Security] パスがサニタイズされました: "${newPath.trim()}" -> "${safePath}"`);
           }
-          target.classification.isNewFolder = false; // Disable new folder badging manually overridden
+          target.classification.proposedPath = safePath;
+          target.classification.isNewFolder = false;
           console.log(`Updated!`);
           
           // Re-write the report file
@@ -165,6 +228,15 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
     } else if (cmd === 'q') {
       console.log('Aborted execution.');
       reviewing = false;
+    } else if (cmd === '' && rlClosed) {
+      // stdin EOF: 非対話環境（パイプ実行等）。レポートは既に生成済みなので、
+      // Vault への保存はスキップして安全に終了する。
+      // 後で `pnpm start -- --rescue <reportPath>` で API コスト 0 で再開可能。
+      console.log('\n⚠️ stdin が閉じられました（非対話実行）。');
+      console.log(`   レポートは生成済み: ${reportMdPath}`);
+      console.log('   レビュー後、以下で Vault への保存を実行できます:');
+      console.log(`   pnpm start -- --rescue "${reportMdPath}"`);
+      reviewing = false;
     }
   }
 }
@@ -172,18 +244,28 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
 async function main() {
   const args = process.argv.slice(2);
   const isConfigMode = args.includes('--config');
+  const isDryRunMode = args.includes('--dry-run');
+  const isSyncRulesMode = args.includes('--sync-rules');
+  const isXBookmarksMode = args.includes('--x-bookmarks');
+  const xLimitArg = args.find(a => a.startsWith('--x-limit='));
+  const xLimit = xLimitArg ? parseInt(xLimitArg.split('=')[1], 10) : undefined;
   const filePath = args.find(a => !a.startsWith('--'));
+
+  if (isDryRunMode) {
+    setDryRun(true);
+  }
 
   let config = loadConfig();
 
   // If no config found or user explicitly requests config, run wizard
   if (!config || isConfigMode) {
-    if (!filePath && !isConfigMode) {
-      console.error('Usage: node index.js <path-to-onetab.txt> [--config]');
+    if (!filePath && !isConfigMode && !isXBookmarksMode) {
+      console.error('Usage: tsx index.ts <path-to-onetab.txt> [--config] [--dry-run]');
+      console.error('       tsx index.ts --x-bookmarks [--x-limit=N] [--dry-run]');
       process.exit(1);
     }
     config = await runConfigWizard(askQuestion);
-    if (isConfigMode && !filePath) {
+    if (isConfigMode && !filePath && !isXBookmarksMode) {
       console.log('Configuration finished. Exiting.');
       process.exit(0);
     }
@@ -192,6 +274,12 @@ async function main() {
   // Apply to process.env dynamically
   applyConfigToEnv(config);
 
+  // --sync-rules: snippets.xml → folder_rules.json を同期して終了
+  if (isSyncRulesMode) {
+    syncRulesFromSnippets();
+    process.exit(0);
+  }
+
   console.log('\n======================================================');
   console.log(`🤖 AI Provider: ${config?.provider}`);
   console.log(`🔹 Step 1 Model (Fast): ${config?.fastModel}`);
@@ -199,50 +287,105 @@ async function main() {
   console.log('💡 Run with `--config` anytime to change these settings.');
   console.log('======================================================\n');
 
+  // 分類結果レポートの出力先: context/分類結果レポート/
+  const REPORTS_DIR = path.join(getVaultRoot(), '__skills', 'context', '分類結果レポート');
+  if (!fs.existsSync(REPORTS_DIR)) {
+    fs.mkdirSync(REPORTS_DIR, { recursive: true });
+  }
+  // パイプライン内部ログ（failed 等）の出力先: pipeline/reports/
+  const INTERNAL_LOGS_DIR = path.join(getVaultRoot(), '__skills', 'pipeline', 'reports');
+  if (!fs.existsSync(INTERNAL_LOGS_DIR)) {
+    fs.mkdirSync(INTERNAL_LOGS_DIR, { recursive: true });
+  }
+
   // Update vault tree snapshot at startup to capture any manual user changes
   updateVaultTreeSnapshot();
 
-  if (!filePath) {
+  if (!filePath && !isXBookmarksMode) {
     console.error('Usage: tsx index.ts <path-to-onetab.txt>');
+    console.error('   or: tsx index.ts --x-bookmarks [--x-limit=N]');
     process.exit(1);
   }
 
-  const content = fs.readFileSync(filePath, 'utf-8');
-  const allLines = content.split('\n').filter(l => l.trim() !== '');
-
-  // Parse lines and pre-filter skips so they don't consume parallel slots
-  const parsedEntries = [];
+  const parsedEntries: ParsedEntry[] = [];
   const failures: { url: string; title: string; reason: string }[] = [];
-  
+
   // Index existing URLs to avoid duplicates
   console.log(`\n🔍 Indexing existing articles in the Vault...`);
   const knownUrls = getKnownUrls();
   console.log(`Found ${knownUrls.size} unique URLs already saved.\n`);
 
-  for (let i = 0; i < allLines.length; i++) {
-    const line = allLines[i];
-    const pipeIdx = line.indexOf(' | ');
-    if (pipeIdx === -1) continue;
-    const url = line.substring(0, pipeIdx).trim();
-    const title = line.substring(pipeIdx + 3).trim();
-
-    const checkUrl = url.endsWith('/') ? url.slice(0, -1) : url;
-    if (knownUrls.has(checkUrl)) {
-      console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (Duplicate in Vault)`);
-      failures.push({ url, title, reason: 'Duplicate: Already exists in Vault' });
-      continue;
+  if (isXBookmarksMode) {
+    // ==========================================
+    // X (Twitter) API 経由でブックマークを取得し、
+    // fetcher/extractor をスキップして Classifier に直接流し込む。
+    // ==========================================
+    console.log('🔖 X API 経由でブックマークを取得します...');
+    let bookmarks: ArticleData[];
+    try {
+      bookmarks = await fetchBookmarks({ maxItems: xLimit });
+    } catch (e: any) {
+      console.error(`❌ X ブックマーク取得失敗: ${e.message}`);
+      process.exit(1);
     }
 
-    const policy = evaluatePolicy(url);
-    if (policy === 'manual_skip') {
-      console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (manual_skip)`);
-      failures.push({ url, title, reason: 'Site Policy: manual_skip' });
-    } else {
-      parsedEntries.push({ url, title, policy });
+    for (let i = 0; i < bookmarks.length; i++) {
+      const bm = bookmarks[i];
+      const url = bm.url;
+      const title = bm.title || `X post ${i + 1}`;
+      const checkUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+      if (knownUrls.has(checkUrl)) {
+        console.log(`[${i + 1}/${bookmarks.length}] ${title.substring(0, 40)}... Skipped (Duplicate in Vault)`);
+        failures.push({ url, title, reason: 'Duplicate: Already exists in Vault' });
+        continue;
+      }
+      // X ブックマークは evaluatePolicy をバイパス（x.com は通常 manual_skip）
+      parsedEntries.push({ url, title, policy: 'x_bookmark', preFetched: bm });
+    }
+  } else {
+    const content = fs.readFileSync(filePath!, 'utf-8');
+    const allLines = content.split('\n').filter(l => l.trim() !== '');
+
+    for (let i = 0; i < allLines.length; i++) {
+      const line = allLines[i];
+      const pipeIdx = line.indexOf(' | ');
+      if (pipeIdx === -1) continue;
+      const url = line.substring(0, pipeIdx).trim();
+      const title = line.substring(pipeIdx + 3).trim();
+
+      const checkUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+      if (knownUrls.has(checkUrl)) {
+        console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (Duplicate in Vault)`);
+        failures.push({ url, title, reason: 'Duplicate: Already exists in Vault' });
+        continue;
+      }
+
+      const policy = evaluatePolicy(url);
+      if (policy === 'manual_skip') {
+        console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (manual_skip)`);
+        failures.push({ url, title, reason: 'Site Policy: manual_skip' });
+      } else {
+        parsedEntries.push({ url, title, policy });
+      }
     }
   }
 
-  console.log(`Starting Phase 3 Pipeline... found ${parsedEntries.length} fetchable URLs (${failures.length} skipped).`);
+  // ==========================================
+  // 実行前ユーザー確認（フェッチ開始前）
+  // ==========================================
+  console.log(`\n📋 処理予定: ${parsedEntries.length} 件 / スキップ: ${failures.length} 件`);
+  console.log(`📁 分類結果レポート出力先: ${REPORTS_DIR}`);
+  if (isDryRunMode) console.log('🧪 dry-run モード: Vault へのファイル書き込みはスキップされます。');
+  if (isXBookmarksMode) console.log('🔖 X ブックマークモード');
+  const preConfirm = (await askQuestion('\nパイプラインを実行しますか？ [y/n]: ')).toLowerCase().trim();
+  if (preConfirm !== 'y') {
+    console.log('キャンセルしました。');
+    await closeBrowser();
+    rl.close();
+    process.exit(0);
+  }
+
+  console.log(`\nStarting Phase 3 Pipeline... found ${parsedEntries.length} fetchable URLs (${failures.length} skipped).`);
   console.log(`Performing content fetching and classification (This may take several minutes...)`);
   
   const results: ProcessingResult[] = [];
@@ -254,14 +397,28 @@ async function main() {
     
     const mappedPromises = chunkEntries.map(async (entry, indexInChunk) => {
       const globalIndex = i + indexInChunk + 1;
-      const { url, title, policy } = entry;
+      const { url, title, policy, preFetched } = entry;
 
       try {
-        const html = await fetchRenderedHtml(url);
-        const article = extractAndConvert(html, url);
+        // X ブックマーク等、構造化済みソースは preFetched を使い fetch/extract を飛ばす
+        const article = preFetched
+          ? preFetched
+          : extractAndConvert(await fetchRenderedHtml(url), url);
         const finalTitle = article.title || title;
 
-        const classification = await classifyArticle(url, finalTitle, article.textContent);
+        // X ブックマークは Classifier を通さず専用フォルダに固定ルーティングする。
+        //   - 他ジャンルへの混入を防ぐ（監査性）
+        //   - 短いツイート本文に対する分類 API コストを削減
+        //   - Router の日付ベース昇格は通常通り適用される
+        const classification: ClassificationResult =
+          policy === 'x_bookmark'
+            ? {
+                proposedPath: X_BOOKMARKS_BASE_FOLDER,
+                isNewFolder: false,
+                confidence: 1.0,
+                reasoning: 'X API bookmark → 専用フォルダへ固定ルーティング',
+              }
+            : await classifyArticle(url, finalTitle, article.textContent);
         
         if (classification.proposedPath === '__EXCLUDED__') {
           console.log(`[${globalIndex}/${parsedEntries.length}] ${finalTitle.substring(0, 30)}... Skipped (Excluded by Rule)`);
@@ -308,7 +465,7 @@ async function main() {
   // Output Failures to failure log
   if (failures.length > 0) {
     const failedContent = failures.map(f => `${f.url} | ${f.title}`).join('\n');
-    const failedPath = path.join(REPORTS_DIR, `failed_onetab_${dateStr}.txt`);
+    const failedPath = path.join(INTERNAL_LOGS_DIR, `failed_onetab_${dateStr}.txt`);
     fs.writeFileSync(failedPath, failedContent, 'utf8');
     console.log(`\n⚠️ Saved ${failures.length} failed/skipped items to ${failedPath}`);
   }

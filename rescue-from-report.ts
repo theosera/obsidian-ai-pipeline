@@ -3,8 +3,15 @@ import fs from 'fs';
 import path from 'path';
 import { fetchRenderedHtml, closeBrowser } from './fetcher.js';
 import { extractAndConvert } from './extractor.js';
-import { saveMarkdown, updateVaultTreeSnapshot } from './storage.js';
-import { sanitizeRelativePath, VAULT_ROOT } from './utils/security.js';
+import { saveMarkdown, updateVaultTreeSnapshot, ensureSafePath } from './storage.js';
+import { loadConfig } from './config.js';
+
+// コンフィグからVAULT_ROOTを読み込む
+const config = loadConfig();
+if (!config) {
+  console.error('pipeline_config.json が見つかりません。先に pnpm start -- --config を実行してください。');
+  process.exit(1);
+}
 
 async function main() {
   const args = process.argv.slice(2);
@@ -34,22 +41,16 @@ async function main() {
       continue;
     }
 
-    // Match Links: - [1] [タイトル](https://example.com) ⚠️[要完全性チェック]
     const linkMatch = line.match(/^- \[\d+\] \[(.*?)\]\((.*?)\)/);
     if (linkMatch && currentFolder) {
       const title = linkMatch[1];
       const url = linkMatch[2];
-      // Validate folder path from report to prevent path traversal
-      try {
-        const safeFolder = sanitizeRelativePath(currentFolder);
-        targetItems.push({
-          url,
-          title,
-          folder: safeFolder
-        });
-      } catch (e) {
-        console.warn(`[Rescue] Skipping item with unsafe folder path: ${currentFolder}`);
-      }
+      const safeFolder = ensureSafePath(currentFolder);
+      targetItems.push({
+        url,
+        title,
+        folder: safeFolder
+      });
     }
   }
 
@@ -67,14 +68,14 @@ async function main() {
 
   for (let i = 0; i < targetItems.length; i += CONCURRENCY_LIMIT) {
     const chunkItems = targetItems.slice(i, i + CONCURRENCY_LIMIT);
-    
+
     const mappedPromises = chunkItems.map(async (item, indexInChunk) => {
       const globalIndex = i + indexInChunk + 1;
-      
+
       try {
         const html = await fetchRenderedHtml(item.url);
         const article = extractAndConvert(html, item.url);
-        
+
         saveMarkdown(article, item.folder);
         console.log(`[${globalIndex}/${targetItems.length}] ${item.title.substring(0, 30)}... ✅ Saved to ${item.folder}`);
         return true;
@@ -91,7 +92,7 @@ async function main() {
   }
 
   await closeBrowser();
-  
+
   if (successCount > 0) {
      updateVaultTreeSnapshot();
      console.log(`\n🎉 Rescue Complete! ${successCount}/${targetItems.length} articles successfully saved to Vault.`);

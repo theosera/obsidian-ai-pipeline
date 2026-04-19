@@ -1,8 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { ProcessingResult } from './types';
-import { sanitizeRelativePath, safePath, validateDateString, VAULT_ROOT } from './utils/security';
-const RULES_PATH = path.join(VAULT_ROOT, '__skills', 'pipeline', 'folder_rules.json');
+import { ensureSafePath, safeRename } from './storage';
+import { getVaultRoot, isDryRun } from './config';
 
 // デフォルトの閾値 (The user can edit this file later if they want to adjust, or we might add a config prompt)
 const THRESHOLDS = {
@@ -12,10 +12,15 @@ const THRESHOLDS = {
 
 type RulesMap = Record<string, string>;
 
+function getRulesPath(): string {
+  return path.join(getVaultRoot(), '__skills', 'pipeline', 'folder_rules.json');
+}
+
 export function loadFolderRules(): RulesMap {
-  if (fs.existsSync(RULES_PATH)) {
+  const rulesPath = getRulesPath();
+  if (fs.existsSync(rulesPath)) {
     try {
-      return JSON.parse(fs.readFileSync(RULES_PATH, 'utf8'));
+      return JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
     } catch (e) {
       console.error('Failed to parse folder_rules.json, starting fresh.');
       return {};
@@ -25,41 +30,59 @@ export function loadFolderRules(): RulesMap {
 }
 
 export function saveFolderRules(rules: RulesMap): void {
-  fs.writeFileSync(RULES_PATH, JSON.stringify(rules, null, 2), 'utf8');
+  fs.writeFileSync(getRulesPath(), JSON.stringify(rules, null, 2), 'utf8');
+}
+
+/**
+ * proposedPath の末尾が日付サブフォルダ (`/YYYY-Qn` または `/YYYY-MM`) の場合、
+ * その suffix を剥がしたベースパスを返す。日付 suffix がなければそのまま返す。
+ *
+ * 用途: 分類結果レポートで「新規フォルダ提案」を判定する際、
+ * 既存カテゴリ配下に router が自動付与した日付サブフォルダを「新規」扱いしないため。
+ */
+export function stripDateSuffix(proposedPath: string): string {
+  // /YYYY-Qn (Q1〜Q9 を許容、現実は Q1〜Q4 のみ)
+  const quarterMatch = proposedPath.match(/^(.+)\/\d{4}-Q\d$/);
+  if (quarterMatch) return quarterMatch[1];
+
+  // /YYYY-MM (01〜12)
+  const monthMatch = proposedPath.match(/^(.+)\/\d{4}-(0[1-9]|1[0-2])$/);
+  if (monthMatch) return monthMatch[1];
+
+  return proposedPath;
 }
 
 export function getRoutedPath(baseCategory: string, publishDateStr: string | undefined, rules: RulesMap): string {
-  // Sanitize the base category to prevent path traversal
-  const sanitizedCategory = sanitizeRelativePath(baseCategory);
+  // パストラバーサル防止: baseCategoryを検証
+  const safeBase = ensureSafePath(baseCategory);
 
   // EXCEPTION: how/howto folders are completely EXEMPT from quarterly/monthly rules
-  if (/(?:\/|^)(how|howto)(?:\/|$)/i.test(sanitizedCategory)) {
-    return sanitizedCategory;
+  if (/(?:\/|^)(how|howto)(?:\/|$)/i.test(safeBase)) {
+    return safeBase;
   }
 
-  const rule = rules[sanitizedCategory] || 'none';
-  // Validate date to prevent injection via malformed date strings
-  const validatedDate = validateDateString(publishDateStr);
-  const dateObj = validatedDate ? new Date(validatedDate) : new Date();
-  
+  const rule = rules[safeBase] || 'none';
+  const dateObj = publishDateStr ? new Date(publishDateStr) : new Date();
+
   if (rule === 'monthly') {
     const year = dateObj.getFullYear();
     const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-    return `${sanitizedCategory}/${year}-${month}`;
+    return `${safeBase}/${year}-${month}`;
   }
 
   if (rule === 'quarterly') {
     const year = dateObj.getFullYear();
     const quarter = Math.floor(dateObj.getMonth() / 3) + 1;
-    return `${sanitizedCategory}/${year}-Q${quarter}`;
+    return `${safeBase}/${year}-Q${quarter}`;
   }
 
-  return sanitizedCategory;
+  return safeBase;
 }
 
 export function updateThresholds(results: ProcessingResult[], currentRules: RulesMap): RulesMap {
+  const vaultRoot = getVaultRoot();
   let updated = false;
-  
+
   // 今バッチでの各ベースカテゴリの処理予定数
   const batchCounts: Record<string, number> = {};
   for (const r of results) {
@@ -74,22 +97,22 @@ export function updateThresholds(results: ProcessingResult[], currentRules: Rule
   // Vault全体のスキャンと閾値評価
   for (const [baseCat, batchCount] of Object.entries(batchCounts)) {
     let currentRule = currentRules[baseCat] || 'none';
-    
+
     // Vault内の対象ジャンルの既存ファイル数をカウント
-    const catPath = safePath(baseCat);
-    let vaultCount = batchCount; 
-    
+    const catPath = path.join(vaultRoot, baseCat);
+    let vaultCount = batchCount;
+
     if (fs.existsSync(catPath) && fs.statSync(catPath).isDirectory()) {
        vaultCount += countMarkdownFiles(catPath);
     }
-    
+
     let newRule = currentRule;
-    
+
     // EXCEPTION: how/howto folders do not get upgraded
     if (/(?:\/|^)(how|howto)(?:\/|$)/i.test(baseCat)) {
       continue;
     }
-    
+
     // 昇格ロジック (一度上がったら下がらない)
     if (currentRule !== 'monthly') {
       if (vaultCount >= THRESHOLDS.MONTHLY) {
@@ -98,21 +121,21 @@ export function updateThresholds(results: ProcessingResult[], currentRules: Rule
         newRule = 'quarterly';
       }
     }
-    
+
     if (newRule !== currentRule) {
       console.log(`\n📈 [フォルダ規則の自動昇格] '${baseCat}' の記事数が ${vaultCount} 件に達したため、ルールが [${currentRule}] -> [${newRule}] に昇格しました！`);
       console.log(`🔄 既存のファイルを新しいルール (${newRule}) に基づき再編成します...`);
       migrateExistingFiles(baseCat, newRule);
-      
+
       currentRules[baseCat] = newRule;
       updated = true;
     }
   }
-  
+
   if (updated) {
     saveFolderRules(currentRules);
   }
-  
+
   return currentRules;
 }
 
@@ -120,7 +143,8 @@ export function updateThresholds(results: ProcessingResult[], currentRules: Rule
  * 既存のファイルを新しいルールに基づいて移動（再編成）する
  */
 function migrateExistingFiles(baseCat: string, newRule: string): void {
-  const baseDir = safePath(baseCat);
+  const vaultRoot = getVaultRoot();
+  const baseDir = path.join(vaultRoot, baseCat);
   if (!fs.existsSync(baseDir)) return;
 
   // 再帰的にすべてのマークダウンファイルを収集
@@ -129,7 +153,7 @@ function migrateExistingFiles(baseCat: string, newRule: string): void {
   for (const filePath of allMdFiles) {
     try {
       const content = fs.readFileSync(filePath, 'utf8');
-      
+
       // フロントマターから date: または published: 抽出
       let fileDate: string | undefined = undefined;
       const dateMatch = content.match(/^(?:date|published):\s*"?(\d{4}-\d{2}-\d{2})"?/m);
@@ -145,10 +169,10 @@ function migrateExistingFiles(baseCat: string, newRule: string): void {
       // モックのルールオブジェクトを渡して解決する
       const tempRules: RulesMap = { [baseCat]: newRule };
       const newRelativePath = getRoutedPath(baseCat, fileDate, tempRules);
-      const newAbsoluteDir = safePath(newRelativePath);
-      
-      // 移動先ディレクトリの作成
-      if (!fs.existsSync(newAbsoluteDir)) {
+      const newAbsoluteDir = path.join(vaultRoot, newRelativePath);
+
+      // 移動先ディレクトリの作成（dry-run時はスキップ）
+      if (!isDryRun() && !fs.existsSync(newAbsoluteDir)) {
         fs.mkdirSync(newAbsoluteDir, { recursive: true });
       }
 
@@ -157,16 +181,18 @@ function migrateExistingFiles(baseCat: string, newRule: string): void {
 
       // 移動先が元の場所と違う場合のみ移動
       if (filePath !== newFilePath) {
-         fs.renameSync(filePath, newFilePath);
+         safeRename(filePath, newFilePath);
       }
 
     } catch (err: any) {
       console.error(`[Router] Failed to migrate file ${filePath}:`, err.message);
     }
   }
-  
-  // 空になった過去のディレクトリをクリーンアップ (深さ1まで)
-  cleanupEmptyDirectories(baseDir);
+
+  // 空になった過去のディレクトリをクリーンアップ (dry-run時はスキップ)
+  if (!isDryRun()) {
+    cleanupEmptyDirectories(baseDir);
+  }
 }
 
 /**
