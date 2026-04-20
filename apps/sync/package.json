@@ -1,0 +1,16 @@
+{
+  "name": "sync",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "sync": "tsx src/sync.ts",
+    "propose:grouping": "tsx src/propose-grouping.ts",
+    "approve:grouping": "tsx src/approve-grouping.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@obsidian-ai-pipeline/core": "workspace:*",
+    "dotenv": "^16.4.5"
+  }
+}

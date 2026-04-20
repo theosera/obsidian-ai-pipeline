@@ -1,27 +1,20 @@
-# Dependencies
 node_modules/
-*.zip
-
-# Environment & Config
+dist/
 .env
-pipeline_config.json
+.env.*
+!.env.example
 
-# Cache & Logs
-reports/
-logs/
+# secrets/tokens
+secrets/
+data/tokens.json
+data/pkce_state.json
+
+# generated analysis artifacts
+analysis/x_folder_grouping_proposal_data.json
+analysis/x_folder_stats.json
+
+# workspace lockfiles in nested packages
+apps/*/node_modules/
+packages/*/node_modules/
+
 .DS_Store
-.html_cache/
-.chromium-data/
-*.txt
-
-# Chrome Extension build output
-chrome-extension/dist/
-chrome-extension/node_modules/
-
-# Ignore all dotfiles and dotfolders as instructed
-.*
-# But specifically allow gitignore itself
-!.gitignore
-# Allow GitHub Actions workflows (CI)
-!.github/
-!.github/**
