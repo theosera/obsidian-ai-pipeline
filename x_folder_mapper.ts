@@ -215,7 +215,9 @@ export function writeGroupingProposal(
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  const file = path.join(dir, `x_folder_grouping_proposal_${dateStr}.md`);
+  // ファイル名に `claude_` prefix を入れ、Codex 側実装 (apps/sync/propose-grouping.ts)
+  // との対照実験で生成物が衝突しないようにする。README の「X ブックマーク対照実験」節を参照。
+  const file = path.join(dir, `x_folder_grouping_proposal_claude_${dateStr}.md`);
 
   let md = `# X ブックマークフォルダ 共通キーワード提案レポート\n\n`;
   md += `生成日時: ${new Date().toISOString()}\n\n`;

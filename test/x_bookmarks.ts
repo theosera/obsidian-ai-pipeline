@@ -240,6 +240,16 @@ export function run(): TestSuiteResult {
       assert.ok(content.includes('AI Tools'));
     });
 
+    runner.test('writeGroupingProposal のファイル名は claude_ prefix を持つ (対照実験)', () => {
+      const result = writeGroupingProposal([
+        { keyword: 'X', folders: ['X Tools', 'X Ethics', 'X Agents'] },
+      ]);
+      assert.ok(
+        path.basename(result).startsWith('x_folder_grouping_proposal_claude_'),
+        `想定 prefix と不一致: ${path.basename(result)}`
+      );
+    });
+
     // =====================================================
     // XBookmarksDb (in-memory)
     // =====================================================
