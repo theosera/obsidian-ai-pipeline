@@ -1,8 +1,11 @@
-From 774ead6b3a6c543651d05c86dce000c12db15da3 Mon Sep 17 00:00:00 2001
+From dce184cecd52380a1dc43dd693de5082e17b53d2 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Sun, 19 Apr 2026 19:55:36 +0000
+Date: Mon, 20 Apr 2026 19:24:25 +0000
 Subject: [PATCH] feat(synthesis): dynamic timeout scaling + early preflight
  estimation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Synthesis agent timeouts now auto-scale with video count (300s + 60s per
 video) instead of a fixed 1800s. Override via --synthesis-timeout CLI
@@ -10,14 +13,17 @@ flag or config.json synthesis_timeout key. Two estimation checkpoints
 log timeout/input-size info: immediately after playlist fetch (early
 warning) and before Stage 05 (precise fill ratio + truncation check).
 
+Rebased on top of e3ed970 (β reflexion retry); retry call also uses the
+computed β timeout.
+
 https://claude.ai/code/session_01RxnSjdy7R88RZt5uMdjbBH
 ---
  config.example.json                  |   3 +-
  pipeline_youtube/main.py             |  51 +++++++-
- pipeline_youtube/stages/synthesis.py |  49 +++++++-
- pipeline_youtube/synthesis/agents.py |  43 ++++++-
+ pipeline_youtube/stages/synthesis.py |  50 +++++++-
+ pipeline_youtube/synthesis/agents.py |  44 ++++++-
  tests/test_synthesis_timeout.py      | 169 +++++++++++++++++++++++++++
- 5 files changed, 307 insertions(+), 8 deletions(-)
+ 5 files changed, 309 insertions(+), 8 deletions(-)
  create mode 100644 tests/test_synthesis_timeout.py
 
 diff --git a/config.example.json b/config.example.json
@@ -165,7 +171,7 @@ index 1e0eba1..218d3b6 100644
  
      if synthesis_result.skipped:
 diff --git a/pipeline_youtube/stages/synthesis.py b/pipeline_youtube/stages/synthesis.py
-index 3d3cb9a..388ca4c 100644
+index e39815a..27e1577 100644
 --- a/pipeline_youtube/stages/synthesis.py
 +++ b/pipeline_youtube/stages/synthesis.py
 @@ -40,11 +40,13 @@ from ..obsidian import format_playlist_folder_name
@@ -269,7 +275,15 @@ index 3d3cb9a..388ca4c 100644
      except SynthesisParseError as e:
          return SynthesisStageResult(
              topics=topics, agent_results=agent_results, error=f"beta_parse_failed: {e}"
-@@ -190,6 +232,7 @@ def run_stage_synthesis(
+@@ -194,6 +236,7 @@ def run_stage_synthesis(
+                 model=beta_model,
+                 max_chapters=max_chapters,
+                 missing_topic_ids=coverage.missing_topic_ids,
++                timeout=timeouts["beta"],
+             )
+             agent_results.append(retry_res)
+             coverage = compute_coverage(topics, chapters)
+@@ -211,6 +254,7 @@ def run_stage_synthesis(
              coverage,
              model=leader_model,
              playlist_title=playlist_title,
@@ -278,10 +292,10 @@ index 3d3cb9a..388ca4c 100644
      except SynthesisParseError as e:
          return SynthesisStageResult(
 diff --git a/pipeline_youtube/synthesis/agents.py b/pipeline_youtube/synthesis/agents.py
-index 5fb3ea9..ba40e51 100644
+index 0236b51..4a91899 100644
 --- a/pipeline_youtube/synthesis/agents.py
 +++ b/pipeline_youtube/synthesis/agents.py
-@@ -33,6 +33,40 @@ from .scoring import (
+@@ -33,6 +33,41 @@ from .scoring import (
      parse_leader_output,
  )
  
@@ -319,10 +333,11 @@ index 5fb3ea9..ba40e51 100644
 +        "leader": heavy,
 +    }
 +
++
  # =====================================================
  # System prompts (one per role)
  # =====================================================
-@@ -270,6 +304,7 @@ def call_alpha(
+@@ -270,6 +305,7 @@ def call_alpha(
      *,
      model: str = "sonnet",
      playlist_title: str | None = None,
@@ -330,7 +345,7 @@ index 5fb3ea9..ba40e51 100644
  ) -> tuple[list[Topic], AgentCallResult]:
      """Run the TopicExtractor agent."""
      materials = format_learning_materials(videos, learning_md_bodies)
-@@ -280,7 +315,7 @@ def call_alpha(
+@@ -280,7 +316,7 @@ def call_alpha(
          prompt=prompt,
          append_system_prompt=ALPHA_SYSTEM_PROMPT,
          model=model,
@@ -339,15 +354,15 @@ index 5fb3ea9..ba40e51 100644
      )
      topics = parse_alpha_topics(response.text)
      return topics, _wrap_result(response)
-@@ -291,6 +326,7 @@ def call_beta(
-     *,
+@@ -292,6 +328,7 @@ def call_beta(
      model: str = "sonnet",
      max_chapters: int | None = None,
+     missing_topic_ids: list[str] | None = None,
 +    timeout: int = 600,
  ) -> tuple[list[ChapterPlan], AgentCallResult]:
      """Run the ChapterArchitect agent.
  
-@@ -313,7 +349,7 @@ def call_beta(
+@@ -332,7 +369,7 @@ def call_beta(
          prompt=prompt,
          append_system_prompt=BETA_SYSTEM_PROMPT,
          model=model,
@@ -356,7 +371,7 @@ index 5fb3ea9..ba40e51 100644
      )
      chapters = parse_beta_chapters(response.text)
      return chapters, _wrap_result(response)
-@@ -350,6 +386,7 @@ def call_leader(
+@@ -369,6 +406,7 @@ def call_leader(
      *,
      model: str = "sonnet",
      playlist_title: str | None = None,
@@ -364,7 +379,7 @@ index 5fb3ea9..ba40e51 100644
  ) -> tuple[LeaderOutput, AgentCallResult]:
      """Run the Leader agent to produce the final MOC + chapter bodies."""
      materials = format_learning_materials(videos, learning_md_bodies)
-@@ -372,7 +409,7 @@ def call_leader(
+@@ -391,7 +429,7 @@ def call_leader(
          prompt=prompt,
          append_system_prompt=LEADER_SYSTEM_PROMPT,
          model=model,
