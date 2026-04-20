@@ -1,35 +1,19 @@
 {
-  "name": "obsidian-clipper-pipeline",
+  "name": "obsidian-ai-pipeline",
+  "private": true,
   "version": "1.0.0",
   "packageManager": "pnpm@10.33.0",
-  "engines": {
-    "node": ">=18",
-    "pnpm": ">=9"
-  },
-  "description": "Automated Obsidian Web Clipper pipeline",
-  "main": "index.ts",
-  "type": "module",
   "scripts": {
-    "start": "tsx index.ts",
-    "sync-rules": "tsx sync-rules.ts",
-    "test": "tsx test_runner.ts"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.36.0",
-    "@mozilla/readability": "^0.5.0",
-    "fast-xml-parser": "^5.5.9",
-    "jsdom": "^25.0.0",
-    "openai": "^6.32.0",
-    "playwright": "^1.50.0",
-    "string-similarity": "^4.0.4",
-    "turndown": "^7.2.0"
+    "dev:auth": "pnpm --filter auth dev",
+    "sync": "pnpm --filter sync sync",
+    "propose:grouping": "pnpm --filter sync propose:grouping",
+    "approve:grouping": "pnpm --filter sync approve:grouping",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
-    "@types/jsdom": "^28.0.1",
-    "@types/node": "^25.5.2",
-    "@types/string-similarity": "^4.0.2",
-    "@types/turndown": "^5.0.6",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^5.6.3",
+    "tsx": "^4.20.6",
+    "@types/node": "^22.15.29"
   }
 }
