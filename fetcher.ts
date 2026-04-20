@@ -19,17 +19,22 @@ let initPromise: Promise<void> | null = null;
 export async function initBrowser(): Promise<void> {
   if (browserContext) return;
   if (initPromise) return initPromise;
-  
+
   initPromise = (async () => {
     const userDataDir = path.resolve(process.cwd(), '.chromium-data');
     if (!fs.existsSync(userDataDir)) {
       fs.mkdirSync(userDataDir, { recursive: true });
     }
-    browserContext = await chromium.launchPersistentContext(userDataDir, { 
+    browserContext = await chromium.launchPersistentContext(userDataDir, {
       headless: true, // User can manually run headed once to login
     });
   })();
   return initPromise;
+}
+
+export async function getBrowserContext(): Promise<BrowserContext> {
+  if (!browserContext) await initBrowser();
+  return browserContext!;
 }
 
 export async function closeBrowser(): Promise<void> {
