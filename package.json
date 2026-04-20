@@ -1,18 +1,25 @@
 {
-  "name": "obsidian-clipper-pipeline",
+  "name": "obsidian-ai-pipeline",
   "version": "1.0.0",
+  "private": true,
   "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=18",
     "pnpm": ">=9"
   },
-  "description": "Automated Obsidian Web Clipper pipeline",
+  "description": "Automated Obsidian Web Clipper pipeline (Claude flat impl.) + pnpm workspace X Bookmarks Sync (Codex impl.)",
   "main": "index.ts",
   "type": "module",
   "scripts": {
     "start": "tsx index.ts",
     "sync-rules": "tsx sync-rules.ts",
-    "test": "tsx test_runner.ts"
+    "test": "tsx test_runner.ts",
+    "dev:auth": "pnpm --filter auth dev",
+    "sync": "pnpm --filter sync sync",
+    "propose:grouping": "pnpm --filter sync propose:grouping",
+    "approve:grouping": "pnpm --filter sync approve:grouping",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
@@ -32,6 +39,6 @@
     "@types/string-similarity": "^4.0.2",
     "@types/turndown": "^5.0.6",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^5.6.3"
   }
 }

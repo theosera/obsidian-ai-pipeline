@@ -67,6 +67,34 @@ X Developer Portal で **App を 2 つ作って別 Client ID を割り当てる*
 
 検証結果は `<vault>/__skills/context/分類結果レポート/` に両実装が生成するレポートを見比べてください。
 
+### Codex 側の起動方法 (pnpm workspace)
+
+Codex 側実装は pnpm workspace 配下に独立しています。初回セットアップ:
+
+```bash
+# 1. 依存インストール (ルートで workspace 全体)
+pnpm install
+
+# 2. .env を Codex 用に設定
+#    X_CLIENT_ID / X_CLIENT_SECRET / X_REDIRECT_URI=http://localhost:3838/auth/callback
+#    OBSIDIAN_VAULT_PATH=/absolute/path/to/vault
+
+# 3. 認可サーバ (別ターミナル)
+pnpm dev:auth                   # = pnpm --filter auth dev
+#   → ブラウザで http://localhost:3838/auth/login (ポート上書き時)
+
+# 4. 同期
+pnpm sync                       # = pnpm --filter sync sync
+
+# 5. grouping 提案 → 承認
+pnpm propose:grouping
+pnpm approve:grouping
+```
+
+保存先は Codex 側の実装では `OBSIDIAN_VAULT_PATH/X_Bookmarks/<child>/<YYYY-Qn|YYYY-MM>/post.md` (fold 数閾値で `< 10` フラット / `>= 10` quarterly / `>= 20` monthly)。**対照実験として Claude 側と出力フォルダを分けたい場合は、`OBSIDIAN_VAULT_PATH` を Codex 専用ルート (例: `/path/to/vault/Clippings/X-Bookmarks-codex/..`) に切り替えるか、`packages/core` 側の path resolver を Codex ブランチ内で上書きしてください**。
+
+Codex 側の詳細仕様 (grouping トークナイズ規則、提案/承認フロー) は `apps/sync/src/propose-grouping.ts` と `packages/core/src/x-folder-grouping/` を参照。
+
 ---
 
 ## アーキテクチャ概要
