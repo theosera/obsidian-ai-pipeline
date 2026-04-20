@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-clipper-pipeline",
+  "name": "obsidian-ai-pipeline",
   "private": true,
   "version": "1.0.0",
   "packageManager": "pnpm@10.33.0",
@@ -19,9 +19,7 @@
     "propose:grouping": "pnpm --filter sync propose:grouping",
     "approve:grouping": "pnpm --filter sync approve:grouping",
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "lockfile:refresh": "pnpm install --lockfile-only --no-frozen-lockfile",
-    "lockfile:check": "pnpm install --frozen-lockfile"
+    "typecheck": "pnpm -r typecheck"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
