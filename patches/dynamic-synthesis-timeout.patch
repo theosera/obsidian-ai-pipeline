@@ -1,8 +1,8 @@
 From dce184cecd52380a1dc43dd693de5082e17b53d2 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 20 Apr 2026 19:24:25 +0000
-Subject: [PATCH] feat(synthesis): dynamic timeout scaling + early preflight
- estimation
+Subject: [PATCH 1/2] feat(synthesis): dynamic timeout scaling + early
+ preflight estimation
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -563,6 +563,55 @@ index 0000000..f0e217c
 +        )
 +        with pytest.raises(click.UsageError, match="synthesis_timeout"):
 +            _load_config(cfg, fallback_model="sonnet")
+-- 
+2.43.0
+
+
+From 23e34d3c899e8d997a5054888e189373e9060267 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 20 Apr 2026 20:31:17 +0000
+Subject: [PATCH 2/2] style: fix ruff format violations in main.py
+
+https://claude.ai/code/session_01RxnSjdy7R88RZt5uMdjbBH
+---
+ pipeline_youtube/main.py | 10 +++-------
+ 1 file changed, 3 insertions(+), 7 deletions(-)
+
+diff --git a/pipeline_youtube/main.py b/pipeline_youtube/main.py
+index 218d3b6..7dad25a 100644
+--- a/pipeline_youtube/main.py
++++ b/pipeline_youtube/main.py
+@@ -130,7 +130,7 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
+         synthesis_timeout = synthesis_timeout_raw
+     else:
+         raise click.UsageError(
+-            f"config.json: synthesis_timeout must be a positive integer or \"auto\", "
++            f'config.json: synthesis_timeout must be a positive integer or "auto", '
+             f"got {synthesis_timeout_raw!r}"
+         )
+ 
+@@ -732,9 +732,7 @@ def cli(
+     click.echo(f"playlist: {playlist_title!r}")
+     click.echo(f"videos: {len(videos)}")
+ 
+-    est_timeouts = compute_synthesis_timeouts(
+-        len(videos), override=effective_synthesis_timeout
+-    )
++    est_timeouts = compute_synthesis_timeouts(len(videos), override=effective_synthesis_timeout)
+     total_duration = sum(v.duration or 0 for v in videos)
+     click.echo(
+         f"synthesis_estimate: {len(videos)} videos"
+@@ -850,9 +848,7 @@ def cli(
+     synth_timeouts = compute_synthesis_timeouts(
+         len(synthesis_videos), override=effective_synthesis_timeout
+     )
+-    click.echo(log_synthesis_preflight(
+-        len(synthesis_videos), synthesis_bodies, synth_timeouts
+-    ))
++    click.echo(log_synthesis_preflight(len(synthesis_videos), synthesis_bodies, synth_timeouts))
+     synthesis_result = run_stage_synthesis(
+         synthesis_videos,
+         synthesis_bodies,
 -- 
 2.43.0
 
