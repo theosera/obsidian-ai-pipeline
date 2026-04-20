@@ -19,6 +19,9 @@ x_bookmarks.db
 x_bookmarks.db-*
 *.corrupted_*
 
+# X API OAuth tokens (機密データ)
+x_tokens.json
+
 # Chrome Extension build output
 chrome-extension/dist/
 chrome-extension/node_modules/

@@ -9,7 +9,9 @@ import { loadConfig, runConfigWizard, applyConfigToEnv, getVaultRoot, setDryRun 
 import { loadFolderRules, updateThresholds, getRoutedPath, stripDateSuffix } from './router';
 import { syncRulesFromSnippets } from './sync-rules';
 import { ArticleData, ClassificationResult, ProcessingResult } from './types';
-import { scrapeBookmarksByFolder, ScrapedBookmark } from './x_bookmarks_scraper';
+import { fetchBookmarksViaApi, ApiBookmark } from './x_bookmarks_api';
+import { runAuthServer } from './x_auth_server';
+import { generateHandsOn } from './hands_on_generator';
 import {
   loadForcedParents,
   loadApprovedMappings,
@@ -202,7 +204,7 @@ async function interactiveReviewLoop(results: ProcessingResult[], reportMdPath: 
             const savedPath = saveMarkdown(res.articleContext, res.classification.proposedPath);
             console.log(` ✅ Saved: ${savedPath}`);
             // X ブックマーク経由なら SQLite メタデータキャッシュにも反映 (差分スクレイプ用)
-            const ax = res.articleContext as ScrapedBookmark;
+            const ax = res.articleContext as ApiBookmark;
             if (res.policy === 'x_bookmark' && ax.xTweetId) {
               try {
                 getDb().upsertBookmark({
@@ -272,6 +274,9 @@ async function main() {
   const isDryRunMode = args.includes('--dry-run');
   const isSyncRulesMode = args.includes('--sync-rules');
   const isXBookmarksMode = args.includes('--x-bookmarks');
+  const isXAuthMode = args.includes('--x-auth');
+  const handsOnArg = args.find(a => a.startsWith('--hands-on='));
+  const sinceArg = args.find(a => a.startsWith('--since='));
   const xLimitArg = args.find(a => a.startsWith('--x-limit='));
   const xLimit = xLimitArg ? parseInt(xLimitArg.split('=')[1], 10) : undefined;
   const filePath = args.find(a => !a.startsWith('--'));
@@ -282,11 +287,38 @@ async function main() {
 
   let config = loadConfig();
 
+  // --x-auth: X OAuth 認可サーバを起動して終了
+  if (isXAuthMode) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    await runAuthServer();
+    // runAuthServer は成功時 process.exit(0)。ここに到達する前にプロセスが死ぬ。
+    return;
+  }
+
+  // --hands-on=<folder>: X ブックマーク DB からハンズオン生成
+  if (handsOnArg) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    const folder = handsOnArg.split('=').slice(1).join('=');
+    const since = sinceArg ? sinceArg.split('=')[1] : undefined;
+    try {
+      await generateHandsOn({ folder, since, dryRun: isDryRunMode });
+    } catch (e: any) {
+      console.error(`❌ ハンズオン生成失敗: ${e.message}`);
+      process.exit(1);
+    }
+    rl.close();
+    process.exit(0);
+  }
+
   // If no config found or user explicitly requests config, run wizard
   if (!config || isConfigMode) {
     if (!filePath && !isConfigMode && !isXBookmarksMode) {
       console.error('Usage: tsx index.ts <path-to-onetab.txt> [--config] [--dry-run]');
       console.error('       tsx index.ts --x-bookmarks [--x-limit=N] [--dry-run]');
+      console.error('       tsx index.ts --x-auth                (X OAuth 初回認証)');
+      console.error('       tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
       process.exit(1);
     }
     config = await runConfigWizard(askQuestion);
@@ -342,11 +374,10 @@ async function main() {
 
   if (isXBookmarksMode) {
     // ==========================================
-    // X (Twitter) Playwright スクレイピングでブックマークを取得し、
-    // フォルダ構造を保持したまま Vault にマッピングする。
-    // fetcher/extractor をスキップして Classifier に直接流し込む。
+    // X (Twitter) API v2 でブックマークを取得し、フォルダ構造を保持したまま
+    // Vault にマッピングする。fetcher/extractor をスキップして Classifier に直接流し込む。
     // ==========================================
-    console.log('🔖 X Playwright スクレイピングでブックマークを取得します...');
+    console.log('🔖 X API v2 でブックマークを取得します...');
     const db = getDb();
     const knownTweetIds = db.getKnownTweetIds();
     const forcedParents = loadForcedParents();
@@ -354,11 +385,14 @@ async function main() {
     console.log(`🔖 強制親フォルダキーワード: ${forcedParents.length > 0 ? forcedParents.join(', ') : '(未設定)'}`);
     console.log(`🔖 既知ツイートID: ${knownTweetIds.size} 件 (DB キャッシュ)`);
 
-    let bookmarks: ScrapedBookmark[];
+    let bookmarks: ApiBookmark[];
     try {
-      bookmarks = await scrapeBookmarksByFolder({ maxItems: xLimit, skipKnownIds: knownTweetIds });
+      bookmarks = await fetchBookmarksViaApi({ maxItems: xLimit, skipKnownIds: knownTweetIds });
     } catch (e: any) {
       console.error(`❌ X ブックマーク取得失敗: ${e.message}`);
+      if (e.message?.includes('x_tokens.json')) {
+        console.error('   → 初回認証を実行してください: pnpm start -- --x-auth');
+      }
       process.exit(1);
     }
 
@@ -459,7 +493,7 @@ async function main() {
         //   - 短いツイート本文に対する分類 API コストを削減
         //   - Router の日付ベース昇格は通常通り適用される
         //   - フォルダ階層は x_folder_mapper で X 側フォルダ名から事前変換済み (article.xFolderName)
-        const xFolderSubPath = (article as ScrapedBookmark).xFolderName;
+        const xFolderSubPath = (article as ApiBookmark).xFolderName;
         const classification: ClassificationResult =
           policy === 'x_bookmark'
             ? {

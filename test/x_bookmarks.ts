@@ -1,8 +1,9 @@
 /**
  * X ブックマーク関連モジュールの統合単体テスト。
  * - x_folder_mapper: 強制親フォルダ・承認済みマッピング・共通キーワード検出
- * - x_bookmarks_db: in-memory SQLite で UPSERT / カウント
- * - x_bookmarks_scraper: tweet 変換 (DOM スクレイプは Playwright 必須なのでテスト外)
+ * - x_bookmarks_db:  in-memory SQLite で UPSERT / カウント
+ * - x_bookmarks_api: tweet→ApiBookmark 変換 / トークン期限判定 / URL 組立
+ * - x_auth_server:   PKCE code_challenge / 認可URL組立
  */
 import assert from 'node:assert';
 import fs from 'fs';
@@ -18,7 +19,8 @@ import {
   writeGroupingProposal,
 } from '../x_folder_mapper';
 import { XBookmarksDb } from '../x_bookmarks_db';
-import { __test as scraperInternals } from '../x_bookmarks_scraper';
+import { __test as apiInternals } from '../x_bookmarks_api';
+import { __test as authInternals } from '../x_auth_server';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export function run(): TestSuiteResult {
@@ -286,52 +288,169 @@ export function run(): TestSuiteResult {
     });
 
     // =====================================================
-    // x_bookmarks_scraper: rawToScrapedBookmark (DOM 部はテスト外)
+    // x_bookmarks_api: tweetToApiBookmark
     // =====================================================
-    runner.section('x_bookmarks_scraper: rawToScrapedBookmark');
+    runner.section('x_bookmarks_api: tweetToApiBookmark');
 
-    runner.test('RawTweet を ScrapedBookmark に変換', () => {
-      const raw = {
-        tweetId: '999',
-        url: 'https://x.com/foo/status/999',
-        authorHandle: 'foo',
-        authorDisplayName: 'Foo Bar',
+    runner.test('XPost を ApiBookmark に変換 (基本)', () => {
+      const post = {
+        id: '999',
         text: 'これはテスト投稿です',
-        createdAt: '2026-04-19T10:00:00.000Z',
-        likeCount: 42,
-        retweetCount: 5,
-        replyCount: 3,
-        expandedUrls: ['https://example.com'],
+        author_id: 'u1',
+        created_at: '2026-04-19T10:00:00.000Z',
+        public_metrics: { like_count: 42, retweet_count: 5, reply_count: 3 },
+        entities: {
+          urls: [{ url: 'https://t.co/abc', expanded_url: 'https://example.com' }],
+        },
       };
-      const sb = scraperInternals.rawToScrapedBookmark(raw, 'Claude Code/Tips');
-      assert.strictEqual(sb.xTweetId, '999');
-      assert.strictEqual(sb.xFolderName, 'Claude Code/Tips');
-      assert.strictEqual(sb.url, 'https://x.com/foo/status/999');
-      assert.strictEqual(sb.date, '2026-04-19');
-      assert.ok(sb.title?.includes('Foo Bar'));
-      assert.ok(sb.title?.includes('@foo'));
-      assert.ok(sb.content?.includes('> これはテスト投稿です'));
-      assert.ok(sb.content?.includes('https://example.com'));
-      assert.ok(sb.content?.includes('❤️ 42'));
+      const author = { id: 'u1', name: 'Foo Bar', username: 'foo' };
+      const bm = apiInternals.tweetToApiBookmark(post, author, 'Claude Code/Tips');
+      assert.strictEqual(bm.xTweetId, '999');
+      assert.strictEqual(bm.xFolderName, 'Claude Code/Tips');
+      assert.strictEqual(bm.url, 'https://x.com/foo/status/999');
+      assert.strictEqual(bm.date, '2026-04-19');
+      assert.ok(bm.title?.includes('Foo Bar'));
+      assert.ok(bm.title?.includes('@foo'));
+      assert.ok(bm.content?.includes('> これはテスト投稿です'));
+      assert.ok(bm.content?.includes('https://example.com'));
+      assert.ok(bm.content?.includes('❤️ 42'));
     });
 
-    runner.test('createdAt が null でも date は undefined で安全', () => {
-      const raw = {
-        tweetId: '1',
-        url: 'https://x.com/a/status/1',
-        authorHandle: 'a',
-        authorDisplayName: 'A',
-        text: 'x',
-        createdAt: null,
-        likeCount: null,
-        retweetCount: null,
-        replyCount: null,
-        expandedUrls: [],
+    runner.test('author 未解決時は @unknown にフォールバック', () => {
+      const post = { id: '1', text: 'x', author_id: 'u1' };
+      const bm = apiInternals.tweetToApiBookmark(post, undefined, 'Misc');
+      assert.ok(bm.url.includes('/unknown/status/1'));
+      assert.ok(bm.title?.includes('@unknown'));
+    });
+
+    runner.test('created_at / metrics が空ならセクション省略', () => {
+      const post = { id: '2', text: 'hello', author_id: 'u1' };
+      const author = { id: 'u1', username: 'a', name: 'A' };
+      const bm = apiInternals.tweetToApiBookmark(post, author, 'Misc');
+      assert.strictEqual(bm.date, undefined);
+      assert.ok(!bm.content?.includes('エンゲージメント'));
+    });
+
+    runner.test('expandBookmarksPage が includes.users を解決して複数件返す', () => {
+      const page = {
+        data: [
+          { id: '1', text: 'a', author_id: 'u1' },
+          { id: '2', text: 'b', author_id: 'u2' },
+        ],
+        includes: {
+          users: [
+            { id: 'u1', name: 'User1', username: 'user1' },
+            { id: 'u2', name: 'User2', username: 'user2' },
+          ],
+        },
       };
-      const sb = scraperInternals.rawToScrapedBookmark(raw, 'Misc');
-      assert.strictEqual(sb.date, undefined);
-      // メトリクス全 null なら エンゲージメントセクションは含まれない
-      assert.ok(!sb.content?.includes('エンゲージメント'));
+      const out = apiInternals.expandBookmarksPage(page, 'Folder');
+      assert.strictEqual(out.length, 2);
+      assert.ok(out[0].title?.includes('@user1'));
+      assert.ok(out[1].title?.includes('@user2'));
+      assert.strictEqual(out[0].xFolderName, 'Folder');
+    });
+
+    // =====================================================
+    // x_bookmarks_api: isTokenExpired
+    // =====================================================
+    runner.section('x_bookmarks_api: isTokenExpired');
+
+    runner.test('expires_in 不明なら expired=false', () => {
+      assert.strictEqual(
+        apiInternals.isTokenExpired({
+          access_token: 't',
+          obtained_at: new Date().toISOString(),
+        }),
+        false
+      );
+    });
+
+    runner.test('期限切れ間近(60秒マージン内) は true', () => {
+      const obtained = new Date(Date.now() - 7200 * 1000).toISOString();
+      assert.strictEqual(
+        apiInternals.isTokenExpired(
+          { access_token: 't', expires_in: 7200, obtained_at: obtained },
+          Date.now()
+        ),
+        true
+      );
+    });
+
+    runner.test('取得直後は false', () => {
+      const obtained = new Date().toISOString();
+      assert.strictEqual(
+        apiInternals.isTokenExpired(
+          { access_token: 't', expires_in: 7200, obtained_at: obtained },
+          Date.now()
+        ),
+        false
+      );
+    });
+
+    // =====================================================
+    // x_bookmarks_api: URL builders
+    // =====================================================
+    runner.section('x_bookmarks_api: URL builders');
+
+    runner.test('bookmarks URL にクエリが正しく載る', () => {
+      const u = new URL(apiInternals.buildBookmarksUrl('12345'));
+      assert.strictEqual(u.pathname, '/2/users/12345/bookmarks');
+      assert.strictEqual(u.searchParams.get('max_results'), '100');
+      assert.ok(u.searchParams.get('tweet.fields')?.includes('created_at'));
+      assert.strictEqual(u.searchParams.get('expansions'), 'author_id');
+    });
+
+    runner.test('pagination_token が与えられれば付与される', () => {
+      const u = new URL(apiInternals.buildFolderBookmarksUrl('12345', '888', 'tokenXYZ'));
+      assert.strictEqual(u.pathname, '/2/users/12345/bookmarks/folders/888');
+      assert.strictEqual(u.searchParams.get('pagination_token'), 'tokenXYZ');
+    });
+
+    runner.test('folders URL は max_results のみ', () => {
+      const u = new URL(apiInternals.buildFoldersUrl('12345'));
+      assert.strictEqual(u.pathname, '/2/users/12345/bookmarks/folders');
+      assert.strictEqual(u.searchParams.get('max_results'), '100');
+    });
+
+    // =====================================================
+    // x_auth_server: PKCE
+    // =====================================================
+    runner.section('x_auth_server: PKCE / authorize URL');
+
+    runner.test('code_challenge は verifier の SHA-256 base64url', () => {
+      const verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+      const challenge = authInternals.codeChallengeFromVerifier(verifier);
+      // RFC 7636 の参考値 (小文字). 我々の実装は base64url (パディングなし)
+      assert.match(challenge, /^[A-Za-z0-9_-]+$/);
+      // 同一入力で決定性
+      assert.strictEqual(challenge, authInternals.codeChallengeFromVerifier(verifier));
+    });
+
+    runner.test('randomBase64Url は一意で URL-safe', () => {
+      const a = authInternals.randomBase64Url();
+      const b = authInternals.randomBase64Url();
+      assert.notStrictEqual(a, b);
+      assert.match(a, /^[A-Za-z0-9_-]+$/);
+    });
+
+    runner.test('authorize URL に必須パラメータが揃う', () => {
+      const url = authInternals.buildAuthorizeUrl({
+        clientId: 'cid',
+        redirectUri: 'http://localhost:3737/auth/callback',
+        state: 'S',
+        codeChallenge: 'C',
+        scopes: ['tweet.read', 'users.read', 'bookmark.read', 'offline.access'],
+      });
+      const u = new URL(url);
+      assert.strictEqual(u.origin + u.pathname, 'https://x.com/i/oauth2/authorize');
+      assert.strictEqual(u.searchParams.get('response_type'), 'code');
+      assert.strictEqual(u.searchParams.get('client_id'), 'cid');
+      assert.strictEqual(u.searchParams.get('state'), 'S');
+      assert.strictEqual(u.searchParams.get('code_challenge'), 'C');
+      assert.strictEqual(u.searchParams.get('code_challenge_method'), 'S256');
+      assert.ok(u.searchParams.get('scope')?.includes('bookmark.read'));
+      assert.ok(u.searchParams.get('scope')?.includes('offline.access'));
     });
 
     return runner.report();
