@@ -6,6 +6,11 @@ export interface ArticleData {
   excerpt?: string;
   date?: string;
   siteName?: string;
+  // X (Twitter) ブックマーク経由でのみ設定される。
+  // xFolderName: 既にマッパーで Vault 階層パスへ変換済みの相対パス（例: "Claude Code/Tips"）
+  // xTweetId:    SQLite メタデータキャッシュの主キー
+  xFolderName?: string;
+  xTweetId?: string;
 }
 
 export interface ClassificationResult {
