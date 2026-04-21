@@ -34,6 +34,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Rebuild native dependencies (better-sqlite3)
+        # pnpm 10 はデフォルトでビルドスクリプトを無効化する。package.json の
+        # pnpm.onlyBuiltDependencies で allowlist 済みだが、CI の pnpm store
+        # キャッシュが設定追加前の状態を再利用するケースがあるため、確実に
+        # native .node バイナリを生成するよう明示リビルドする。
+        run: pnpm rebuild better-sqlite3
+
       - name: Run security tests (24 cases)
         run: pnpm test
 
