@@ -6,7 +6,7 @@ function escapeYaml(input: string): string {
 
 export function buildBookmarkMarkdown(params: {
   post: XPost;
-  author?: XAuthor;
+  author?: XAuthor | undefined;
   bookmarkFolder: string;
   syncedAt: string;
 }): string {

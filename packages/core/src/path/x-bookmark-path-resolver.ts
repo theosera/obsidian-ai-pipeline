@@ -33,10 +33,10 @@ export function resolveDateBucket(params: {
 export function resolveXBookmarkSaveDirectory(params: {
   vaultPath: string;
   sourceRoot: string;
-  childFolderName?: string;
+  childFolderName?: string | undefined;
   postDate: Date;
   folderPostCount: number;
-  mapping?: FolderMapping;
+  mapping?: FolderMapping | undefined;
 }): string {
   const child = params.childFolderName?.trim() || "root";
   const segments = [params.vaultPath, params.sourceRoot];
