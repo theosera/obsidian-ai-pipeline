@@ -19,7 +19,7 @@
     "propose:grouping": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter sync propose:grouping",
     "approve:grouping": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter sync approve:grouping",
     "build": "pnpm -r build",
-    "typecheck": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm -r typecheck"
+    "typecheck": "tsc --noEmit && pnpm --filter @obsidian-ai-pipeline/core build && pnpm -r typecheck"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",

@@ -31,6 +31,11 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
 
+      - name: Lint package.json files for duplicate keys
+        # node/python accept duplicate JSON keys silently (last-wins). Catch
+        # malformed manifests before they slip into main (see PR #23 post-mortem).
+        run: python3 .github/scripts/check-package-json-duplicates.py
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -44,8 +49,10 @@ jobs:
       - name: Run security tests (24 cases)
         run: pnpm test
 
-      - name: TypeScript type check
-        run: pnpm exec tsc --noEmit
+      - name: TypeScript type check (root + workspace)
+        # pnpm exec tsc --noEmit は root tsconfig しか見ず、packages/core
+        # や apps/* の型崩れを検知できない。workspace 全体を走らせる。
+        run: pnpm typecheck
 
   chrome-extension:
     name: Chrome extension - build & typecheck
