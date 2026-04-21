@@ -9,10 +9,13 @@ on:
 permissions:
   contents: read
 
-# 同一PR/ブランチで連続push時に古いジョブをキャンセル
+# 同一PR/ブランチで連続push時に古いジョブをキャンセルする。
+# ただし main では常に最後まで走らせる（merge commit ごとの緑/赤履歴を確実に残すため）。
+# 例: 短時間に連続 merge すると 1 本目の run が 2 本目に cancel され、1 本目の
+# 変更が main 上で検証されないまま残ってしまう事故を防ぐ。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   pipeline:
