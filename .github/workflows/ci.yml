@@ -32,7 +32,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Rebuild native dependencies (better-sqlite3)
         # pnpm 10 はデフォルトでビルドスクリプトを無効化する。package.json の
