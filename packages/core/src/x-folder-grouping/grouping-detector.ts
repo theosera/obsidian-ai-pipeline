@@ -79,7 +79,7 @@ function detectForPosition(folderNames: string[], matchType: MatchType): {
       token,
       children,
       reason: [
-        `${children.length} folders share the same ${matchType === "prefix" ? "leading" : "trailing"} token`,
+        `${folders.length} folders share the same ${matchType === "prefix" ? "leading" : "trailing"} token`,
         "token length >= 2",
         "token is not a stopword"
       ],

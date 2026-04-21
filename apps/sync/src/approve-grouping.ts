@@ -13,8 +13,20 @@ const config = loadEnvConfig(repoRoot);
 
 async function findLatestProposalDataFile(): Promise<string> {
   const analysisDir = path.resolve(repoRoot, "analysis");
-  const files = await fs.readdir(analysisDir);
   const prefix = `x_folder_grouping_proposal_${config.proposalPrefix}_`;
+
+  let files: string[];
+  try {
+    files = await fs.readdir(analysisDir);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      throw new Error(
+        `No proposal data found with prefix ${prefix}. Run pnpm propose:grouping first.`
+      );
+    }
+    throw error;
+  }
+
   const candidates = files
     .filter((file) => file.startsWith(prefix) && file.endsWith(".json"))
     .sort((a, b) => b.localeCompare(a));

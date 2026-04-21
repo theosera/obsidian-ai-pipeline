@@ -48,7 +48,8 @@ function flattenPages(pages: Awaited<ReturnType<XApiClient["getBookmarksAll"]>>)
   for (const page of pages) {
     const authorMap = new Map((page.includes?.users ?? []).map((u) => [u.id, u]));
     for (const post of page.data ?? []) {
-      results.push({ post, author: authorMap.get(post.author_id) });
+      const author = authorMap.get(post.author_id);
+      results.push(author ? { post, author } : { post });
     }
   }
   return results;
@@ -69,7 +70,7 @@ async function savePost(params: {
     childFolderName: folder,
     postDate: date,
     folderPostCount: params.folderPostCount,
-    mapping: params.mapping
+    ...(params.mapping && { mapping: params.mapping })
   });
   await ensureDir(directory);
 
@@ -81,7 +82,7 @@ async function savePost(params: {
 
   const markdown = buildBookmarkMarkdown({
     post: params.item.post,
-    author: params.item.author,
+    ...(params.item.author && { author: params.item.author }),
     bookmarkFolder: folder,
     syncedAt: params.syncedAt
   });
@@ -135,7 +136,7 @@ async function run(): Promise<void> {
         await savePost({
           folderName: folder.name,
           item,
-          mapping,
+          ...(mapping && { mapping }),
           folderPostCount: items.length,
           syncedAt
         })
@@ -153,7 +154,7 @@ async function run(): Promise<void> {
         await savePost({
           folderName: "root",
           item,
-          mapping,
+          ...(mapping && { mapping }),
           folderPostCount: allItems.length,
           syncedAt
         })
@@ -179,7 +180,7 @@ async function run(): Promise<void> {
         childFolderName: result.folderName,
         postDate: new Date(),
         folderPostCount: folderCounts[result.folderName] ?? 0,
-        mapping
+        ...(mapping && { mapping })
       });
     await ensureDir(folderDir);
     const index = buildFolderIndexMarkdown({

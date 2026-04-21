@@ -19,6 +19,10 @@ interface PkceState {
 const repoRoot = path.resolve(process.cwd(), "../..");
 const config = loadEnvConfig(repoRoot);
 
+// Derive a single host value from the configured redirect URI
+const redirectUrl = new URL(config.xRedirectUri);
+const localAuthHost = redirectUrl.hostname;
+
 async function savePkceState(pkce: PkceState): Promise<void> {
   await writeJsonFile(config.pkceStatePath, pkce);
 }
@@ -52,7 +56,7 @@ const server = http.createServer(async (req, res) => {
       send(res, 400, "missing url");
       return;
     }
-    const url = new URL(req.url, `http://localhost:${config.localAuthPort}`);
+    const url = new URL(req.url, `http://${localAuthHost}:${config.localAuthPort}`);
 
     if (url.pathname === "/auth/login") {
       const pkce = createPkcePair();
@@ -124,7 +128,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(config.localAuthPort, "127.0.0.1", () => {
-  console.log(`Auth server running: http://localhost:${config.localAuthPort}`);
+server.listen(config.localAuthPort, localAuthHost, () => {
+  console.log(`Auth server running: http://${localAuthHost}:${config.localAuthPort}`);
   console.log("Open /auth/login to start OAuth2 PKCE flow");
 });
