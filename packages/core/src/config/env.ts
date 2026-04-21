@@ -5,6 +5,7 @@ export interface EnvConfig {
   xClientId: string;
   xClientSecret?: string;
   xRedirectUri: string;
+  localAuthHost: string;
   xScope: string;
   xAuthBaseUrl: string;
   xApiBaseUrl: string;
@@ -25,33 +26,15 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function readPort(name: string, fallback: number): number {
-  const value = process.env[name];
-  if (!value) {
-    return fallback;
-  }
-  const trimmed = value.trim();
-  const port = Number(trimmed);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(
-      `Invalid port for ${name}: "${value}". Must be an integer between 1 and 65535.`
-    );
-  }
-  return port;
-}
-
-function safeFileSegment(value: string): string {
-  const trimmed = value.trim();
-  const safe = trimmed.replace(/[^A-Za-z0-9._-]/g, "_");
-  return safe || "codex";
-}
-
 export function loadEnvConfig(repoRoot = process.cwd()): EnvConfig {
   loadDotEnv(path.resolve(repoRoot, ".env"));
   const dataDir = path.resolve(repoRoot, "data");
+  const xRedirectUri = requireEnv("X_REDIRECT_URI");
+  const parsedRedirect = new URL(xRedirectUri);
   const config: EnvConfig = {
     xClientId: requireEnv("X_CLIENT_ID"),
-    xRedirectUri: requireEnv("X_REDIRECT_URI"),
+    xRedirectUri,
+    localAuthHost: parsedRedirect.hostname || "127.0.0.1",
     xScope:
       process.env.X_SCOPE ?? "tweet.read users.read bookmark.read offline.access",
     xAuthBaseUrl: process.env.X_AUTH_BASE_URL ?? "https://twitter.com/i/oauth2",
@@ -84,4 +67,19 @@ function loadDotEnv(envPath: string): void {
     const value = trimmed.slice(idx + 1).trim().replace(/^['"]|['"]$/g, "");
     process.env[key] = value;
   }
+}
+
+function readPort(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw.trim());
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error(`Invalid port for ${name}: ${raw}`);
+  }
+  return value;
+}
+
+function safeFileSegment(value: string): string {
+  const normalized = value.trim().replace(/[^A-Za-z0-9_-]+/g, "_");
+  return normalized.length > 0 ? normalized : "codex";
 }

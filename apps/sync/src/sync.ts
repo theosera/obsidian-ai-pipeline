@@ -48,8 +48,7 @@ function flattenPages(pages: Awaited<ReturnType<XApiClient["getBookmarksAll"]>>)
   for (const page of pages) {
     const authorMap = new Map((page.includes?.users ?? []).map((u) => [u.id, u]));
     for (const post of page.data ?? []) {
-      const author = authorMap.get(post.author_id);
-      results.push(author ? { post, author } : { post });
+      results.push({ post, author: authorMap.get(post.author_id) });
     }
   }
   return results;
@@ -70,7 +69,7 @@ async function savePost(params: {
     childFolderName: folder,
     postDate: date,
     folderPostCount: params.folderPostCount,
-    ...(params.mapping && { mapping: params.mapping })
+    mapping: params.mapping
   });
   await ensureDir(directory);
 
@@ -82,7 +81,7 @@ async function savePost(params: {
 
   const markdown = buildBookmarkMarkdown({
     post: params.item.post,
-    ...(params.item.author && { author: params.item.author }),
+    author: params.item.author,
     bookmarkFolder: folder,
     syncedAt: params.syncedAt
   });
@@ -136,7 +135,7 @@ async function run(): Promise<void> {
         await savePost({
           folderName: folder.name,
           item,
-          ...(mapping && { mapping }),
+          mapping,
           folderPostCount: items.length,
           syncedAt
         })
@@ -154,7 +153,7 @@ async function run(): Promise<void> {
         await savePost({
           folderName: "root",
           item,
-          ...(mapping && { mapping }),
+          mapping,
           folderPostCount: allItems.length,
           syncedAt
         })
@@ -172,24 +171,46 @@ async function run(): Promise<void> {
   });
 
   for (const result of folderResults) {
-    const folderDir =
-      result.entries[0]?.directory ??
-      resolveXBookmarkSaveDirectory({
+    const groupedByDirectory = new Map<string, typeof result.entries>();
+    for (const entry of result.entries) {
+      const grouped = groupedByDirectory.get(entry.directory);
+      if (grouped) {
+        grouped.push(entry);
+      } else {
+        groupedByDirectory.set(entry.directory, [entry]);
+      }
+    }
+
+    if (groupedByDirectory.size === 0) {
+      const folderDir = resolveXBookmarkSaveDirectory({
         vaultPath: config.obsidianVaultPath,
         sourceRoot: config.xBookmarksRoot,
         childFolderName: result.folderName,
         postDate: new Date(),
         folderPostCount: folderCounts[result.folderName] ?? 0,
-        ...(mapping && { mapping })
+        mapping
       });
-    await ensureDir(folderDir);
-    const index = buildFolderIndexMarkdown({
-      folderName: result.folderName,
-      sourceRoot: config.xBookmarksRoot,
-      generatedAt: syncedAt,
-      posts: result.entries
-    });
-    await fs.writeFile(path.join(folderDir, "_index.md"), index, "utf-8");
+      await ensureDir(folderDir);
+      const index = buildFolderIndexMarkdown({
+        folderName: result.folderName,
+        sourceRoot: config.xBookmarksRoot,
+        generatedAt: syncedAt,
+        posts: []
+      });
+      await fs.writeFile(path.join(folderDir, "_index.md"), index, "utf-8");
+      continue;
+    }
+
+    for (const [folderDir, entries] of groupedByDirectory.entries()) {
+      await ensureDir(folderDir);
+      const index = buildFolderIndexMarkdown({
+        folderName: result.folderName,
+        sourceRoot: config.xBookmarksRoot,
+        generatedAt: syncedAt,
+        posts: entries
+      });
+      await fs.writeFile(path.join(folderDir, "_index.md"), index, "utf-8");
+    }
   }
 
   console.log(`Synced ${allItems.length} total bookmarks for @${me.username}`);

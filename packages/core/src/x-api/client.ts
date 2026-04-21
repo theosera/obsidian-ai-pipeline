@@ -43,8 +43,15 @@ export class XApiClient {
   async getBookmarkFolders(userId: string): Promise<XFolder[]> {
     const folders: XFolder[] = [];
     let token: string | undefined;
+    const seenTokens = new Set<string>();
+    const maxPages = 1000;
+    let pageCount = 0;
 
     do {
+      if (pageCount >= maxPages) {
+        throw new Error(`Bookmark folder pagination exceeded limit (${maxPages}).`);
+      }
+      pageCount += 1;
       const query = new URLSearchParams({
         max_results: BOOKMARK_FIELDS.maxResults
       });
@@ -57,7 +64,14 @@ export class XApiClient {
         query
       );
       folders.push(...(payload.data ?? []));
-      token = payload.meta?.next_token;
+      const nextToken = payload.meta?.next_token;
+      if (nextToken && seenTokens.has(nextToken)) {
+        throw new Error("Bookmark folder pagination repeated a next_token. Stopping to avoid loop.");
+      }
+      if (nextToken) {
+        seenTokens.add(nextToken);
+      }
+      token = nextToken;
     } while (token);
 
     return folders;
