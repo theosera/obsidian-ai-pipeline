@@ -27,9 +27,23 @@ async function loadPkceState(): Promise<PkceState> {
   return readJsonFile<PkceState>(config.pkceStatePath);
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function send(res: http.ServerResponse, status: number, message: string): void {
-  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
   res.end(message);
+}
+
+function sendHtml(res: http.ServerResponse, status: number, html: string): void {
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(html);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -38,7 +52,7 @@ const server = http.createServer(async (req, res) => {
       send(res, 400, "missing url");
       return;
     }
-    const url = new URL(req.url, `http://localhost:${config.localAuthPort}`);
+    const url = new URL(req.url, `http://${config.localAuthHost}:${config.localAuthPort}`);
 
     if (url.pathname === "/auth/login") {
       const pkce = createPkcePair();
@@ -85,19 +99,19 @@ const server = http.createServer(async (req, res) => {
 
       const client = new XApiClient(config, tokens);
       const me = await client.getMe();
-      send(
+      sendHtml(
         res,
         200,
-        `<h1>Auth Success</h1><p>User: ${me.name} (@${me.username})</p><p>tokens saved: ${config.tokensPath}</p>`
+        `<h1>Auth Success</h1><p>User: ${escapeHtml(me.name)} (@${escapeHtml(me.username)})</p><p>tokens saved: ${escapeHtml(config.tokensPath)}</p>`
       );
       return;
     }
 
     if (url.pathname === "/") {
-      send(
+      sendHtml(
         res,
         200,
-        `<h1>X Auth Server</h1><p><a href=\"/auth/login\">Login with X</a></p><p>Redirect URI: ${config.xRedirectUri}</p>`
+        `<h1>X Auth Server</h1><p><a href=\"/auth/login\">Login with X</a></p><p>Redirect URI: ${escapeHtml(config.xRedirectUri)}</p>`
       );
       return;
     }
@@ -105,11 +119,12 @@ const server = http.createServer(async (req, res) => {
     send(res, 404, `Not found: ${url.pathname}`);
   } catch (error) {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    send(res, 500, `<pre>${message}</pre>`);
+    console.error(message);
+    send(res, 500, "Internal server error");
   }
 });
 
-server.listen(config.localAuthPort, () => {
-  console.log(`Auth server running: http://localhost:${config.localAuthPort}`);
+server.listen(config.localAuthPort, config.localAuthHost, () => {
+  console.log(`Auth server running: http://${config.localAuthHost}:${config.localAuthPort}`);
   console.log("Open /auth/login to start OAuth2 PKCE flow");
 });

@@ -60,7 +60,7 @@ async function savePost(params: {
   mapping?: FolderMapping;
   folderPostCount: number;
   syncedAt: string;
-}): Promise<{ fileName: string; postId: string; authorDisplay: string; url: string }> {
+}): Promise<{ fileName: string; postId: string; authorDisplay: string; url: string; directory: string }> {
   const folder = params.folderName || "root";
   const date = new Date(params.item.post.created_at || new Date().toISOString());
   const directory = resolveXBookmarkSaveDirectory({
@@ -91,7 +91,8 @@ async function savePost(params: {
     fileName,
     postId: params.item.post.id,
     authorDisplay: `${authorName} (@${authorUsername})`,
-    url: `https://x.com/${authorUsername}/status/${params.item.post.id}`
+    url: `https://x.com/${authorUsername}/status/${params.item.post.id}`,
+    directory
   };
 }
 
@@ -112,7 +113,16 @@ async function run(): Promise<void> {
 
   const folders = await client.getBookmarkFolders(me.id);
   const folderCounts: Record<string, number> = {};
-  const folderResults: Array<{ folderName: string; entries: Array<{ fileName: string; postId: string; authorDisplay: string; url: string }> }> = [];
+  const folderResults: Array<{
+    folderName: string;
+    entries: Array<{
+      fileName: string;
+      postId: string;
+      authorDisplay: string;
+      url: string;
+      directory: string;
+    }>;
+  }> = [];
 
   for (const folder of folders) {
     const pages = await client.getBookmarksByFolder(me.id, folder.id);
@@ -161,21 +171,46 @@ async function run(): Promise<void> {
   });
 
   for (const result of folderResults) {
-    const folderDir = resolveXBookmarkSaveDirectory({
-      vaultPath: config.obsidianVaultPath,
-      sourceRoot: config.xBookmarksRoot,
-      childFolderName: result.folderName,
-      postDate: new Date(),
-      folderPostCount: folderCounts[result.folderName] ?? 0,
-      mapping
-    });
-    const index = buildFolderIndexMarkdown({
-      folderName: result.folderName,
-      sourceRoot: config.xBookmarksRoot,
-      generatedAt: syncedAt,
-      posts: result.entries
-    });
-    await fs.writeFile(path.join(folderDir, "_index.md"), index, "utf-8");
+    const groupedByDirectory = new Map<string, typeof result.entries>();
+    for (const entry of result.entries) {
+      const grouped = groupedByDirectory.get(entry.directory);
+      if (grouped) {
+        grouped.push(entry);
+      } else {
+        groupedByDirectory.set(entry.directory, [entry]);
+      }
+    }
+
+    if (groupedByDirectory.size === 0) {
+      const folderDir = resolveXBookmarkSaveDirectory({
+        vaultPath: config.obsidianVaultPath,
+        sourceRoot: config.xBookmarksRoot,
+        childFolderName: result.folderName,
+        postDate: new Date(),
+        folderPostCount: folderCounts[result.folderName] ?? 0,
+        mapping
+      });
+      await ensureDir(folderDir);
+      const index = buildFolderIndexMarkdown({
+        folderName: result.folderName,
+        sourceRoot: config.xBookmarksRoot,
+        generatedAt: syncedAt,
+        posts: []
+      });
+      await fs.writeFile(path.join(folderDir, "_index.md"), index, "utf-8");
+      continue;
+    }
+
+    for (const [folderDir, entries] of groupedByDirectory.entries()) {
+      await ensureDir(folderDir);
+      const index = buildFolderIndexMarkdown({
+        folderName: result.folderName,
+        sourceRoot: config.xBookmarksRoot,
+        generatedAt: syncedAt,
+        posts: entries
+      });
+      await fs.writeFile(path.join(folderDir, "_index.md"), index, "utf-8");
+    }
   }
 
   console.log(`Synced ${allItems.length} total bookmarks for @${me.username}`);

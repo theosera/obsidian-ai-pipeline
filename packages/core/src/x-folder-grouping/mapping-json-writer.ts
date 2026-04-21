@@ -38,3 +38,14 @@ export async function writeProposalData(params: {
   await writeJsonFile(filePath, params.analysis);
   return filePath;
 }
+
+function safeAnalysisFileName(fileName?: string): string {
+  const fallback = "x_folder_grouping_proposal_data.json";
+  const raw = (fileName ?? fallback).trim();
+  const base = path.basename(raw);
+  if (!base || base === "." || base === "..") {
+    return fallback;
+  }
+  const normalized = base.replace(/[^A-Za-z0-9._-]/g, "_");
+  return normalized || fallback;
+}
