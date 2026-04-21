@@ -31,6 +31,7 @@ export function loadEnvConfig(repoRoot = process.cwd()): EnvConfig {
   const dataDir = path.resolve(repoRoot, "data");
   const xRedirectUri = requireEnv("X_REDIRECT_URI");
   const parsedRedirect = new URL(xRedirectUri);
+  const fallbackPort = parsedRedirect.port ? Number(parsedRedirect.port) : 3838;
   const config: EnvConfig = {
     xClientId: requireEnv("X_CLIENT_ID"),
     xRedirectUri,
@@ -39,13 +40,21 @@ export function loadEnvConfig(repoRoot = process.cwd()): EnvConfig {
       process.env.X_SCOPE ?? "tweet.read users.read bookmark.read offline.access",
     xAuthBaseUrl: process.env.X_AUTH_BASE_URL ?? "https://twitter.com/i/oauth2",
     xApiBaseUrl: process.env.X_API_BASE_URL ?? "https://api.x.com",
-    localAuthPort: Number(process.env.AUTH_PORT ?? "3838"),
-    tokensPath: process.env.TOKENS_PATH ?? path.join(dataDir, "tokens.json"),
-    pkceStatePath: process.env.PKCE_STATE_PATH ?? path.join(dataDir, "pkce_state.json"),
+    localAuthPort: readPort("AUTH_PORT", fallbackPort),
+    tokensPath: resolvePathFromRepo(
+      repoRoot,
+      process.env.TOKENS_PATH,
+      path.join(dataDir, "tokens.json")
+    ),
+    pkceStatePath: resolvePathFromRepo(
+      repoRoot,
+      process.env.PKCE_STATE_PATH,
+      path.join(dataDir, "pkce_state.json")
+    ),
     obsidianVaultPath: requireEnv("OBSIDIAN_VAULT_PATH"),
     xBookmarksRoot: process.env.X_BOOKMARKS_ROOT ?? "Clippings/X-Bookmarks-codex",
     sourceRoot: process.env.SOURCE_ROOT ?? "Clippings/X-Bookmarks-codex",
-    proposalPrefix: process.env.PROPOSAL_PREFIX ?? "codex"
+    proposalPrefix: safeFileSegment(process.env.PROPOSAL_PREFIX ?? "codex")
   };
   const secret = process.env.X_CLIENT_SECRET;
   if (secret) {
@@ -84,17 +93,8 @@ function safeFileSegment(value: string): string {
   return normalized.length > 0 ? normalized : "codex";
 }
 
-function loadDotEnv(envPath: string): void {
-  if (!fs.existsSync(envPath)) return;
-  const raw = fs.readFileSync(envPath, "utf-8");
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const idx = trimmed.indexOf("=");
-    if (idx <= 0) continue;
-    const key = trimmed.slice(0, idx).trim();
-    if (process.env[key] !== undefined) continue;
-    const value = trimmed.slice(idx + 1).trim().replace(/^['"]|['"]$/g, "");
-    process.env[key] = value;
-  }
+function resolvePathFromRepo(repoRoot: string, rawPath: string | undefined, fallback: string): string {
+  if (!rawPath) return fallback;
+  if (path.isAbsolute(rawPath)) return rawPath;
+  return path.resolve(repoRoot, rawPath);
 }

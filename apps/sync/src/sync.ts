@@ -22,7 +22,7 @@ import {
 
 interface FlattenedPost {
   post: XPost;
-  author?: XAuthor;
+  author?: XAuthor | undefined;
 }
 
 const repoRoot = path.resolve(process.cwd(), "../..");
@@ -46,7 +46,9 @@ async function ensureValidTokens(tokens: XTokenSet): Promise<XTokenSet> {
 function flattenPages(pages: Awaited<ReturnType<XApiClient["getBookmarksAll"]>>): FlattenedPost[] {
   const results: FlattenedPost[] = [];
   for (const page of pages) {
-    const authorMap = new Map((page.includes?.users ?? []).map((u) => [u.id, u]));
+    const authorMap = new Map<string, XAuthor>(
+      (page.includes?.users ?? []).map((u: XAuthor) => [u.id, u] as const)
+    );
     for (const post of page.data ?? []) {
       results.push({ post, author: authorMap.get(post.author_id) });
     }
@@ -57,7 +59,7 @@ function flattenPages(pages: Awaited<ReturnType<XApiClient["getBookmarksAll"]>>)
 async function savePost(params: {
   folderName: string;
   item: FlattenedPost;
-  mapping?: FolderMapping;
+  mapping?: FolderMapping | undefined;
   folderPostCount: number;
   syncedAt: string;
 }): Promise<{ fileName: string; postId: string; authorDisplay: string; url: string; directory: string }> {
