@@ -1,9 +1,12 @@
 # Dependencies
 node_modules/
 *.zip
+dist/
 
 # Environment & Config
 .env
+.env.*
+!.env.example
 pipeline_config.json
 
 # Cache & Logs
@@ -14,9 +17,28 @@ logs/
 .chromium-data/
 *.txt
 
+# X bookmarks SQLite metadata cache (個人データ。.md が source of truth)
+x_bookmarks.db
+x_bookmarks.db-*
+*.corrupted_*
+
+# X API OAuth tokens (機密データ) — Claude 側 (vault 配下) + Codex 側 (repo 配下)
+x_tokens.json
+secrets/
+data/tokens.json
+data/pkce_state.json
+
+# Codex 側 generated analysis artifacts
+analysis/x_folder_grouping_proposal_data.json
+analysis/x_folder_stats.json
+
 # Chrome Extension build output
 chrome-extension/dist/
 chrome-extension/node_modules/
+
+# pnpm workspace 配下の nested node_modules
+apps/*/node_modules/
+packages/*/node_modules/
 
 # Ignore all dotfiles and dotfolders as instructed
 .*
