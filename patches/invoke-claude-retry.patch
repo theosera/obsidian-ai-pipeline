@@ -1,0 +1,627 @@
+From 76b79fce4e0f002339c82a94b7b2ae6bcb04a334 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 21 Apr 2026 01:25:00 +0000
+Subject: [PATCH 1/2] feat(claude_cli): auto-retry on transient network errors
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When a claude -p invocation fails with a known-transient pattern
+(Stream idle timeout, Unable to connect to API, ConnectionRefused,
+FailedToOpenSocket, 5xx, etc.), `invoke_claude` now retries up to 3
+times with exponential backoff (30s → 60s → 120s). This absorbs the
+common "laptop resumed from sleep, network not yet up" scenario
+without forcing a full Stage 01-04 rerun.
+
+Non-transient failures (subprocess timeout, bad JSON, auth errors)
+bypass the retry loop and propagate immediately.
+
+ClaudeCliError now carries a `transient: bool` flag for callers that
+want to distinguish. Defaults: max_retries=3, retry_base_delay=30s.
+Set max_retries=0 to disable.
+
+https://claude.ai/code/session_01RxnSjdy7R88RZt5uMdjbBH
+---
+ pipeline_youtube/providers/claude_cli.py | 133 +++++++++++-
+ tests/test_claude_cli_retry.py           | 264 +++++++++++++++++++++++
+ 2 files changed, 393 insertions(+), 4 deletions(-)
+ create mode 100644 tests/test_claude_cli_retry.py
+
+diff --git a/pipeline_youtube/providers/claude_cli.py b/pipeline_youtube/providers/claude_cli.py
+index b747ac9..42c5377 100644
+--- a/pipeline_youtube/providers/claude_cli.py
++++ b/pipeline_youtube/providers/claude_cli.py
+@@ -45,6 +45,8 @@ import os
+ import shlex
+ import shutil
+ import subprocess
++import sys
++import time
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any
+@@ -152,10 +154,45 @@ class ClaudeResponse:
+ 
+ 
+ class ClaudeCliError(RuntimeError):
+-    """Raised when `claude -p` exits non-zero or returns unparseable JSON."""
++    """Raised when `claude -p` exits non-zero or returns unparseable JSON.
+ 
++    `transient=True` marks errors that are worth retrying (network blips,
++    stream idle timeouts, temporary API unavailability). The retry loop
++    in `invoke_claude` checks this flag.
++    """
+ 
+-def invoke_claude(
++    def __init__(self, msg: str, *, transient: bool = False) -> None:
++        super().__init__(msg)
++        self.transient = transient
++
++
++# Substrings in the claude CLI's `result` field (or stderr) that indicate
++# a transient, retry-safe failure. Matching is literal-substring to stay
++# robust against minor wording changes across CLI versions.
++_TRANSIENT_ERROR_PATTERNS = (
++    "Stream idle timeout",
++    "Unable to connect to API",
++    "ConnectionRefused",
++    "FailedToOpenSocket",
++    "Connection reset",
++    "ECONNRESET",
++    "ETIMEDOUT",
++    "ENETUNREACH",
++    "getaddrinfo EAI",
++    "socket hang up",
++    "503 Service Unavailable",
++    "502 Bad Gateway",
++    "504 Gateway Timeout",
++    "overloaded_error",
++)
++
++
++def _is_transient_error_text(text: str) -> bool:
++    """Return True if any known transient-error substring is present."""
++    return any(p in text for p in _TRANSIENT_ERROR_PATTERNS)
++
++
++def _invoke_claude_once(
+     prompt: str,
+     *,
+     append_system_prompt: str | None = None,
+@@ -267,6 +304,8 @@ def invoke_claude(
+             env=env,
+         )
+     except subprocess.TimeoutExpired as e:
++        # Subprocess timeout is NOT transient — we already waited the full
++        # budget. Don't mark transient=True to avoid pointless retries.
+         raise ClaudeCliError(f"claude -p timeout after {timeout}s (cmd: {shlex.join(cmd)})") from e
+     except FileNotFoundError as e:
+         raise ClaudeCliError(
+@@ -274,10 +313,19 @@ def invoke_claude(
+             "Re-run after `claude login` or set PIPELINE_YOUTUBE_CLAUDE_BIN."
+         ) from e
+ 
++    # When claude CLI hits a network error it still writes a JSON body to
++    # stdout describing the failure (is_error=true + a "result" string),
++    # while the process itself exits with code 1. So check stdout FIRST
++    # for a transient-error signature before falling back to the generic
++    # returncode-nonzero path.
++    combined_output = (result.stdout or "") + "\n" + (result.stderr or "")
++    transient = _is_transient_error_text(combined_output)
++
+     if result.returncode != 0:
+         raise ClaudeCliError(
+             f"claude -p exited {result.returncode}: "
+-            f"stderr={result.stderr[:500]!r} stdout={result.stdout[:200]!r}"
++            f"stderr={result.stderr[:500]!r} stdout={result.stdout[:200]!r}",
++            transient=transient,
+         )
+ 
+     try:
+@@ -288,9 +336,11 @@ def invoke_claude(
+         ) from e
+ 
+     if data.get("is_error"):
++        result_text = str(data.get("result", ""))
+         raise ClaudeCliError(
+             f"claude -p returned is_error=true: "
+-            f"subtype={data.get('subtype')!r} result={str(data.get('result'))[:500]!r}"
++            f"subtype={data.get('subtype')!r} result={result_text[:500]!r}",
++            transient=_is_transient_error_text(result_text),
+         )
+ 
+     usage = data.get("usage") or {}
+@@ -308,3 +358,78 @@ def invoke_claude(
+         stop_reason=data.get("stop_reason"),
+         raw=data,
+     )
++
++
++# Defaults for the retry loop. Three retries with exponential backoff
++# (30s → 60s → 120s, max cumulative wait 210s) absorbs the common
++# "laptop resumed from sleep, network not yet up" scenario without
++# adding noticeable latency to a fully-healthy run.
++_DEFAULT_MAX_RETRIES = 3
++_DEFAULT_RETRY_BASE_DELAY = 30.0
++
++
++def invoke_claude(
++    prompt: str,
++    *,
++    append_system_prompt: str | None = None,
++    system_prompt: str | None = None,
++    model: str = "sonnet",
++    disallow_tools: bool = True,
++    timeout: int = 600,
++    resume_session: str | None = None,
++    persist_session: bool = False,
++    max_budget_usd: float | None = None,
++    extra_args: list[str] | None = None,
++    max_retries: int = _DEFAULT_MAX_RETRIES,
++    retry_base_delay: float = _DEFAULT_RETRY_BASE_DELAY,
++) -> ClaudeResponse:
++    """Call `claude -p` with automatic retry on transient network errors.
++
++    Wraps `_invoke_claude_once` in a retry loop for known-transient failure
++    modes (stream idle timeouts, connection refused, socket hang-ups, 5xx
++    responses). Other errors (subprocess timeout, bad JSON, auth issues)
++    bypass the loop and propagate immediately.
++
++    Parameters beyond those of `_invoke_claude_once`:
++
++    max_retries:
++        Maximum number of retries after the first attempt. Default 3 =
++        up to 4 total attempts.
++    retry_base_delay:
++        Seconds to sleep before the first retry. Doubles each subsequent
++        retry (30s → 60s → 120s by default). Set to 0 to disable waits
++        (tests).
++
++    Set `max_retries=0` to disable retry behavior entirely.
++    """
++    last_exc: ClaudeCliError | None = None
++    for attempt in range(max_retries + 1):
++        try:
++            return _invoke_claude_once(
++                prompt,
++                append_system_prompt=append_system_prompt,
++                system_prompt=system_prompt,
++                model=model,
++                disallow_tools=disallow_tools,
++                timeout=timeout,
++                resume_session=resume_session,
++                persist_session=persist_session,
++                max_budget_usd=max_budget_usd,
++                extra_args=extra_args,
++            )
++        except ClaudeCliError as e:
++            if not e.transient or attempt >= max_retries:
++                raise
++            last_exc = e
++            delay = retry_base_delay * (2**attempt)
++            sys.stderr.write(
++                f"[claude_cli retry {attempt + 1}/{max_retries}] "
++                f"transient error, sleeping {delay:.0f}s: {str(e)[:200]}\n"
++            )
++            sys.stderr.flush()
++            time.sleep(delay)
++
++    # Unreachable — the loop either returns or raises. Kept for the type
++    # checker and as a guard against future logic edits.
++    assert last_exc is not None
++    raise last_exc
+diff --git a/tests/test_claude_cli_retry.py b/tests/test_claude_cli_retry.py
+new file mode 100644
+index 0000000..798cbfe
+--- /dev/null
++++ b/tests/test_claude_cli_retry.py
+@@ -0,0 +1,264 @@
++"""Tests for the retry-on-transient-error logic in `invoke_claude`.
++
++These tests mock `subprocess.run` to simulate transient failures and
++verify that:
++
++1. Known transient error patterns trigger a retry.
++2. Non-transient errors propagate immediately (no retry).
++3. Retry gives up after `max_retries` and raises the last error.
++4. `max_retries=0` disables retry behavior (one attempt only).
++5. Exponential backoff is applied between retries.
++"""
++
++from __future__ import annotations
++
++import json
++import subprocess
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from pipeline_youtube.providers import claude_cli as claude_cli_mod
++from pipeline_youtube.providers.claude_cli import (
++    ClaudeCliError,
++    _is_transient_error_text,
++    invoke_claude,
++)
++
++_FAKE_CLAUDE_BIN = "/opt/test/bin/claude"
++
++
++@pytest.fixture(autouse=True)
++def _seed_resolved_claude_bin(monkeypatch):
++    monkeypatch.setattr(claude_cli_mod, "_CLAUDE_BIN", _FAKE_CLAUDE_BIN)
++    monkeypatch.setattr(claude_cli_mod, "_CLAUDE_VERSION", "claude 2.1.109")
++    yield
++    claude_cli_mod._reset_claude_binary_cache_for_tests()
++
++
++@pytest.fixture(autouse=True)
++def _fast_sleep(monkeypatch):
++    """Replace time.sleep with a no-op so retry tests run instantly."""
++    monkeypatch.setattr(claude_cli_mod.time, "sleep", lambda _s: None)
++
++
++def _completed(returncode: int = 0, stdout: str = "{}", stderr: str = "") -> MagicMock:
++    mock = MagicMock(spec=subprocess.CompletedProcess)
++    mock.returncode = returncode
++    mock.stdout = stdout
++    mock.stderr = stderr
++    return mock
++
++
++_SUCCESS = {
++    "type": "result",
++    "subtype": "success",
++    "is_error": False,
++    "result": "ok",
++    "session_id": "s1",
++    "usage": {"input_tokens": 1, "output_tokens": 1},
++}
++
++
++def _transient_payload(
++    msg: str = "API Error: Stream idle timeout - partial response received",
++) -> str:
++    return json.dumps(
++        {
++            "type": "result",
++            "subtype": "success",
++            "is_error": True,
++            "result": msg,
++            "session_id": "s_err",
++        }
++    )
++
++
++# =====================================================
++# Pattern matcher
++# =====================================================
++
++
++class TestTransientPatternMatcher:
++    @pytest.mark.parametrize(
++        "text",
++        [
++            "API Error: Stream idle timeout - partial response received",
++            "API Error: Unable to connect to API (ConnectionRefused)",
++            "API Error: Unable to connect to API (FailedToOpenSocket)",
++            "network: ECONNRESET",
++            "socket hang up",
++            "503 Service Unavailable",
++            "502 Bad Gateway",
++            "overloaded_error",
++        ],
++    )
++    def test_known_transient_matches(self, text: str):
++        assert _is_transient_error_text(text)
++
++    @pytest.mark.parametrize(
++        "text",
++        [
++            "authentication failed",
++            "invalid API key",
++            "context length exceeded",
++            "",
++        ],
++    )
++    def test_non_transient_does_not_match(self, text: str):
++        assert not _is_transient_error_text(text)
++
++
++# =====================================================
++# Retry behavior
++# =====================================================
++
++
++class TestRetryBehavior:
++    def test_transient_error_then_success(self):
++        """First call hits stream-idle-timeout, second succeeds."""
++        with patch("subprocess.run") as run:
++            run.side_effect = [
++                _completed(returncode=1, stdout=_transient_payload()),
++                _completed(returncode=0, stdout=json.dumps(_SUCCESS)),
++            ]
++            resp = invoke_claude("hi", retry_base_delay=0.0)
++
++        assert resp.text == "ok"
++        assert run.call_count == 2
++
++    def test_two_transient_errors_then_success(self):
++        with patch("subprocess.run") as run:
++            run.side_effect = [
++                _completed(returncode=1, stdout=_transient_payload("ConnectionRefused")),
++                _completed(returncode=1, stdout=_transient_payload("Stream idle timeout")),
++                _completed(returncode=0, stdout=json.dumps(_SUCCESS)),
++            ]
++            resp = invoke_claude("hi", retry_base_delay=0.0)
++
++        assert resp.text == "ok"
++        assert run.call_count == 3
++
++    def test_exhaust_retries_raises_final_error(self):
++        """After max_retries transient failures, raise the last one."""
++        with patch("subprocess.run") as run:
++            run.return_value = _completed(returncode=1, stdout=_transient_payload())
++            with pytest.raises(ClaudeCliError, match="Stream idle timeout"):
++                invoke_claude("hi", max_retries=2, retry_base_delay=0.0)
++
++        # 1 initial + 2 retries = 3 attempts
++        assert run.call_count == 3
++
++    def test_max_retries_zero_disables_retry(self):
++        """max_retries=0 means one attempt, never retry."""
++        with patch("subprocess.run") as run:
++            run.return_value = _completed(returncode=1, stdout=_transient_payload())
++            with pytest.raises(ClaudeCliError):
++                invoke_claude("hi", max_retries=0, retry_base_delay=0.0)
++
++        assert run.call_count == 1
++
++    def test_non_transient_error_propagates_immediately(self):
++        """Auth error / parse error etc. should NOT retry."""
++        payload = json.dumps(
++            {
++                "type": "result",
++                "subtype": "error",
++                "is_error": True,
++                "result": "authentication failed",
++                "session_id": "s_err",
++            }
++        )
++        with patch("subprocess.run") as run:
++            run.return_value = _completed(returncode=1, stdout=payload)
++            with pytest.raises(ClaudeCliError, match="authentication failed"):
++                invoke_claude("hi", max_retries=3, retry_base_delay=0.0)
++
++        assert run.call_count == 1
++
++    def test_subprocess_timeout_does_not_retry(self):
++        """subprocess.TimeoutExpired is permanent — we already waited the full budget."""
++        with patch("subprocess.run") as run:
++            run.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=30)
++            with pytest.raises(ClaudeCliError, match="timeout"):
++                invoke_claude("hi", timeout=30, max_retries=3, retry_base_delay=0.0)
++
++        assert run.call_count == 1
++
++    def test_invalid_json_does_not_retry(self):
++        """A broken JSON response is not a network issue — don't retry."""
++        with patch("subprocess.run") as run:
++            run.return_value = _completed(returncode=0, stdout="definitely not json")
++            with pytest.raises(ClaudeCliError, match="invalid JSON"):
++                invoke_claude("hi", max_retries=3, retry_base_delay=0.0)
++
++        assert run.call_count == 1
++
++    def test_exponential_backoff_between_retries(self):
++        """Sleep delays should double: 30 → 60 → 120."""
++        with (
++            patch("subprocess.run") as run,
++            patch.object(claude_cli_mod.time, "sleep") as sleep_mock,
++        ):
++            run.return_value = _completed(returncode=1, stdout=_transient_payload())
++            with pytest.raises(ClaudeCliError):
++                invoke_claude("hi", max_retries=3, retry_base_delay=30.0)
++
++        # 3 retries → 3 sleep calls
++        delays = [call.args[0] for call in sleep_mock.call_args_list]
++        assert delays == [30.0, 60.0, 120.0]
++
++    def test_retry_base_delay_override(self):
++        """Custom base delay should propagate through exponential formula."""
++        with (
++            patch("subprocess.run") as run,
++            patch.object(claude_cli_mod.time, "sleep") as sleep_mock,
++        ):
++            run.return_value = _completed(returncode=1, stdout=_transient_payload())
++            with pytest.raises(ClaudeCliError):
++                invoke_claude("hi", max_retries=2, retry_base_delay=5.0)
++
++        delays = [call.args[0] for call in sleep_mock.call_args_list]
++        assert delays == [5.0, 10.0]
++
++
++# =====================================================
++# Transient flag on ClaudeCliError
++# =====================================================
++
++
++class TestTransientFlag:
++    def test_transient_flag_set_on_stream_idle(self):
++        """_invoke_claude_once should mark transient=True for known patterns."""
++        with patch("subprocess.run") as run:
++            run.return_value = _completed(returncode=1, stdout=_transient_payload())
++            # Use max_retries=0 so we see the bare exception
++            with pytest.raises(ClaudeCliError) as exc_info:
++                invoke_claude("hi", max_retries=0)
++
++        assert exc_info.value.transient is True
++
++    def test_transient_flag_not_set_on_auth_error(self):
++        payload = json.dumps(
++            {
++                "type": "result",
++                "subtype": "error",
++                "is_error": True,
++                "result": "authentication failed: bad token",
++                "session_id": "s_err",
++            }
++        )
++        with patch("subprocess.run") as run:
++            run.return_value = _completed(returncode=1, stdout=payload)
++            with pytest.raises(ClaudeCliError) as exc_info:
++                invoke_claude("hi", max_retries=0)
++
++        assert exc_info.value.transient is False
++
++    def test_transient_flag_not_set_on_timeout(self):
++        with patch("subprocess.run") as run:
++            run.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=30)
++            with pytest.raises(ClaudeCliError) as exc_info:
++                invoke_claude("hi", timeout=30, max_retries=0)
++
++        assert exc_info.value.transient is False
+-- 
+2.43.0
+
+
+From 9b25f1d1e4f93605687e3b9828f9bc18e8e42450 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 21 Apr 2026 02:10:39 +0000
+Subject: [PATCH 2/2] =?UTF-8?q?docs:=20update=20README=20with=20dynamic=20?=
+ =?UTF-8?q?timeout,=20retry,=20and=20=CE=B2=20reflexion?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Agent Teams: γ→deterministic coverage + β reflexion retry
+- Dynamic synthesis timeout (auto formula + CLI/config override)
+- Preflight estimation logging (post-fetch + pre-Stage05)
+- Transient error auto-retry (30s→60s→120s exponential backoff)
+- New CLI flags: --synthesis-timeout, --capture-backend
+- New config.json keys: synthesis_timeout, capture_backend
+- Test count 352→506, new test files documented
+- Troubleshooting: network retry, iCloud permissions, timeout
+
+https://claude.ai/code/session_01RxnSjdy7R88RZt5uMdjbBH
+---
+ README.md | 40 +++++++++++++++++++++++++++++++++-------
+ 1 file changed, 33 insertions(+), 7 deletions(-)
+
+diff --git a/README.md b/README.md
+index 6276283..81f81cc 100644
+--- a/README.md
++++ b/README.md
+@@ -13,7 +13,7 @@ NotebookLM に動画 URL を 1 本ずつ手動で貼り付けて要約を Obsidi
+ - **04_Learning_Material**: 上記 3 工程を「時系列 → キャプチャ画像 → 要点」3 点セットでテーマ単位に再構成
+ 
+ **プレイリスト単位 (05)**
+-- **05_Synthesis**: プレイリストの動画数 ≥ 3 本の時、Agent Teams (α/β/γ/leader) で 04 全体を横断統合し、章別ハンズオン md 群 + 00_MOC.md + 重複度スコア JSON を出力する
++- **05_Synthesis**: プレイリストの動画数 ≥ 3 本の時、Agent Teams (α→β→Leader) で 04 全体を横断統合し、章別ハンズオン md 群 + 00_MOC.md + 重複度スコア JSON を出力する。カバレッジ検証は Python 集合演算で決定論的に実施し、β の漏れトピックは Reflexion リトライで自己修復する
+ 
+ AI 呼び出し (stage 02/04/05) は **`claude -p` headless CLI を subprocess で呼び出し**、Claude Pro/Max の OAuth セッションを使います。`ANTHROPIC_API_KEY` は不要。`claude login` 済であればそのまま動作します。
+ 
+@@ -46,10 +46,12 @@ cp config.example.json config.json
+ # config.json で設定できるフィールド:
+ #   - vault_root (必須): Obsidian Vault のルートパス
+ #   - models (任意): ステージ/エージェント別モデル
+-#     {"stage_02","stage_04","alpha","beta","gamma","leader"} のキーを任意に設定。
+-#     未設定キーは CLI の --model にフォールバック。
++#     {"stage_02","stage_04","alpha","beta","leader"} のキーを任意に設定。
++#     未設定キーは CLI の --model にフォールバック。"gamma" は後方互換で受理するが無視。
+ #   - filler_words (任意): Stage 02 の transcript から除去する日本語フィラー語リスト。
+ #     未設定ならデフォルト (えー/えっと/あのー/まあ/なんか 等) を使用。
++#   - capture_backend (任意): "host" (デフォルト) または "docker"
++#   - synthesis_timeout (任意): "auto" (デフォルト, 300 + 60×動画数) または秒数の整数
+ # 他のノブ (capture-format / concurrency / min-playlist-size / max-chapters 等) は
+ # 都度変わる運用値なので CLI フラグで渡す設計。
+ ```
+@@ -72,8 +74,14 @@ uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PL
+ # キャプチャフォーマット指定 (デフォルトは auto = 可能なら WebP)
+ uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx" --capture-format gif
+ 
++# Stage 05 タイムアウトを固定指定 (デフォルトは auto = 300 + 60×動画数)
++uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx" --synthesis-timeout 3600
++
+ # 単一動画のみ (05 Synthesis は自動スキップ)
+ uv run python -m pipeline_youtube.main "https://www.youtube.com/watch?v=VIDEO_ID"
++
++# macOS で長時間実行する場合は caffeinate で sleep 防止
++caffeinate -i uv run python -m pipeline_youtube.main "https://www.youtube.com/playlist?list=PLxxx"
+ ```
+ 
+ ### CLI フラグ一覧
+@@ -92,6 +100,8 @@ uv run python -m pipeline_youtube.main "https://www.youtube.com/watch?v=VIDEO_ID
+ | `--config PATH` | 代替 `config.json` パス |
+ | `--stop-after-capture` | Phase 1 実行 (01〜03 のみ)。Obsidian で 02_Summary.md を校閲して `reviewed: true` に書き換えてから Phase 3 を回す運用 |
+ | `--resume-reviewed` | Phase 3 実行。`reviewed: true` が付いた動画だけ Stage 04〜05 を走らせる |
++| `--capture-backend {host,docker}` | Stage 03 実行バックエンド。`docker` はハードニングしたコンテナで yt-dlp/ffmpeg を隔離実行 |
++| `--synthesis-timeout N` | Stage 05 の per-agent タイムアウト (秒)。未指定 = auto (`300 + 60 × 動画数`) |
+ 
+ 詳細は [`docs/cli.md`](docs/cli.md) と [`docs/sample-run.md`](docs/sample-run.md) を参照。
+ 
+@@ -127,20 +137,30 @@ Permanent Note/08_YouTube学習/
+ 
+ ## Stage 05 Agent Teams の内部構造
+ 
+-Stage 05 はプレイリストに 3 本以上の動画があるときだけ自動起動する。4 つの Claude エージェントを逐次呼び出す:
++Stage 05 はプレイリストに 3 本以上の動画があるときだけ自動起動する。3 つの Claude エージェント + 決定論的カバレッジ検証を逐次実行する:
+ 
+ | ロール | 役割 | 入力 | 出力 |
+ |---|---|---|---|
+ | **α** (alpha) | トピック抽出 + 重複度スコア付与 | 全動画の 04 md 本文 | `topics[]` JSON (topic_id / label / source_videos / duplication_count / category) |
+ | **β** (beta) | 章立て設計 (章数を動的決定) | α の topics | `chapters[]` JSON (index / label / category / topic_ids) |
+-| **γ** (gamma) | カバレッジ検証 | α + β | `CoverageReport` (covered / missing / notes) |
+-| **leader** | 章別 md + MOC 生成 | α + β + γ + 04 md 本文 | `{moc, chapters[]}` JSON |
++| **coverage** | カバレッジ検証 (Python 集合演算) | α + β | `CoverageReport` (covered / missing) — LLM 不要 |
++| **β retry** | Reflexion リトライ (漏れがあれば 1 回) | β + missing IDs | 修正版 `chapters[]` |
++| **leader** | 章別 md + MOC 生成 | α + β + coverage + 04 md 本文 | `{moc, chapters[]}` JSON |
+ 
++- **カバレッジ検証**: 旧 γ エージェント (LLM) を Python 集合演算 (`compute_coverage`) に置換。α の topic_ids と β の chapter.topic_ids の set diff でミクロ秒で結果が出る。漏れがあれば β に missing IDs をフィードバックして 1 回リトライ (確定的自己修復)。
++- **動的タイムアウト**: 各エージェントのタイムアウトは `300 + 60 × 動画数` で自動計算。CLI `--synthesis-timeout` または config.json `synthesis_timeout` で固定値に上書き可。β は入力が軽量なため最大 600s にキャップ。
++- **プリフライトログ**: Stage 05 開始前に入力充填率・トランケーション有無・タイムアウト値をログ出力。プレイリスト fetch 直後にも早期見積もりを表示。
+ - **重複度カテゴリ**: `duplication_count >= 3` → `core` (章冒頭 `> [!important]`)、`== 2` → `supporting` (本文中で **太字**)、`== 1` → `unique` (通常記述)
+ - **章数**: β が動的に決定 (3 章以上を目安、内容に応じて増減)
+ - **章本文の画像埋め込み**: leader は、概念理解に特に有用な箇所だけに絞って `![[...webp]]` を挿入する (各章 0〜3 枚目安)。ファイル名は入力の 04 md 本文にある記法からそのままコピー (新規ファイル名の創作は禁止)。
+ - **プロンプトインジェクション対策**: 全ロール入力は `<untrusted_content>` でラップし、`sanitize_untrusted_text` を経由。
+ 
++## 耐障害性
++
++- **Transient エラー自動リトライ** — `invoke_claude` は `Stream idle timeout` / `ConnectionRefused` / `FailedToOpenSocket` / 5xx 等の既知のネットワーク一時障害を検出し、最大 3 回まで指数バックオフ (30s → 60s → 120s) でリトライする。laptop の sleep 復帰後の接続断や API の瞬断に対応。
++- **Checkpoint リカバリ** — Stage 04 完了済みの動画は再実行時に自動スキップ。途中で Ctrl+C しても完了分は保持される。
++- **動的タイムアウト** — Stage 05 のタイムアウトが動画数に応じて自動伸長 (`300 + 60 × N`)。大規模プレイリストでの timeout 失敗を防止。
++
+ ## セキュリティ層
+ 
+ - **パストラバーサル防御 (7 段階)** — `path_safety.py:ensure_safe_path`
+@@ -170,7 +190,7 @@ uv run mypy pipeline_youtube/ --ignore-missing-imports
+ 
+ ```bash
+ uv run pytest tests/ -q
+-# 352 passed (2026-04-18 時点)
++# 506 passed (2026-04-21 時点)
+ ```
+ 
+ 主な対象:
+@@ -180,6 +200,9 @@ uv run pytest tests/ -q
+ - `test_transcript_*` — 字幕フォールバック
+ - `test_scripts_stage.py` / `test_summary_stage.py` / `test_capture_stage.py` / `test_learning_stage.py` — stage 01〜04
+ - `test_synthesis_scoring.py` / `test_synthesis_agents.py` / `test_synthesis_stage.py` — stage 05 Agent Teams (claude_cli モック)
++- `test_synthesis_timeout.py` — 動的タイムアウト計算 + プリフライトログ + config.json 読み込み
++- `test_claude_cli_retry.py` — transient エラーリトライ (パターン検出 / 指数バックオフ / 非 transient 即時伝播)
++- `test_capture_backend.py` — Docker 隔離バックエンド (コマンド形状 / パス変換 / プリフライト)
+ 
+ ## トラブルシューティング
+ 
+@@ -192,6 +215,9 @@ uv run pytest tests/ -q
+ | stage 05 が `[skip] only N videos succeeded` | プレイリストの stage 04 成功数が `--min-playlist-size` (デフォルト 3) 未満。成功数を増やすか `--min-playlist-size 2` で緩和 |
+ | Templater が 04 の md を空ファイルと誤認してリネーム | stage 04 は placeholder を作らず直接書き込むよう設計済み。該当フォルダの Templater テンプレート指定を解除するのが確実 |
+ | `--synthesis-only` で `04 folder not found` | 指定日付のフォルダに該当プレイリストの 04 md が存在しないときに出る。まず 01〜04 を通す |
++| `Stream idle timeout` / `ConnectionRefused` で動画が FAIL | ネットワーク一時障害。リトライ機構 (3 回、計 210s) で吸収するが、laptop sleep 中の長時間断はリトライでもカバーできない。`caffeinate -i` で sleep 防止して再実行 |
++| Stage 05 が timeout | `--synthesis-timeout 3600` で延長するか、auto (300+60×動画数) が適切か確認。50 本超は auto で 3300s |
++| iCloud `Operation not permitted` | macOS のプライバシー設定 → フルディスクアクセスにターミナルアプリを追加 → ターミナル再起動 |
+ 
+ ## 関連ドキュメント
+ 
+-- 
+2.43.0
+
