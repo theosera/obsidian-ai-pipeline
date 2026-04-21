@@ -1,5 +1,6 @@
 {
-  "name": "obsidian-clipper-pipeline",
+  "name": "obsidian-ai-pipeline",
+  "private": true,
   "version": "1.0.0",
   "packageManager": "pnpm@10.33.0",
   "engines": {
@@ -12,7 +13,13 @@
   "scripts": {
     "start": "tsx index.ts",
     "sync-rules": "tsx sync-rules.ts",
-    "test": "tsx test_runner.ts"
+    "test": "tsx test_runner.ts",
+    "dev:auth": "pnpm --filter auth dev",
+    "sync": "pnpm --filter sync sync",
+    "propose:grouping": "pnpm --filter sync propose:grouping",
+    "approve:grouping": "pnpm --filter sync approve:grouping",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
