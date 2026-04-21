@@ -41,10 +41,26 @@ export class XApiClient {
   }
 
   async getBookmarkFolders(userId: string): Promise<XFolder[]> {
-    const payload = await this.request<{ data?: XFolder[] }>(
-      `/2/users/${userId}/bookmarks/folders`
-    );
-    return payload.data ?? [];
+    const folders: XFolder[] = [];
+    let token: string | undefined;
+
+    do {
+      const query = new URLSearchParams({
+        max_results: BOOKMARK_FIELDS.maxResults
+      });
+      if (token) {
+        query.set("pagination_token", token);
+      }
+
+      const payload = await this.request<{ data?: XFolder[]; meta?: { next_token?: string } }>(
+        `/2/users/${userId}/bookmarks/folders`,
+        query
+      );
+      folders.push(...(payload.data ?? []));
+      token = payload.meta?.next_token;
+    } while (token);
+
+    return folders;
   }
 
   async getBookmarksAll(userId: string): Promise<XBookmarkPage[]> {

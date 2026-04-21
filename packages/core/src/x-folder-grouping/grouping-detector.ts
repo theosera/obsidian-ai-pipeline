@@ -15,7 +15,9 @@ interface TokenMap {
 
 function parentFolderNameFromToken(token: string): string {
   if (!token) return "Group";
-  return token.length <= 3 ? token.toUpperCase() : token[0].toUpperCase() + token.slice(1);
+  if (token.length <= 3) return token.toUpperCase();
+  const [first, ...rest] = token;
+  return `${first?.toUpperCase() ?? ""}${rest.join("")}`;
 }
 
 function detectForPosition(folderNames: string[], matchType: MatchType): {
@@ -57,17 +59,31 @@ function detectForPosition(folderNames: string[], matchType: MatchType): {
       continue;
     }
 
+    const parentFolder = parentFolderNameFromToken(token);
+    const children = folders.filter(
+      (name) => name.localeCompare(parentFolder, undefined, { sensitivity: "accent" }) !== 0
+    );
+    if (children.length < 3) {
+      skipped.push({
+        token,
+        match_type: matchType,
+        folders,
+        reason: "parent folder collides with child set"
+      });
+      continue;
+    }
+
     proposals.push({
-      parent_folder: parentFolderNameFromToken(token),
+      parent_folder: parentFolder,
       match_type: matchType,
       token,
-      children: folders,
+      children,
       reason: [
         `${folders.length} folders share the same ${matchType === "prefix" ? "leading" : "trailing"} token`,
         "token length >= 2",
         "token is not a stopword"
       ],
-      confidence: Math.min(1, 0.5 + folders.length * 0.1)
+      confidence: Math.min(1, 0.5 + children.length * 0.1)
     });
   }
 

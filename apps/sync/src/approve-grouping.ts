@@ -1,6 +1,7 @@
-import "dotenv/config";
+import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  loadEnvConfig,
   fileExists,
   readJsonFile,
   writeFolderMapping,
@@ -8,9 +9,37 @@ import {
 } from "@obsidian-ai-pipeline/core";
 
 const repoRoot = path.resolve(process.cwd(), "../..");
+const config = loadEnvConfig(repoRoot);
+
+async function findLatestProposalDataFile(): Promise<string> {
+  const analysisDir = path.resolve(repoRoot, "analysis");
+  const prefix = `x_folder_grouping_proposal_${config.proposalPrefix}_`;
+
+  let files: string[];
+  try {
+    files = await fs.readdir(analysisDir);
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      throw new Error(
+        `No proposal data found with prefix ${prefix}. Run pnpm propose:grouping first.`
+      );
+    }
+    throw error;
+  }
+
+  const candidates = files
+    .filter((file) => file.startsWith(prefix) && file.endsWith(".json"))
+    .sort((a, b) => b.localeCompare(a));
+  if (candidates.length === 0) {
+    throw new Error(
+      `No proposal data found with prefix ${prefix}. Run pnpm propose:grouping first.`
+    );
+  }
+  return path.join(analysisDir, candidates[0] as string);
+}
 
 async function run(): Promise<void> {
-  const proposalDataPath = path.resolve(repoRoot, "analysis", "x_folder_grouping_proposal_data.json");
+  const proposalDataPath = await findLatestProposalDataFile();
   if (!(await fileExists(proposalDataPath))) {
     throw new Error(
       `Missing proposal data: ${proposalDataPath}. Run pnpm propose:grouping before approval.`

@@ -19,13 +19,14 @@ function toTokenSet(source: TokenResponse): XTokenSet {
   const expiresAt = source.expires_in
     ? new Date(Date.now() + source.expires_in * 1000).toISOString()
     : undefined;
-  return {
+  const tokenSet: XTokenSet = {
     access_token: source.access_token,
-    refresh_token: source.refresh_token,
-    token_type: source.token_type,
-    scope: source.scope,
-    expires_at: expiresAt
   };
+  if (source.refresh_token) tokenSet.refresh_token = source.refresh_token;
+  if (source.token_type) tokenSet.token_type = source.token_type;
+  if (source.scope) tokenSet.scope = source.scope;
+  if (expiresAt) tokenSet.expires_at = expiresAt;
+  return tokenSet;
 }
 
 async function exchange(config: EnvConfig, body: URLSearchParams): Promise<XTokenSet> {

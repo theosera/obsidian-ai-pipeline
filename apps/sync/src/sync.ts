@@ -1,4 +1,3 @@
-import "dotenv/config";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -49,7 +48,8 @@ function flattenPages(pages: Awaited<ReturnType<XApiClient["getBookmarksAll"]>>)
   for (const page of pages) {
     const authorMap = new Map((page.includes?.users ?? []).map((u) => [u.id, u]));
     for (const post of page.data ?? []) {
-      results.push({ post, author: authorMap.get(post.author_id) });
+      const author = authorMap.get(post.author_id);
+      results.push(author ? { post, author } : { post });
     }
   }
   return results;
@@ -61,7 +61,7 @@ async function savePost(params: {
   mapping?: FolderMapping;
   folderPostCount: number;
   syncedAt: string;
-}): Promise<{ fileName: string; postId: string; authorDisplay: string; url: string }> {
+}): Promise<{ fileName: string; postId: string; authorDisplay: string; url: string; directory: string }> {
   const folder = params.folderName || "root";
   const date = new Date(params.item.post.created_at || new Date().toISOString());
   const directory = resolveXBookmarkSaveDirectory({
@@ -70,7 +70,7 @@ async function savePost(params: {
     childFolderName: folder,
     postDate: date,
     folderPostCount: params.folderPostCount,
-    mapping: params.mapping
+    ...(params.mapping && { mapping: params.mapping })
   });
   await ensureDir(directory);
 
@@ -82,7 +82,7 @@ async function savePost(params: {
 
   const markdown = buildBookmarkMarkdown({
     post: params.item.post,
-    author: params.item.author,
+    ...(params.item.author && { author: params.item.author }),
     bookmarkFolder: folder,
     syncedAt: params.syncedAt
   });
@@ -92,7 +92,8 @@ async function savePost(params: {
     fileName,
     postId: params.item.post.id,
     authorDisplay: `${authorName} (@${authorUsername})`,
-    url: `https://x.com/${authorUsername}/status/${params.item.post.id}`
+    url: `https://x.com/${authorUsername}/status/${params.item.post.id}`,
+    directory
   };
 }
 
@@ -113,7 +114,16 @@ async function run(): Promise<void> {
 
   const folders = await client.getBookmarkFolders(me.id);
   const folderCounts: Record<string, number> = {};
-  const folderResults: Array<{ folderName: string; entries: Array<{ fileName: string; postId: string; authorDisplay: string; url: string }> }> = [];
+  const folderResults: Array<{
+    folderName: string;
+    entries: Array<{
+      fileName: string;
+      postId: string;
+      authorDisplay: string;
+      url: string;
+      directory: string;
+    }>;
+  }> = [];
 
   for (const folder of folders) {
     const pages = await client.getBookmarksByFolder(me.id, folder.id);
@@ -126,7 +136,7 @@ async function run(): Promise<void> {
         await savePost({
           folderName: folder.name,
           item,
-          mapping,
+          ...(mapping && { mapping }),
           folderPostCount: items.length,
           syncedAt
         })
@@ -144,7 +154,7 @@ async function run(): Promise<void> {
         await savePost({
           folderName: "root",
           item,
-          mapping,
+          ...(mapping && { mapping }),
           folderPostCount: allItems.length,
           syncedAt
         })
@@ -162,14 +172,17 @@ async function run(): Promise<void> {
   });
 
   for (const result of folderResults) {
-    const folderDir = resolveXBookmarkSaveDirectory({
-      vaultPath: config.obsidianVaultPath,
-      sourceRoot: config.xBookmarksRoot,
-      childFolderName: result.folderName,
-      postDate: new Date(),
-      folderPostCount: folderCounts[result.folderName] ?? 0,
-      mapping
-    });
+    const folderDir =
+      result.entries[0]?.directory ??
+      resolveXBookmarkSaveDirectory({
+        vaultPath: config.obsidianVaultPath,
+        sourceRoot: config.xBookmarksRoot,
+        childFolderName: result.folderName,
+        postDate: new Date(),
+        folderPostCount: folderCounts[result.folderName] ?? 0,
+        ...(mapping && { mapping })
+      });
+    await ensureDir(folderDir);
     const index = buildFolderIndexMarkdown({
       folderName: result.folderName,
       sourceRoot: config.xBookmarksRoot,

@@ -47,3 +47,12 @@ packages/*/node_modules/
 # Allow GitHub Actions workflows (CI)
 !.github/
 !.github/**
+
+# X bookmark workspace artifacts
+!.env.example
+data/tokens.json
+data/pkce_state.json
+analysis/x_folder_grouping_proposal_data.json
+analysis/x_folder_stats.json
+analysis/x_folder_grouping_proposal_codex_*.json
+analysis/x_folder_grouping_proposal_codex_*.md

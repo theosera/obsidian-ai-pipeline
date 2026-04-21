@@ -67,8 +67,6 @@ jobs:
           cache-dependency-path: chrome-extension/pnpm-lock.yaml
 
       - name: Install dependencies
-        # ルートに pnpm-workspace.yaml (apps/* packages/*) があるが chrome-extension
-        # は workspace 対象外。--ignore-workspace でローカル lockfile を使う。
         run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Build (tsc --noEmit + vite build)
