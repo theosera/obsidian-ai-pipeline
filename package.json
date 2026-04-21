@@ -35,11 +35,11 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/jsdom": "^28.0.1",
-    "@types/node": "^25.5.2",
+    "@types/node": "catalog:",
     "@types/string-similarity": "^4.0.2",
     "@types/turndown": "^5.0.6",
-    "tsx": "^4.21.0",
-    "typescript": "^5.6.3"
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

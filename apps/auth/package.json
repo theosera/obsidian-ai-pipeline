@@ -9,5 +9,10 @@
   },
   "dependencies": {
     "@obsidian-ai-pipeline/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }
