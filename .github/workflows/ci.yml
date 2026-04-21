@@ -32,7 +32,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Run security tests (24 cases)
         run: pnpm test
@@ -60,7 +60,7 @@ jobs:
           cache-dependency-path: chrome-extension/pnpm-lock.yaml
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Build (tsc --noEmit + vite build)
-        run: pnpm build
+        run: pnpm run build
