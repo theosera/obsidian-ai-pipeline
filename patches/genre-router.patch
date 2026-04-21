@@ -1,0 +1,1685 @@
+From f2de1ff309e89ae3be4ee1318a5822b693ad975e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 21 Apr 2026 02:42:11 +0000
+Subject: [PATCH] feat: Router + GitHub code fetch + concept/practice split
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three phased improvements to make the pipeline aware of video genre
+and extend Stage 01 / 04 for code-bearing playlists.
+
+## Stage 00.5: Router (new)
+
+- `pipeline_youtube/genres.py` with `Genre` enum + `CODE_BEARING_GENRES`
+  frozenset gate + `classify_playlist_genre()` (single haiku call, ~$0.01
+  per playlist).
+- Wired into `main.py` after `fetch_metadata`; result logged as
+  `genre: coding (code_bearing=True) — <rationale>`.
+- Errors (network, parse, unknown enum) collapse to `Genre.OTHER` so
+  downstream features default to current behavior.
+- Added `router` to `_MODEL_KEYS`; defaults to haiku regardless of
+  `--model`.
+
+## Stage 01 extension: GitHub code fetch (gated)
+
+- `pipeline_youtube/code_fetch.py`:
+  - `fetch_video_description()` via per-video yt-dlp extract.
+  - Regex-based GitHub blob / Gist / repo URL extraction.
+  - Raw content fetch (urllib, built-in) with 5-URL / 50 KB caps.
+  - `render_code_section()` appends `## 関連コード` with fenced code
+    blocks (language detected from extension).
+- `run_stage_scripts()` gains `include_code_blocks: bool = False`
+  parameter, threaded through `_process_video` / `_run_videos_concurrent`
+  from the `code_bearing` flag.
+- Repo-level URLs intentionally skipped (README noise > signal).
+
+## Stage 04 extension: concept/practice split (gated)
+
+- `LEARNING_CODE_BEARING_ADDENDUM` appended to system prompt when
+  `code_bearing=True`. Instructs the model to emit two top-level
+  `# 概念 (Concepts)` / `# 実践 (Practice)` sections and splits the
+  existing `<種別>` categories between them.
+- Addendum references `## 関連コード` so the Leader can cite fetched
+  GitHub snippets in the practice section.
+
+## Tests
+
+- `test_genres.py` (17), `test_code_fetch.py` (27),
+  `test_learning_code_bearing.py` (3).
+- Updated `test_config_models.py` for the new `router` model key.
+- Updated `test_e2e_playlist.py` to stub `classify_playlist_genre` and
+  accept the new `include_code_blocks` kwarg.
+- Total: 506 → 553 passed.
+
+## README
+
+Added a new "ジャンル判定 (Router) とジャンル別分岐" section documenting
+the gate, GitHub URL constraints, and error-fallback behavior. Updated
+stage list and test count.
+
+https://claude.ai/code/session_01RxnSjdy7R88RZt5uMdjbBH
+---
+ README.md                           |  41 +++-
+ pipeline_youtube/code_fetch.py      | 336 ++++++++++++++++++++++++++++
+ pipeline_youtube/genres.py          | 145 ++++++++++++
+ pipeline_youtube/main.py            |  30 ++-
+ pipeline_youtube/stages/learning.py |  41 +++-
+ pipeline_youtube/stages/scripts.py  |  29 ++-
+ tests/test_code_fetch.py            | 271 ++++++++++++++++++++++
+ tests/test_config_models.py         |   1 +
+ tests/test_e2e_playlist.py          |  16 +-
+ tests/test_genres.py                | 286 +++++++++++++++++++++++
+ tests/test_learning_code_bearing.py | 142 ++++++++++++
+ 11 files changed, 1324 insertions(+), 14 deletions(-)
+ create mode 100644 pipeline_youtube/code_fetch.py
+ create mode 100644 pipeline_youtube/genres.py
+ create mode 100644 tests/test_code_fetch.py
+ create mode 100644 tests/test_genres.py
+ create mode 100644 tests/test_learning_code_bearing.py
+
+diff --git a/README.md b/README.md
+index 81f81cc..5f87a37 100644
+--- a/README.md
++++ b/README.md
+@@ -4,13 +4,16 @@
+ 
+ YouTube プレイリスト → Obsidian Vault 自学自習用学習レポート生成パイプライン。
+ 
+-NotebookLM に動画 URL を 1 本ずつ手動で貼り付けて要約を Obsidian に転記する運用を自動化する。プレイリスト URL を 1 本投げると、プレイリスト内の全動画を以下 5 工程に通して、学習しやすいレポートと分野横断のハンズオンを Vault に保存する。
++NotebookLM に動画 URL を 1 本ずつ手動で貼り付けて要約を Obsidian に転記する運用を自動化する。プレイリスト URL を 1 本投げると、プレイリスト内の全動画を以下の工程に通して、学習しやすいレポートと分野横断のハンズオンを Vault に保存する。
++
++**プレイリスト単位の前処理 (00.5)**
++- **Router**: プレイリスト全体のジャンルを 1 回の haiku 呼び出しで分類 (`coding` / `humanities` / `business` / `science` / `lifestyle` / `entertainment` / `other`)。下流の「コードを含む動画向けの特別処理」はこの結果でゲートする
+ 
+ **動画単位 (01〜04)**
+-- **01_Scripts**: タイムスタンプ付き文字起こし (YouTube 純正字幕 → 自動生成字幕 → ローカル Whisper の 3 段フォールバック)
++- **01_Scripts**: タイムスタンプ付き文字起こし (YouTube 純正字幕 → 自動生成字幕 → ローカル Whisper の 3 段フォールバック)。`coding` ジャンルの時は動画概要欄から GitHub/Gist URL を検出 → raw コードを fetch → `## 関連コード` セクションとして追記
+ - **02_Summary**: 意味単位タイムスタンプ範囲付き要約
+ - **03_Capture**: 要点タイムスタンプに対応する動画フレーム抽出 (WebP アニメーション)
+-- **04_Learning_Material**: 上記 3 工程を「時系列 → キャプチャ画像 → 要点」3 点セットでテーマ単位に再構成
++- **04_Learning_Material**: 上記 3 工程を「時系列 → キャプチャ画像 → 要点」3 点セットでテーマ単位に再構成。`coding` ジャンル時は `# 概念` (Concepts) / `# 実践` (Practice) の 2 階層に分割して出力
+ 
+ **プレイリスト単位 (05)**
+ - **05_Synthesis**: プレイリストの動画数 ≥ 3 本の時、Agent Teams (α→β→Leader) で 04 全体を横断統合し、章別ハンズオン md 群 + 00_MOC.md + 重複度スコア JSON を出力する。カバレッジ検証は Python 集合演算で決定論的に実施し、β の漏れトピックは Reflexion リトライで自己修復する
+@@ -46,8 +49,9 @@ cp config.example.json config.json
+ # config.json で設定できるフィールド:
+ #   - vault_root (必須): Obsidian Vault のルートパス
+ #   - models (任意): ステージ/エージェント別モデル
+-#     {"stage_02","stage_04","alpha","beta","leader"} のキーを任意に設定。
+-#     未設定キーは CLI の --model にフォールバック。"gamma" は後方互換で受理するが無視。
++#     {"router","stage_02","stage_04","alpha","beta","leader"} のキーを任意に設定。
++#     router は未設定時に haiku (他は --model にフォールバック)。
++#     "gamma" は後方互換で受理するが無視。
+ #   - filler_words (任意): Stage 02 の transcript から除去する日本語フィラー語リスト。
+ #     未設定ならデフォルト (えー/えっと/あのー/まあ/なんか 等) を使用。
+ #   - capture_backend (任意): "host" (デフォルト) または "docker"
+@@ -125,6 +129,28 @@ Permanent Note/08_YouTube学習/
+ - **プレイリスト名の `/` 扱い**: YouTube プレイリスト名に ASCII `/` が含まれる場合、`/` はカテゴリ区切りとみなして **最後のセグメントのみ** をタイトルとして採用する (例: `2026Agent Teams/AI駆動経営` → `AI駆動経営`)。全角 `／` (U+FF0F) は日本語タイトル内の正規句読点として保持。
+ - **画像配置**: `Permanent Note/_assets/2026/pipeline-youtube/pyt_{video_id}_{idx}.webp` に直接書き込み。Obsidian Attachment Management プラグインの `${notename}` リネームパターンとは故意に衝突させない命名を使用。
+ 
++## ジャンル判定 (Router) とジャンル別分岐
++
++パイプラインの最上流 (Stage 00.5) で、プレイリスト全体のジャンルを 1 回の haiku 呼び出しで判定します。コストは 1 プレイリストあたり ~$0.01 (数百トークン × haiku)。
++
++**判定結果による分岐:**
++
++| Genre | Stage 01 `## 関連コード` 自動追記 | Stage 04 `# 概念` / `# 実践` 分割 |
++|---|---|---|
++| `coding` | ✅ GitHub/Gist 概要欄 URL から raw コードを fetch | ✅ 理論と実装を分離 |
++| `business` / `humanities` / `science` / `lifestyle` / `entertainment` / `other` | ❌ | ❌ (flat 構造のまま) |
++
++**ゲート基準**: `CODE_BEARING_GENRES = {Genre.CODING}` (genres.py)。将来 `mixed` や `tutorial` を追加したい場合はこの frozenset を拡張。
++
++**エラー耐性**: Router の API 失敗・JSON パース失敗・未知のジャンル値は `Genre.OTHER` に collapse され、下流はデフォルト動作 (コード特別処理なし) に fallback します。ルーター呼び出しはパイプライン全体のブロッカーにはなりません。
++
++**GitHub URL 抽出の制約**:
++- blob URL (`https://github.com/owner/repo/blob/ref/path`) → raw をそのまま fetch
++- Gist URL → public API (`api.github.com/gists/<id>`) でファイル群をまとめて取得
++- リポジトリ URL (`github.com/owner/repo` のみ) → スキップ (README 自動 fetch は情報量的にノイズが多い)
++- 1 動画あたり最大 5 URL / ファイルあたり最大 50KB
++- 認証なし (rate limit: 60 req/h per IP)
++
+ ## 文字起こしフォールバック階層
+ 
+ 1. **純正字幕** (`youtube-transcript-api` の manually-created)
+@@ -190,7 +216,7 @@ uv run mypy pipeline_youtube/ --ignore-missing-imports
+ 
+ ```bash
+ uv run pytest tests/ -q
+-# 506 passed (2026-04-21 時点)
++# 553 passed (2026-04-21 時点)
+ ```
+ 
+ 主な対象:
+@@ -203,6 +229,9 @@ uv run pytest tests/ -q
+ - `test_synthesis_timeout.py` — 動的タイムアウト計算 + プリフライトログ + config.json 読み込み
+ - `test_claude_cli_retry.py` — transient エラーリトライ (パターン検出 / 指数バックオフ / 非 transient 即時伝播)
+ - `test_capture_backend.py` — Docker 隔離バックエンド (コマンド形状 / パス変換 / プリフライト)
++- `test_genres.py` — Router ジャンル分類 (JSON 解析 / エラー fallback / プロンプト形状)
++- `test_code_fetch.py` — GitHub URL 抽出 + raw コード取得 (yt-dlp / urllib モック)
++- `test_learning_code_bearing.py` — Stage 04 の `# 概念` / `# 実践` プロンプト分割
+ 
+ ## トラブルシューティング
+ 
+diff --git a/pipeline_youtube/code_fetch.py b/pipeline_youtube/code_fetch.py
+new file mode 100644
+index 0000000..b682c79
+--- /dev/null
++++ b/pipeline_youtube/code_fetch.py
+@@ -0,0 +1,336 @@
++"""GitHub / Gist URL extraction + raw content fetch for Stage 01.
++
++When the Router classifies a playlist as ``coding``, Stage 01 invokes
++this module to:
++
++1. Pull the video description via yt-dlp (a per-video extract — flat
++   playlist metadata doesn't include description).
++2. Scan the description for GitHub repository/file/gist URLs.
++3. Fetch each URL's raw content (capped at 5 URLs / 50KB each).
++4. Format the result as a markdown ``## 関連コード`` section that the
++   caller appends to the 01 transcript md.
++
++The whole module is *advisory* — any failure (network, parse, rate
++limit) returns an empty section without raising, so a transcript that
++can't get its code blocks still completes Stage 01 normally.
++
++Network safety: all HTTP fetches go through ``urllib.request`` (built-in,
++no extra deps), use a short timeout, and only allow ``raw.githubusercontent.com``
++and ``gist.githubusercontent.com`` hosts after URL rewriting — even if a
++malicious description contains a redirect-style URL, the fetch target is
++constrained.
++"""
++
++from __future__ import annotations
++
++import re
++import urllib.error
++import urllib.request
++from dataclasses import dataclass
++
++import yt_dlp  # type: ignore[import-untyped]
++
++# GitHub blob URL: https://github.com/<owner>/<repo>/blob/<ref>/<path>
++# Captures owner, repo, and the rest (ref + path).
++_GITHUB_BLOB_RE = re.compile(
++    r"https://github\.com/([\w.-]+)/([\w.-]+)/blob/([^\s)]+)",
++    flags=re.IGNORECASE,
++)
++
++# Gist URL: https://gist.github.com/[<owner>/]<id>
++# Captures the gist id.
++_GIST_RE = re.compile(
++    r"https://gist\.github\.com/(?:[\w-]+/)?([0-9a-fA-F]{6,40})",
++    flags=re.IGNORECASE,
++)
++
++# Optional repo-level URL: https://github.com/<owner>/<repo>
++# Captures owner and repo. Matched only when no /blob/ appears.
++_GITHUB_REPO_RE = re.compile(
++    r"https://github\.com/([\w.-]+)/([\w.-]+)(?:[/\s)#]|$)",
++    flags=re.IGNORECASE,
++)
++
++# Hard caps to prevent runaway descriptions from inflating Stage 01 md.
++MAX_URLS_PER_VIDEO = 5
++MAX_BYTES_PER_FILE = 50_000
++FETCH_TIMEOUT = 10  # seconds
++
++
++# Common code file extensions → fenced-code language hint.
++_LANG_BY_EXT: dict[str, str] = {
++    ".py": "python",
++    ".ts": "typescript",
++    ".tsx": "tsx",
++    ".js": "javascript",
++    ".jsx": "jsx",
++    ".rs": "rust",
++    ".go": "go",
++    ".java": "java",
++    ".kt": "kotlin",
++    ".swift": "swift",
++    ".rb": "ruby",
++    ".sh": "bash",
++    ".bash": "bash",
++    ".zsh": "bash",
++    ".fish": "fish",
++    ".ps1": "powershell",
++    ".sql": "sql",
++    ".yaml": "yaml",
++    ".yml": "yaml",
++    ".toml": "toml",
++    ".json": "json",
++    ".md": "markdown",
++    ".html": "html",
++    ".css": "css",
++    ".scss": "scss",
++    ".c": "c",
++    ".h": "c",
++    ".cpp": "cpp",
++    ".hpp": "cpp",
++    ".cs": "csharp",
++    ".php": "php",
++    ".lua": "lua",
++    ".dockerfile": "dockerfile",
++    ".tf": "hcl",
++}
++
++
++@dataclass(frozen=True)
++class CodeSnippet:
++    """A single fetched code block with provenance."""
++
++    source_url: str  # original github.com/... URL
++    raw_url: str  # the raw URL actually fetched
++    filename: str  # display name (last path segment for files, "<gist_id>.json" for gists)
++    language: str  # fenced-code hint (may be empty string)
++    content: str  # raw text content (already truncated to MAX_BYTES_PER_FILE)
++    truncated: bool
++
++
++def fetch_video_description(video_id: str, *, timeout: int = 30) -> str | None:
++    """Fetch the description of a YouTube video by id.
++
++    Performs a single (non-flat) yt-dlp extract. Returns ``None`` on any
++    failure so the caller can fall back gracefully.
++    """
++    opts = {
++        "quiet": True,
++        "no_warnings": True,
++        "skip_download": True,
++        "socket_timeout": timeout,
++    }
++    try:
++        with yt_dlp.YoutubeDL(opts) as ydl:
++            info = ydl.extract_info(
++                f"https://www.youtube.com/watch?v={video_id}",
++                download=False,
++            )
++    except Exception:
++        return None
++    if info is None:
++        return None
++    desc = info.get("description")
++    return str(desc) if desc else None
++
++
++def extract_github_urls(description: str) -> list[str]:
++    """Extract unique GitHub blob / Gist / repo URLs from a description.
++
++    Order is preserved (first appearance wins). Capped at
++    ``MAX_URLS_PER_VIDEO`` * 2 to leave room for filtering, but the
++    caller is expected to apply the final cap when fetching.
++    """
++    if not description:
++        return []
++
++    found: list[str] = []
++    seen: set[str] = set()
++
++    def _push(u: str) -> None:
++        if u in seen:
++            return
++        seen.add(u)
++        found.append(u)
++
++    for m in _GITHUB_BLOB_RE.finditer(description):
++        owner, repo, rest = m.groups()
++        _push(f"https://github.com/{owner}/{repo}/blob/{rest}")
++
++    for m in _GIST_RE.finditer(description):
++        gist_id = m.group(1)
++        _push(f"https://gist.github.com/{gist_id}")
++
++    # Repo URLs are lowest priority — only matched if not already captured
++    # via /blob/ and not used to dilute the budget.
++    for m in _GITHUB_REPO_RE.finditer(description):
++        owner, repo = m.group(1), m.group(2)
++        # Skip if we already have a blob URL for this repo (more specific).
++        if any(f"github.com/{owner}/{repo}/blob/" in u for u in found):
++            continue
++        _push(f"https://github.com/{owner}/{repo}")
++
++    return found[: MAX_URLS_PER_VIDEO * 2]
++
++
++def _blob_to_raw(blob_url: str) -> str | None:
++    m = _GITHUB_BLOB_RE.match(blob_url)
++    if not m:
++        return None
++    owner, repo, rest = m.groups()
++    return f"https://raw.githubusercontent.com/{owner}/{repo}/{rest}"
++
++
++def _language_for_path(path: str) -> str:
++    lower = path.lower()
++    # Special filename-based detection (Dockerfile has no extension).
++    base = lower.rsplit("/", 1)[-1]
++    if base == "dockerfile":
++        return "dockerfile"
++    if base == "makefile":
++        return "makefile"
++    if "." not in base:
++        return ""
++    ext = "." + base.rsplit(".", 1)[1]
++    return _LANG_BY_EXT.get(ext, "")
++
++
++def _fetch_raw(
++    url: str, *, timeout: int = FETCH_TIMEOUT, max_bytes: int = MAX_BYTES_PER_FILE
++) -> tuple[str, bool] | None:
++    """Fetch URL content, capped at max_bytes. Returns (text, truncated) or None on error."""
++    try:
++        req = urllib.request.Request(
++            url,
++            headers={
++                "User-Agent": "pipeline-youtube/1.0 (+https://github.com/theosera/pipeline-youtube)"
++            },
++        )
++        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — host is gated by caller
++            data = resp.read(max_bytes + 1)
++    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
++        return None
++
++    truncated = len(data) > max_bytes
++    if truncated:
++        data = data[:max_bytes]
++    return data.decode("utf-8", errors="replace"), truncated
++
++
++def _fetch_blob(url: str) -> CodeSnippet | None:
++    raw_url = _blob_to_raw(url)
++    if raw_url is None:
++        return None
++    result = _fetch_raw(raw_url)
++    if result is None:
++        return None
++    text, truncated = result
++    filename = raw_url.rsplit("/", 1)[-1]
++    return CodeSnippet(
++        source_url=url,
++        raw_url=raw_url,
++        filename=filename,
++        language=_language_for_path(filename),
++        content=text,
++        truncated=truncated,
++    )
++
++
++def _fetch_gist(url: str) -> CodeSnippet | None:
++    """Fetch a gist via its public API. Concatenates all files into one snippet."""
++    m = _GIST_RE.match(url)
++    if m is None:
++        return None
++    gist_id = m.group(1)
++    api_url = f"https://api.github.com/gists/{gist_id}"
++    try:
++        req = urllib.request.Request(
++            api_url,
++            headers={
++                "User-Agent": "pipeline-youtube/1.0",
++                "Accept": "application/vnd.github+json",
++            },
++        )
++        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:  # noqa: S310
++            import json as _json
++
++            payload = _json.loads(resp.read().decode("utf-8"))
++    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError, TimeoutError):
++        return None
++
++    files = payload.get("files") or {}
++    if not files:
++        return None
++
++    parts: list[str] = []
++    total_len = 0
++    truncated = False
++    primary_lang = ""
++    for fname, fdata in files.items():
++        content = (fdata or {}).get("content") or ""
++        lang = _language_for_path(fname) or ""
++        if not primary_lang:
++            primary_lang = lang
++        block = f"--- {fname} ---\n{content}"
++        if total_len + len(block) > MAX_BYTES_PER_FILE:
++            block = block[: MAX_BYTES_PER_FILE - total_len]
++            truncated = True
++            parts.append(block)
++            break
++        parts.append(block)
++        total_len += len(block)
++
++    return CodeSnippet(
++        source_url=url,
++        raw_url=api_url,
++        filename=f"gist_{gist_id}",
++        language=primary_lang,
++        content="\n\n".join(parts),
++        truncated=truncated,
++    )
++
++
++def fetch_snippets_for_urls(urls: list[str]) -> list[CodeSnippet]:
++    """Fetch up to ``MAX_URLS_PER_VIDEO`` snippets, skipping unsupported URLs.
++
++    Repo-level URLs (without /blob/) are skipped — fetching a repo's
++    default README gets noisy fast and rarely matches what the video is
++    actually demonstrating. Only blob and gist URLs return code.
++    """
++    out: list[CodeSnippet] = []
++    for url in urls:
++        if len(out) >= MAX_URLS_PER_VIDEO:
++            break
++        snippet: CodeSnippet | None = None
++        if "/blob/" in url:
++            snippet = _fetch_blob(url)
++        elif url.startswith("https://gist.github.com/"):
++            snippet = _fetch_gist(url)
++        # Repo URLs intentionally skipped.
++        if snippet is not None:
++            out.append(snippet)
++    return out
++
++
++def render_code_section(snippets: list[CodeSnippet]) -> str:
++    """Render snippets as a markdown ``## 関連コード`` section.
++
++    Returns an empty string when the snippets list is empty so callers
++    can append unconditionally.
++    """
++    if not snippets:
++        return ""
++
++    lines: list[str] = ["", "## 関連コード", ""]
++    for s in snippets:
++        lines.append(f"### [{s.filename}]({s.source_url})")
++        lines.append("")
++        fence_lang = s.language or ""
++        lines.append(f"```{fence_lang}")
++        lines.append(s.content.rstrip())
++        lines.append("```")
++        if s.truncated:
++            lines.append("")
++            lines.append(f"_(truncated to {MAX_BYTES_PER_FILE:,} bytes; see source for full file)_")
++        lines.append("")
++    return "\n".join(lines)
+diff --git a/pipeline_youtube/genres.py b/pipeline_youtube/genres.py
+new file mode 100644
+index 0000000..cb10635
+--- /dev/null
++++ b/pipeline_youtube/genres.py
+@@ -0,0 +1,145 @@
++"""Genre classification (Router) for downstream pipeline behavior.
++
++Stage 00.5 — placed between playlist metadata fetch and per-video processing.
++
++Why
++---
++The pipeline's downstream stages (especially Stage 04 learning material
++generation) want to behave differently for *coding* tutorials vs purely
++*conceptual* content. A coding playlist benefits from:
++
++- GitHub URL extraction from descriptions
++- Concept-vs-Practice section split in 04 prompts
++- (future) Code-block forced extraction
++
++A philosophy lecture playlist would be hurt by all three. Rather than
++trigger these heuristics from per-video fragile keyword matching, this
++module classifies the *whole playlist* once with a single cheap LLM call
++(haiku) and downstream features gate on the result.
++
++Design
++------
++- Single `classify_playlist_genre()` entry point. One LLM call per
++  playlist, ~$0.01 cost.
++- Output is a `Genre` enum + free-text rationale (for logs).
++- All errors (network, parse) collapse to `Genre.OTHER` so downstream
++  features default to current behavior. The router is *advisory*, never
++  blocking.
++"""
++
++from __future__ import annotations
++
++import json
++from enum import StrEnum
++
++from .playlist import VideoMeta
++from .providers.claude_cli import ClaudeCliError, invoke_claude
++from .sanitize import sanitize_untrusted_text, wrap_untrusted
++
++
++class Genre(StrEnum):
++    """Coarse playlist genre.
++
++    Designed to be stable across pipeline versions — adding new values
++    is fine, renaming existing ones is a breaking change for any
++    consumer that compares against `Genre.CODING.value`.
++    """
++
++    CODING = "coding"
++    BUSINESS = "business"
++    HUMANITIES = "humanities"
++    SCIENCE = "science"
++    LIFESTYLE = "lifestyle"
++    ENTERTAINMENT = "entertainment"
++    OTHER = "other"
++
++
++# Genres for which the pipeline injects code-bearing enhancements
++# (GitHub URL extraction, concept/practice split, etc.).
++CODE_BEARING_GENRES: frozenset[Genre] = frozenset({Genre.CODING})
++
++
++_ROUTER_SYSTEM_PROMPT = """あなたは YouTube プレイリストのジャンル分類器です。
++入力されたプレイリスト名と動画タイトル群から **ひとつ** のジャンルを選び、JSON で返してください。
++出力 JSON 以外の説明文は禁止。
++
++利用可能なジャンル:
++- coding: プログラミング・開発ツール・AI/コード生成 (Claude Code, Copilot, Cursor 等)
++- business: 経営・マーケティング・生産性・起業
++- humanities: 哲学・歴史・文学・芸術・宗教
++- science: 数学・物理・化学・生物・宇宙
++- lifestyle: 料理・旅行・健康・ファッション
++- entertainment: ゲーム・音楽・アニメ・Vlog
++- other: 上記いずれにも当てはまらない
++
++出力形式: {"genre": "coding", "rationale": "理由を1〜2文で"}"""
++
++
++# Cap the number of titles passed to the LLM. Most playlists fit well
++# within this; very large playlists get a representative sample (first N).
++_MAX_TITLES_IN_PROMPT = 30
++
++
++def classify_playlist_genre(
++    playlist_title: str,
++    videos: list[VideoMeta],
++    *,
++    model: str = "haiku",
++) -> tuple[Genre, str]:
++    """Classify a playlist into a single Genre.
++
++    Returns ``(genre, rationale)``. On any error (network, parse, unknown
++    genre value) returns ``(Genre.OTHER, "<error description>")`` so the
++    caller can proceed with default behavior.
++
++    The function is intentionally side-effect free; the caller decides
++    whether to log the result.
++    """
++    if not videos:
++        return Genre.OTHER, "no videos"
++
++    safe_title = sanitize_untrusted_text(
++        playlist_title or "Untitled Playlist",
++        300,
++        context="genres.playlist_title",
++    )
++    title_lines: list[str] = []
++    for v in videos[:_MAX_TITLES_IN_PROMPT]:
++        safe = sanitize_untrusted_text(v.title or "(no title)", 200, context="genres.video_title")
++        title_lines.append(f"- {safe}")
++    titles_block = "\n".join(title_lines)
++
++    extra = ""
++    if len(videos) > _MAX_TITLES_IN_PROMPT:
++        extra = f"\n(計 {len(videos)} 本中、先頭 {_MAX_TITLES_IN_PROMPT} 本を表示)"
++
++    prompt = (
++        f"プレイリスト: {safe_title}\n"
++        f"動画タイトル ({min(len(videos), _MAX_TITLES_IN_PROMPT)} 本):\n"
++        f"{wrap_untrusted(titles_block)}{extra}"
++    )
++
++    try:
++        response = invoke_claude(
++            prompt=prompt,
++            system_prompt=_ROUTER_SYSTEM_PROMPT,
++            model=model,
++            max_retries=2,
++        )
++    except ClaudeCliError as e:
++        return Genre.OTHER, f"router_call_failed: {str(e)[:200]}"
++
++    text = response.text.strip()
++    # Strip code fences if the model wrapped output despite instructions.
++    if text.startswith("```"):
++        text = text.strip("`").lstrip("json").strip()
++
++    try:
++        data = json.loads(text)
++        genre_str = str(data["genre"]).lower()
++        genre = Genre(genre_str)
++    except (json.JSONDecodeError, KeyError, ValueError) as e:
++        return Genre.OTHER, f"router_parse_failed: {type(e).__name__}: {str(e)[:100]}"
++
++    rationale = str(data.get("rationale", ""))[:300]
++    return genre, rationale
+diff --git a/pipeline_youtube/main.py b/pipeline_youtube/main.py
+index 7dad25a..40b7aea 100644
+--- a/pipeline_youtube/main.py
++++ b/pipeline_youtube/main.py
+@@ -29,6 +29,7 @@ from .checkpoint import (
+     read_trusted_video_id,
+ )
+ from .config import VaultRootError, set_dry_run, set_vault_root
++from .genres import CODE_BEARING_GENRES, classify_playlist_genre
+ from .obsidian import format_playlist_folder_name
+ from .path_safety import ensure_safe_path
+ from .pipeline import LEARNING_BASE, UNIT_DIRS, compute_note_paths, create_placeholder_notes
+@@ -51,7 +52,7 @@ from .synthesis.agents import compute_synthesis_timeouts
+ 
+ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+ 
+-_MODEL_KEYS = frozenset({"stage_02", "stage_04", "alpha", "beta", "leader"})
++_MODEL_KEYS = frozenset({"router", "stage_02", "stage_04", "alpha", "beta", "leader"})
+ # "gamma" accepted silently for backward-compat with existing config.json,
+ # but the γ LLM role has been replaced by a Python set diff — the value is ignored.
+ _DEPRECATED_MODEL_KEYS = frozenset({"gamma"})
+@@ -101,7 +102,12 @@ def _load_config(config_path: Path, fallback_model: str) -> CliConfig:
+             f"config.json: unknown model keys {sorted(unknown)!r}; "
+             f"expected any of {sorted(_MODEL_KEYS)!r}"
+         )
+-    models = {key: models_raw.get(key, fallback_model) for key in _MODEL_KEYS}
++    # Router defaults to haiku regardless of fallback_model — it's a single
++    # cheap classification call where speed/cost beats reasoning depth.
++    _per_key_default = {"router": "haiku"}
++    models = {
++        key: models_raw.get(key, _per_key_default.get(key, fallback_model)) for key in _MODEL_KEYS
++    }
+ 
+     filler_raw = data.get("filler_words")
+     if filler_raw is None:
+@@ -383,13 +389,19 @@ def _process_video(
+     filler_words: tuple[str, ...] = (),
+     stop_after_capture: bool = False,
+     capture_backend: Any = None,
++    code_bearing: bool = False,
+ ) -> VideoRunResult:
+     try:
+         paths = compute_note_paths(video, run_time)
+         create_placeholder_notes(video, run_time, dry_run=dry_run)
+ 
+         click.echo("  [01] scripts...", nl=False)
+-        transcript = run_stage_scripts(video, paths["scripts"], dry_run=dry_run)
++        transcript = run_stage_scripts(
++            video,
++            paths["scripts"],
++            dry_run=dry_run,
++            include_code_blocks=code_bearing,
++        )
+         with contextlib.suppress(Exception):
+             record_transcript_stat(video, transcript)
+         click.echo(
+@@ -468,6 +480,7 @@ def _process_video(
+             run_time=run_time,
+             model=models["stage_04"],
+             dry_run=dry_run,
++            code_bearing=code_bearing,
+         )
+         click.echo(
+             f" in={learning_resp.input_tokens or 0}"
+@@ -505,6 +518,7 @@ async def _run_videos_concurrent(
+     filler_words: tuple[str, ...] = (),
+     stop_after_capture: bool = False,
+     capture_backend: Any = None,
++    code_bearing: bool = False,
+ ) -> list[VideoRunResult]:
+     """Process multiple videos concurrently with bounded parallelism."""
+     sem = asyncio.Semaphore(concurrency)
+@@ -522,6 +536,7 @@ async def _run_videos_concurrent(
+                 filler_words=filler_words,
+                 stop_after_capture=stop_after_capture,
+                 capture_backend=capture_backend,
++                code_bearing=code_bearing,
+             )
+ 
+     tasks = [_task(i, v) for i, v in enumerate(videos, 1)]
+@@ -732,6 +747,13 @@ def cli(
+     click.echo(f"playlist: {playlist_title!r}")
+     click.echo(f"videos: {len(videos)}")
+ 
++    # Stage 00.5: Router. One cheap haiku call decides whether downstream
++    # code-bearing features (GitHub URL extraction, concept/practice split)
++    # apply. Errors collapse to Genre.OTHER → default behavior.
++    genre, genre_rationale = classify_playlist_genre(playlist_title, videos, model=models["router"])
++    code_bearing = genre in CODE_BEARING_GENRES
++    click.echo(f"genre: {genre.value} (code_bearing={code_bearing}) — {genre_rationale[:120]}")
++
+     est_timeouts = compute_synthesis_timeouts(len(videos), override=effective_synthesis_timeout)
+     total_duration = sum(v.duration or 0 for v in videos)
+     click.echo(
+@@ -798,6 +820,7 @@ def cli(
+                     filler_words=filler_words,
+                     stop_after_capture=stop_after_capture,
+                     capture_backend=active_capture_backend,
++                    code_bearing=code_bearing,
+                 )
+             )
+             results.extend(concurrent_results)
+@@ -813,6 +836,7 @@ def cli(
+                     filler_words=filler_words,
+                     stop_after_capture=stop_after_capture,
+                     capture_backend=active_capture_backend,
++                    code_bearing=code_bearing,
+                 )
+                 results.append(result)
+ 
+diff --git a/pipeline_youtube/stages/learning.py b/pipeline_youtube/stages/learning.py
+index abcaeb8..ca0001e 100644
+--- a/pipeline_youtube/stages/learning.py
++++ b/pipeline_youtube/stages/learning.py
+@@ -77,6 +77,35 @@ LEARNING_SYSTEM_PROMPT = """あなたは YouTube 動画の要約と画像キャ
+ """
+ 
+ 
++# Additional instruction injected when the Router classifies the playlist
++# as code-bearing. Splits the output into two top-level sections so
++# theoretical concepts and runnable commands/code don't intermingle.
++LEARNING_CODE_BEARING_ADDENDUM = """
++
++## コード系プレイリスト向け追加ルール (本動画は coding 判定)
++
++出力を以下の **2 つのトップレベル `#` セクション** に分割してください:
++
++```
++# 概念 (Concepts)
++
++## <種別>: <テーマ名>
++... (上記 3 点セット)
++
++# 実践 (Practice)
++
++## <種別>: <テーマ名>
++... (上記 3 点セット)
++```
++
++- `# 概念` 配下に置く `<種別>`: `概念` / `問題` / `結果` / `まとめ` / `背景`
++- `# 実践` 配下に置く `<種別>`: `解決策` / `実装手順` / `コマンド` / `コード例` / `セットアップ` / `デバッグ`
++- 動画末尾に **GitHub などから取得したコードブロック** が `## 関連コード` として既に存在する場合は、そこに記載されたファイル / コマンドを `# 実践` セクション内で参照すると学習者にとって有用 (引用は必要、創作は禁止)
++- どちらのセクションにも該当しないテーマは `# 実践` の末尾に置く
++- どちらかのセクションが空になる場合は、そのトップレベル見出し自体を省略してよい (片方しか書く内容がない動画もある)
++"""
++
++
+ @dataclass(frozen=True)
+ class CaptureMapping:
+     range_str: str  # e.g. "[00:00 ~ 01:03]"
+@@ -128,12 +157,19 @@ def run_stage_learning(
+     run_time: datetime,
+     model: str = "sonnet",
+     dry_run: bool = False,
++    code_bearing: bool = False,
+ ) -> ClaudeResponse:
+     """Integrate 02 + 03 into 04 and write directly to `learning_md_path`.
+ 
+     Unlike stages 01/02/03 which append to an existing placeholder md,
+     this stage writes the 04 md from scratch (frontmatter + body) to
+     avoid Templater hijacking an empty 04 file.
++
++    When ``code_bearing=True`` (set by the orchestrator after the Router
++    classifies the playlist), the system prompt receives an additional
++    instruction to split the output into ``# 概念`` and ``# 実践``
++    top-level sections so theoretical and practical content stay
++    separated.
+     """
+     if not summary_md_path.exists():
+         raise FileNotFoundError(f"summary md not found: {summary_md_path}")
+@@ -145,10 +181,13 @@ def run_stage_learning(
+     mappings = parse_capture_mapping(capture_body)
+ 
+     prompt = _build_prompt(video, summary_body, capture_body, mappings)
++    system_prompt = LEARNING_SYSTEM_PROMPT
++    if code_bearing:
++        system_prompt = LEARNING_SYSTEM_PROMPT + LEARNING_CODE_BEARING_ADDENDUM
+ 
+     response = invoke_claude(
+         prompt=prompt,
+-        append_system_prompt=LEARNING_SYSTEM_PROMPT,
++        append_system_prompt=system_prompt,
+         model=model,
+     )
+ 
+diff --git a/pipeline_youtube/stages/scripts.py b/pipeline_youtube/stages/scripts.py
+index 1067cc5..89e1eae 100644
+--- a/pipeline_youtube/stages/scripts.py
++++ b/pipeline_youtube/stages/scripts.py
+@@ -9,12 +9,24 @@ Output format matches the dummy data in
+ The frontmatter above the body is already written by the placeholder
+ step (`pipeline.create_placeholder_notes`), so this stage appends the
+ chunked body to the existing file.
++
++When ``include_code_blocks=True`` is passed (set by the orchestrator
++when the Router classifies the playlist as ``coding``), this stage
++additionally fetches the video description, scrapes any GitHub
++blob/Gist URLs, downloads their raw content (size-capped), and appends
++a ``## 関連コード`` section after the transcript.
+ """
+ 
+ from __future__ import annotations
+ 
+ from pathlib import Path
+ 
++from ..code_fetch import (
++    extract_github_urls,
++    fetch_snippets_for_urls,
++    fetch_video_description,
++    render_code_section,
++)
+ from ..playlist import VideoMeta
+ from ..transcript.auto import fetch_auto
+ from ..transcript.base import TranscriptResult, fetch_with_fallback
+@@ -30,6 +42,7 @@ def run_stage_scripts(
+     window_seconds: float = 30.0,
+     languages: list[str] | None = None,
+     dry_run: bool = False,
++    include_code_blocks: bool = False,
+ ) -> TranscriptResult:
+     """Fetch transcript, chunk it, and append the body to `scripts_md_path`.
+ 
+@@ -64,8 +77,20 @@ def run_stage_scripts(
+ 
+     body = _render_chunks(video, chunk_by_window(result.snippets, window_seconds))
+ 
+-    if not dry_run and body:
+-        _append_body(scripts_md_path, body)
++    code_section = ""
++    if include_code_blocks:
++        # Fetching description + raw code is best-effort. If anything
++        # fails, we silently skip — the transcript is the primary asset.
++        description = fetch_video_description(video.video_id)
++        if description:
++            urls = extract_github_urls(description)
++            snippets = fetch_snippets_for_urls(urls)
++            code_section = render_code_section(snippets)
++
++    full_body = body + code_section if code_section else body
++
++    if not dry_run and full_body:
++        _append_body(scripts_md_path, full_body)
+ 
+     return result
+ 
+diff --git a/tests/test_code_fetch.py b/tests/test_code_fetch.py
+new file mode 100644
+index 0000000..dab87b9
+--- /dev/null
++++ b/tests/test_code_fetch.py
+@@ -0,0 +1,271 @@
++"""Tests for the code_fetch module (GitHub URL extraction + raw fetch).
++
++Network calls are mocked. Real-world behavior of yt-dlp / GitHub is out
++of scope for unit tests.
++"""
++
++from __future__ import annotations
++
++from unittest.mock import MagicMock, patch
++
++from pipeline_youtube import code_fetch
++
++# =====================================================
++# extract_github_urls
++# =====================================================
++
++
++class TestExtractGithubUrls:
++    def test_blob_url_extracted(self):
++        desc = (
++            "ソースコード: https://github.com/anthropics/anthropic-sdk-python/blob/main/README.md"
++        )
++        urls = code_fetch.extract_github_urls(desc)
++        assert urls == ["https://github.com/anthropics/anthropic-sdk-python/blob/main/README.md"]
++
++    def test_gist_url_extracted(self):
++        desc = "Gist: https://gist.github.com/anthropics/abc123def456"
++        urls = code_fetch.extract_github_urls(desc)
++        assert urls == ["https://gist.github.com/abc123def456"]
++
++    def test_repo_url_extracted_when_no_blob(self):
++        desc = "Repository: https://github.com/anthropics/claude-code"
++        urls = code_fetch.extract_github_urls(desc)
++        assert urls == ["https://github.com/anthropics/claude-code"]
++
++    def test_blob_takes_priority_over_repo_for_same_repo(self):
++        desc = """
++        Repo: https://github.com/anthropics/claude-code
++        File: https://github.com/anthropics/claude-code/blob/main/foo.py
++        """
++        urls = code_fetch.extract_github_urls(desc)
++        # Both still appear (the bare repo URL could refer to a different
++        # part), but the blob URL wins by appearing first in iteration
++        # order. The repo URL is filtered out only when it duplicates
++        # the same owner/repo as an existing blob URL.
++        assert "https://github.com/anthropics/claude-code/blob/main/foo.py" in urls
++        assert "https://github.com/anthropics/claude-code" not in urls
++
++    def test_dedupes_identical_urls(self):
++        desc = """
++        First mention: https://github.com/foo/bar/blob/main/a.py
++        Second mention: https://github.com/foo/bar/blob/main/a.py
++        """
++        urls = code_fetch.extract_github_urls(desc)
++        assert urls == ["https://github.com/foo/bar/blob/main/a.py"]
++
++    def test_empty_description(self):
++        assert code_fetch.extract_github_urls("") == []
++        assert code_fetch.extract_github_urls(None) == []  # type: ignore[arg-type]
++
++    def test_no_github_urls_in_description(self):
++        desc = "プログラミング動画です。よろしく！ https://twitter.com/foo"
++        assert code_fetch.extract_github_urls(desc) == []
++
++    def test_multiple_distinct_urls(self):
++        desc = """
++        - https://github.com/foo/bar/blob/main/a.py
++        - https://gist.github.com/abc123def456
++        - https://github.com/baz/qux
++        """
++        urls = code_fetch.extract_github_urls(desc)
++        assert "https://github.com/foo/bar/blob/main/a.py" in urls
++        assert "https://gist.github.com/abc123def456" in urls
++        assert "https://github.com/baz/qux" in urls
++
++    def test_caps_at_2x_max_for_filtering_room(self):
++        urls_in_desc = "\n".join(f"https://github.com/foo/bar{i}/blob/main/a.py" for i in range(20))
++        urls = code_fetch.extract_github_urls(urls_in_desc)
++        assert len(urls) <= code_fetch.MAX_URLS_PER_VIDEO * 2
++
++
++# =====================================================
++# language detection
++# =====================================================
++
++
++class TestLanguageDetection:
++    def test_python_extension(self):
++        assert code_fetch._language_for_path("foo/bar.py") == "python"
++
++    def test_typescript_extension(self):
++        assert code_fetch._language_for_path("src/index.ts") == "typescript"
++
++    def test_dockerfile_no_extension(self):
++        assert code_fetch._language_for_path("docker/Dockerfile") == "dockerfile"
++        assert code_fetch._language_for_path("Dockerfile") == "dockerfile"
++
++    def test_unknown_extension(self):
++        assert code_fetch._language_for_path("foo.xyz") == ""
++
++    def test_no_extension(self):
++        assert code_fetch._language_for_path("LICENSE") == ""
++
++
++# =====================================================
++# fetch_snippets_for_urls
++# =====================================================
++
++
++class TestFetchSnippetsForUrls:
++    def test_blob_url_fetches_raw(self):
++        with patch.object(
++            code_fetch,
++            "_fetch_raw",
++            return_value=("print('hi')\n", False),
++        ) as fetch:
++            snippets = code_fetch.fetch_snippets_for_urls(
++                ["https://github.com/anthropics/foo/blob/main/x.py"]
++            )
++
++        assert len(snippets) == 1
++        s = snippets[0]
++        assert s.filename == "x.py"
++        assert s.language == "python"
++        assert s.content == "print('hi')\n"
++        assert s.truncated is False
++        # Verify the fetch URL is the raw form
++        assert (
++            fetch.call_args.args[0] == "https://raw.githubusercontent.com/anthropics/foo/main/x.py"
++        )
++
++    def test_repo_url_skipped(self):
++        """Bare repo URLs should be skipped (no /blob/, no fetch)."""
++        with patch.object(code_fetch, "_fetch_raw") as fetch:
++            snippets = code_fetch.fetch_snippets_for_urls(
++                ["https://github.com/anthropics/claude-code"]
++            )
++        assert snippets == []
++        fetch.assert_not_called()
++
++    def test_capped_at_max(self):
++        """Only MAX_URLS_PER_VIDEO snippets are fetched even when more are given."""
++        urls = [f"https://github.com/o/r{i}/blob/main/x.py" for i in range(10)]
++        with patch.object(
++            code_fetch,
++            "_fetch_raw",
++            return_value=("ok", False),
++        ) as fetch:
++            snippets = code_fetch.fetch_snippets_for_urls(urls)
++        assert len(snippets) == code_fetch.MAX_URLS_PER_VIDEO
++        assert fetch.call_count == code_fetch.MAX_URLS_PER_VIDEO
++
++    def test_failed_fetch_skipped(self):
++        with patch.object(code_fetch, "_fetch_raw", return_value=None):
++            snippets = code_fetch.fetch_snippets_for_urls(["https://github.com/o/r/blob/main/x.py"])
++        assert snippets == []
++
++    def test_truncation_flag_propagated(self):
++        with patch.object(
++            code_fetch,
++            "_fetch_raw",
++            return_value=("x" * 50_000, True),
++        ):
++            snippets = code_fetch.fetch_snippets_for_urls(
++                ["https://github.com/o/r/blob/main/big.py"]
++            )
++        assert len(snippets) == 1
++        assert snippets[0].truncated is True
++
++    def test_gist_via_api(self):
++        mock_resp = MagicMock()
++        mock_resp.read.return_value = b'{"files": {"main.py": {"content": "print(\\"hi\\")"}, "README.md": {"content": "# example"}}}'
++        mock_resp.__enter__ = lambda self: self
++        mock_resp.__exit__ = lambda *a: None
++
++        with patch("urllib.request.urlopen", return_value=mock_resp):
++            snippets = code_fetch.fetch_snippets_for_urls(["https://gist.github.com/abc123def456"])
++
++        assert len(snippets) == 1
++        s = snippets[0]
++        assert s.filename == "gist_abc123def456"
++        assert "main.py" in s.content
++        assert "README.md" in s.content
++
++
++# =====================================================
++# render_code_section
++# =====================================================
++
++
++class TestRenderCodeSection:
++    def test_empty_returns_empty_string(self):
++        assert code_fetch.render_code_section([]) == ""
++
++    def test_single_snippet_format(self):
++        snippet = code_fetch.CodeSnippet(
++            source_url="https://github.com/o/r/blob/main/x.py",
++            raw_url="https://raw.githubusercontent.com/o/r/main/x.py",
++            filename="x.py",
++            language="python",
++            content="print('hi')",
++            truncated=False,
++        )
++        rendered = code_fetch.render_code_section([snippet])
++        assert "## 関連コード" in rendered
++        assert "### [x.py](https://github.com/o/r/blob/main/x.py)" in rendered
++        assert "```python" in rendered
++        assert "print('hi')" in rendered
++        assert "```" in rendered
++        assert "truncated" not in rendered
++
++    def test_truncated_snippet_shows_warning(self):
++        snippet = code_fetch.CodeSnippet(
++            source_url="https://github.com/o/r/blob/main/big.py",
++            raw_url="https://raw.githubusercontent.com/o/r/main/big.py",
++            filename="big.py",
++            language="python",
++            content="x" * 100,
++            truncated=True,
++        )
++        rendered = code_fetch.render_code_section([snippet])
++        assert "truncated" in rendered
++
++    def test_unknown_language_no_fence_lang(self):
++        snippet = code_fetch.CodeSnippet(
++            source_url="https://github.com/o/r/blob/main/foo.xyz",
++            raw_url="https://raw.githubusercontent.com/o/r/main/foo.xyz",
++            filename="foo.xyz",
++            language="",
++            content="?",
++            truncated=False,
++        )
++        rendered = code_fetch.render_code_section([snippet])
++        assert "```\n" in rendered or rendered.split("```")[1].startswith("\n")
++
++
++# =====================================================
++# fetch_video_description (yt-dlp mocked)
++# =====================================================
++
++
++class TestFetchVideoDescription:
++    def test_returns_description_string(self):
++        fake_ydl = MagicMock()
++        fake_ydl.__enter__ = lambda self: self
++        fake_ydl.__exit__ = lambda *a: None
++        fake_ydl.extract_info.return_value = {"description": "some description"}
++
++        with patch("yt_dlp.YoutubeDL", return_value=fake_ydl):
++            result = code_fetch.fetch_video_description("vid001")
++        assert result == "some description"
++
++    def test_returns_none_on_extract_failure(self):
++        fake_ydl = MagicMock()
++        fake_ydl.__enter__ = lambda self: self
++        fake_ydl.__exit__ = lambda *a: None
++        fake_ydl.extract_info.side_effect = RuntimeError("boom")
++
++        with patch("yt_dlp.YoutubeDL", return_value=fake_ydl):
++            result = code_fetch.fetch_video_description("vid001")
++        assert result is None
++
++    def test_returns_none_when_description_missing(self):
++        fake_ydl = MagicMock()
++        fake_ydl.__enter__ = lambda self: self
++        fake_ydl.__exit__ = lambda *a: None
++        fake_ydl.extract_info.return_value = {"title": "no desc field"}
++
++        with patch("yt_dlp.YoutubeDL", return_value=fake_ydl):
++            result = code_fetch.fetch_video_description("vid001")
++        assert result is None
+diff --git a/tests/test_config_models.py b/tests/test_config_models.py
+index 1a96e67..316eb6d 100644
+--- a/tests/test_config_models.py
++++ b/tests/test_config_models.py
+@@ -36,6 +36,7 @@ class TestLoadConfig:
+         result = _load_config(cfg, fallback_model="sonnet")
+         assert result.vault_root == vault
+         assert result.models == {
++            "router": "haiku",  # router defaults to haiku regardless of fallback
+             "stage_02": "sonnet",
+             "stage_04": "sonnet",
+             "alpha": "sonnet",
+diff --git a/tests/test_e2e_playlist.py b/tests/test_e2e_playlist.py
+index 85f0d95..37d989c 100644
+--- a/tests/test_e2e_playlist.py
++++ b/tests/test_e2e_playlist.py
+@@ -189,7 +189,7 @@ def vault(tmp_path: Path):
+ class TestE2EPlaylist:
+     def test_full_cli_3_videos(self, vault: Path, monkeypatch):
+         # Mock Stage 01 transcripts (bypass real youtube-transcript-api)
+-        def fake_scripts(video, path, *, dry_run):
++        def fake_scripts(video, path, *, dry_run, include_code_blocks=False):
+             return _transcript_result(video.video_id)
+ 
+         monkeypatch.setattr(main_mod, "run_stage_scripts", fake_scripts)
+@@ -206,6 +206,13 @@ class TestE2EPlaylist:
+             main_mod, "get_resolved_claude_binary", lambda: ("/fake/claude", "claude 2.1.109")
+         )
+ 
++        # Stub Router (genre classification) — avoid real LLM call
++        from pipeline_youtube.genres import Genre
++
++        monkeypatch.setattr(
++            main_mod, "classify_playlist_genre", lambda *a, **kw: (Genre.OTHER, "stubbed")
++        )
++
+         # Stub every invoke_claude in both stages + synthesis
+         from pipeline_youtube.stages import learning as learning_mod
+         from pipeline_youtube.stages import summary as summary_mod
+@@ -249,7 +256,7 @@ class TestE2EPlaylist:
+         assert "leader" in result.output
+ 
+     def test_stop_after_capture_skips_04_and_05(self, vault: Path, monkeypatch):
+-        def fake_scripts(video, path, *, dry_run):
++        def fake_scripts(video, path, *, dry_run, include_code_blocks=False):
+             return _transcript_result(video.video_id)
+ 
+         monkeypatch.setattr(main_mod, "run_stage_scripts", fake_scripts)
+@@ -259,9 +266,14 @@ class TestE2EPlaylist:
+         monkeypatch.setattr(
+             main_mod, "get_resolved_claude_binary", lambda: ("/fake/claude", "claude 2.1.109")
+         )
++        from pipeline_youtube.genres import Genre
+         from pipeline_youtube.stages import learning as learning_mod
+         from pipeline_youtube.stages import summary as summary_mod
+ 
++        monkeypatch.setattr(
++            main_mod, "classify_playlist_genre", lambda *a, **kw: (Genre.OTHER, "stubbed")
++        )
++
+         invoke_count = {"n": 0}
+ 
+         def fake_invoke(**kw):
+diff --git a/tests/test_genres.py b/tests/test_genres.py
+new file mode 100644
+index 0000000..2575b21
+--- /dev/null
++++ b/tests/test_genres.py
+@@ -0,0 +1,286 @@
++"""Tests for the Genre router (Stage 00.5).
++
++Verify:
++1. Each known Genre value parses correctly.
++2. The router prompt includes the playlist title and a sample of titles.
++3. JSON output (with or without code fences) parses to the right Genre.
++4. Errors (network, parse, unknown enum value) collapse to Genre.OTHER
++   without raising.
++5. CODE_BEARING_GENRES is the gate that downstream features check.
++"""
++
++from __future__ import annotations
++
++import pytest
++
++from pipeline_youtube.genres import (
++    CODE_BEARING_GENRES,
++    Genre,
++    classify_playlist_genre,
++)
++from pipeline_youtube.playlist import VideoMeta
++from pipeline_youtube.providers import claude_cli as claude_cli_mod
++from pipeline_youtube.providers.claude_cli import ClaudeCliError, ClaudeResponse
++
++
++def _video(i: int, title: str) -> VideoMeta:
++    vid = f"vid{i:03d}"
++    return VideoMeta(
++        video_id=vid,
++        title=title,
++        url=f"https://www.youtube.com/watch?v={vid}",
++        duration=600,
++        channel="Test",
++        upload_date="20260420",
++        playlist_title="Test Playlist",
++    )
++
++
++def _resp(text: str) -> ClaudeResponse:
++    return ClaudeResponse(
++        text=text,
++        model="haiku",
++        input_tokens=10,
++        output_tokens=20,
++        cache_creation_tokens=0,
++        cache_read_tokens=0,
++        total_cost_usd=0.001,
++        duration_ms=500,
++    )
++
++
++# =====================================================
++# Genre enum + CODE_BEARING_GENRES
++# =====================================================
++
++
++class TestGenreEnum:
++    def test_all_known_values(self):
++        assert {g.value for g in Genre} == {
++            "coding",
++            "business",
++            "humanities",
++            "science",
++            "lifestyle",
++            "entertainment",
++            "other",
++        }
++
++    def test_code_bearing_only_includes_coding(self):
++        assert frozenset({Genre.CODING}) == CODE_BEARING_GENRES
++
++    def test_genre_is_str_compatible(self):
++        """Genre values should compare to plain strings (str enum semantics)."""
++        assert Genre.CODING == "coding"
++        assert Genre.HUMANITIES == "humanities"
++
++
++# =====================================================
++# classify_playlist_genre — happy paths
++# =====================================================
++
++
++class TestClassifyHappyPath:
++    def test_coding_classification(self, monkeypatch):
++        captured: dict = {}
++
++        def fake_invoke(**kw):
++            captured.update(kw)
++            return _resp('{"genre": "coding", "rationale": "Claude Code チュートリアル"}')
++
++        monkeypatch.setattr(claude_cli_mod, "invoke_claude", fake_invoke)
++        # Re-import the binding the genres module uses
++        from pipeline_youtube import genres as genres_mod
++
++        monkeypatch.setattr(genres_mod, "invoke_claude", fake_invoke)
++
++        videos = [
++            _video(1, "Claude Code 入門"),
++            _video(2, "Cursor で AI コーディング"),
++        ]
++        genre, rationale = classify_playlist_genre("AI 開発入門", videos)
++
++        assert genre == Genre.CODING
++        assert "Claude Code" in rationale
++
++        # Prompt contains both playlist title and video titles
++        prompt = captured["prompt"]
++        assert "AI 開発入門" in prompt
++        assert "Claude Code 入門" in prompt
++        assert "Cursor" in prompt
++
++        # System prompt enforces JSON-only output
++        assert "JSON" in captured["system_prompt"]
++
++    def test_humanities_classification(self, monkeypatch):
++        from pipeline_youtube import genres as genres_mod
++
++        monkeypatch.setattr(
++            genres_mod,
++            "invoke_claude",
++            lambda **kw: _resp('{"genre": "humanities", "rationale": "哲学講義"}'),
++        )
++
++        videos = [_video(1, "ニーチェの永劫回帰"), _video(2, "カントの定言命法")]
++        genre, _ = classify_playlist_genre("哲学入門", videos)
++        assert genre == Genre.HUMANITIES
++
++    def test_strips_code_fences(self, monkeypatch):
++        """If the LLM ignores instructions and wraps JSON in ```, still parse."""
++        from pipeline_youtube import genres as genres_mod
++
++        monkeypatch.setattr(
++            genres_mod,
++            "invoke_claude",
++            lambda **kw: _resp('```json\n{"genre": "science", "rationale": "x"}\n```'),
++        )
++
++        videos = [_video(1, "量子力学")]
++        genre, _ = classify_playlist_genre("物理学", videos)
++        assert genre == Genre.SCIENCE
++
++    def test_uses_haiku_by_default(self, monkeypatch):
++        captured: dict = {}
++        from pipeline_youtube import genres as genres_mod
++
++        def fake(**kw):
++            captured.update(kw)
++            return _resp('{"genre": "other", "rationale": ""}')
++
++        monkeypatch.setattr(genres_mod, "invoke_claude", fake)
++        classify_playlist_genre("p", [_video(1, "t")])
++        assert captured["model"] == "haiku"
++
++    def test_explicit_model_override(self, monkeypatch):
++        captured: dict = {}
++        from pipeline_youtube import genres as genres_mod
++
++        def fake(**kw):
++            captured.update(kw)
++            return _resp('{"genre": "other", "rationale": ""}')
++
++        monkeypatch.setattr(genres_mod, "invoke_claude", fake)
++        classify_playlist_genre("p", [_video(1, "t")], model="sonnet")
++        assert captured["model"] == "sonnet"
++
++
++# =====================================================
++# classify_playlist_genre — error paths
++# =====================================================
++
++
++class TestClassifyErrorPaths:
++    def test_invoke_failure_returns_other(self, monkeypatch):
++        from pipeline_youtube import genres as genres_mod
++
++        def fake(**kw):
++            raise ClaudeCliError("network down")
++
++        monkeypatch.setattr(genres_mod, "invoke_claude", fake)
++        genre, rationale = classify_playlist_genre("p", [_video(1, "t")])
++        assert genre == Genre.OTHER
++        assert "router_call_failed" in rationale
++
++    def test_invalid_json_returns_other(self, monkeypatch):
++        from pipeline_youtube import genres as genres_mod
++
++        monkeypatch.setattr(genres_mod, "invoke_claude", lambda **kw: _resp("definitely not json"))
++        genre, rationale = classify_playlist_genre("p", [_video(1, "t")])
++        assert genre == Genre.OTHER
++        assert "router_parse_failed" in rationale
++
++    def test_unknown_genre_value_returns_other(self, monkeypatch):
++        from pipeline_youtube import genres as genres_mod
++
++        monkeypatch.setattr(
++            genres_mod,
++            "invoke_claude",
++            lambda **kw: _resp('{"genre": "cooking", "rationale": "lol"}'),
++        )
++        genre, _ = classify_playlist_genre("p", [_video(1, "t")])
++        assert genre == Genre.OTHER
++
++    def test_missing_genre_key_returns_other(self, monkeypatch):
++        from pipeline_youtube import genres as genres_mod
++
++        monkeypatch.setattr(
++            genres_mod,
++            "invoke_claude",
++            lambda **kw: _resp('{"category": "coding"}'),
++        )
++        genre, rationale = classify_playlist_genre("p", [_video(1, "t")])
++        assert genre == Genre.OTHER
++        assert "router_parse_failed" in rationale
++
++    def test_empty_playlist_returns_other_without_call(self, monkeypatch):
++        called: list[bool] = []
++        from pipeline_youtube import genres as genres_mod
++
++        def fake(**kw):
++            called.append(True)
++            return _resp('{"genre": "coding", "rationale": ""}')
++
++        monkeypatch.setattr(genres_mod, "invoke_claude", fake)
++        genre, rationale = classify_playlist_genre("p", [])
++        assert genre == Genre.OTHER
++        assert rationale == "no videos"
++        assert not called  # no LLM call when there's nothing to classify
++
++
++# =====================================================
++# Sample size + sanitization
++# =====================================================
++
++
++class TestPromptShape:
++    def test_truncates_to_30_titles(self, monkeypatch):
++        captured: dict = {}
++        from pipeline_youtube import genres as genres_mod
++
++        def fake(**kw):
++            captured.update(kw)
++            return _resp('{"genre": "other", "rationale": ""}')
++
++        monkeypatch.setattr(genres_mod, "invoke_claude", fake)
++
++        videos = [_video(i, f"Video {i}") for i in range(50)]
++        classify_playlist_genre("Big Playlist", videos)
++
++        # Only first 30 titles in prompt
++        prompt = captured["prompt"]
++        assert "Video 0" in prompt
++        assert "Video 29" in prompt
++        assert "Video 30" not in prompt
++        assert "計 50 本中、先頭 30 本を表示" in prompt
++
++    def test_sanitizes_control_chars_in_titles(self, monkeypatch):
++        captured: dict = {}
++        from pipeline_youtube import genres as genres_mod
++
++        def fake(**kw):
++            captured.update(kw)
++            return _resp('{"genre": "other", "rationale": ""}')
++
++        monkeypatch.setattr(genres_mod, "invoke_claude", fake)
++
++        videos = [_video(1, "title\x01with\x07control")]
++        classify_playlist_genre("p", videos)
++        prompt = captured["prompt"]
++        assert "\x01" not in prompt
++        assert "\x07" not in prompt
++
++    @pytest.mark.parametrize(
++        "title",
++        ["", "Untitled​playlist"],
++    )
++    def test_handles_edge_case_titles(self, monkeypatch, title: str):
++        from pipeline_youtube import genres as genres_mod
++
++        monkeypatch.setattr(
++            genres_mod,
++            "invoke_claude",
++            lambda **kw: _resp('{"genre": "other", "rationale": ""}'),
++        )
++        # Should not raise
++        genre, _ = classify_playlist_genre(title, [_video(1, "t")])
++        assert genre == Genre.OTHER
+diff --git a/tests/test_learning_code_bearing.py b/tests/test_learning_code_bearing.py
+new file mode 100644
+index 0000000..7358ffe
+--- /dev/null
++++ b/tests/test_learning_code_bearing.py
+@@ -0,0 +1,142 @@
++"""Tests for the code-bearing addendum in Stage 04 learning prompt.
++
++Verify that:
++1. When ``code_bearing=False`` (default) the system prompt is exactly
++   the base ``LEARNING_SYSTEM_PROMPT``.
++2. When ``code_bearing=True`` the addendum is appended and instructs
++   the model to split output into `# 概念` / `# 実践`.
++3. The addendum mentions the ``## 関連コード`` section produced by
++   Stage 01 so the Leader can reference fetched GitHub snippets.
++"""
++
++from __future__ import annotations
++
++from datetime import datetime
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++
++from pipeline_youtube.playlist import VideoMeta
++from pipeline_youtube.providers.claude_cli import ClaudeResponse
++from pipeline_youtube.stages import learning as learning_mod
++from pipeline_youtube.stages.learning import (
++    LEARNING_CODE_BEARING_ADDENDUM,
++    LEARNING_SYSTEM_PROMPT,
++    run_stage_learning,
++)
++
++
++@pytest.fixture
++def vault(tmp_path: Path, monkeypatch):
++    """Minimal vault setup + a pair of 02/03 md files."""
++    from pipeline_youtube import config as cfg
++
++    cfg.set_vault_root(tmp_path)
++    cfg.set_dry_run(False)
++    yield tmp_path
++    cfg.reset_vault_root()
++
++
++def _video() -> VideoMeta:
++    return VideoMeta(
++        video_id="vid001",
++        title="Claude Code チュートリアル",
++        url="https://www.youtube.com/watch?v=vid001",
++        duration=600,
++        channel="test",
++        upload_date="20260420",
++        playlist_title="Test Playlist",
++    )
++
++
++def _write_stub(path: Path, body: str) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(f"---\nfoo: bar\n---\n\n{body}\n", encoding="utf-8")
++
++
++def _fake_response(
++    text: str = "## 概念: test\n[00:00 ~ 01:00]\n![[x.webp]]\n- ok",
++) -> ClaudeResponse:
++    return ClaudeResponse(
++        text=text,
++        model="sonnet",
++        input_tokens=10,
++        output_tokens=20,
++        cache_creation_tokens=0,
++        cache_read_tokens=0,
++        total_cost_usd=0.01,
++        duration_ms=1000,
++    )
++
++
++class TestCodeBearingAddendum:
++    def test_default_uses_base_prompt_only(self, vault: Path):
++        summary_path = vault / "summary.md"
++        capture_path = vault / "capture.md"
++        learning_path = vault / "learning.md"
++        _write_stub(summary_path, "sample summary")
++        _write_stub(capture_path, "[00:00 ~ 01:00]\n![[x.webp]]")
++
++        captured: dict = {}
++
++        def fake_invoke(**kw):
++            captured.update(kw)
++            return _fake_response()
++
++        with patch.object(learning_mod, "invoke_claude", fake_invoke):
++            run_stage_learning(
++                _video(),
++                summary_path,
++                capture_path,
++                learning_path,
++                run_time=datetime(2026, 4, 21, 12, 0),
++                model="sonnet",
++            )
++
++        assert captured["append_system_prompt"] == LEARNING_SYSTEM_PROMPT
++        assert "# 概念 (Concepts)" not in captured["append_system_prompt"]
++
++    def test_code_bearing_appends_addendum(self, vault: Path):
++        summary_path = vault / "summary.md"
++        capture_path = vault / "capture.md"
++        learning_path = vault / "learning.md"
++        _write_stub(summary_path, "sample summary")
++        _write_stub(capture_path, "[00:00 ~ 01:00]\n![[x.webp]]")
++
++        captured: dict = {}
++
++        def fake_invoke(**kw):
++            captured.update(kw)
++            return _fake_response()
++
++        with patch.object(learning_mod, "invoke_claude", fake_invoke):
++            run_stage_learning(
++                _video(),
++                summary_path,
++                capture_path,
++                learning_path,
++                run_time=datetime(2026, 4, 21, 12, 0),
++                model="sonnet",
++                code_bearing=True,
++            )
++
++        sp = captured["append_system_prompt"]
++        # Base prompt still present
++        assert LEARNING_SYSTEM_PROMPT in sp
++        # Addendum appended verbatim
++        assert LEARNING_CODE_BEARING_ADDENDUM in sp
++        # Key instructions from the addendum are visible
++        assert "# 概念 (Concepts)" in sp
++        assert "# 実践 (Practice)" in sp
++        # Mentions the GitHub snippet section from Stage 01
++        assert "## 関連コード" in sp
++
++    def test_addendum_lists_concept_and_practice_types(self):
++        """Sanity check that the category partition is spelled out."""
++        # concept categories
++        for cat in ("概念", "問題", "結果", "まとめ", "背景"):
++            assert cat in LEARNING_CODE_BEARING_ADDENDUM
++        # practice categories
++        for cat in ("解決策", "実装手順", "コマンド", "コード例", "セットアップ", "デバッグ"):
++            assert cat in LEARNING_CODE_BEARING_ADDENDUM
+-- 
+2.43.0
+
