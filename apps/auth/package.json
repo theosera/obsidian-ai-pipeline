@@ -8,7 +8,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@obsidian-ai-pipeline/core": "workspace:*",
-    "dotenv": "^16.4.5"
+    "@obsidian-ai-pipeline/core": "workspace:*"
   }
 }

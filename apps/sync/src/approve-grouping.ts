@@ -13,15 +13,7 @@ const config = loadEnvConfig(repoRoot);
 
 async function findLatestProposalDataFile(): Promise<string> {
   const analysisDir = path.resolve(repoRoot, "analysis");
-  let files: string[];
-  try {
-    files = await fs.readdir(analysisDir);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error("Run pnpm propose:grouping first.");
-    }
-    throw error;
-  }
+  const files = await fs.readdir(analysisDir);
   const prefix = `x_folder_grouping_proposal_${config.proposalPrefix}_`;
   const candidates = files
     .filter((file) => file.startsWith(prefix) && file.endsWith(".json"))

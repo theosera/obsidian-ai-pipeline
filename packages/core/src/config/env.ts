@@ -39,13 +39,13 @@ export function loadEnvConfig(repoRoot = process.cwd()): EnvConfig {
       process.env.X_SCOPE ?? "tweet.read users.read bookmark.read offline.access",
     xAuthBaseUrl: process.env.X_AUTH_BASE_URL ?? "https://twitter.com/i/oauth2",
     xApiBaseUrl: process.env.X_API_BASE_URL ?? "https://api.x.com",
-    localAuthPort: readPort("AUTH_PORT", 3838),
+    localAuthPort: Number(process.env.AUTH_PORT ?? "3838"),
     tokensPath: process.env.TOKENS_PATH ?? path.join(dataDir, "tokens.json"),
     pkceStatePath: process.env.PKCE_STATE_PATH ?? path.join(dataDir, "pkce_state.json"),
     obsidianVaultPath: requireEnv("OBSIDIAN_VAULT_PATH"),
     xBookmarksRoot: process.env.X_BOOKMARKS_ROOT ?? "Clippings/X-Bookmarks-codex",
     sourceRoot: process.env.SOURCE_ROOT ?? "Clippings/X-Bookmarks-codex",
-    proposalPrefix: safeFileSegment(process.env.PROPOSAL_PREFIX ?? "codex")
+    proposalPrefix: process.env.PROPOSAL_PREFIX ?? "codex"
   };
   const secret = process.env.X_CLIENT_SECRET;
   if (secret) {
@@ -82,4 +82,19 @@ function readPort(name: string, fallback: number): number {
 function safeFileSegment(value: string): string {
   const normalized = value.trim().replace(/[^A-Za-z0-9_-]+/g, "_");
   return normalized.length > 0 ? normalized : "codex";
+}
+
+function loadDotEnv(envPath: string): void {
+  if (!fs.existsSync(envPath)) return;
+  const raw = fs.readFileSync(envPath, "utf-8");
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const idx = trimmed.indexOf("=");
+    if (idx <= 0) continue;
+    const key = trimmed.slice(0, idx).trim();
+    if (process.env[key] !== undefined) continue;
+    const value = trimmed.slice(idx + 1).trim().replace(/^['"]|['"]$/g, "");
+    process.env[key] = value;
+  }
 }

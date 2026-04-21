@@ -30,7 +30,11 @@ export async function writeProposalData(params: {
   fileName?: string;
 }): Promise<string> {
   const repoRoot = params.repoRoot ?? process.cwd();
-  const filePath = path.resolve(repoRoot, "analysis", safeAnalysisFileName(params.fileName));
+  const filePath = path.resolve(
+    repoRoot,
+    "analysis",
+    params.fileName ?? "x_folder_grouping_proposal_data.json"
+  );
   await writeJsonFile(filePath, params.analysis);
   return filePath;
 }

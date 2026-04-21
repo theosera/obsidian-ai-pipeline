@@ -92,20 +92,6 @@ importers:
 
   packages/core: {}
 
-  apps/auth:
-    dependencies:
-      '@obsidian-ai-pipeline/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-
-  apps/sync:
-    dependencies:
-      '@obsidian-ai-pipeline/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-
-  packages/core: {}
-
 packages:
 
   '@anthropic-ai/sdk@0.36.3':
