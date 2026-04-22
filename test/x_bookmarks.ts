@@ -26,6 +26,12 @@ import {
   buildBookmarkMarkdown,
 } from '../packages/core/src/markdown/markdown-builder.js';
 import type { XPost } from '../packages/core/src/types/shared.js';
+import {
+  loadForcedParents as loadCodexForcedParents,
+  resolveForcedParent,
+  hasWordBoundaryMatch,
+} from '../packages/core/src/x-folder-grouping/forced-parents.js';
+import { resolveXBookmarkSaveDirectory } from '../packages/core/src/path/x-bookmark-path-resolver.js';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export function run(): TestSuiteResult {
@@ -827,6 +833,266 @@ export function run(): TestSuiteResult {
       assert.ok(md.includes('- Replies: 3'));
       assert.ok(md.includes('- Reposts: 5'));
       assert.ok(md.includes('- Quotes: 2'));
+    });
+
+    // =====================================================
+    // codex forced-parents: hasWordBoundaryMatch
+    // =====================================================
+    runner.section('codex forced-parents: hasWordBoundaryMatch');
+
+    runner.test('空のキーワードは常に false', () => {
+      assert.strictEqual(hasWordBoundaryMatch('AI Agent', ''), false);
+      assert.strictEqual(hasWordBoundaryMatch('AI Agent', '   '), false);
+    });
+
+    runner.test('完全一致はマッチ', () => {
+      assert.strictEqual(hasWordBoundaryMatch('Claude Code', 'Claude Code'), true);
+    });
+
+    runner.test('単語境界マッチ (AI は "AI Agent" にマッチ)', () => {
+      assert.strictEqual(hasWordBoundaryMatch('AI Agent', 'AI'), true);
+    });
+
+    runner.test('部分一致は不一致 (AI は "AIRI" にマッチしない)', () => {
+      assert.strictEqual(hasWordBoundaryMatch('AIRI', 'AI'), false);
+    });
+
+    runner.test('日本語隣接は境界として扱う (MCP は "MCP連携" にマッチ)', () => {
+      assert.strictEqual(hasWordBoundaryMatch('MCP連携', 'MCP'), true);
+    });
+
+    runner.test('大小文字無視', () => {
+      assert.strictEqual(hasWordBoundaryMatch('claude code tips', 'Claude Code'), true);
+    });
+
+    // =====================================================
+    // codex forced-parents: resolveForcedParent
+    // =====================================================
+    runner.section('codex forced-parents: resolveForcedParent');
+
+    runner.test('空の forcedParents は null', () => {
+      assert.strictEqual(resolveForcedParent('Claude Code Tips', []), null);
+    });
+
+    runner.test('マッチなしは null', () => {
+      assert.strictEqual(resolveForcedParent('LangChain', ['Claude Code', 'Obsidian']), null);
+    });
+
+    runner.test('完全一致なら child は空文字', () => {
+      assert.deepStrictEqual(
+        resolveForcedParent('Claude Code', ['Claude Code']),
+        { parent: 'Claude Code', child: '' }
+      );
+    });
+
+    runner.test('単語境界マッチで parent + child 分割', () => {
+      assert.deepStrictEqual(
+        resolveForcedParent('Claude Code Tips', ['Claude Code']),
+        { parent: 'Claude Code', child: 'Tips' }
+      );
+    });
+
+    runner.test('日本語混在: MCP連携 → { MCP, 連携 }', () => {
+      assert.deepStrictEqual(
+        resolveForcedParent('MCP連携', ['MCP']),
+        { parent: 'MCP', child: '連携' }
+      );
+    });
+
+    runner.test('長いキーワードが優先 (Claude Code > Code)', () => {
+      assert.deepStrictEqual(
+        resolveForcedParent('Claude Code Tips', ['Code', 'Claude Code']),
+        { parent: 'Claude Code', child: 'Tips' }
+      );
+    });
+
+    runner.test('空文字キーワードはスキップ', () => {
+      assert.deepStrictEqual(
+        resolveForcedParent('AI Agent', ['', 'AI']),
+        { parent: 'AI', child: 'Agent' }
+      );
+    });
+
+    runner.test('大小文字無視マッチ (キーワード表記が正規形で返る)', () => {
+      const result = resolveForcedParent('claude code tips', ['Claude Code']);
+      assert.ok(result);
+      assert.strictEqual(result!.parent, 'Claude Code');
+      assert.strictEqual(result!.child, 'tips');
+    });
+
+    runner.test('空フォルダ名は null', () => {
+      assert.strictEqual(resolveForcedParent('', ['Claude Code']), null);
+      assert.strictEqual(resolveForcedParent('   ', ['Claude Code']), null);
+    });
+
+    // =====================================================
+    // codex forced-parents: loadForcedParents (file IO)
+    // =====================================================
+    runner.section('codex forced-parents: loadForcedParents');
+
+    runner.test('未存在ファイルは空配列', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-fp-test-'));
+      try {
+        assert.deepStrictEqual(loadCodexForcedParents(dir), []);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    runner.test('正常な x_forced_parents.json を読み込み空文字を除外', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-fp-test-'));
+      try {
+        const subdir = path.join(dir, '__skills', 'pipeline');
+        fs.mkdirSync(subdir, { recursive: true });
+        fs.writeFileSync(
+          path.join(subdir, 'x_forced_parents.json'),
+          JSON.stringify(['Claude Code', 'Obsidian', '', '  ']),
+          'utf8'
+        );
+        assert.deepStrictEqual(loadCodexForcedParents(dir), ['Claude Code', 'Obsidian']);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    runner.test('壊れた JSON は空配列 (例外を投げない)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-fp-test-'));
+      try {
+        const subdir = path.join(dir, '__skills', 'pipeline');
+        fs.mkdirSync(subdir, { recursive: true });
+        fs.writeFileSync(
+          path.join(subdir, 'x_forced_parents.json'),
+          '{this is: not valid [[[',
+          'utf8'
+        );
+        assert.deepStrictEqual(loadCodexForcedParents(dir), []);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    runner.test('配列以外 (object) は空配列', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-fp-test-'));
+      try {
+        const subdir = path.join(dir, '__skills', 'pipeline');
+        fs.mkdirSync(subdir, { recursive: true });
+        fs.writeFileSync(
+          path.join(subdir, 'x_forced_parents.json'),
+          JSON.stringify({ not: 'an array' }),
+          'utf8'
+        );
+        assert.deepStrictEqual(loadCodexForcedParents(dir), []);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    // =====================================================
+    // codex path resolver: forcedParents integration
+    // =====================================================
+    runner.section('codex path resolver: forcedParents priority');
+
+    runner.test('forcedParents マッチは vault/sourceRoot/parent/child に展開', () => {
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: 'Claude Code Tips',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 1,
+        forcedParents: ['Claude Code'],
+      });
+      assert.strictEqual(result, '/vault/Clippings/X/Claude Code/Tips');
+    });
+
+    runner.test('forcedParents 完全一致は vault/sourceRoot/parent のみ', () => {
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: 'Claude Code',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 1,
+        forcedParents: ['Claude Code'],
+      });
+      assert.strictEqual(result, '/vault/Clippings/X/Claude Code');
+    });
+
+    runner.test('forcedParents 未指定 / マッチなしは child 直下 (従来挙動)', () => {
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: 'LangChain',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 1,
+        forcedParents: ['Claude Code', 'Obsidian'],
+      });
+      assert.strictEqual(result, '/vault/Clippings/X/LangChain');
+    });
+
+    runner.test('forcedParents は FolderMapping より優先', () => {
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: 'Claude Code Tips',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 1,
+        forcedParents: ['Claude Code'],
+        mapping: {
+          version: 1,
+          generated_at: '2026-04-22T00:00:00Z',
+          source_root: 'Clippings/X',
+          groups: [
+            {
+              parent_folder: 'SomeOther',
+              match_type: 'prefix',
+              token: 'Claude',
+              children: ['Claude Code Tips'],
+            },
+          ],
+        },
+      });
+      // forcedParents 優先 → "Claude Code/Tips" (mapping の "SomeOther/Claude Code Tips" ではない)
+      assert.strictEqual(result, '/vault/Clippings/X/Claude Code/Tips');
+    });
+
+    runner.test('forcedParents + date bucket (quarterly) 併用', () => {
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: 'Claude Code Tips',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 15, // quarterly threshold (10+)
+        forcedParents: ['Claude Code'],
+      });
+      assert.strictEqual(result, '/vault/Clippings/X/Claude Code/Tips/2026-Q2');
+    });
+
+    runner.test('forcedParents の悪意ある値 (../..) は sourceRoot を脱出しない', () => {
+      // x_forced_parents.json は user-maintained で、壊れた/悪意ある値が
+      // 入る可能性がある。sanitizeSegment で `/`, `\`, `..`, 制御文字を除去
+      // して path.join が vault 外に書き込むのを防ぐ。
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: '../../etc Tips',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 1,
+        forcedParents: ['../../etc'],
+      });
+      // "../../etc" → sanitize → "etc" ("/" と ".." が削除)
+      assert.strictEqual(result, '/vault/Clippings/X/etc/Tips');
+    });
+
+    runner.test('forcedParents のスラッシュ含む値 (A/B) は単一セグメント化', () => {
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: 'A/B sub',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 1,
+        forcedParents: ['A/B'],
+      });
+      // "A/B" → sanitize → "A-B" (スラッシュをハイフン置換)
+      assert.strictEqual(result, '/vault/Clippings/X/A-B/sub');
     });
 
     return runner.report();

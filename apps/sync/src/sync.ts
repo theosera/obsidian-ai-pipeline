@@ -6,6 +6,7 @@ import {
   ensureDir,
   fileExists,
   loadEnvConfig,
+  loadForcedParents,
   loadTokens,
   readJsonFile,
   refreshAccessToken,
@@ -60,6 +61,7 @@ async function savePost(params: {
   folderName: string;
   item: FlattenedPost;
   mapping?: FolderMapping | undefined;
+  forcedParents?: readonly string[] | undefined;
   folderPostCount: number;
   syncedAt: string;
 }): Promise<{ fileName: string; postId: string; authorDisplay: string; url: string; directory: string }> {
@@ -71,7 +73,8 @@ async function savePost(params: {
     childFolderName: folder,
     postDate: date,
     folderPostCount: params.folderPostCount,
-    mapping: params.mapping
+    mapping: params.mapping,
+    forcedParents: params.forcedParents
   });
   await ensureDir(directory);
 
@@ -111,6 +114,7 @@ async function run(): Promise<void> {
   const client = new XApiClient(config, tokens);
   const me = await client.getMe();
   const mapping = await loadMapping();
+  const forcedParents = loadForcedParents(config.obsidianVaultPath);
   const syncedAt = new Date().toISOString();
 
   const folders = await client.getBookmarkFolders(me.id);
@@ -138,6 +142,7 @@ async function run(): Promise<void> {
           folderName: folder.name,
           item,
           mapping,
+          forcedParents,
           folderPostCount: items.length,
           syncedAt
         })
@@ -156,6 +161,7 @@ async function run(): Promise<void> {
           folderName: "root",
           item,
           mapping,
+          forcedParents,
           folderPostCount: allItems.length,
           syncedAt
         })
@@ -190,7 +196,8 @@ async function run(): Promise<void> {
         childFolderName: result.folderName,
         postDate: new Date(),
         folderPostCount: folderCounts[result.folderName] ?? 0,
-        mapping
+        mapping,
+        forcedParents
       });
       await ensureDir(folderDir);
       const index = buildFolderIndexMarkdown({
