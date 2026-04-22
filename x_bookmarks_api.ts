@@ -83,25 +83,6 @@ export interface BookmarkFoldersResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Self-link detection (hostname-based; avoids substring false positives)
-// ---------------------------------------------------------------------------
-const X_SELF_HOSTS = new Set(['x.com', 'twitter.com']);
-
-function isXSelfLink(url: string): boolean {
-  let host: string;
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  if (X_SELF_HOSTS.has(host)) return true;
-  for (const self of X_SELF_HOSTS) {
-    if (host.endsWith(`.${self}`)) return true;
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
 // Token storage
 // ---------------------------------------------------------------------------
 export function getTokensPath(): string {
@@ -295,12 +276,25 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
     .join('\n');
 
   // entities.urls が付いている場合は expanded_url を優先的に引用する。
-  // hostname 一致で self-link を判定（旧 substring 方式の false positive
-  // 例: box.com を x.com と誤検出 を回避）。
+  // 自己リンク (x.com / twitter.com の投稿 URL) を除外する。
+  // includes() ではなく hostname を解析する (box.com 等の誤マッチ防止)。
   const expandedUrls = (post.entities?.urls ?? [])
     .map(u => u.expanded_url || u.url)
     .filter((u): u is string => !!u)
-    .filter(u => !isXSelfLink(u))
+    .filter(u => {
+      try {
+        const parsed = new URL(u);
+        const host = parsed.hostname.toLowerCase();
+        const isXHost = host === 'x.com' || host.endsWith('.x.com')
+                     || host === 'twitter.com' || host.endsWith('.twitter.com');
+        if (!isXHost) return true;
+        // 自分自身のポスト URL だけ除外し、他のツイートやプロフィールへのリンクは残す
+        const statusMatch = parsed.pathname.match(/^\/(?:[^/]+\/status|i\/web\/status)\/([^/]+)/);
+        return statusMatch?.[1] !== post.id;
+      } catch {
+        return true;
+      }
+    })
     .filter((v, i, arr) => arr.indexOf(v) === i);
 
   const linksSection = expandedUrls.length > 0

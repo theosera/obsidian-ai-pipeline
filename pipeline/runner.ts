@@ -66,16 +66,21 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   );
   console.log('Performing content fetching and classification (This may take several minutes...)');
 
-  const { results, failures: processingFailures } = await processEntries(entries, {
-    xBookmarksBaseFolder: X_BOOKMARKS_BASE_FOLDER,
-  });
-  failures.push(...processingFailures);
-
-  await closeBrowser();
+  let results: ProcessingResult[];
+  try {
+    const processed = await processEntries(entries, {
+      xBookmarksBaseFolder: X_BOOKMARKS_BASE_FOLDER,
+    });
+    results = processed.results;
+    failures.push(...processed.failures);
+  } finally {
+    await closeBrowser();
+  }
 
   // === 4. 失敗ログ書出 ===
+  const sourceTag = args.xBookmarks ? 'xbookmarks' : 'onetab';
   const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  writeFailureLog(failures, INTERNAL_LOGS_DIR, dateStr);
+  writeFailureLog(failures, INTERNAL_LOGS_DIR, sourceTag, dateStr);
 
   if (results.length === 0) {
     console.log('\nNo items were successfully processed. Exiting.');
@@ -86,8 +91,9 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   applyRouterPhase(results);
 
   // === 6. レポート生成 + 対話レビュー ===
-  const reportPath = path.join(REPORTS_DIR, `OneTab分類結果レポート-${dateStr}.md`);
-  fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics), 'utf8');
+  const reportLabel = args.xBookmarks ? 'X-Bookmarks' : 'OneTab';
+  const reportPath = path.join(REPORTS_DIR, `${reportLabel}分類結果レポート-${dateStr}.md`);
+  fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
   await interactiveReviewLoop(results, reportPath);
 }
 
@@ -147,11 +153,12 @@ async function confirmBeforeRun(
 function writeFailureLog(
   failures: FailureRecord[],
   internalLogsDir: string,
+  sourceTag: string,
   dateStr: string
 ): void {
   if (failures.length === 0) return;
   const failedContent = failures.map((f) => `${f.url} | ${f.title}`).join('\n');
-  const failedPath = path.join(internalLogsDir, `failed_onetab_${dateStr}.txt`);
+  const failedPath = path.join(internalLogsDir, `failed_${sourceTag}_${dateStr}.txt`);
   fs.writeFileSync(failedPath, failedContent, 'utf8');
   console.log(`\n⚠️ Saved ${failures.length} failed/skipped items to ${failedPath}`);
 }

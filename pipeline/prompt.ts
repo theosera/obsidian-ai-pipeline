@@ -7,34 +7,48 @@ import readline from 'readline';
  * 直接扱い、上位 (runner / interactive / config wizard 等) は askQuestion() 経由で
  * 対話する。
  *
- * stdin EOF 対応:
- *   - パイプ実行や非対話環境では stdin が早期に閉じられる。
- *   - rl.close() 後に rl.question() を呼ぶと ERR_USE_AFTER_CLOSE が飛ぶため、
- *     閉鎖フラグを保持し以降の問いに対しては空文字を即座に resolve する。
- *   - 呼び出し側は「空文字 = 入力なし = quit 相当」として扱うことで、
- *     非対話環境でも安全に終了できる。
+ * Lazy init:
+ *   readline.createInterface は副作用を伴う (stdin を即座にバインド)。
+ *   テスト等で prompt.ts が transitively import されても stdin を奪わないよう、
+ *   最初の askQuestion() 呼出し時に遅延初期化する。
+ *
+ * Pending question drain:
+ *   stdin が閉じられると rl.question の callback は fire しない (Node.js の仕様)。
+ *   pending resolver リストを保持し、close イベントで全てを空文字で resolve する
+ *   ことでハングを防止する。
  */
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
-
+let rl: readline.Interface | null = null;
 let rlClosed = false;
-rl.on('close', () => {
-  rlClosed = true;
-});
+const pending: Array<(v: string) => void> = [];
+
+function getRl(): readline.Interface {
+  if (!rl) {
+    rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.on('close', () => {
+      rlClosed = true;
+      while (pending.length) pending.shift()!('');
+    });
+  }
+  return rl;
+}
 
 export function askQuestion(question: string): Promise<string> {
   return new Promise((resolve) => {
-    if (rlClosed) {
-      resolve('');
-      return;
-    }
+    if (rlClosed) return resolve('');
+    pending.push(resolve);
     try {
-      rl.question(question, (answer) => resolve(answer ?? ''));
+      getRl().question(question, (answer) => {
+        const idx = pending.indexOf(resolve);
+        if (idx >= 0) pending.splice(idx, 1);
+        resolve(answer ?? '');
+      });
     } catch {
-      // rl がすでに閉じられているが rlClosed イベントが遅延した場合のフォールバック
+      const idx = pending.indexOf(resolve);
+      if (idx >= 0) pending.splice(idx, 1);
       resolve('');
     }
   });
@@ -45,7 +59,7 @@ export function isPromptClosed(): boolean {
 }
 
 export function closePrompt(): void {
-  if (!rlClosed) {
+  if (rl && !rlClosed) {
     rl.close();
   }
 }

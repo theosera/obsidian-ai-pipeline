@@ -7,8 +7,8 @@
  *                     したい媒体 (note, wired 等)。保存前のレビューでマーカー表示される
  *   - public_auto   : 上記以外。Playwright のヘッドレスブラウザで取得して進める
  *
- * 判定は URL 部分一致のみの単純ロジック。個別の例外はルールベース (classifier)
- * 側で扱い、ここでは「そもそもフェッチするか」のゲートだけを担う。
+ * 判定は URL.hostname ベースの完全一致 (サブドメイン許容) で行う。
+ * 旧実装の includes() は `x.com` が `netflix.com` に誤マッチするバグがあった。
  */
 export type SitePolicy = 'manual_skip' | 'public_review' | 'public_auto';
 
@@ -23,8 +23,25 @@ const SKIP_LIST = [
 
 const REVIEW_LIST = ['note.com', 'wired.jp'] as const;
 
+function matchesHostRule(url: string, rule: string): boolean {
+  let host: string;
+  let pathname: string;
+  try {
+    const u = new URL(url);
+    host = u.hostname.toLowerCase();
+    pathname = u.pathname;
+  } catch {
+    return false;
+  }
+  const [rHost, ...rPathParts] = rule.split('/');
+  const rPath = rPathParts.length ? '/' + rPathParts.join('/') : '';
+  const hostOk = host === rHost || host.endsWith('.' + rHost);
+  if (!hostOk) return false;
+  return rPath ? pathname.startsWith(rPath) : true;
+}
+
 export function evaluatePolicy(url: string): SitePolicy {
-  if (SKIP_LIST.some((s) => url.includes(s))) return 'manual_skip';
-  if (REVIEW_LIST.some((s) => url.includes(s))) return 'public_review';
+  if (SKIP_LIST.some((r) => matchesHostRule(url, r))) return 'manual_skip';
+  if (REVIEW_LIST.some((r) => matchesHostRule(url, r))) return 'public_review';
   return 'public_auto';
 }
