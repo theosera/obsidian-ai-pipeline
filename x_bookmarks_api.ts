@@ -276,10 +276,25 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
     .join('\n');
 
   // entities.urls が付いている場合は expanded_url を優先的に引用する
+  // 自己リンク (x.com / twitter.com の投稿 URL) を除外する。
+  // includes() ではなく hostname を解析する (box.com 等の誤マッチ防止)。
   const expandedUrls = (post.entities?.urls ?? [])
     .map(u => u.expanded_url ?? u.url)
     .filter((u): u is string => !!u)
-    .filter(u => !u.includes('x.com/') && !u.includes('twitter.com/'))
+    .filter(u => {
+      try {
+        const parsed = new URL(u);
+        const host = parsed.hostname.toLowerCase();
+        const isXHost = host === 'x.com' || host.endsWith('.x.com')
+                     || host === 'twitter.com' || host.endsWith('.twitter.com');
+        if (!isXHost) return true;
+        // 自分自身のポスト URL だけ除外し、他のツイートやプロフィールへのリンクは残す
+        const statusMatch = parsed.pathname.match(/^\/(?:[^/]+\/status|i\/web\/status)\/([^/]+)/);
+        return statusMatch?.[1] !== post.id;
+      } catch {
+        return true;
+      }
+    })
     .filter((v, i, arr) => arr.indexOf(v) === i);
 
   const linksSection = expandedUrls.length > 0
