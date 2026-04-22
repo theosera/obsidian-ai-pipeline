@@ -2,6 +2,27 @@ import path from "node:path";
 import type { FolderMapping } from "../types/shared.js";
 import { resolveForcedParent } from "../x-folder-grouping/forced-parents.js";
 
+// Strip path separators / traversal tokens / control chars from a single
+// path segment so a malicious or broken entry in x_forced_parents.json
+// (e.g. "A/B", "../../tmp") cannot escape the intended sourceRoot.
+// Mirrors the Claude-side `sanitizeFolderName` in x_folder_mapper.ts.
+function sanitizeSegment(segment: string): string {
+  // Split on path separators, drop `..` within each piece (so "../../etc"
+  // → ["", "", "etc"] → "etc"), then rejoin with `-` so something like
+  // "A/B" collapses to "A-B" instead of traversing into a subdirectory.
+  const cleaned = segment
+    .replace(/[\x00-\x1f\x7f]/g, "")
+    .split(/[/\\]/)
+    .map((piece) => piece.replace(/\.\.+/g, ""))
+    .filter((piece) => piece.length > 0)
+    .join("-")
+    .replace(/[*?:"<>|／＼]/g, "")
+    .trim()
+    .normalize("NFC")
+    .slice(0, 80);
+  return cleaned || "_Unfiled";
+}
+
 function toQuarter(date: Date): string {
   const month = date.getUTCMonth() + 1;
   const q = Math.floor((month - 1) / 3) + 1;
@@ -52,8 +73,11 @@ export function resolveXBookmarkSaveDirectory(params: {
       : null;
 
   if (forced) {
-    segments.push(forced.parent);
-    if (forced.child) segments.push(forced.child);
+    // Sanitize: x_forced_parents.json is user-maintained, so defensively
+    // strip separators / traversal / control chars before pushing to
+    // path.join to prevent sourceRoot escape.
+    segments.push(sanitizeSegment(forced.parent));
+    if (forced.child) segments.push(sanitizeSegment(forced.child));
   } else {
     // Tier 2: approved FolderMapping (generated via propose/approve flow)
     const group = params.mapping?.groups.find((g) => g.children.includes(child));

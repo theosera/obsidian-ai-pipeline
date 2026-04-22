@@ -1066,6 +1066,35 @@ export function run(): TestSuiteResult {
       assert.strictEqual(result, '/vault/Clippings/X/Claude Code/Tips/2026-Q2');
     });
 
+    runner.test('forcedParents の悪意ある値 (../..) は sourceRoot を脱出しない', () => {
+      // x_forced_parents.json は user-maintained で、壊れた/悪意ある値が
+      // 入る可能性がある。sanitizeSegment で `/`, `\`, `..`, 制御文字を除去
+      // して path.join が vault 外に書き込むのを防ぐ。
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: '../../etc Tips',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 1,
+        forcedParents: ['../../etc'],
+      });
+      // "../../etc" → sanitize → "etc" ("/" と ".." が削除)
+      assert.strictEqual(result, '/vault/Clippings/X/etc/Tips');
+    });
+
+    runner.test('forcedParents のスラッシュ含む値 (A/B) は単一セグメント化', () => {
+      const result = resolveXBookmarkSaveDirectory({
+        vaultPath: '/vault',
+        sourceRoot: 'Clippings/X',
+        childFolderName: 'A/B sub',
+        postDate: new Date('2026-04-22T00:00:00Z'),
+        folderPostCount: 1,
+        forcedParents: ['A/B'],
+      });
+      // "A/B" → sanitize → "A-B" (スラッシュをハイフン置換)
+      assert.strictEqual(result, '/vault/Clippings/X/A-B/sub');
+    });
+
     return runner.report();
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

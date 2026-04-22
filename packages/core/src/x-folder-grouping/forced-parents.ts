@@ -50,6 +50,12 @@ export function hasWordBoundaryMatch(folderName: string, keyword: string): boole
 }
 
 function stripKeyword(folderName: string, keyword: string): string {
+  // First-occurrence-only replace (no `g` flag) — mirrors the Claude-side
+  // `x_folder_mapper.ts:stripKeyword` so the two implementations produce
+  // identical parent/child pairs for the same input. If the keyword appears
+  // twice (e.g. "AI Agent AI Tools" with keyword "AI"), the second instance
+  // survives into the child segment intentionally — change it on both sides
+  // together or they drift.
   return folderName
     .replace(boundaryRegex(keyword), "")
     .replace(/\s+/g, " ")
