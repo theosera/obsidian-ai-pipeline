@@ -283,9 +283,14 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
     .filter((u): u is string => !!u)
     .filter(u => {
       try {
-        const host = new URL(u).hostname.toLowerCase();
-        return host !== 'x.com' && !host.endsWith('.x.com')
-            && host !== 'twitter.com' && !host.endsWith('.twitter.com');
+        const parsed = new URL(u);
+        const host = parsed.hostname.toLowerCase();
+        const isXHost = host === 'x.com' || host.endsWith('.x.com')
+                     || host === 'twitter.com' || host.endsWith('.twitter.com');
+        if (!isXHost) return true;
+        // 自分自身のポスト URL だけ除外し、他のツイートやプロフィールへのリンクは残す
+        const statusMatch = parsed.pathname.match(/^\/(?:[^/]+\/status|i\/web\/status)\/([^/]+)/);
+        return statusMatch?.[1] !== post.id;
       } catch {
         return true;
       }

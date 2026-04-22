@@ -41,12 +41,18 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
   const xLimitValue = extractValue(xLimitArg);
   let xLimit: number | undefined;
   if (xLimitValue !== undefined) {
-    if (!/^\d+$/.test(xLimitValue)) {
+    if (!/^[1-9]\d*$/.test(xLimitValue)) {
       console.error(`Invalid --x-limit value: "${xLimitValue}" (expected positive integer)`);
       printUsage();
       process.exit(1);
     }
-    xLimit = parseInt(xLimitValue, 10);
+    const parsed = Number(xLimitValue);
+    if (!Number.isSafeInteger(parsed)) {
+      console.error(`Invalid --x-limit value: "${xLimitValue}" (exceeds safe integer range)`);
+      printUsage();
+      process.exit(1);
+    }
+    xLimit = parsed;
   }
 
   return {

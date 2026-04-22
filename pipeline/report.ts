@@ -49,7 +49,8 @@ function isGenuinelyNewFolder(proposedPath: string, vaultFolders: string[]): boo
 
 export function generateReport(
   results: ProcessingResult[],
-  usageData: Record<string, { input: number; output: number }> = {}
+  usageData: Record<string, { input: number; output: number }> = {},
+  reportLabel = 'OneTab'
 ): string {
   const successResults = results.filter((r) => r.status === 'success');
   const vaultFolders = getVaultFolders();
@@ -66,7 +67,7 @@ export function generateReport(
   const newFolders = successResults.filter((r) => r.classification?.isNewFolder);
   const reviewItems = successResults.filter((r) => r.policy === 'public_review');
 
-  let report = `# OneTab分類結果レポート\n\n`;
+  let report = `# ${reportLabel}分類結果レポート\n\n`;
   report += `## 📊 実行サマリー\n`;
   report += `- **総取得件数:** ${successResults.length}件\n`;
   report += `- **新規提案フォルダ数:** ${newFolders.length}件\n`;

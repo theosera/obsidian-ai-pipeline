@@ -93,7 +93,7 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   // === 6. レポート生成 + 対話レビュー ===
   const reportLabel = args.xBookmarks ? 'X-Bookmarks' : 'OneTab';
   const reportPath = path.join(REPORTS_DIR, `${reportLabel}分類結果レポート-${dateStr}.md`);
-  fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics), 'utf8');
+  fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
   await interactiveReviewLoop(results, reportPath);
 }
 
