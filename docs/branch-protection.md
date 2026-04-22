@@ -52,6 +52,64 @@ gh api \
 - CI が両方緑でないと merge ボタンが活性化しない
 - 未解決レビューコメントが残っていると merge 不可
 
+## Auto-merge (Phase 1)
+
+Claude が作成した PR は `mcp__github__enable_pr_auto_merge` で自動 merge 対象になる（詳細は `CLAUDE.md` PR workflow 参照）。この機能を有効化するには **リポジトリ側の 1 設定** が必須:
+
+### 必須: `Allow auto-merge` を有効化
+
+`Settings` → `General` → スクロールして `Pull Requests` セクション → **`Allow auto-merge`** にチェック → Save
+
+または `gh api` で一括:
+
+```bash
+gh api \
+  --method PATCH \
+  -H "Accept: application/vnd.github+json" \
+  /repos/theosera/obsidian-ai-pipeline \
+  -F 'allow_auto_merge=true' \
+  -F 'allow_squash_merge=true' \
+  -F 'allow_merge_commit=false' \
+  -F 'allow_rebase_merge=false' \
+  -F 'delete_branch_on_merge=true' \
+  -F 'squash_merge_commit_title=PR_TITLE' \
+  -F 'squash_merge_commit_message=PR_BODY'
+```
+
+ポイント:
+- `allow_auto_merge=true` がないと `enable_pr_auto_merge` は silently 失敗する
+- squash のみに絞ると Claude の `mergeMethod: "SQUASH"` と整合
+- `delete_branch_on_merge=true` で merge 後に branch 自動削除（履歴クリーン化）
+
+### 動作フロー
+
+```
+1. Claude が create_pull_request で PR 作成
+2. Claude が直後に enable_pr_auto_merge(SQUASH) を呼ぶ
+3. CI 実行 (pipeline + chrome-extension)
+4. CodeRabbit / Codex がレビュー
+5. Claude が指摘に push で応答
+6. CI 緑 + required status checks 満たした時点で GitHub が自動 squash merge
+7. source branch 自動削除
+```
+
+ユーザーの介入が必要になるのは:
+- Claude が `needs-human-review` ラベルを付けた場合（アーキテクチャ判断が必要と判定）
+- CI が根本的な問題で失敗する場合（Claude が修正を push しても通らない）
+- レビューアーが手動で `Require changes` を付けた場合
+
+### Opt-out
+
+特定 PR で auto-merge を一時停止したい場合:
+
+```bash
+# CLI から
+gh pr merge <PR_NUMBER> --disable-auto
+
+# またはツールから
+mcp__github__disable_pr_auto_merge(pullNumber=XX)
+```
+
 ## 一人開発で review approval が要件になる場合
 
 `required_pull_request_reviews.required_approving_review_count=0` にしてあるので、approve 不要で自分で merge できる。もし approve 必須にしたい場合は `1` に上げる（ただしその場合 1 人開発だと別アカウントが必要になる）。
