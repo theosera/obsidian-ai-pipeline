@@ -11,5 +11,6 @@ export * from "./x-folder-grouping/stopwords.js";
 export * from "./x-folder-grouping/grouping-detector.js";
 export * from "./x-folder-grouping/proposal-markdown-renderer.js";
 export * from "./x-folder-grouping/mapping-json-writer.js";
+export * from "./x-folder-grouping/forced-parents.js";
 export * from "./path/date-suffix-stripper.js";
 export * from "./path/x-bookmark-path-resolver.js";
