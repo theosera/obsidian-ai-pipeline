@@ -83,7 +83,7 @@ gh api \
 
 ### 動作フロー
 
-```
+```text
 1. Claude が create_pull_request で PR 作成
 2. Claude が直後に enable_pr_auto_merge(SQUASH) を呼ぶ
 3. CI 実行 (pipeline + chrome-extension)
