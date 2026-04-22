@@ -77,15 +77,14 @@ export function generateReport(
     report += `## 💸 APIトークン使用量と概算コスト\n`;
     let totalCost = 0;
     for (const [model, stats] of Object.entries(usageData)) {
-      const rates = PRICING_MILLION_TOKENS[model] || { in: 0, out: 0 };
-      const costIn = (stats.input / 1_000_000) * rates.in;
-      const costOut = (stats.output / 1_000_000) * rates.out;
-      const modelCost = costIn + costOut;
+      const rates = PRICING_MILLION_TOKENS[model];
+      const modelCost = rates
+        ? (stats.input / 1_000_000) * rates.in + (stats.output / 1_000_000) * rates.out
+        : 0;
       totalCost += modelCost;
 
       report += `- **${model}**: Input ${stats.input.toLocaleString()} tokens, Output ${stats.output.toLocaleString()} tokens `;
-      if (modelCost > 0) report += `(約 $${modelCost.toFixed(4)})\n`;
-      else report += `(Local or Rate Unknown)\n`;
+      report += rates ? `(約 $${modelCost.toFixed(4)})\n` : `(Local or Rate Unknown)\n`;
     }
     report += `\n**💰 Total Estimated Cost: $${totalCost.toFixed(4)}**\n\n`;
   }
@@ -115,7 +114,10 @@ export function generateReport(
 
     for (const item of items) {
       const reviewBadge = item.policy === 'public_review' ? ' ⚠️[要完全性チェック]' : '';
-      report += `- [${item.id}] [${item.title || 'No Title'}](${item.url})${reviewBadge}\n`;
+      // Markdown link を壊さないようタイトルと URL をエスケープ
+      const safeTitle = (item.title || 'No Title').replace(/[\[\]]/g, (c) => `\\${c}`);
+      const safeUrl = (item.url || '').replace(/[()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+      report += `- [${item.id}] [${safeTitle}](${safeUrl})${reviewBadge}\n`;
       if (item.classification!.reasoning && !isNew) {
         report += `  - *理由: ${item.classification!.reasoning}*\n`;
       }

@@ -39,7 +39,15 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     arg ? arg.split('=').slice(1).join('=') : undefined;
 
   const xLimitValue = extractValue(xLimitArg);
-  const xLimit = xLimitValue ? parseInt(xLimitValue, 10) : undefined;
+  let xLimit: number | undefined;
+  if (xLimitValue !== undefined) {
+    if (!/^\d+$/.test(xLimitValue)) {
+      console.error(`Invalid --x-limit value: "${xLimitValue}" (expected positive integer)`);
+      printUsage();
+      process.exit(1);
+    }
+    xLimit = parseInt(xLimitValue, 10);
+  }
 
   return {
     config: argv.includes('--config'),
@@ -47,7 +55,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     syncRules: argv.includes('--sync-rules'),
     xAuth: argv.includes('--x-auth'),
     xBookmarks: argv.includes('--x-bookmarks'),
-    xLimit: Number.isFinite(xLimit) ? xLimit : undefined,
+    xLimit,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
     // 位置引数 (非 flag): 先頭のみ採用
