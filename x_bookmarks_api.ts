@@ -275,11 +275,11 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
     .map(line => `> ${line}`)
     .join('\n');
 
-  // entities.urls が付いている場合は expanded_url を優先的に引用する
+  // entities.urls が付いている場合は expanded_url を優先的に引用する。
   // 自己リンク (x.com / twitter.com の投稿 URL) を除外する。
   // includes() ではなく hostname を解析する (box.com 等の誤マッチ防止)。
   const expandedUrls = (post.entities?.urls ?? [])
-    .map(u => u.expanded_url ?? u.url)
+    .map(u => u.expanded_url || u.url)
     .filter((u): u is string => !!u)
     .filter(u => {
       try {
