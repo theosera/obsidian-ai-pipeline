@@ -27,12 +27,25 @@ export interface XPublicMetrics {
   quote_count: number;
 }
 
+export interface XUrlEntity {
+  url: string;
+  expanded_url?: string;
+  display_url?: string;
+  start?: number;
+  end?: number;
+}
+
+export interface XPostEntities {
+  urls?: XUrlEntity[];
+}
+
 export interface XPost {
   id: string;
   text: string;
   author_id: string;
   created_at: string;
   public_metrics: XPublicMetrics;
+  entities?: XPostEntities;
 }
 
 export interface XFolder {

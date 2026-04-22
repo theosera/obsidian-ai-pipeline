@@ -21,6 +21,11 @@ import {
 import { XBookmarksDb } from '../x_bookmarks_db';
 import { __test as apiInternals } from '../x_bookmarks_api';
 import { __test as authInternals } from '../x_auth_server';
+import {
+  expandedExternalLinks,
+  buildBookmarkMarkdown,
+} from '../packages/core/src/markdown/markdown-builder.js';
+import type { XPost } from '../packages/core/src/types/shared.js';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export function run(): TestSuiteResult {
@@ -461,6 +466,98 @@ export function run(): TestSuiteResult {
       assert.strictEqual(u.searchParams.get('code_challenge_method'), 'S256');
       assert.ok(u.searchParams.get('scope')?.includes('bookmark.read'));
       assert.ok(u.searchParams.get('scope')?.includes('offline.access'));
+    });
+
+    // =====================================================
+    // Codex markdown-builder: entities → expanded URLs
+    // =====================================================
+    runner.section('codex markdown-builder: expandedExternalLinks');
+
+    const basePost = (overrides: Partial<XPost> = {}): XPost => ({
+      id: '100',
+      text: 'hello',
+      author_id: 'u1',
+      created_at: '2026-04-22T00:00:00.000Z',
+      public_metrics: {
+        like_count: 0,
+        reply_count: 0,
+        retweet_count: 0,
+        quote_count: 0,
+      },
+      ...overrides,
+    });
+
+    runner.test('entities 未指定なら空配列', () => {
+      assert.deepStrictEqual(expandedExternalLinks(basePost()), []);
+    });
+
+    runner.test('expanded_url があれば優先採用', () => {
+      const post = basePost({
+        entities: {
+          urls: [{ url: 'https://t.co/abc', expanded_url: 'https://example.com' }],
+        },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), ['https://example.com']);
+    });
+
+    runner.test('expanded_url 不在なら t.co にフォールバック', () => {
+      const post = basePost({
+        entities: { urls: [{ url: 'https://t.co/xyz' }] },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), ['https://t.co/xyz']);
+    });
+
+    runner.test('x.com / twitter.com の自己リンクは除外', () => {
+      const post = basePost({
+        entities: {
+          urls: [
+            { url: 'https://t.co/1', expanded_url: 'https://x.com/foo/status/1' },
+            { url: 'https://t.co/2', expanded_url: 'https://twitter.com/bar/status/2' },
+            { url: 'https://t.co/3', expanded_url: 'https://external.example.com/a' },
+          ],
+        },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), ['https://external.example.com/a']);
+    });
+
+    runner.test('重複 URL は除外', () => {
+      const post = basePost({
+        entities: {
+          urls: [
+            { url: 'https://t.co/a', expanded_url: 'https://example.com' },
+            { url: 'https://t.co/b', expanded_url: 'https://example.com' },
+          ],
+        },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), ['https://example.com']);
+    });
+
+    runner.section('codex markdown-builder: buildBookmarkMarkdown');
+
+    runner.test('含まれるリンクセクションが entities から生成される', () => {
+      const md = buildBookmarkMarkdown({
+        post: basePost({
+          text: 'see this',
+          entities: {
+            urls: [{ url: 'https://t.co/1', expanded_url: 'https://example.com' }],
+          },
+        }),
+        author: { id: 'u1', name: 'Foo', username: 'foo' },
+        bookmarkFolder: 'F',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      assert.ok(md.includes('## 含まれるリンク'));
+      assert.ok(md.includes('- https://example.com'));
+    });
+
+    runner.test('entities なしなら含まれるリンクセクションは出ない', () => {
+      const md = buildBookmarkMarkdown({
+        post: basePost({ text: 'plain' }),
+        author: { id: 'u1', name: 'Foo', username: 'foo' },
+        bookmarkFolder: 'F',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      assert.ok(!md.includes('## 含まれるリンク'));
     });
 
     return runner.report();

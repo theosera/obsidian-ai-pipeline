@@ -4,6 +4,22 @@ function escapeYaml(input: string): string {
   return input.replace(/"/g, '\\"');
 }
 
+// Resolve entities.urls[] to unique expanded URLs, dropping self-links
+// (x.com / twitter.com) since those just point back at the quoted post.
+export function expandedExternalLinks(post: XPost): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of post.entities?.urls ?? []) {
+    const url = entry.expanded_url ?? entry.url;
+    if (!url) continue;
+    if (url.includes("x.com/") || url.includes("twitter.com/")) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out;
+}
+
 export function buildBookmarkMarkdown(params: {
   post: XPost;
   author?: XAuthor | undefined;
@@ -13,6 +29,10 @@ export function buildBookmarkMarkdown(params: {
   const authorName = params.author?.name ?? "Unknown Author";
   const username = params.author?.username ?? "unknown";
   const postUrl = `https://x.com/${username}/status/${params.post.id}`;
+  const links = expandedExternalLinks(params.post);
+  const linksSection = links.length > 0
+    ? `\n## 含まれるリンク\n${links.map((u) => `- ${u}`).join("\n")}\n`
+    : "";
 
   return `---
 title: "${escapeYaml(`${authorName} - ${params.post.id}`)}"
@@ -38,7 +58,7 @@ tags:
 - Post ID: ${params.post.id}
 - 投稿日: ${params.post.created_at}
 - 保存フォルダ: ${params.bookmarkFolder}
-
+${linksSection}
 ## Metrics
 - Likes: ${params.post.public_metrics.like_count}
 - Replies: ${params.post.public_metrics.reply_count}

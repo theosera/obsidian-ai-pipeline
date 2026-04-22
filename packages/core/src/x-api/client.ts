@@ -2,7 +2,9 @@ import type { EnvConfig } from "../config/env.js";
 import type { XBookmarkPage, XFolder, XTokenSet, XUser } from "../types/shared.js";
 
 const BOOKMARK_FIELDS = {
-  tweetFields: "created_at,author_id,public_metrics",
+  // entities included so markdown-builder can surface expanded URLs
+  // (t.co → real host) the same way the Claude flat impl does.
+  tweetFields: "created_at,author_id,public_metrics,entities",
   expansions: "author_id",
   userFields: "username,name",
   maxResults: "100"
