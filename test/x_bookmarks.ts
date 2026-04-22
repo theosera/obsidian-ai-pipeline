@@ -560,6 +560,204 @@ export function run(): TestSuiteResult {
       assert.ok(!md.includes('## 含まれるリンク'));
     });
 
+    // =====================================================
+    // Codex markdown-builder: expandedExternalLinks 追加エッジケース
+    // =====================================================
+    runner.section('codex markdown-builder: expandedExternalLinks (additional edge cases)');
+
+    runner.test('entities.urls が空配列なら空配列を返す', () => {
+      const post = basePost({ entities: { urls: [] } });
+      assert.deepStrictEqual(expandedExternalLinks(post), []);
+    });
+
+    runner.test('url も expanded_url も空文字なら除外', () => {
+      const post = basePost({
+        entities: {
+          urls: [{ url: '', expanded_url: '' }],
+        },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), []);
+    });
+
+    runner.test('複数の外部リンクは挿入順を保持', () => {
+      const post = basePost({
+        entities: {
+          urls: [
+            { url: 'https://t.co/1', expanded_url: 'https://alpha.example.com' },
+            { url: 'https://t.co/2', expanded_url: 'https://beta.example.com' },
+            { url: 'https://t.co/3', expanded_url: 'https://gamma.example.com' },
+          ],
+        },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), [
+        'https://alpha.example.com',
+        'https://beta.example.com',
+        'https://gamma.example.com',
+      ]);
+    });
+
+    runner.test('x.com ドメインなし (パスなし) は除外されない', () => {
+      // フィルタは url.includes("x.com/") で、末尾スラッシュなしの "https://x.com" は通過する
+      const post = basePost({
+        entities: { urls: [{ url: 'https://x.com', expanded_url: 'https://x.com' }] },
+      });
+      // "x.com" alone has no trailing "/" so it is NOT filtered
+      assert.deepStrictEqual(expandedExternalLinks(post), ['https://x.com']);
+    });
+
+    runner.test('twitter.com ドメインなし (パスなし) は除外されない', () => {
+      const post = basePost({
+        entities: { urls: [{ url: 'https://twitter.com', expanded_url: 'https://twitter.com' }] },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), ['https://twitter.com']);
+    });
+
+    runner.test('expanded_url が undefined で url が空文字の場合スキップ', () => {
+      const post = basePost({
+        entities: {
+          urls: [
+            { url: '', expanded_url: undefined },
+            { url: 'https://t.co/ok', expanded_url: 'https://valid.example.com' },
+          ],
+        },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), ['https://valid.example.com']);
+    });
+
+    runner.test('外部リンクと自己リンクが混在しても外部リンクのみ返す', () => {
+      const post = basePost({
+        entities: {
+          urls: [
+            { url: 'https://t.co/1', expanded_url: 'https://github.com/foo/bar' },
+            { url: 'https://t.co/2', expanded_url: 'https://x.com/foo/status/999' },
+            { url: 'https://t.co/3', expanded_url: 'https://twitter.com/baz/status/1' },
+            { url: 'https://t.co/4', expanded_url: 'https://docs.example.com/readme' },
+          ],
+        },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), [
+        'https://github.com/foo/bar',
+        'https://docs.example.com/readme',
+      ]);
+    });
+
+    // =====================================================
+    // Codex markdown-builder: buildBookmarkMarkdown 追加エッジケース
+    // =====================================================
+    runner.section('codex markdown-builder: buildBookmarkMarkdown (additional edge cases)');
+
+    runner.test('entities.urls が空配列なら含まれるリンクセクションは出ない', () => {
+      const md = buildBookmarkMarkdown({
+        post: basePost({ entities: { urls: [] } }),
+        author: { id: 'u1', name: 'Foo', username: 'foo' },
+        bookmarkFolder: 'F',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      assert.ok(!md.includes('## 含まれるリンク'));
+    });
+
+    runner.test('複数リンクはすべて箇条書きで含まれるリンクセクションに現れる', () => {
+      const md = buildBookmarkMarkdown({
+        post: basePost({
+          text: 'links',
+          entities: {
+            urls: [
+              { url: 'https://t.co/1', expanded_url: 'https://alpha.example.com' },
+              { url: 'https://t.co/2', expanded_url: 'https://beta.example.com' },
+            ],
+          },
+        }),
+        author: { id: 'u1', name: 'Foo', username: 'foo' },
+        bookmarkFolder: 'F',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      assert.ok(md.includes('- https://alpha.example.com'));
+      assert.ok(md.includes('- https://beta.example.com'));
+    });
+
+    runner.test('含まれるリンクセクションは ## Metrics より前に位置する', () => {
+      const md = buildBookmarkMarkdown({
+        post: basePost({
+          text: 'order check',
+          entities: {
+            urls: [{ url: 'https://t.co/1', expanded_url: 'https://example.com' }],
+          },
+        }),
+        author: { id: 'u1', name: 'Foo', username: 'foo' },
+        bookmarkFolder: 'F',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      const linksPos = md.indexOf('## 含まれるリンク');
+      const metricsPos = md.indexOf('## Metrics');
+      assert.ok(linksPos !== -1, '含まれるリンクセクションが存在する');
+      assert.ok(metricsPos !== -1, 'Metrics セクションが存在する');
+      assert.ok(linksPos < metricsPos, '含まれるリンクは Metrics より前にある');
+    });
+
+    runner.test('著者名に " が含まれる場合 YAML でエスケープされる', () => {
+      const md = buildBookmarkMarkdown({
+        post: basePost({ text: 'escape test' }),
+        author: { id: 'u1', name: 'Say "Hello"', username: 'quoter' },
+        bookmarkFolder: 'F',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      // YAML title should have escaped quotes
+      assert.ok(md.includes('\\"Hello\\"'), `YAML title should escape quotes, got: ${md.split('\n').find(l => l.startsWith('title:'))}`);
+    });
+
+    runner.test('author 未指定時は Unknown Author / unknown で Markdown が生成される', () => {
+      const md = buildBookmarkMarkdown({
+        post: basePost({
+          text: 'no author',
+          entities: {
+            urls: [{ url: 'https://t.co/1', expanded_url: 'https://example.com' }],
+          },
+        }),
+        bookmarkFolder: 'F',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      assert.ok(md.includes('Unknown Author'));
+      assert.ok(md.includes('@unknown'));
+      // links section should still appear
+      assert.ok(md.includes('## 含まれるリンク'));
+      assert.ok(md.includes('- https://example.com'));
+    });
+
+    runner.test('YAML frontmatter に必須フィールドが揃う', () => {
+      const md = buildBookmarkMarkdown({
+        post: basePost({ id: '42', text: 'fm check' }),
+        author: { id: 'u1', name: 'Alice', username: 'alice' },
+        bookmarkFolder: 'MyFolder',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      assert.ok(md.startsWith('---\n'), 'YAML front matter starts');
+      assert.ok(md.includes('post_id: "42"'));
+      assert.ok(md.includes('author_username: "alice"'));
+      assert.ok(md.includes('bookmark_folder: "MyFolder"'));
+      assert.ok(md.includes('synced_at: "2026-04-22T01:00:00.000Z"'));
+    });
+
+    runner.test('Metrics セクションに like/reply/repost/quote が出力される', () => {
+      const post = basePost({
+        public_metrics: {
+          like_count: 10,
+          reply_count: 3,
+          retweet_count: 5,
+          quote_count: 2,
+        },
+      });
+      const md = buildBookmarkMarkdown({
+        post,
+        author: { id: 'u1', name: 'Bob', username: 'bob' },
+        bookmarkFolder: 'F',
+        syncedAt: '2026-04-22T01:00:00.000Z',
+      });
+      assert.ok(md.includes('- Likes: 10'));
+      assert.ok(md.includes('- Replies: 3'));
+      assert.ok(md.includes('- Reposts: 5'));
+      assert.ok(md.includes('- Quotes: 2'));
+    });
+
     return runner.report();
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
