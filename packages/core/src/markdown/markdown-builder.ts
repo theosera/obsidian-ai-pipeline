@@ -4,15 +4,37 @@ function escapeYaml(input: string): string {
   return input.replace(/"/g, '\\"');
 }
 
+const X_SELF_HOSTS = new Set([
+  "x.com",
+  "twitter.com",
+]);
+
+function isXSelfLink(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // match exact host or any subdomain (mobile.twitter.com, www.x.com, ...)
+  if (X_SELF_HOSTS.has(host)) return true;
+  for (const self of X_SELF_HOSTS) {
+    if (host.endsWith(`.${self}`)) return true;
+  }
+  return false;
+}
+
 // Resolve entities.urls[] to unique expanded URLs, dropping self-links
-// (x.com / twitter.com) since those just point back at the quoted post.
+// (x.com / twitter.com and their subdomains). Hostname-based match avoids
+// false positives like https://box.com/file being dropped for containing
+// "x.com/" as a substring.
 export function expandedExternalLinks(post: XPost): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const entry of post.entities?.urls ?? []) {
     const url = entry.expanded_url ?? entry.url;
     if (!url) continue;
-    if (url.includes("x.com/") || url.includes("twitter.com/")) continue;
+    if (isXSelfLink(url)) continue;
     if (seen.has(url)) continue;
     seen.add(url);
     out.push(url);

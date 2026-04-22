@@ -83,6 +83,25 @@ export interface BookmarkFoldersResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Self-link detection (hostname-based; avoids substring false positives)
+// ---------------------------------------------------------------------------
+const X_SELF_HOSTS = new Set(['x.com', 'twitter.com']);
+
+function isXSelfLink(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (X_SELF_HOSTS.has(host)) return true;
+  for (const self of X_SELF_HOSTS) {
+    if (host.endsWith(`.${self}`)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Token storage
 // ---------------------------------------------------------------------------
 export function getTokensPath(): string {
@@ -275,11 +294,13 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
     .map(line => `> ${line}`)
     .join('\n');
 
-  // entities.urls が付いている場合は expanded_url を優先的に引用する
+  // entities.urls が付いている場合は expanded_url を優先的に引用する。
+  // hostname 一致で self-link を判定（旧 substring 方式の false positive
+  // 例: box.com を x.com と誤検出 を回避）。
   const expandedUrls = (post.entities?.urls ?? [])
     .map(u => u.expanded_url ?? u.url)
     .filter((u): u is string => !!u)
-    .filter(u => !u.includes('x.com/') && !u.includes('twitter.com/'))
+    .filter(u => !isXSelfLink(u))
     .filter((v, i, arr) => arr.indexOf(v) === i);
 
   const linksSection = expandedUrls.length > 0
