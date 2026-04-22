@@ -664,6 +664,16 @@ export function run(): TestSuiteResult {
       );
     });
 
+    runner.test('expanded_url が空文字列の場合は url にフォールバック (||)', () => {
+      // 旧 ?? は空文字を valid 扱いして fallback せず、結果として entry が drop されていた
+      const post = basePost({
+        entities: {
+          urls: [{ url: 'https://t.co/short', expanded_url: '' }],
+        },
+      });
+      assert.deepStrictEqual(expandedExternalLinks(post), ['https://t.co/short']);
+    });
+
     runner.test('malformed URL (new URL でエラー) は落とさず保持 (互換挙動)', () => {
       // new URL() が投げる系はスキップせず、hostname 不明として通過させる
       // → dedup と filter は走るが self-link 判定はスキップ

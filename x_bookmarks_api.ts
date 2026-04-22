@@ -298,7 +298,7 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
   // hostname 一致で self-link を判定（旧 substring 方式の false positive
   // 例: box.com を x.com と誤検出 を回避）。
   const expandedUrls = (post.entities?.urls ?? [])
-    .map(u => u.expanded_url ?? u.url)
+    .map(u => u.expanded_url || u.url)
     .filter((u): u is string => !!u)
     .filter(u => !isXSelfLink(u))
     .filter((v, i, arr) => arr.indexOf(v) === i);

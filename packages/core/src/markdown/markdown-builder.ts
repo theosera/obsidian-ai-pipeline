@@ -32,7 +32,7 @@ export function expandedExternalLinks(post: XPost): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const entry of post.entities?.urls ?? []) {
-    const url = entry.expanded_url ?? entry.url;
+    const url = entry.expanded_url || entry.url;
     if (!url) continue;
     if (isXSelfLink(url)) continue;
     if (seen.has(url)) continue;
