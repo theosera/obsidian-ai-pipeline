@@ -31,6 +31,12 @@ const TOKEN_ENDPOINT = `${API_BASE}/oauth2/token`;
 export interface ApiBookmark extends ArticleData {
   xFolderName: string;
   xTweetId: string;
+  /**
+   * X Premium 長文ツイートの全文 (note_tweet.text)。
+   * `text` が truncate されている場合のみセットされる。SQLite キャッシュに
+   * full text を保存するため interactive.ts で参照される。
+   */
+  xNoteTweetText?: string;
 }
 
 export interface FetchOptions {
@@ -69,6 +75,12 @@ export interface XPost {
   entities?: {
     urls?: { url: string; expanded_url?: string; display_url?: string }[];
   };
+  /**
+   * X Premium 長文ツイート (~25,000 字) の本文。
+   * これがあるツイートでは `text` は冒頭で `…` 付きで切れているため、
+   * `note_tweet.text` を優先して使う。
+   */
+  note_tweet?: { text: string };
 }
 
 export interface BookmarksResponse {
@@ -264,7 +276,9 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
   const displayName = author?.name ?? username;
   const url = `https://x.com/${username}/status/${post.id}`;
 
-  const bodyText = post.text ?? '';
+  // X Premium 長文ツイートは `text` が冒頭で truncate されるが、
+  // `note_tweet.text` には全文が入る。`note_tweet` があれば必ずそちらを使う。
+  const bodyText = post.note_tweet?.text ?? post.text ?? '';
   const firstLine = bodyText.split('\n')[0].trim();
   const titleSnippet = firstLine.length > 60 ? firstLine.substring(0, 60) + '…' : firstLine;
   const title = `${displayName} (@${username}): ${titleSnippet || post.id}`;
@@ -311,7 +325,7 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
 
   const content = `${quotedBody}${linksSection}${metricsSection}\n\n[元ポストを X で見る](${url})\n`;
 
-  return {
+  const result: ApiBookmark = {
     url,
     title,
     content,
@@ -322,6 +336,10 @@ export function tweetToApiBookmark(post: XPost, author: XUser | undefined, folde
     xFolderName: folderName,
     xTweetId: post.id,
   };
+  if (post.note_tweet?.text) {
+    result.xNoteTweetText = post.note_tweet.text;
+  }
+  return result;
 }
 
 /**
@@ -344,7 +362,7 @@ export function expandBookmarksPage(page: BookmarksResponse, folderName: string)
 function buildBookmarksUrl(userId: string, paginationToken?: string): string {
   const url = new URL(`${API_BASE}/users/${userId}/bookmarks`);
   url.searchParams.set('max_results', '100');
-  url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities');
+  url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities,note_tweet');
   url.searchParams.set('expansions', 'author_id');
   url.searchParams.set('user.fields', 'username,name');
   if (paginationToken) url.searchParams.set('pagination_token', paginationToken);
@@ -354,7 +372,7 @@ function buildBookmarksUrl(userId: string, paginationToken?: string): string {
 function buildFolderBookmarksUrl(userId: string, folderId: string, paginationToken?: string): string {
   const url = new URL(`${API_BASE}/users/${userId}/bookmarks/folders/${folderId}`);
   url.searchParams.set('max_results', '100');
-  url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities');
+  url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities,note_tweet');
   url.searchParams.set('expansions', 'author_id');
   url.searchParams.set('user.fields', 'username,name');
   if (paginationToken) url.searchParams.set('pagination_token', paginationToken);

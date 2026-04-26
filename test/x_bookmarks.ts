@@ -308,6 +308,43 @@ export function run(): TestSuiteResult {
       db.close();
     });
 
+    runner.test('upsertBookmark は noteTweetText を保存する', () => {
+      const db = new XBookmarksDb(':memory:');
+      const fullText = 'X Premium 長文の全文がここに入る (25000字想定)。';
+      db.upsertBookmark({
+        tweetId: 'long1',
+        url: 'https://x.com/a/status/long1',
+        tweetText: 'X Premium 長文の全文がここに…',
+        noteTweetText: fullText,
+      });
+      // PRAGMA で内部状態を確認 (rich query) — schema に note_tweet_text 列が存在するか
+      const row = (db as any).db.prepare(
+        'SELECT note_tweet_text FROM bookmarks WHERE tweet_id = ?'
+      ).get('long1') as { note_tweet_text: string };
+      assert.strictEqual(row.note_tweet_text, fullText);
+      db.close();
+    });
+
+    runner.test('既存 (note_tweet_text 列無し) DB に対しても migration で動作する', () => {
+      const db = new XBookmarksDb(':memory:');
+      // simulate "old DB": drop the column we just added, then re-instantiate
+      // (constructor migrate がidempotentであることを確認)
+      const internal = (db as any).db as import('better-sqlite3').Database;
+      // SQLite は ALTER TABLE DROP COLUMN を 3.35+ でサポート
+      try {
+        internal.exec('ALTER TABLE bookmarks DROP COLUMN note_tweet_text');
+      } catch {
+        // 古い better-sqlite3 でサポートされていなければ skip
+        db.close();
+        return;
+      }
+      // constructor migrate が idempotent: 再呼び出しでカラムが復活
+      (db as any).migrateAddNoteTweetText.call(db);
+      const cols = internal.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+      assert.ok(cols.some(c => c.name === 'note_tweet_text'));
+      db.close();
+    });
+
     // =====================================================
     // x_bookmarks_api: tweetToApiBookmark
     // =====================================================
@@ -350,6 +387,34 @@ export function run(): TestSuiteResult {
       const bm = apiInternals.tweetToApiBookmark(post, author, 'Misc');
       assert.strictEqual(bm.date, undefined);
       assert.ok(!bm.content?.includes('エンゲージメント'));
+    });
+
+    runner.test('note_tweet があれば全文を本文に使い、xNoteTweetText に記録', () => {
+      const truncated = 'これは長文ツイート…';
+      const fullText = 'これは長文ツイートで、X Premium 加入者は最大25,000字まで投稿できます。truncated な text フィールドには冒頭しか入りませんが、note_tweet.text には全文が入ります。';
+      const post = {
+        id: '777',
+        text: truncated,
+        author_id: 'u1',
+        note_tweet: { text: fullText },
+      };
+      const author = { id: 'u1', username: 'foo', name: 'Foo' };
+      const bm = apiInternals.tweetToApiBookmark(post, author, 'LongForm');
+      // 本文は note_tweet 由来 (全文)
+      assert.ok(bm.content?.includes(fullText.split('\n')[0]));
+      // truncate 文字列は本文に含まれない (置き換えられている)
+      assert.ok(!bm.content?.includes('長文ツイート…'));
+      // xNoteTweetText に full text が保存されている
+      assert.strictEqual(bm.xNoteTweetText, fullText);
+      // textContent も full text に
+      assert.strictEqual(bm.textContent, fullText);
+    });
+
+    runner.test('note_tweet が無ければ従来通り text を使い、xNoteTweetText 未設定', () => {
+      const post = { id: '778', text: '通常ツイート', author_id: 'u1' };
+      const bm = apiInternals.tweetToApiBookmark(post, { id: 'u1', username: 'a', name: 'A' }, 'Misc');
+      assert.strictEqual(bm.textContent, '通常ツイート');
+      assert.strictEqual(bm.xNoteTweetText, undefined);
     });
 
     runner.test('expandBookmarksPage が includes.users を解決して複数件返す', () => {
@@ -419,7 +484,13 @@ export function run(): TestSuiteResult {
       assert.strictEqual(u.pathname, '/2/users/12345/bookmarks');
       assert.strictEqual(u.searchParams.get('max_results'), '100');
       assert.ok(u.searchParams.get('tweet.fields')?.includes('created_at'));
+      assert.ok(u.searchParams.get('tweet.fields')?.includes('note_tweet'));
       assert.strictEqual(u.searchParams.get('expansions'), 'author_id');
+    });
+
+    runner.test('folder bookmarks URL にも note_tweet が含まれる', () => {
+      const u = new URL(apiInternals.buildFolderBookmarksUrl('12345', '888'));
+      assert.ok(u.searchParams.get('tweet.fields')?.includes('note_tweet'));
     });
 
     runner.test('pagination_token が与えられれば付与される', () => {
