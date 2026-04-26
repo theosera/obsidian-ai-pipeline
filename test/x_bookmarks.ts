@@ -339,8 +339,15 @@ export function run(): TestSuiteResult {
       // 2) "古い DB" を擬似生成: カラムを drop
       try {
         internal1.exec('ALTER TABLE bookmarks DROP COLUMN note_tweet_text');
-      } catch {
-        // 古い better-sqlite3 で DROP COLUMN 未対応なら skip
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        // SQLite < 3.35 (better-sqlite3 古バンドル) のみ DROP COLUMN 未対応で skip
+        // それ以外のエラー (lock, schema drift 等) は隠蔽すると regression を見逃すので throw
+        if (!/DROP COLUMN|near "DROP"|syntax error/i.test(msg)) {
+          db1.close();
+          throw e;
+        }
+        console.warn(`   ⏭️  skip migration test: DROP COLUMN unsupported (${msg})`);
         db1.close();
         return;
       }
