@@ -313,8 +313,13 @@ export async function extractFramesFromTweetVideo(
     log(`   🎞️  frame ${i + 1}/${timestamps.length} @ ${formatTimestamp(t)}`);
     const code = await extractOneFrame(ffmpegPath, sourceMp4, t, outPath);
     if (code !== 0 || !fs.existsSync(outPath)) {
+      // 部分成功で frames を返すと renderKeyFramesSection が「成功」と
+      // 解釈してしまい、本文上で抽出失敗が見えなくなる。失敗時は frames を
+      // 空配列で返し、呼び出し側で必ず「取得失敗」見出しが出るようにする。
+      // (ディスクに残った partial frame は次回 alreadyExtracted=false で
+      //  再抽出のリトライ対象になる)
       return {
-        frames,
+        frames: [],
         durationSec,
         skipped: 'ffmpeg_failed',
         message: `frame ${i + 1} extraction failed (exit=${code})`,

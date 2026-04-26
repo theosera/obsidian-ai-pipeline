@@ -1382,6 +1382,18 @@ export function run(): TestSuiteResult {
       assert.ok(md.includes('90.0s > 60s cap'));
     });
 
+    runner.test('ffmpeg_failed は必ず取得失敗見出しを出す (frames が空配列であること前提)', () => {
+      // x_video_frames.ts:315 で partial frames を返さないようになっているため
+      // 失敗時は必ず frames=[] となる。renderKeyFramesSection は frames.length===0
+      // を取得失敗判定に使うので、ffmpeg_failed の場合は確実に 取得失敗 見出しが出る
+      const md = videoInternals.renderKeyFramesSection({
+        frames: [], durationSec: 20, skipped: 'ffmpeg_failed',
+        message: 'frame 3 extraction failed (exit=1)',
+      });
+      assert.ok(md.includes('取得失敗'));
+      assert.ok(md.includes('ffmpeg_failed'));
+    });
+
     runner.section('x_video_frames: alreadyExtracted');
 
     runner.test('全フレーム揃っていれば true', () => {
