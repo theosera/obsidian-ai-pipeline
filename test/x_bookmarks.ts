@@ -325,24 +325,38 @@ export function run(): TestSuiteResult {
       db.close();
     });
 
-    runner.test('既存 (note_tweet_text 列無し) DB に対しても migration で動作する', () => {
-      const db = new XBookmarksDb(':memory:');
-      // simulate "old DB": drop the column we just added, then re-instantiate
-      // (constructor migrate がidempotentであることを確認)
-      const internal = (db as any).db as import('better-sqlite3').Database;
-      // SQLite は ALTER TABLE DROP COLUMN を 3.35+ でサポート
+    runner.test('既存 (note_tweet_text 列無し) DB に対しても constructor migration で復活する', () => {
+      // ファイル backed DB で本物の constructor → migration パスを通す。
+      // (in-memory + private 直叩きだと「constructor が migration を呼び忘れた」
+      //  リグレッションを検出できない)
+      const dbDir = path.join(tmpDir, 'migration-test');
+      fs.mkdirSync(dbDir, { recursive: true });
+      const dbPath = path.join(dbDir, 'x_bookmarks.db');
+
+      // 1) 通常通り作成 → カラムあり
+      const db1 = new XBookmarksDb(dbPath);
+      const internal1 = (db1 as any).db as import('better-sqlite3').Database;
+      // 2) "古い DB" を擬似生成: カラムを drop
       try {
-        internal.exec('ALTER TABLE bookmarks DROP COLUMN note_tweet_text');
+        internal1.exec('ALTER TABLE bookmarks DROP COLUMN note_tweet_text');
       } catch {
-        // 古い better-sqlite3 でサポートされていなければ skip
-        db.close();
+        // 古い better-sqlite3 で DROP COLUMN 未対応なら skip
+        db1.close();
         return;
       }
-      // constructor migrate が idempotent: 再呼び出しでカラムが復活
-      (db as any).migrateAddNoteTweetText.call(db);
-      const cols = internal.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
-      assert.ok(cols.some(c => c.name === 'note_tweet_text'));
-      db.close();
+      const colsAfterDrop = internal1.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+      assert.ok(!colsAfterDrop.some(c => c.name === 'note_tweet_text'), 'precondition: column dropped');
+      db1.close();
+
+      // 3) もう一度 new XBookmarksDb(filePath) で開く → constructor が migration を実行
+      const db2 = new XBookmarksDb(dbPath);
+      const internal2 = (db2 as any).db as import('better-sqlite3').Database;
+      const colsReopened = internal2.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+      assert.ok(
+        colsReopened.some(c => c.name === 'note_tweet_text'),
+        'constructor が note_tweet_text を再追加するべき'
+      );
+      db2.close();
     });
 
     // =====================================================
