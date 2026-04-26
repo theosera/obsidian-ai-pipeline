@@ -22,6 +22,7 @@ export interface BookmarkRow {
   url: string;
   author: string | null;
   tweet_text: string | null;
+  note_tweet_text: string | null;
   created_at: string | null;
   x_folder_name: string | null;
   vault_path: string | null;
@@ -36,6 +37,8 @@ export interface BookmarkUpsertInput {
   url: string;
   author?: string;
   tweetText?: string;
+  /** X Premium 長文ツイート全文 (note_tweet.text)。truncated でない方。 */
+  noteTweetText?: string;
   createdAt?: string;
   xFolderName?: string;
   vaultPath?: string;
@@ -50,6 +53,7 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   url TEXT NOT NULL UNIQUE,
   author TEXT,
   tweet_text TEXT,
+  note_tweet_text TEXT,
   created_at TEXT,
   x_folder_name TEXT,
   vault_path TEXT,
@@ -69,6 +73,18 @@ export class XBookmarksDb {
     this.db = new Database(filePath);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
+    this.migrateAddNoteTweetText();
+  }
+
+  /**
+   * 既存 DB に `note_tweet_text` カラムが無ければ idempotent に追加する。
+   * better-sqlite3 の `ALTER TABLE ADD COLUMN` は非破壊で既存行は NULL になる。
+   */
+  private migrateAddNoteTweetText(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'note_tweet_text')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN note_tweet_text TEXT");
+    }
   }
 
   getKnownTweetIds(): Set<string> {
@@ -79,11 +95,11 @@ export class XBookmarksDb {
   upsertBookmark(input: BookmarkUpsertInput): void {
     const stmt = this.db.prepare(`
       INSERT INTO bookmarks (
-        tweet_id, url, author, tweet_text, created_at,
+        tweet_id, url, author, tweet_text, note_tweet_text, created_at,
         x_folder_name, vault_path, saved_at,
         engagement_likes, engagement_retweets, engagement_replies
       ) VALUES (
-        @tweet_id, @url, @author, @tweet_text, @created_at,
+        @tweet_id, @url, @author, @tweet_text, @note_tweet_text, @created_at,
         @x_folder_name, @vault_path, @saved_at,
         @engagement_likes, @engagement_retweets, @engagement_replies
       )
@@ -91,6 +107,7 @@ export class XBookmarksDb {
         url = excluded.url,
         author = excluded.author,
         tweet_text = excluded.tweet_text,
+        note_tweet_text = excluded.note_tweet_text,
         created_at = excluded.created_at,
         x_folder_name = excluded.x_folder_name,
         vault_path = excluded.vault_path,
@@ -104,6 +121,7 @@ export class XBookmarksDb {
       url: input.url,
       author: input.author ?? null,
       tweet_text: input.tweetText ?? null,
+      note_tweet_text: input.noteTweetText ?? null,
       created_at: input.createdAt ?? null,
       x_folder_name: input.xFolderName ?? null,
       vault_path: input.vaultPath ?? null,

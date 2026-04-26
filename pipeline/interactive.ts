@@ -73,6 +73,7 @@ async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
             tweetId: ax.xTweetId,
             url: ax.url,
             tweetText: ax.textContent,
+            noteTweetText: ax.xNoteTweetText,
             createdAt: ax.date,
             xFolderName: ax.xFolderName,
             vaultPath: savedPath,
