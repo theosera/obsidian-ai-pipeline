@@ -309,6 +309,30 @@ pnpm start -- --x-bookmarks --x-limit=20 --dry-run
 > ツイートは `x.com` ドメインですが、`--x-bookmarks` モードでは `evaluatePolicy` の `manual_skip` を**意図的にバイパス**します。
 > access_token が期限切れの場合は refresh_token で自動更新されます。refresh_token も失効した場合は `--x-auth` で再認証してください。
 
+#### 動画キーフレーム抽出 (opt-in)
+
+ツイートに動画 (video / animated_gif) が埋め込まれている場合、`X_VIDEO_FRAMES=true` で起動すると ffmpeg で等間隔キーフレームを 4 枚抽出し、`.md` 末尾に `## キーフレーム` セクションとして埋め込みます。
+
+```bash
+# 前提: ffmpeg がインストールされていること
+ffmpeg -version
+
+# opt-in で動画フレーム抽出を有効化
+X_VIDEO_FRAMES=true pnpm start -- --x-bookmarks --x-limit=10
+```
+
+挙動:
+
+- **保存先**: `<vault>/_attachments/x-bookmarks/<post_id>/frame-{NN}.webp` (idempotent — 既に存在すれば再生成しない)
+- **動画長**: 60 秒超は skip (要点把握目的のため)
+- **ファイルサイズ**: 30MB 超は skip
+- **抽出方式**: Tier 0 等間隔サンプル (動画長を 5 等分し 1/5, 2/5, 3/5, 4/5 の地点)
+- **失敗時**: `## キーフレーム 取得失敗 (理由)` を本文に出力し、本文保存は継続
+- **ffmpeg 不在時**: skip 警告のみ。本文は通常通り保存される
+- **OFF時**: 本セクションは生成されず、従来挙動と同等
+
+機能フラグなので、まず `--x-limit=5` で挙動確認することを推奨します。
+
 ### X ブックマーク群からハンズオン生成（Claude Code OAuth）
 
 Vault に蓄積した X ブックマーク群を素材に、Claude Code CLI (OAuth サブスク枠) でハンズオン .md を生成します。API キー課金不要。
