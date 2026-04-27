@@ -1326,27 +1326,38 @@ export function run(): TestSuiteResult {
     runner.section('x_video_frames: isVideoFramesEnabled');
 
     runner.test('X_VIDEO_FRAMES=true で有効', () => {
+      // try/finally + delete-on-undefined パターン:
+      // 1) `process.env.X = undefined` は文字列 "undefined" を保存してしまう
+      // 2) 途中で assert が throw すると env が残ったままになり後続テストに漏れる
       const prev = process.env.X_VIDEO_FRAMES;
-      process.env.X_VIDEO_FRAMES = 'true';
-      assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
-      process.env.X_VIDEO_FRAMES = '1';
-      assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
-      process.env.X_VIDEO_FRAMES = 'TRUE';
-      assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
-      process.env.X_VIDEO_FRAMES = prev;
+      try {
+        process.env.X_VIDEO_FRAMES = 'true';
+        assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
+        process.env.X_VIDEO_FRAMES = '1';
+        assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
+        process.env.X_VIDEO_FRAMES = 'TRUE';
+        assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
+      } finally {
+        if (prev === undefined) delete process.env.X_VIDEO_FRAMES;
+        else process.env.X_VIDEO_FRAMES = prev;
+      }
     });
 
     runner.test('X_VIDEO_FRAMES 未設定 / false で無効', () => {
       const prev = process.env.X_VIDEO_FRAMES;
-      delete process.env.X_VIDEO_FRAMES;
-      assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
-      process.env.X_VIDEO_FRAMES = 'false';
-      assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
-      process.env.X_VIDEO_FRAMES = '0';
-      assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
-      process.env.X_VIDEO_FRAMES = '';
-      assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
-      process.env.X_VIDEO_FRAMES = prev;
+      try {
+        delete process.env.X_VIDEO_FRAMES;
+        assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
+        process.env.X_VIDEO_FRAMES = 'false';
+        assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
+        process.env.X_VIDEO_FRAMES = '0';
+        assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
+        process.env.X_VIDEO_FRAMES = '';
+        assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
+      } finally {
+        if (prev === undefined) delete process.env.X_VIDEO_FRAMES;
+        else process.env.X_VIDEO_FRAMES = prev;
+      }
     });
 
     runner.section('x_video_frames: renderKeyFramesSection');

@@ -27,6 +27,8 @@ import { getVaultRoot } from './config';
 import {
   extractFramesFromTweetVideo,
   isVideoFramesEnabled,
+  pickBestVariantUrl,
+  pickVideoMedia,
   renderKeyFramesSection,
 } from './x_video_frames';
 
@@ -384,20 +386,19 @@ export function tweetToApiBookmark(
 
   // 動画 (video / animated_gif) があれば最高 bitrate URL と duration を ApiBookmark に転記。
   // 実フレーム抽出は async 後処理 (enrichBookmarksWithFrames) に委ねる。
+  // `pickVideoMedia` / `pickBestVariantUrl` の選別ロジックを共有して、
+  // 「何が主動画か」「どの variant を選ぶか」のルールを一箇所に保つ。
   if (mediaResolver && post.attachments?.media_keys?.length) {
-    for (const key of post.attachments.media_keys) {
-      const media = mediaResolver(key);
-      if (!media) continue;
-      if (media.type !== 'video' && media.type !== 'animated_gif') continue;
-      const variants = media.variants ?? [];
-      const sorted = [...variants].sort((a, b) => (b.bit_rate ?? 0) - (a.bit_rate ?? 0));
-      const best = sorted[0]?.url;
-      if (!best) continue;
+    const resolved = post.attachments.media_keys
+      .map(k => mediaResolver(k))
+      .filter((m): m is XMediaResponse => !!m);
+    const video = pickVideoMedia(resolved);
+    const best = video ? pickBestVariantUrl(video) : undefined;
+    if (video && best) {
       result.xVideoUrl = best;
-      if (typeof media.duration_ms === 'number') {
-        result.xVideoDurationMs = media.duration_ms;
+      if (typeof video.duration_ms === 'number') {
+        result.xVideoDurationMs = video.duration_ms;
       }
-      break; // 主動画 1 本のみ
     }
   }
 
@@ -582,25 +583,42 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
  * 個々のツイートの失敗は警告ログのみ。
  */
 async function enrichBookmarksWithFrames(bookmarks: ApiBookmark[]): Promise<void> {
-  const targets = bookmarks.filter(b => b.xVideoUrl && b.xVideoDurationMs);
+  // duration_ms 不在の動画も拾う (extractFramesFromTweetVideo 側で `no_duration`
+  // skip が出て本文に「取得失敗」セクションが出る → silently 落ちることがない)
+  const targets = bookmarks.filter(b => b.xVideoUrl);
   if (targets.length === 0) return;
   console.log(`🎞️  [X API] 動画 ${targets.length} 件のキーフレーム抽出を開始`);
+  let success = 0;
+  let failed = 0;
+  const skipReasons: Record<string, number> = {};
   for (const bm of targets) {
     try {
       const result = await extractFramesFromTweetVideo(
         bm.xTweetId,
         bm.xVideoUrl!,
-        bm.xVideoDurationMs!,
+        bm.xVideoDurationMs ?? 0,
         { logger: (m) => console.log(m) },
       );
       const section = renderKeyFramesSection(result);
       if (section) {
         bm.content = (bm.content ?? '') + section;
       }
+      if (result.skipped) {
+        skipReasons[result.skipped] = (skipReasons[result.skipped] ?? 0) + 1;
+      } else {
+        success += 1;
+      }
     } catch (e: any) {
       console.warn(`   ⚠️  frame extraction failed for ${bm.xTweetId}: ${e.message}`);
+      failed += 1;
     }
   }
+  const skipSummary = Object.keys(skipReasons).length === 0
+    ? ''
+    : ' / skipped: ' + Object.entries(skipReasons).map(([k, v]) => `${k}=${v}`).join(', ');
+  console.log(
+    `🎞️  [X API] キーフレーム抽出完了: success=${success} failed=${failed}${skipSummary}`
+  );
 }
 
 // テスト用 export

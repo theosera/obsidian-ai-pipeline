@@ -8,8 +8,11 @@
  *   - Tier 0 (等間隔サンプル): 重要度推論なし、動画長を均等分割した時刻で frame 取得
  *
  * 保存パス:
- *   <vault>/_attachments/x-bookmarks/<post_id>/source.mp4   (一次)
- *   <vault>/_attachments/x-bookmarks/<post_id>/frame-NN.webp (抽出結果)
+ *   <vault>/_attachments/x-bookmarks/<post_id>/source.mp4   (一次・抽出後に削除)
+ *   <vault>/_attachments/x-bookmarks/<post_id>/frame-NN.webp (抽出結果・vault 内に永続)
+ *
+ * source.mp4 はフレーム抽出後に best-effort で削除する (vault 内 disk leak 回避)。
+ * frame-NN.webp は意図的に vault 内に残し、Obsidian の preview から参照される。
  *
  * Markdown 埋め込み:
  *   ## キーフレーム (動画 0:18)
@@ -43,6 +46,7 @@ export interface VideoFrameResult {
   skipped?:
     | 'feature_disabled'
     | 'no_video_variant'
+    | 'no_duration'
     | 'too_long'
     | 'too_large'
     | 'download_failed'
@@ -138,43 +142,82 @@ function ffmpegAvailable(ffmpegPath: string): boolean {
   }
 }
 
+// X CDN は UA 無しの bot を弾くことがあるので HEAD/GET 両方に同じ UA を付与。
+const FETCH_UA = 'obsidian-ai-pipeline/1.0 (+https://github.com/theosera/obsidian-ai-pipeline)';
+const HEAD_TIMEOUT_MS = 10_000;
+const GET_TIMEOUT_MS = 60_000;
+
 /**
- * 動画 URL を mp4 として保存。HEAD で size 取得できれば事前 cap。
- * 失敗時は file は残さず例外を伝播する (呼び出し側で graceful skip)。
+ * 動画 URL を mp4 として保存。
+ *
+ * - HEAD で Content-Length が返ればサイズ事前 cap。HEAD が 4xx/5xx/timeout でも GET を継続。
+ * - GET は AbortSignal で timeout、ストリーミング読み込みで `maxSizeMb` を逐次チェック
+ *   (Content-Length 不在の悪性応答での memory blowup を防ぐ)。
+ * - 失敗時は destPath を delete してから throw (呼び出し側 graceful skip 用)。
  */
 async function downloadVideo(
   url: string,
   destPath: string,
   maxSizeMb: number
 ): Promise<void> {
-  // HEAD でサイズチェック (X CDN は Content-Length を返す)
+  const maxBytes = maxSizeMb * 1024 * 1024;
+
+  // HEAD pre-check (失敗は GET に進む。ただし「サイズ超過」エラーだけは伝播)
   try {
-    const head = await fetch(url, { method: 'HEAD' });
+    const head = await fetch(url, {
+      method: 'HEAD',
+      headers: { 'User-Agent': FETCH_UA },
+      signal: AbortSignal.timeout(HEAD_TIMEOUT_MS),
+    });
     const len = head.headers.get('content-length');
-    if (len && Number(len) > maxSizeMb * 1024 * 1024) {
+    if (len && Number(len) > maxBytes) {
       throw new Error(`video size ${(Number(len) / 1024 / 1024).toFixed(1)}MB exceeds ${maxSizeMb}MB cap`);
     }
   } catch (e: any) {
-    // HEAD 不可な CDN もあるので失敗は警告のみ。GET は試行する。
-    if (/exceeds.*cap/.test(String(e?.message))) {
-      throw e;
-    }
+    if (/exceeds.*cap/.test(String(e?.message))) throw e;
+    // HEAD timeout / 405 / 4xx は GET で再試行
   }
 
   const res = await fetch(url, {
-    headers: {
-      // X CDN は UA 無しの bot を弾くことがあるので User-Agent を付与
-      'User-Agent': 'obsidian-ai-pipeline/1.0 (+https://github.com/theosera/obsidian-ai-pipeline)',
-    },
+    headers: { 'User-Agent': FETCH_UA },
+    signal: AbortSignal.timeout(GET_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} from ${url}`);
   }
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > maxSizeMb * 1024 * 1024) {
-    throw new Error(`video size ${(buf.length / 1024 / 1024).toFixed(1)}MB exceeds ${maxSizeMb}MB cap`);
+  if (!res.body) {
+    throw new Error('empty response body');
   }
-  fs.writeFileSync(destPath, buf);
+
+  // ストリーミング読み込み: 1 chunk ごとに累計サイズチェック → 上限超過なら中断
+  const writer = fs.createWriteStream(destPath);
+  const reader = res.body.getReader();
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        // 上限超過: reader/writer を破棄、partial file 削除
+        try { await reader.cancel(); } catch { /* noop */ }
+        throw new Error(
+          `video streaming exceeded ${maxSizeMb}MB cap (received ${(received / 1024 / 1024).toFixed(1)}MB)`
+        );
+      }
+      writer.write(Buffer.from(value));
+    }
+    await new Promise<void>((resolve, reject) => {
+      writer.end((err: NodeJS.ErrnoException | null | undefined) => err ? reject(err) : resolve());
+    });
+  } catch (e) {
+    // partial file をクリーンアップ
+    try { writer.destroy(); } catch { /* noop */ }
+    if (fs.existsSync(destPath)) {
+      try { fs.unlinkSync(destPath); } catch { /* noop */ }
+    }
+    throw e;
+  }
 }
 
 /**
@@ -250,6 +293,16 @@ export async function extractFramesFromTweetVideo(
     return { frames: [], skipped: 'feature_disabled' };
   }
 
+  // duration_ms が API から返らない video もある。等間隔サンプルが計算できないので
+  // この場合は明示的に skip 表示 (silently skip ではなく失敗を本文上で見えるように)
+  if (!durationMs || durationMs <= 0) {
+    return {
+      frames: [],
+      skipped: 'no_duration',
+      message: 'API が duration_ms を返さなかったため等間隔サンプルが計算できません',
+    };
+  }
+
   const durationSec = durationMs / 1000;
   if (durationSec > opts.maxDurationSec) {
     return {
@@ -291,11 +344,20 @@ export async function extractFramesFromTweetVideo(
   fs.mkdirSync(attachDir, { recursive: true });
   const sourceMp4 = path.join(attachDir, 'source.mp4');
 
+  // source.mp4 は extraction 用の一時ファイル。終了時 (成功/失敗どちらも)
+  // best-effort で削除して vault 内 disk leak を防ぐ。
+  const cleanupSource = () => {
+    if (fs.existsSync(sourceMp4)) {
+      try { fs.unlinkSync(sourceMp4); } catch { /* best-effort */ }
+    }
+  };
+
   try {
     log(`   📥 動画 DL: ${videoUrl.split('?')[0]} → ${sourceMp4}`);
     await downloadVideo(videoUrl, sourceMp4, opts.maxSizeMb);
   } catch (e: any) {
     const msg = String(e?.message ?? e);
+    cleanupSource();
     return {
       frames: [],
       durationSec,
@@ -318,6 +380,7 @@ export async function extractFramesFromTweetVideo(
       // 空配列で返し、呼び出し側で必ず「取得失敗」見出しが出るようにする。
       // (ディスクに残った partial frame は次回 alreadyExtracted=false で
       //  再抽出のリトライ対象になる)
+      cleanupSource();
       return {
         frames: [],
         durationSec,
@@ -332,6 +395,8 @@ export async function extractFramesFromTweetVideo(
     });
   }
 
+  // 全フレーム抽出成功: source.mp4 はもう不要なので削除して vault 内 disk leak 回避
+  cleanupSource();
   return { frames, durationSec };
 }
 
