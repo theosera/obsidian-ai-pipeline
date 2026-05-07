@@ -304,7 +304,68 @@ pnpm start -- --x-bookmarks
 
 # 件数制限 + dry-run（書き込みなし）
 pnpm start -- --x-bookmarks --x-limit=20 --dry-run
+
+# Stage 1 でフォルダ一覧を表示 → 対話選択 → Stage 2 で本文取得
+pnpm start -- --x-pick
+pnpm start -- --x-pick --x-limit=10 --dry-run
 ```
+
+#### `--x-pick`（フォルダ対話選択モード）
+
+`--x-bookmarks` が「全フォルダ自動」なのに対し、`--x-pick` は **2 段階フロー**で取得対象を絞り込めます。`--x-bookmarks` を含意するので併記不要です。
+
+**Stage 1 (フォルダ一覧表示・低コスト)**:
+
+`/2/users/:id/bookmarks/folders` のみ叩いて、X 側のフラットなフォルダ群を **2 階層 Tree** に再構築して表示します。`/bookmarks/folders/:id` (本文取得) は走らないので Stage 1 のコストは小さい。
+
+Tree 構築ルール（[x_folder_tree.ts](x_folder_tree.ts)）:
+
+| Tier | グルーピング条件 | 例 |
+|---|---|---|
+| 1 (forced) | `x_forced_parents.json` のキーワードに単語境界マッチ | `Claude Code Tips` → 親 `Claude Code` |
+| 2 (approved) | `x_folder_mapping.json` の親パス先頭セグメント | `AI Tools` (`AI/Tools`) → 親 `AI` |
+| 3 (dynamic) | 残ったフォルダから 3 件以上の共通キーワードを自動検出 | `Foo Tools/Foo Ethics/Foo Agents` → 親 `Foo` |
+| 4 (orphan) | どの親にも入らないフォルダを `(その他)` でまとめ | `LangChain` |
+| 5 (unfiled) | X 側のどのフォルダにも未割当のブックマーク（仮想） | `_Unfiled` |
+
+表示例:
+
+```text
+🔖 X ブックマークフォルダ (合計 8 フォルダ)
+
+[1] Claude Code  (強制親, 3)
+    ├─ [1.1] Claude Code
+    ├─ [1.2] Claude Code Tips
+    └─ [1.3] Claude Code Hooks
+
+[2] Foo  (動的検出, 3)
+    ├─ [2.1] Foo Tools  (= Foo/Tools)
+    ├─ [2.2] Foo Ethics (= Foo/Ethics)
+    └─ [2.3] Foo Agents (= Foo/Agents)
+
+[3] (その他)  (未グルーピング, 1)
+    └─ [3.1] LangChain
+
+[4] _Unfiled  (フォルダ未割当)
+```
+
+**Stage 2 (選択 → 本文取得)**:
+
+| 入力 | 動作 |
+|---|---|
+| `1` | グループ [1] 配下の全サブフォルダ |
+| `1.2` | サブフォルダ [1.2] のみ |
+| `1, 3.1, 4` | 複合指定（カンマ区切り） |
+| `1-3` | グループ範囲指定 |
+| `all` | 全フォルダ + Unfiled |
+| `q` | 中止 |
+
+選択後は `/2/users/:id/bookmarks/folders/:id` を選んだフォルダだけ叩きます。Unfiled が選ばれていない場合は `/2/users/:id/bookmarks` のコールも省略するので **Pay-per-use コストを最小化**できます。
+
+> 動作確認の典型フロー:
+> 1. `pnpm start -- --x-pick --x-limit=10 --dry-run` で Tree を確認しつつ書き込みは止める
+> 2. 想定したフォルダだけ拾えていることを確認
+> 3. `--dry-run` を外して本番取得
 
 > ツイートは `x.com` ドメインですが、`--x-bookmarks` モードでは `evaluatePolicy` の `manual_skip` を**意図的にバイパス**します。
 > access_token が期限切れの場合は refresh_token で自動更新されます。refresh_token も失効した場合は `--x-auth` で再認証してください。
@@ -405,6 +466,8 @@ pipeline/
 ├── hands_on_generator.ts   X ブックマーク群 → Claude CLI でハンズオン生成
 ├── prompts/hands_on.md     ハンズオン生成プロンプトテンプレート
 ├── x_folder_mapper.ts      X フォルダ名 → Vault 階層パスの 2 層マッピング
+├── x_folder_tree.ts        --x-pick 用 Tree ビルダ + ASCII レンダラ
+├── x_interactive_picker.ts --x-pick 用 番号パーサ + 対話ループ
 ├── x_bookmarks_db.ts       SQLite メタデータキャッシュ（差分同期用）
 ├── classifier.ts         AI 分類エンジン（Fast / Smart Pass）
 ├── router.ts             動的フォルダルーティング

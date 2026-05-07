@@ -13,7 +13,8 @@ import { run as runXBookmarks } from './test/x_bookmarks';
 
 interface Suite {
   name: string;
-  run: () => { passed: number; failed: number };
+  // suites may be sync or async; we await uniformly so both work
+  run: () => { passed: number; failed: number } | Promise<{ passed: number; failed: number }>;
 }
 
 const suites: Suite[] = [
@@ -28,39 +29,46 @@ let totalPassed = 0;
 let totalFailed = 0;
 const suiteResults: { name: string; passed: number; failed: number }[] = [];
 
-for (const suite of suites) {
-  console.log(`\n======== ${suite.name} ========`);
-  let result: { passed: number; failed: number };
-  try {
-    result = suite.run();
-  } catch (err: any) {
-    // suite 自身が throw した場合でも集計サマリーが出力されるようにガードする
-    console.error(`  ❌ ${suite.name} suite crashed`);
-    console.error(`     ${err?.message ?? String(err)}`);
-    result = { passed: 0, failed: 1 };
+async function main() {
+  for (const suite of suites) {
+    console.log(`\n======== ${suite.name} ========`);
+    let result: { passed: number; failed: number };
+    try {
+      result = await suite.run();
+    } catch (err: any) {
+      // suite 自身が throw した場合でも集計サマリーが出力されるようにガードする
+      console.error(`  ❌ ${suite.name} suite crashed`);
+      console.error(`     ${err?.message ?? String(err)}`);
+      result = { passed: 0, failed: 1 };
+    }
+    totalPassed += result.passed;
+    totalFailed += result.failed;
+    suiteResults.push({ name: suite.name, ...result });
   }
-  totalPassed += result.passed;
-  totalFailed += result.failed;
-  suiteResults.push({ name: suite.name, ...result });
+  printSummary();
 }
 
-// =====================================================
-// サマリー
-// =====================================================
-console.log('\n========================================');
-console.log('📊 テスト結果サマリー');
-console.log('========================================');
-for (const r of suiteResults) {
-  const status = r.failed === 0 ? '✅' : '❌';
-  console.log(`  ${status} ${r.name.padEnd(12)}  ${r.passed} passed, ${r.failed} failed`);
-}
-console.log('----------------------------------------');
-console.log(`  合計: ${totalPassed} passed, ${totalFailed} failed`);
-console.log('========================================\n');
+function printSummary(): void {
+  console.log('\n========================================');
+  console.log('📊 テスト結果サマリー');
+  console.log('========================================');
+  for (const r of suiteResults) {
+    const status = r.failed === 0 ? '✅' : '❌';
+    console.log(`  ${status} ${r.name.padEnd(12)}  ${r.passed} passed, ${r.failed} failed`);
+  }
+  console.log('----------------------------------------');
+  console.log(`  合計: ${totalPassed} passed, ${totalFailed} failed`);
+  console.log('========================================\n');
 
-if (totalFailed > 0) {
-  console.error('❌ テストに失敗があります！');
+  if (totalFailed > 0) {
+    console.error('❌ テストに失敗があります！');
+    process.exit(1);
+  }
+
+  console.log('🎉 全テスト合格！');
+}
+
+main().catch((err) => {
+  console.error('❌ test_runner main() threw:', err);
   process.exit(1);
-}
-
-console.log('🎉 全テスト合格！');
+});

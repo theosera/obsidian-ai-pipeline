@@ -31,8 +31,17 @@ import { ParsedEntry, FailureRecord } from './types';
 export async function prepareXBookmarks(options: {
   maxItems?: number;
   knownUrls: Set<string>;
+  /**
+   * --x-pick 経由で選択されたフォルダ ({id, name}) 配列。
+   * undefined は従来挙動 (全フォルダ)。空配列 + includeUnfiled=true は Unfiled だけ取得。
+   */
+  selectedFolders?: { id: string; name: string }[];
+  /** --x-pick で _Unfiled を選択したかどうか。未指定は true (従来挙動)。 */
+  includeUnfiled?: boolean;
+  /** --x-pick 経由のときは Tier 3 提案レポート出力をスキップ (Stage 1 で表示済み)。 */
+  suppressGroupingProposal?: boolean;
 }): Promise<{ entries: ParsedEntry[]; failures: FailureRecord[] }> {
-  const { maxItems, knownUrls } = options;
+  const { maxItems, knownUrls, selectedFolders, includeUnfiled, suppressGroupingProposal } = options;
   const entries: ParsedEntry[] = [];
   const failures: FailureRecord[] = [];
 
@@ -49,15 +58,19 @@ export async function prepareXBookmarks(options: {
   const bookmarks: ApiBookmark[] = await fetchBookmarksViaApi({
     maxItems,
     skipKnownIds: knownTweetIds,
+    selectedFolders,
+    includeUnfiled,
   });
 
   // 共通キーワード提案レポート (未マッチフォルダのみ対象)
-  const folderNamesRaw = [...new Set(bookmarks.map((b) => b.xFolderName))];
-  const proposals = detectCommonKeywords(folderNamesRaw, forcedParents);
-  if (proposals.length > 0) {
-    const reportPath = writeGroupingProposal(proposals);
-    console.log(`📋 共通キーワード提案レポート: ${reportPath}`);
-    console.log('   → 親フォルダとして承認するなら x_forced_parents.json に追記してください。');
+  if (!suppressGroupingProposal) {
+    const folderNamesRaw = [...new Set(bookmarks.map((b) => b.xFolderName))];
+    const proposals = detectCommonKeywords(folderNamesRaw, forcedParents);
+    if (proposals.length > 0) {
+      const reportPath = writeGroupingProposal(proposals);
+      console.log(`📋 共通キーワード提案レポート: ${reportPath}`);
+      console.log('   → 親フォルダとして承認するなら x_forced_parents.json に追記してください。');
+    }
   }
 
   for (let i = 0; i < bookmarks.length; i++) {

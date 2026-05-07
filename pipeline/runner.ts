@@ -14,6 +14,10 @@ import { processEntries } from './processor';
 import { generateReport } from './report';
 import { interactiveReviewLoop } from './interactive';
 import { askQuestion } from './prompt';
+import { listFolders } from '../x_bookmarks_api';
+import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
+import { pickFolders } from '../x_interactive_picker';
+import { loadForcedParents, loadApprovedMappings } from '../x_folder_mapper';
 
 /**
  * X API ブックマーク専用のベースフォルダ。
@@ -52,6 +56,16 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   console.log(`Found ${knownUrls.size} unique URLs already saved.\n`);
 
   const { entries, failures } = await buildEntries(args, knownUrls);
+
+  // --x-pick で「中止」が選ばれると entries も failures も 0 件で返る。
+  // この場合は y/n 確認をスキップして即終了 (再度プロンプトを出すと UX が悪い)。
+  // 他のフロー (--x-bookmarks 単独 / OneTab) で 0 件になった場合は、
+  // 従来通り confirmBeforeRun で「処理予定: 0 件」を表示して y/n を出した方が
+  // 「実行はしたが何もなかった」ことが明示できる。
+  if (args.xPick && entries.length === 0 && failures.length === 0) {
+    await closeBrowser();
+    return;
+  }
 
   // === 2. 実行前ユーザー確認 ===
   const approved = await confirmBeforeRun(entries, failures, REPORTS_DIR, args);
@@ -116,6 +130,22 @@ async function buildEntries(
 ): Promise<{ entries: ParsedEntry[]; failures: FailureRecord[] }> {
   if (args.xBookmarks) {
     try {
+      // --x-pick: Stage 1 (フォルダ一覧表示) → 選択 → Stage 2 (本文取得)
+      if (args.xPick) {
+        const selection = await runFolderPickStage();
+        if (selection.cancelled) {
+          console.log('🚪 ユーザー中止 — ブックマーク取得をスキップします。');
+          return { entries: [], failures: [] };
+        }
+        return await prepareXBookmarks({
+          maxItems: args.xLimit,
+          knownUrls,
+          selectedFolders: selection.selectedFolders,
+          includeUnfiled: selection.includeUnfiled,
+          suppressGroupingProposal: true,
+        });
+      }
+      // 従来挙動 (--x-bookmarks 単独): 全フォルダ自動取得
       return await prepareXBookmarks({ maxItems: args.xLimit, knownUrls });
     } catch (e: any) {
       console.error(`❌ X ブックマーク取得失敗: ${e.message}`);
@@ -126,6 +156,47 @@ async function buildEntries(
     }
   }
   return readOneTabFile(args.filePath!, knownUrls);
+}
+
+/**
+ * Stage 1: フォルダ一覧を取得 → 2 階層 Tree 表示 → 対話選択。
+ *
+ * API コールは `/users/me` + `/bookmarks/folders` のみ (本文 fetch なし)。
+ * 選択結果は selectedFolders ({id, name}) として Stage 2 に渡される。
+ */
+async function runFolderPickStage(): Promise<{
+  selectedFolders: { id: string; name: string }[];
+  includeUnfiled: boolean;
+  cancelled: boolean;
+}> {
+  console.log('\n🔖 Stage 1: フォルダ一覧を取得中...');
+  const listing = await listFolders();
+  console.log(`   authenticated as @${listing.username}`);
+
+  const forcedParents = loadForcedParents();
+  const approvedMap = loadApprovedMappings();
+  const tree = buildFolderTree(listing.folders, forcedParents, approvedMap);
+  const rendered = renderFolderTree(tree);
+  const result = await pickFolders(tree, rendered, askQuestion);
+
+  if (result.cancelled) {
+    return { selectedFolders: [], includeUnfiled: false, cancelled: true };
+  }
+
+  // result.folderIds → listing.folders から {id, name} を再構築
+  const idToName = new Map(listing.folders.map(f => [f.id, f.name]));
+  const selectedFolders = result.folderIds.map(id => ({
+    id,
+    name: idToName.get(id) ?? id,
+  }));
+  console.log(
+    `🔖 Stage 2: ${selectedFolders.length} フォルダ${result.includeUnfiled ? ' + Unfiled' : ''} を取得します`
+  );
+  return {
+    selectedFolders,
+    includeUnfiled: result.includeUnfiled,
+    cancelled: false,
+  };
 }
 
 /**
@@ -141,7 +212,9 @@ async function confirmBeforeRun(
   console.log(`\n📋 処理予定: ${entries.length} 件 / スキップ: ${failures.length} 件`);
   console.log(`📁 分類結果レポート出力先: ${reportsDir}`);
   if (args.dryRun) console.log('🧪 dry-run モード: Vault へのファイル書き込みはスキップされます。');
-  if (args.xBookmarks) console.log('🔖 X ブックマークモード');
+  if (args.xBookmarks) {
+    console.log(args.xPick ? '🔖 X ブックマークモード (--x-pick: 選択済みフォルダのみ)' : '🔖 X ブックマークモード');
+  }
   const answer = (await askQuestion('\nパイプラインを実行しますか？ [y/n]: ')).toLowerCase().trim();
   if (answer !== 'y') {
     console.log('キャンセルしました。');
