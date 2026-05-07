@@ -9,7 +9,9 @@
  *   --dry-run             ファイル移動/保存を抑止
  *   --sync-rules          snippets→folder_rules 同期のみ実行
  *   --x-auth              X OAuth 認可サーバを起動して終了
- *   --x-bookmarks         X API v2 ブックマーク取込モード
+ *   --x-bookmarks         X API v2 ブックマーク取込モード (全フォルダ自動)
+ *   --x-pick              Stage 1 (フォルダ一覧) → 対話選択 → Stage 2 (本文取得)
+ *                         --x-bookmarks を含意するので併記不要
  *   --x-limit=N           X 取得件数上限
  *   --hands-on=<folder>   X ブックマーク DB からハンズオン生成
  *   --since=YYYY-MM-DD    --hands-on の対象期間起点
@@ -22,6 +24,8 @@ export interface ParsedCliArgs {
   syncRules: boolean;
   xAuth: boolean;
   xBookmarks: boolean;
+  /** Stage 1 (フォルダ一覧) → 対話選択 → Stage 2 (本文取得) */
+  xPick: boolean;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -55,12 +59,16 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     xLimit = parsed;
   }
 
+  const xPick = argv.includes('--x-pick');
+
   return {
     config: argv.includes('--config'),
     dryRun: argv.includes('--dry-run'),
     syncRules: argv.includes('--sync-rules'),
     xAuth: argv.includes('--x-auth'),
-    xBookmarks: argv.includes('--x-bookmarks'),
+    // --x-pick は --x-bookmarks を含意 (両者の単独/併記どちらも有効)
+    xBookmarks: argv.includes('--x-bookmarks') || xPick,
+    xPick,
     xLimit,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
@@ -73,6 +81,7 @@ export function printUsage(): void {
   console.error('Usage:');
   console.error('  tsx index.ts <path-to-onetab.txt> [--config] [--dry-run]');
   console.error('  tsx index.ts --x-bookmarks [--x-limit=N] [--dry-run]');
+  console.error('  tsx index.ts --x-pick      [--x-limit=N] [--dry-run]  (フォルダ対話選択)');
   console.error('  tsx index.ts --x-auth                (X OAuth 初回認証)');
   console.error('  tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
   console.error('  tsx index.ts --sync-rules            (snippets→folder_rules 同期のみ)');

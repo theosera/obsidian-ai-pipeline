@@ -56,8 +56,28 @@ export interface ApiBookmark extends ArticleData {
 export interface FetchOptions {
   maxItems?: number;
   skipKnownIds?: Set<string>;
+  /**
+   * 取得対象フォルダ ({id, name}) 配列。指定時はフォルダ列挙をスキップし
+   * この ID のフォルダのみ本文取得する (--x-pick 経由のセレクト用)。
+   * name は ApiBookmark.xFolderName に流れるので、Stage 1 で取得した
+   * 表示名 (X 側 raw) をそのまま渡すこと。
+   * 未指定 (undefined) は従来通り「全フォルダ」を取得。
+   */
+  selectedFolders?: { id: string; name: string }[];
+  /**
+   * `_Unfiled` (どのフォルダにも未割当のブックマーク) を取得対象に含めるか。
+   * `--x-pick` で明示選択したときだけ true を渡す想定。デフォルト true (従来挙動)。
+   */
+  includeUnfiled?: boolean;
   /** テストから fetch をモックするための差し替え口 */
   fetchFn?: typeof fetch;
+}
+
+/** Stage 1 (一覧表示) でだけ使う、軽量な folder list 取得結果 */
+export interface FolderListing {
+  userId: string;
+  username: string;
+  folders: { id: string; name: string }[];
 }
 
 export interface StoredTokens {
@@ -456,12 +476,60 @@ function buildFoldersUrl(userId: string, paginationToken?: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 1: フォルダ一覧のみ取得 (本文 fetch は走らせない)
+// ---------------------------------------------------------------------------
+/**
+ * `--x-pick` の Stage 1 で利用する軽量フェッチ。
+ * `/users/me` + `/bookmarks/folders` のみ叩き、本文取得 (`/bookmarks/folders/:id`)
+ * には進まない。これにより「とりあえず一覧だけ確認」のコストを大幅に下げる。
+ */
+export async function listFolders(
+  fetchFn: typeof fetch = fetch
+): Promise<FolderListing> {
+  const clientId = process.env.X_CLIENT_ID ?? '';
+  const clientSecret = process.env.X_CLIENT_SECRET ?? '';
+  if (!clientId) {
+    throw new Error('X_CLIENT_ID が未設定です。.env に追加してください。');
+  }
+  let accessToken = await getValidAccessToken(clientId, clientSecret, fetchFn);
+  const ctx = {
+    accessToken,
+    clientId,
+    clientSecret,
+    fetchFn,
+    onRefreshed: (t: string) => { accessToken = t; },
+  };
+
+  const me = await xGet<{ data: { id: string; username: string } }>(
+    `${API_BASE}/users/me`,
+    ctx
+  );
+  const userId = me.data.id;
+  const username = me.data.username;
+
+  const folders: { id: string; name: string }[] = [];
+  let token: string | undefined;
+  do {
+    const page = await xGet<BookmarkFoldersResponse>(buildFoldersUrl(userId, token), ctx);
+    folders.push(...(page.data ?? []));
+    token = page.meta?.next_token;
+  } while (token);
+
+  return { userId, username, folders };
+}
+
+// ---------------------------------------------------------------------------
 // Main fetch entry
 // ---------------------------------------------------------------------------
 export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<ApiBookmark[]> {
   const maxItems = options.maxItems ?? Infinity;
   const skipKnownIds = options.skipKnownIds ?? new Set<string>();
   const fetchFn = options.fetchFn ?? fetch;
+  // selectedFolders が undefined: 従来通り「全フォルダ列挙」
+  // selectedFolders が空配列:     フォルダ取得をスキップ (Unfiled だけ取りたいときの明示意図)
+  // selectedFolders が配列:        その {id,name} のフォルダのみ取得
+  const selectedFolders = options.selectedFolders;
+  const includeUnfiled = options.includeUnfiled ?? true;
 
   const clientId = process.env.X_CLIENT_ID ?? '';
   const clientSecret = process.env.X_CLIENT_SECRET ?? '';
@@ -486,19 +554,25 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
   const userId = me.data.id;
   console.log(`🔖 [X API] authenticated as @${me.data.username} (${userId})`);
 
-  // 2. フォルダ一覧
-  const folders: { id: string; name: string }[] = [];
-  {
+  // 2. フォルダ一覧 (--x-pick 経由で selectedFolders が来ているなら列挙不要)
+  let folders: { id: string; name: string }[];
+  if (selectedFolders === undefined) {
+    folders = [];
     let token: string | undefined;
     do {
       const page = await xGet<BookmarkFoldersResponse>(buildFoldersUrl(userId, token), ctx);
       folders.push(...(page.data ?? []));
       token = page.meta?.next_token;
     } while (token);
+    console.log(
+      `🔖 [X API] フォルダ ${folders.length} 件: ${folders.map(f => f.name).join(', ') || '(なし)'}`
+    );
+  } else {
+    folders = selectedFolders;
+    console.log(
+      `🔖 [X API] 指定フォルダ ${folders.length} 件のみ取得: ${folders.map(f => f.name).join(', ') || '(なし)'}`
+    );
   }
-  console.log(
-    `🔖 [X API] フォルダ ${folders.length} 件: ${folders.map(f => f.name).join(', ') || '(なし)'}`
-  );
 
   const all: ApiBookmark[] = [];
   const folderTweetIds = new Set<string>();
@@ -537,7 +611,8 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
   }
 
   // 4. Unfiled (All Bookmarks にあるがどのフォルダにも無いもの)
-  if (all.length < maxItems) {
+  // --x-pick で _Unfiled が選ばれていない場合は API コールを丸ごと省略する。
+  if (includeUnfiled && all.length < maxItems) {
     let token: string | undefined;
     let consecutiveKnown = 0;
     let unfiledCount = 0;

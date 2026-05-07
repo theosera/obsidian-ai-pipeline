@@ -94,7 +94,7 @@ export function sanitizeFolderName(raw: string): string {
  *       keyword="AI", folder="AIRI"     → false
  *       keyword="Claude Code", folder="Claude Code Tips" → true
  */
-function hasWordBoundaryMatch(folderName: string, keyword: string): boolean {
+export function hasWordBoundaryMatch(folderName: string, keyword: string): boolean {
   const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // (?<![A-Za-z0-9]) と (?![A-Za-z0-9]) で英数字以外の境界を担保。
   // 日本語等の非ASCII文字隣接でもマッチさせる (例: "MCP連携" の "MCP" もマッチ)。
@@ -106,7 +106,7 @@ function hasWordBoundaryMatch(folderName: string, keyword: string): boolean {
  * X フォルダ名から強制親キーワード部分を取り除き、残った部分をサブフォルダ名として返す。
  * 残りが空なら親フォルダ直下扱い (空文字を返す)。
  */
-function stripKeyword(folderName: string, keyword: string): string {
+export function stripKeyword(folderName: string, keyword: string): string {
   const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, 'i');
   return folderName.replace(re, '').replace(/\s+/g, ' ').trim();

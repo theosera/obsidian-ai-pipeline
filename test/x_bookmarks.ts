@@ -18,6 +18,8 @@ import {
   loadApprovedMappings,
   writeGroupingProposal,
 } from '../x_folder_mapper';
+import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
+import { parseSelection } from '../x_interactive_picker';
 import { XBookmarksDb } from '../x_bookmarks_db';
 import { __test as apiInternals } from '../x_bookmarks_api';
 import { __test as authInternals } from '../x_auth_server';
@@ -1430,6 +1432,264 @@ export function run(): TestSuiteResult {
       assert.strictEqual(videoInternals.formatTimestamp(8.7), '0:08');
       assert.strictEqual(videoInternals.formatTimestamp(65), '1:05');
       assert.strictEqual(videoInternals.formatTimestamp(125.4), '2:05');
+    });
+
+    // =====================================================
+    // x_folder_tree: buildFolderTree
+    // =====================================================
+    runner.section('x_folder_tree: buildFolderTree');
+
+    runner.test('空フォルダ入力でも unfiled は必ず末尾に出る', () => {
+      const tree = buildFolderTree([], [], {});
+      assert.strictEqual(tree.totalFolders, 0);
+      assert.strictEqual(tree.groups.length, 1);
+      assert.strictEqual(tree.groups[0].kind, 'unfiled');
+      assert.strictEqual(tree.groups[0].index, '1');
+    });
+
+    runner.test('forced parent でグルーピングされ remainder が children に入る', () => {
+      const tree = buildFolderTree(
+        [
+          { id: 'f1', name: 'Claude Code' },
+          { id: 'f2', name: 'Claude Code Tips' },
+          { id: 'f3', name: 'Claude Code Hooks' },
+        ],
+        ['Claude Code'],
+        {}
+      );
+      const forced = tree.groups.find(g => g.kind === 'forced');
+      assert.ok(forced, 'forced グループが存在する');
+      assert.strictEqual(forced!.label, 'Claude Code');
+      assert.strictEqual(forced!.children.length, 3);
+      const tips = forced!.children.find(c => c.rawName === 'Claude Code Tips');
+      assert.strictEqual(tips?.remainder, 'Tips');
+      const root = forced!.children.find(c => c.rawName === 'Claude Code');
+      assert.strictEqual(root?.remainder, '');
+    });
+
+    runner.test('長いキーワードが優先される (Claude Code > Code)', () => {
+      const tree = buildFolderTree(
+        [
+          { id: 'f1', name: 'Claude Code Tips' },
+          { id: 'f2', name: 'Random Code Snippet' },
+        ],
+        ['Code', 'Claude Code'],
+        {}
+      );
+      const cc = tree.groups.find(g => g.label === 'Claude Code');
+      const codeOnly = tree.groups.find(g => g.label === 'Code');
+      assert.strictEqual(cc?.children.length, 1);
+      assert.strictEqual(cc?.children[0].rawName, 'Claude Code Tips');
+      assert.strictEqual(codeOnly?.children.length, 1);
+      assert.strictEqual(codeOnly?.children[0].rawName, 'Random Code Snippet');
+    });
+
+    runner.test('approved mapping が Tier 2 として親パス先頭でグルーピングされる', () => {
+      const tree = buildFolderTree(
+        [
+          { id: 'f1', name: 'AI Tools' },
+          { id: 'f2', name: 'AI Ethics' },
+        ],
+        [],
+        { 'AI Tools': 'AI/Tools', 'AI Ethics': 'AI/Ethics' }
+      );
+      const approved = tree.groups.find(g => g.kind === 'approved');
+      assert.ok(approved, 'approved グループが存在する');
+      assert.strictEqual(approved!.label, 'AI');
+      assert.strictEqual(approved!.children.length, 2);
+    });
+
+    runner.test('動的検出 (Tier 3) は 3 件以上で起動', () => {
+      const tree = buildFolderTree(
+        [
+          { id: 'f1', name: 'Foo Tools' },
+          { id: 'f2', name: 'Foo Ethics' },
+          { id: 'f3', name: 'Foo Agents' },
+          { id: 'f4', name: 'Bar Tools' },
+        ],
+        [],
+        {}
+      );
+      const dynamic = tree.groups.find(g => g.kind === 'dynamic');
+      assert.ok(dynamic, '動的検出グループが存在する');
+      assert.strictEqual(dynamic!.label.toLowerCase(), 'foo');
+      assert.strictEqual(dynamic!.children.length, 3);
+    });
+
+    runner.test('orphan は (その他) としてまとめられる', () => {
+      const tree = buildFolderTree(
+        [
+          { id: 'f1', name: 'LangChain' },
+          { id: 'f2', name: 'Whatever' },
+        ],
+        [],
+        {}
+      );
+      const orphan = tree.groups.find(g => g.kind === 'orphan');
+      assert.ok(orphan);
+      assert.strictEqual(orphan!.label, '(その他)');
+      assert.strictEqual(orphan!.children.length, 2);
+    });
+
+    runner.test('通番が [1] [1.1] [1.2] ... のように一貫して付く', () => {
+      const tree = buildFolderTree(
+        [
+          { id: 'f1', name: 'Claude Code' },
+          { id: 'f2', name: 'Claude Code Tips' },
+          { id: 'f3', name: 'LangChain' },
+        ],
+        ['Claude Code'],
+        {}
+      );
+      // [1] forced "Claude Code" / [1.1] [1.2] / [2] orphan / [2.1] LangChain / [3] unfiled
+      const forced = tree.groups[0];
+      assert.strictEqual(forced.index, '1');
+      assert.strictEqual(forced.children[0].index, '1.1');
+      assert.strictEqual(forced.children[1].index, '1.2');
+      const last = tree.groups[tree.groups.length - 1];
+      assert.strictEqual(last.kind, 'unfiled');
+      assert.match(last.index, /^\d+$/);
+    });
+
+    runner.test('1 フォルダが複数の親候補にマッチしても 1 グループのみに所属する', () => {
+      // forced が先に取り、Tier 3 の動的検出は残りだけを対象にする
+      const tree = buildFolderTree(
+        [
+          { id: 'f1', name: 'Claude Code Tips' },
+          { id: 'f2', name: 'Code Hooks' },
+          { id: 'f3', name: 'Code Plugins' },
+          { id: 'f4', name: 'Code Notes' },
+        ],
+        ['Claude Code'],
+        {}
+      );
+      const allChildren = tree.groups.flatMap(g => g.children.map(c => c.folderId));
+      const counts = new Map<string | null, number>();
+      for (const id of allChildren) counts.set(id, (counts.get(id) ?? 0) + 1);
+      for (const [id, n] of counts) {
+        assert.strictEqual(n, 1, `folder ${id} が ${n} 回登場している (重複)`);
+      }
+    });
+
+    runner.section('x_folder_tree: renderFolderTree');
+
+    runner.test('レンダリング結果に [1] のような通番と総件数が含まれる', () => {
+      const tree = buildFolderTree(
+        [{ id: 'f1', name: 'Claude Code Tips' }],
+        ['Claude Code'],
+        {}
+      );
+      const out = renderFolderTree(tree);
+      assert.ok(out.includes('[1]'));
+      assert.ok(out.includes('Claude Code'));
+      assert.ok(out.includes('合計 1 フォルダ'));
+      assert.ok(out.includes('_Unfiled'));
+      assert.ok(out.includes('q'), 'ヘルプに q が出る');
+    });
+
+    runner.test('remainder が空のフォルダは "(= ...)" suffix を出さない', () => {
+      const tree = buildFolderTree(
+        [{ id: 'f1', name: 'Claude Code' }],
+        ['Claude Code'],
+        {}
+      );
+      const out = renderFolderTree(tree);
+      // "Claude Code" 単独行に "(= " が付くと冗長になるので付けない
+      const lines = out.split('\n').filter(l => l.includes('[1.1]'));
+      assert.strictEqual(lines.length, 1);
+      assert.ok(!lines[0].includes('(='));
+    });
+
+    // =====================================================
+    // x_interactive_picker: parseSelection
+    // =====================================================
+    runner.section('x_interactive_picker: parseSelection');
+
+    function makeTree() {
+      return buildFolderTree(
+        [
+          { id: 'cc-root', name: 'Claude Code' },
+          { id: 'cc-tips', name: 'Claude Code Tips' },
+          { id: 'cc-hooks', name: 'Claude Code Hooks' },
+          { id: 'lang', name: 'LangChain' },
+        ],
+        ['Claude Code'],
+        {}
+      );
+      // 期待 Tree: [1] forced Claude Code (3 children) / [2] orphan (1 child) / [3] unfiled
+    }
+
+    runner.test('"q" は cancelled=true', () => {
+      const r = parseSelection('q', makeTree());
+      assert.strictEqual(r.cancelled, true);
+      assert.strictEqual(r.folderIds.length, 0);
+    });
+
+    runner.test('"all" で全フォルダ + Unfiled が選択される', () => {
+      const r = parseSelection('all', makeTree());
+      assert.strictEqual(r.cancelled, false);
+      assert.strictEqual(r.folderIds.length, 4);
+      assert.strictEqual(r.includeUnfiled, true);
+    });
+
+    runner.test('グループ単独 "1" で配下の全 child が選ばれる', () => {
+      const r = parseSelection('1', makeTree());
+      assert.deepStrictEqual(r.folderIds.sort(), ['cc-hooks', 'cc-root', 'cc-tips']);
+      assert.strictEqual(r.includeUnfiled, false);
+    });
+
+    runner.test('サブフォルダ "1.2" で 1 件のみ選ばれる', () => {
+      const r = parseSelection('1.2', makeTree());
+      assert.strictEqual(r.folderIds.length, 1);
+      // children は入力順なので 1.1=cc-root, 1.2=cc-tips
+      assert.strictEqual(r.folderIds[0], 'cc-tips');
+    });
+
+    runner.test('範囲 "1-2" で複数グループの child を集約', () => {
+      const r = parseSelection('1-2', makeTree());
+      // [1] = 3 children, [2] = LangChain
+      assert.strictEqual(r.folderIds.length, 4);
+    });
+
+    runner.test('カンマ区切り "1.1, 2" で複合指定', () => {
+      const r = parseSelection('1.1, 2', makeTree());
+      assert.strictEqual(r.folderIds.length, 2);
+      assert.ok(r.folderIds.includes('cc-root'));
+      assert.ok(r.folderIds.includes('lang'));
+    });
+
+    runner.test('unfiled グループ番号を選ぶと includeUnfiled=true (folder ID は付かない)', () => {
+      const tree = makeTree();
+      const unfiledIdx = tree.groups.find(g => g.kind === 'unfiled')!.index;
+      const r = parseSelection(unfiledIdx, tree);
+      assert.strictEqual(r.includeUnfiled, true);
+      assert.strictEqual(r.folderIds.length, 0);
+    });
+
+    runner.test('重複指定は dedupe される', () => {
+      const r = parseSelection('1, 1.1, 1.1', makeTree());
+      // [1] が cc-root/cc-tips/cc-hooks を全て入れた後、1.1 (=cc-root) を追加 → dedupe
+      assert.strictEqual(r.folderIds.length, 3);
+    });
+
+    runner.test('存在しないグループ番号は例外', () => {
+      assert.throws(() => parseSelection('99', makeTree()), /存在しません/);
+    });
+
+    runner.test('存在しないサブ番号は例外', () => {
+      assert.throws(() => parseSelection('1.99', makeTree()), /存在しません/);
+    });
+
+    runner.test('不正トークンは例外', () => {
+      assert.throws(() => parseSelection('abc', makeTree()), /不正な入力/);
+    });
+
+    runner.test('空入力は例外', () => {
+      assert.throws(() => parseSelection('', makeTree()), /空/);
+    });
+
+    runner.test('範囲の to < from は例外', () => {
+      assert.throws(() => parseSelection('5-2', makeTree()), /不正な範囲/);
     });
 
     return runner.report();
