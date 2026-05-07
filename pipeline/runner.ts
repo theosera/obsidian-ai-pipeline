@@ -59,7 +59,10 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
 
   // --x-pick で「中止」が選ばれると entries も failures も 0 件で返る。
   // この場合は y/n 確認をスキップして即終了 (再度プロンプトを出すと UX が悪い)。
-  if (entries.length === 0 && failures.length === 0) {
+  // 他のフロー (--x-bookmarks 単独 / OneTab) で 0 件になった場合は、
+  // 従来通り confirmBeforeRun で「処理予定: 0 件」を表示して y/n を出した方が
+  // 「実行はしたが何もなかった」ことが明示できる。
+  if (args.xPick && entries.length === 0 && failures.length === 0) {
     await closeBrowser();
     return;
   }

@@ -19,6 +19,19 @@ export class TestRunner {
     }
   }
 
+  /** Async test variant. Use for tests that need await (mocked fetch etc.). */
+  async testAsync(name: string, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+      console.log(`  ✅ ${name}`);
+      this.passed++;
+    } catch (err: any) {
+      console.error(`  ❌ ${name}`);
+      console.error(`     ${err.message}`);
+      this.failed++;
+    }
+  }
+
   section(name: string): void {
     console.log(`\n--- ${name} ---`);
   }

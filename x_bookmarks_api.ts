@@ -577,6 +577,40 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
   const all: ApiBookmark[] = [];
   const folderTweetIds = new Set<string>();
 
+  // 3a. selectedFolders + includeUnfiled の組み合わせは、Unfiled 判定のために
+  //    「他のフォルダにあるツイート ID」も必要 (なければ folder X のツイートが
+  //     Unfiled として誤分類される)。ID 収集だけ目的で他フォルダも fetch する。
+  //     本文は all[] に積まない (--x-pick の選択意図を尊重)。
+  if (selectedFolders !== undefined && includeUnfiled) {
+    const allFolders: { id: string; name: string }[] = [];
+    let token: string | undefined;
+    do {
+      const page = await xGet<BookmarkFoldersResponse>(buildFoldersUrl(userId, token), ctx);
+      allFolders.push(...(page.data ?? []));
+      token = page.meta?.next_token;
+    } while (token);
+    const selectedIds = new Set(selectedFolders.map(f => f.id));
+    const otherFolders = allFolders.filter(f => !selectedIds.has(f.id));
+    if (otherFolders.length > 0) {
+      console.log(
+        `🔖 [X API] _Unfiled 判定のため他 ${otherFolders.length} フォルダの ID を収集します ` +
+        `(本文は results に含めません)`
+      );
+      for (const f of otherFolders) {
+        let pToken: string | undefined;
+        do {
+          const page = await xGet<BookmarksResponse>(
+            buildFolderBookmarksUrl(userId, f.id, pToken),
+            ctx
+          );
+          const bms = expandBookmarksPage(page, f.name);
+          for (const bm of bms) folderTweetIds.add(bm.xTweetId);
+          pToken = page.meta?.next_token;
+        } while (pToken);
+      }
+    }
+  }
+
   // 3. フォルダ毎にページング。3 件連続で既知ツイートなら早期終了。
   for (const folder of folders) {
     if (all.length >= maxItems) break;

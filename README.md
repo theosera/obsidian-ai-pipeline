@@ -330,7 +330,7 @@ Tree 構築ルール（[x_folder_tree.ts](x_folder_tree.ts)）:
 
 表示例:
 
-```
+```text
 🔖 X ブックマークフォルダ (合計 8 フォルダ)
 
 [1] Claude Code  (強制親, 3)

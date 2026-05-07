@@ -20,6 +20,7 @@ import {
 } from '../x_folder_mapper';
 import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
 import { parseSelection } from '../x_interactive_picker';
+import { fetchBookmarksViaApi, saveTokens } from '../x_bookmarks_api';
 import { XBookmarksDb } from '../x_bookmarks_db';
 import { __test as apiInternals } from '../x_bookmarks_api';
 import { __test as authInternals } from '../x_auth_server';
@@ -37,7 +38,7 @@ import {
 import { resolveXBookmarkSaveDirectory } from '../packages/core/src/path/x-bookmark-path-resolver.js';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
-export function run(): TestSuiteResult {
+export async function run(): Promise<TestSuiteResult> {
   const runner = new TestRunner();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-xbm-test-'));
   setVaultRoot(tmpDir);
@@ -1690,6 +1691,176 @@ export function run(): TestSuiteResult {
 
     runner.test('範囲の to < from は例外', () => {
       assert.throws(() => parseSelection('5-2', makeTree()), /不正な範囲/);
+    });
+
+    runner.test('unfiled の "n.1" 形式は吸収される (ergonomics)', () => {
+      const tree = makeTree();
+      const unfiledIdx = tree.groups.find(g => g.kind === 'unfiled')!.index;
+      const r = parseSelection(`${unfiledIdx}.1`, tree);
+      assert.strictEqual(r.includeUnfiled, true);
+      assert.strictEqual(r.folderIds.length, 0);
+    });
+
+    runner.test('unfiled の "n.2" 以降は入力ミスとして例外', () => {
+      const tree = makeTree();
+      const unfiledIdx = tree.groups.find(g => g.kind === 'unfiled')!.index;
+      assert.throws(() => parseSelection(`${unfiledIdx}.2`, tree), /存在しません/);
+      assert.throws(() => parseSelection(`${unfiledIdx}.999`, tree), /存在しません/);
+    });
+
+    // =====================================================
+    // x_bookmarks_api: fetchBookmarksViaApi (selectedFolders + includeUnfiled)
+    // =====================================================
+    runner.section('x_bookmarks_api: selectedFolders + includeUnfiled');
+
+    await runner.testAsync('selectedFolders + includeUnfiled: 他フォルダのツイートを Unfiled に誤分類しない (Codex P1)', async () => {
+      // セットアップ: トークン保存 + 環境変数
+      saveTokens({
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh',
+        expires_in: 7200,
+        obtained_at: new Date().toISOString(),
+      });
+      const prevClientId = process.env.X_CLIENT_ID;
+      process.env.X_CLIENT_ID = 'test-client';
+
+      try {
+        // 想定シナリオ:
+        //   X 側に folder A (id=fa) と folder B (id=fb)
+        //   tweet T_A1 は folder A に
+        //   tweet T_B1 は folder B に
+        //   tweet T_U1 はどのフォルダにも未割当
+        //   /bookmarks (Unfiled extraction) は T_A1 / T_B1 / T_U1 すべて返す
+        //
+        // ユーザーは folder A だけ選択 + includeUnfiled=true
+        // 期待:
+        //   results に T_A1 (folder A 由来) と T_U1 (Unfiled) のみ含まれる
+        //   T_B1 は folderTweetIds に積まれて Unfiled 扱いされない
+        //   (修正前は T_B1 が Unfiled として results に紛れ込んでいた)
+
+        const callLog: string[] = [];
+        const mockFetch: typeof fetch = (async (input: any) => {
+          const url = typeof input === 'string' ? input : input.url;
+          callLog.push(url);
+          const respond = (body: any, status = 200) => new Response(JSON.stringify(body), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          });
+          if (url.includes('/users/me')) {
+            return respond({ data: { id: 'u1', username: 'tester' } });
+          }
+          if (url.includes('/bookmarks/folders/fa')) {
+            return respond({
+              data: [{ id: 'T_A1', text: 'in folder A', author_id: 'u1' }],
+              includes: { users: [{ id: 'u1', name: 'A', username: 'a' }] },
+            });
+          }
+          if (url.includes('/bookmarks/folders/fb')) {
+            return respond({
+              data: [{ id: 'T_B1', text: 'in folder B', author_id: 'u1' }],
+              includes: { users: [{ id: 'u1', name: 'A', username: 'a' }] },
+            });
+          }
+          if (url.includes('/bookmarks/folders')) {
+            // フォルダ一覧 (3a の他フォルダ列挙で叩かれる)
+            return respond({
+              data: [{ id: 'fa', name: 'FolderA' }, { id: 'fb', name: 'FolderB' }],
+            });
+          }
+          if (url.includes('/bookmarks')) {
+            // /users/:id/bookmarks (Unfiled 抽出元)
+            return respond({
+              data: [
+                { id: 'T_A1', text: 'in folder A', author_id: 'u1' },
+                { id: 'T_B1', text: 'in folder B', author_id: 'u1' },
+                { id: 'T_U1', text: 'truly unfiled', author_id: 'u1' },
+              ],
+              includes: { users: [{ id: 'u1', name: 'A', username: 'a' }] },
+            });
+          }
+          throw new Error(`unexpected fetch url: ${url}`);
+        }) as any;
+
+        const results = await fetchBookmarksViaApi({
+          selectedFolders: [{ id: 'fa', name: 'FolderA' }],
+          includeUnfiled: true,
+          fetchFn: mockFetch,
+        });
+
+        const tweetIds = results.map(r => r.xTweetId).sort();
+        // T_A1 (folder A から) + T_U1 (Unfiled) のみ
+        // T_B1 は別フォルダにあるので Unfiled として誤分類されてはならない
+        assert.deepStrictEqual(
+          tweetIds,
+          ['T_A1', 'T_U1'],
+          `T_B1 が Unfiled に誤分類されている: ${JSON.stringify(tweetIds)}`
+        );
+
+        // T_U1 は Unfiled grouping
+        const tu1 = results.find(r => r.xTweetId === 'T_U1');
+        assert.strictEqual(tu1?.xFolderName, '_Unfiled');
+        // T_A1 は FolderA grouping
+        const ta1 = results.find(r => r.xTweetId === 'T_A1');
+        assert.strictEqual(ta1?.xFolderName, 'FolderA');
+
+        // /bookmarks/folders/fb が ID 収集目的で叩かれているはず
+        assert.ok(
+          callLog.some(u => u.includes('/bookmarks/folders/fb')),
+          `他フォルダ fb の ID 収集が走っていない: ${callLog.join(', ')}`
+        );
+      } finally {
+        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prevClientId;
+      }
+    });
+
+    await runner.testAsync('selectedFolders + includeUnfiled=false: 他フォルダ列挙は行わない (コスト節約)', async () => {
+      saveTokens({
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh',
+        expires_in: 7200,
+        obtained_at: new Date().toISOString(),
+      });
+      const prevClientId = process.env.X_CLIENT_ID;
+      process.env.X_CLIENT_ID = 'test-client';
+
+      try {
+        const callLog: string[] = [];
+        const mockFetch: typeof fetch = (async (input: any) => {
+          const url = typeof input === 'string' ? input : input.url;
+          callLog.push(url);
+          const respond = (body: any) => new Response(JSON.stringify(body), {
+            status: 200, headers: { 'content-type': 'application/json' },
+          });
+          if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 'tester' } });
+          if (url.includes('/bookmarks/folders/fa')) {
+            return respond({
+              data: [{ id: 'T_A1', text: 'a', author_id: 'u1' }],
+              includes: { users: [{ id: 'u1', username: 'a', name: 'A' }] },
+            });
+          }
+          throw new Error(`unexpected fetch url: ${url}`);
+        }) as any;
+
+        await fetchBookmarksViaApi({
+          selectedFolders: [{ id: 'fa', name: 'FolderA' }],
+          includeUnfiled: false,
+          fetchFn: mockFetch,
+        });
+
+        // フォルダ一覧 (/bookmarks/folders) も /bookmarks (Unfiled) も叩かれない
+        assert.ok(
+          !callLog.some(u => u.match(/\/bookmarks\/folders($|\?)/)),
+          `余分なフォルダ一覧コール: ${callLog.join(', ')}`
+        );
+        assert.ok(
+          !callLog.some(u => u.match(/\/bookmarks(\?|$)/) && !u.includes('/folders/')),
+          `余分な Unfiled コール: ${callLog.join(', ')}`
+        );
+      } finally {
+        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prevClientId;
+      }
     });
 
     return runner.report();

@@ -80,7 +80,11 @@ export function parseSelection(input: string, tree: FolderTree): SelectionResult
       const group = tree.groups.find(g => g.index === groupIdx);
       if (!group) throw new Error(`グループ番号 [${groupIdx}] は存在しません`);
       if (group.kind === 'unfiled') {
-        // unfiled グループにサブはないが、"n.1" 形式が来たら unfiled として吸収する
+        // unfiled グループは children を持たないが、ergonomics のため "n.1" だけ吸収する。
+        // それ以外 ("n.2" など) は明らかな入力ミスなので拒否する。
+        if (subMatch[2] !== '1') {
+          throw new Error(`サブフォルダ番号 [${childIdx}] は存在しません`);
+        }
         includeUnfiled = true;
         continue;
       }
@@ -138,7 +142,7 @@ function dedupeOrdered<T>(arr: T[]): T[] {
 
 /**
  * Tree を表示 → askQuestion ループでユーザー選択を取る対話ヘルパ。
- * 不正入力時は再プロンプト (最大 maxRetries 回)。超過時は cancelled として返す。
+ * 入力試行は合計 maxAttempts 回 (デフォルト 3)。超過時は cancelled として返す。
  *
  * askFn は pipeline/prompt.ts の askQuestion を渡す想定 (テストではモック)。
  */
@@ -146,17 +150,17 @@ export async function pickFolders(
   tree: FolderTree,
   renderedTree: string,
   askFn: (prompt: string) => Promise<string>,
-  maxRetries = 3
+  maxAttempts = 3
 ): Promise<SelectionResult> {
   console.log('\n' + renderedTree + '\n');
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const answer = await askFn('選択 > ');
     try {
       return parseSelection(answer, tree);
     } catch (e: any) {
       console.error(`⚠️  ${e.message}`);
-      if (attempt === maxRetries) {
-        console.error(`再試行回数上限 (${maxRetries}) に達したため中止します。`);
+      if (attempt === maxAttempts - 1) {
+        console.error(`入力試行上限 (${maxAttempts}) に達したため中止します。`);
         return { folderIds: [], includeUnfiled: false, cancelled: true };
       }
     }
