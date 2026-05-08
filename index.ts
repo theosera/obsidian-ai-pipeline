@@ -58,6 +58,33 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // --x-sync-folders: Sync Phase 単独実行 (Vault 再編後 / orphan AI 判定だけ走らせたいとき)
+  if (args.xSyncFolders) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { runSyncPhase } = await import('./x_session_sync');
+      const { createInteractiveOrphanResolver } = await import('./x_session_ai');
+      const baseFolder = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
+      const result = await runSyncPhase({
+        baseFolder,
+        resolver: createInteractiveOrphanResolver(askQuestion),
+      });
+      console.log('\n🔖 Sync 完了:');
+      console.log(`  新規 sessions: ${result.newSessions}`);
+      console.log(`  更新 sessions: ${result.updatedSessions}`);
+      console.log(`  Vault 移動検知: ${result.vaultMoves}`);
+      console.log(`  ファイル再 bind: ${result.fileReassignments}`);
+      console.log(`  orphan_on_x:    ${result.orphansOnX}`);
+      console.log(`  orphan_on_vault: ${result.orphansOnVault}`);
+    } catch (e: any) {
+      console.error(`❌ Sync 失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
   // ------------------------------------------------------------------
   // Config wizard の必要性判定
   // ------------------------------------------------------------------

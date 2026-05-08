@@ -18,6 +18,8 @@ import { listFolders } from '../x_bookmarks_api';
 import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
 import { pickFolders } from '../x_interactive_picker';
 import { loadForcedParents, loadApprovedMappings } from '../x_folder_mapper';
+import { runSyncPhase } from '../x_session_sync';
+import { createInteractiveOrphanResolver } from '../x_session_ai';
 
 /**
  * X API ブックマーク専用のベースフォルダ。
@@ -48,6 +50,29 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
     console.error('Usage: tsx index.ts <path-to-onetab.txt>');
     console.error('   or: tsx index.ts --x-bookmarks [--x-limit=N]');
     process.exit(1);
+  }
+
+  // === 0. Sync Phase (X bookmarks モードの先頭で必ず走る・--no-sync で抑止) ===
+  if (args.xBookmarks && !args.noSync) {
+    try {
+      const result = await runSyncPhase({
+        baseFolder: X_BOOKMARKS_BASE_FOLDER,
+        resolver: createInteractiveOrphanResolver(askQuestion),
+      });
+      const summary = [
+        `new=${result.newSessions}`,
+        `updated=${result.updatedSessions}`,
+        `vault_moves=${result.vaultMoves}`,
+        `file_reassign=${result.fileReassignments}`,
+        `orphan_x=${result.orphansOnX}`,
+        `orphan_vault=${result.orphansOnVault}`,
+      ].join(', ');
+      console.log(`🔖 Sync Phase: ${summary}`);
+    } catch (e: any) {
+      console.warn(`⚠️  Sync Phase 失敗 (続行): ${e.message}`);
+    }
+  } else if (args.xBookmarks && args.noSync) {
+    console.log('🔖 --no-sync 指定: Sync Phase をスキップします (前回 sync 状態を再利用)');
   }
 
   // === 1. 入力構築 ===

@@ -17,11 +17,22 @@ import {
   loadForcedParents,
   loadApprovedMappings,
   writeGroupingProposal,
+  prioritizeForcedParents,
 } from '../x_folder_mapper';
 import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
 import { parseSelection } from '../x_interactive_picker';
 import { fetchBookmarksViaApi, saveTokens } from '../x_bookmarks_api';
-import { XBookmarksDb } from '../x_bookmarks_db';
+import {
+  newSessionId,
+  writeSessionMarker,
+  readSessionMarker,
+  walkSessionMarkers,
+  getOrCreateSession,
+  lookupVaultPath,
+} from '../x_session_registry';
+import { runSyncPhase, __test as syncInternals } from '../x_session_sync';
+import { __test as aiInternals } from '../x_session_ai';
+import { XBookmarksDb, getDb } from '../x_bookmarks_db';
 import { __test as apiInternals } from '../x_bookmarks_api';
 import { __test as authInternals } from '../x_auth_server';
 import { __test as videoInternals } from '../x_video_frames';
@@ -1468,7 +1479,9 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(root?.remainder, '');
     });
 
-    runner.test('長いキーワードが優先される (Claude Code > Code)', () => {
+    runner.test('頻度優先: より多くマッチするキーワードが親になる (Code 2 > Claude Code 1)', () => {
+      // 'Code' は 2 フォルダ、'Claude Code' は 1 フォルダにマッチ → Code 親が勝つ
+      // 全フォルダが 'Code' 親に吸収され、'Claude Code' 親は生成されない
       const tree = buildFolderTree(
         [
           { id: 'f1', name: 'Claude Code Tips' },
@@ -1477,12 +1490,22 @@ export async function run(): Promise<TestSuiteResult> {
         ['Code', 'Claude Code'],
         {}
       );
-      const cc = tree.groups.find(g => g.label === 'Claude Code');
       const codeOnly = tree.groups.find(g => g.label === 'Code');
+      const cc = tree.groups.find(g => g.label === 'Claude Code');
+      assert.strictEqual(codeOnly?.children.length, 2);
+      assert.strictEqual(cc, undefined, '長いキーワードでも頻度負けすれば親にならない');
+    });
+
+    runner.test('頻度同点なら長一致 tiebreak (Claude Code = Code = 1 → Claude Code 親)', () => {
+      // 'Code' / 'Claude Code' どちらも 1 フォルダのみマッチ → tiebreak 長い方が勝つ
+      const tree = buildFolderTree(
+        [{ id: 'f1', name: 'Claude Code Tips' }],
+        ['Code', 'Claude Code'],
+        {}
+      );
+      const cc = tree.groups.find(g => g.label === 'Claude Code');
       assert.strictEqual(cc?.children.length, 1);
       assert.strictEqual(cc?.children[0].rawName, 'Claude Code Tips');
-      assert.strictEqual(codeOnly?.children.length, 1);
-      assert.strictEqual(codeOnly?.children[0].rawName, 'Random Code Snippet');
     });
 
     runner.test('approved mapping が Tier 2 として親パス先頭でグルーピングされる', () => {
@@ -1861,6 +1884,309 @@ export async function run(): Promise<TestSuiteResult> {
         if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
         else process.env.X_CLIENT_ID = prevClientId;
       }
+    });
+
+    // =====================================================
+    // x_folder_mapper: prioritizeForcedParents (occurrence-frequency)
+    // =====================================================
+    runner.section('x_folder_mapper: prioritizeForcedParents');
+
+    runner.test('出現頻度が多いキーワードが優先される', () => {
+      // "Code" は 3 フォルダ, "Claude Code" は 1 フォルダにマッチ → "Code" が先頭
+      const sorted = prioritizeForcedParents(
+        ['Claude Code', 'Code'],
+        ['Claude Code Tips', 'Random Code', 'My Code Notes', 'Code Garden']
+      );
+      assert.strictEqual(sorted[0], 'Code', `expected Code first, got ${sorted.join(',')}`);
+    });
+
+    runner.test('同点なら長いキーワードが優先 (tiebreak)', () => {
+      const sorted = prioritizeForcedParents(
+        ['Code', 'Claude Code'],
+        ['Claude Code', 'Claude Code Tips']  // 両方 2 件マッチ
+      );
+      assert.strictEqual(sorted[0], 'Claude Code');
+    });
+
+    runner.test('長さも同点なら配列順 (元の優先度を尊重)', () => {
+      const sorted = prioritizeForcedParents(
+        ['BB', 'AA'],
+        ['AAX', 'BBX']
+      );
+      assert.strictEqual(sorted[0], 'BB');
+    });
+
+    runner.test('空文字キーワードは除外される', () => {
+      const sorted = prioritizeForcedParents(['', '  ', 'AI'], ['AI Agent']);
+      assert.deepStrictEqual(sorted, ['AI']);
+    });
+
+    runner.test('mapFolderToVaultPath は allFolderNames があれば頻度優先で動く', () => {
+      // forced=['Claude Code', 'Code']
+      //   "Claude Code Notes" は両方マッチ可能
+      //   全体 ["Claude Code Notes", "Random Code", "Code Hub"] では Code が 3 件 / Claude Code は 1 件
+      //   → 頻度優先なら "Code Hub" 等は Code 親に落ち、"Claude Code Notes" も Code 親 (Claude Code よりスコア高)
+      assert.strictEqual(
+        mapFolderToVaultPath(
+          'Claude Code Notes',
+          ['Claude Code', 'Code'],
+          {},
+          { allFolderNames: ['Claude Code Notes', 'Random Code', 'Code Hub'] }
+        ),
+        'Code/Claude Notes'
+      );
+    });
+
+    runner.test('mapFolderToVaultPath は allFolderNames 無しなら従来通り長さ優先', () => {
+      // 後方互換: 既存呼出しは挙動を変えない
+      assert.strictEqual(
+        mapFolderToVaultPath('Claude Code Tips', ['Claude Code', 'Code'], {}),
+        'Claude Code/Tips'
+      );
+    });
+
+    // =====================================================
+    // x_session_registry
+    // =====================================================
+    runner.section('x_session_registry');
+
+    runner.test('newSessionId は UUID v4 形式', () => {
+      const id = newSessionId();
+      assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      assert.notStrictEqual(newSessionId(), id);
+    });
+
+    runner.test('writeSessionMarker / readSessionMarker は roundtrip する', () => {
+      const dir = path.join(tmpDir, 'marker-test-1');
+      fs.mkdirSync(dir, { recursive: true });
+      const sessionId = newSessionId();
+      writeSessionMarker(dir, {
+        session_id: sessionId,
+        x_folder_id: 'fa',
+        x_folder_name: 'Folder A',
+        created_at: new Date().toISOString(),
+        last_synced_at: new Date().toISOString(),
+      });
+      const read = readSessionMarker(dir);
+      assert.strictEqual(read?.session_id, sessionId);
+      assert.strictEqual(read?.x_folder_id, 'fa');
+    });
+
+    runner.test('writeSessionMarker は既存マーカーの session_id を維持する (idempotent)', () => {
+      const dir = path.join(tmpDir, 'marker-test-2');
+      fs.mkdirSync(dir, { recursive: true });
+      const original = newSessionId();
+      writeSessionMarker(dir, {
+        session_id: original,
+        x_folder_id: 'fa',
+        x_folder_name: 'A',
+        created_at: 'c1',
+        last_synced_at: 't1',
+      });
+      // 別の session_id で上書きしようとしても、既存値が優先される
+      writeSessionMarker(dir, {
+        session_id: 'should-not-override',
+        x_folder_id: 'fa',
+        x_folder_name: 'A',
+        created_at: 'c1',
+        last_synced_at: 't2',
+      });
+      assert.strictEqual(readSessionMarker(dir)?.session_id, original);
+    });
+
+    runner.test('walkSessionMarkers は再帰走査で全マーカーを集める', () => {
+      const root = path.join(tmpDir, 'walk-root');
+      fs.mkdirSync(path.join(root, 'a/b/c'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'a/d'), { recursive: true });
+      writeSessionMarker(path.join(root, 'a/b/c'), {
+        session_id: newSessionId(),
+        x_folder_id: 'fc',
+        x_folder_name: 'C',
+        created_at: 'c',
+        last_synced_at: 'c',
+      });
+      writeSessionMarker(path.join(root, 'a/d'), {
+        session_id: newSessionId(),
+        x_folder_id: 'fd',
+        x_folder_name: 'D',
+        created_at: 'c',
+        last_synced_at: 'c',
+      });
+      const found = walkSessionMarkers(root);
+      assert.strictEqual(found.length, 2);
+      const ids = found.map(f => f.marker.x_folder_id).sort();
+      assert.deepStrictEqual(ids, ['fc', 'fd']);
+    });
+
+    runner.test('readSessionMarker は壊れた JSON で null を返す', () => {
+      const dir = path.join(tmpDir, 'bad-marker');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, '_session.json'), '{not valid', 'utf8');
+      assert.strictEqual(readSessionMarker(dir), null);
+    });
+
+    // =====================================================
+    // x_session_sync
+    // =====================================================
+    runner.section('x_session_sync: runSyncPhase');
+
+    /**
+     * sync テストは同じ vault root (tmpDir) を共有する関係で、テスト間で
+     * folder_sessions が累積する。各テスト先頭で DELETE して隔離する。
+     */
+    function resetSessionsForSyncTest() {
+      (getDb() as any).db.exec('DELETE FROM folder_sessions');
+    }
+
+    await runner.testAsync('X 側新規フォルダ → session 発行 + marker 作成', async () => {
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-test';
+      const fakeListing = async () => ({
+        userId: 'u1',
+        username: 'tester',
+        folders: [{ id: 'fnew', name: 'NewFolder' }],
+      });
+      const result = await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: fakeListing,
+      });
+      assert.strictEqual(result.newSessions, 1);
+      const baseAbs = path.join(tmpDir, baseFolder);
+      const targetDir = path.join(baseAbs, 'NewFolder');
+      assert.ok(fs.existsSync(path.join(targetDir, '_session.json')), '_session.json が作成されている');
+    });
+
+    await runner.testAsync('X 側で削除された folder → resolver=keep で status=orphaned_on_x', async () => {
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-test-2';
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({
+          userId: 'u1', username: 't',
+          folders: [{ id: 'fdel', name: 'WillBeDeleted' }],
+        }),
+      });
+      const result = await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({ userId: 'u1', username: 't', folders: [] }),
+        resolver: { resolveOrphan: async () => 'keep' as const },
+      });
+      assert.strictEqual(result.orphansOnX, 1);
+      const sess = getDb().listFolderSessions().find((s) => s.x_folder_name === 'WillBeDeleted');
+      assert.strictEqual(sess?.status, 'orphaned_on_x');
+    });
+
+    await runner.testAsync('resolver=archive で _archived/ に移動 + status=archived', async () => {
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-test-3';
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({
+          userId: 'u1', username: 't',
+          folders: [{ id: 'farch', name: 'ToArchive' }],
+        }),
+      });
+      const baseAbs = path.join(tmpDir, baseFolder);
+      assert.ok(fs.existsSync(path.join(baseAbs, 'ToArchive')));
+
+      const result = await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({ userId: 'u1', username: 't', folders: [] }),
+        resolver: { resolveOrphan: async () => 'archive' as const },
+      });
+      assert.strictEqual(result.orphansOnX, 1);
+      const sess = getDb().listFolderSessions().find((s) => s.x_folder_name === 'ToArchive');
+      assert.strictEqual(sess?.status, 'archived');
+      assert.ok(!fs.existsSync(path.join(baseAbs, 'ToArchive')), '元のディレクトリは消えている');
+      assert.ok(
+        fs.existsSync(path.join(baseAbs, '_archived', sess!.session_id)),
+        'archive 先に移動されている'
+      );
+    });
+
+    runner.test('reassignMisplacedFiles: ファイル移動を frontmatter から検知して bookmarks 行を更新', () => {
+      const baseFolder = 'Clippings/X-Bookmarks-reassign';
+      const baseAbs = path.join(tmpDir, baseFolder);
+      const folderA = path.join(baseAbs, 'FolderA');
+      const folderB = path.join(baseAbs, 'FolderB');
+      fs.mkdirSync(folderA, { recursive: true });
+      fs.mkdirSync(folderB, { recursive: true });
+
+      const sessionA = newSessionId();
+      const sessionB = newSessionId();
+      writeSessionMarker(folderA, {
+        session_id: sessionA, x_folder_id: 'fa', x_folder_name: 'A',
+        created_at: 'c', last_synced_at: 'c',
+      });
+      writeSessionMarker(folderB, {
+        session_id: sessionB, x_folder_id: 'fb', x_folder_name: 'B',
+        created_at: 'c', last_synced_at: 'c',
+      });
+      // sessionA に属する .md (元) を folderB に置く (= ユーザーが移動した想定)
+      const mdContent = `---
+title: "test"
+session_id: "${sessionA}"
+x_tweet_id: "12345"
+---
+body
+`;
+      const mdPath = path.join(folderB, 'moved.md');
+      fs.writeFileSync(mdPath, mdContent, 'utf8');
+
+      // 事前 DB row 投入
+      getDb().upsertBookmark({
+        tweetId: '12345',
+        url: 'https://x.com/u/status/12345',
+        sessionId: sessionA,
+        vaultPath: path.join(baseFolder, 'FolderA', 'orig.md'),
+      });
+
+      const count = syncInternals.reassignMisplacedFiles(baseAbs);
+      assert.strictEqual(count, 1);
+
+      // .md frontmatter が sessionB に書き換わっている
+      const updated = fs.readFileSync(mdPath, 'utf8');
+      assert.ok(updated.includes(`session_id: "${sessionB}"`), '.md が新 session_id に書き換わる');
+      // bookmarks 行も sessionB に更新されている
+      const row = (getDb() as any).db.prepare(
+        'SELECT session_id FROM bookmarks WHERE tweet_id = ?'
+      ).get('12345') as { session_id: string };
+      assert.strictEqual(row.session_id, sessionB);
+    });
+
+    // =====================================================
+    // x_session_ai: parseAiOutput
+    // =====================================================
+    runner.section('x_session_ai: parseAiOutput');
+
+    runner.test('正常な "RECOMMEND: keep" 応答をパース', () => {
+      const v = aiInternals.parseAiOutput('RECOMMEND: keep\n最近 .md が更新されており参照価値が高い。');
+      assert.strictEqual(v.recommend, 'keep');
+      assert.strictEqual(v.source, 'ai');
+      assert.ok(v.reason.includes('参照価値'));
+    });
+
+    runner.test('正常な "RECOMMEND: archive" 応答をパース', () => {
+      const v = aiInternals.parseAiOutput('RECOMMEND: archive\n古いフォルダで配下に新規ポストもない。');
+      assert.strictEqual(v.recommend, 'archive');
+      assert.strictEqual(v.source, 'ai');
+    });
+
+    runner.test('フォーマット不正は keep にフォールバック', () => {
+      const v = aiInternals.parseAiOutput('わからない');
+      assert.strictEqual(v.recommend, 'keep');
+      assert.strictEqual(v.source, 'fallback');
+    });
+
+    runner.test('空応答は keep にフォールバック', () => {
+      const v = aiInternals.parseAiOutput('');
+      assert.strictEqual(v.recommend, 'keep');
+      assert.strictEqual(v.source, 'fallback');
+    });
+
+    runner.test('大小文字は無視 (RECOMMEND: ARCHIVE も拾う)', () => {
+      const v = aiInternals.parseAiOutput('RECOMMEND: ARCHIVE\n理由。');
+      assert.strictEqual(v.recommend, 'archive');
     });
 
     return runner.report();

@@ -51,6 +51,14 @@ export interface ApiBookmark extends ArticleData {
   xVideoUrl?: string;
   /** 主動画の長さ (ミリ秒)。フレーム抽出時の等間隔サンプル計算に使う。 */
   xVideoDurationMs?: number;
+  /**
+   * 当ブックマークが属する X folder の session_id。
+   * sync phase で folder→session を解決した後に input_x_bookmarks.ts が
+   * 各 ApiBookmark に注入する。.md frontmatter にも書き出される。
+   */
+  xSessionId?: string;
+  /** session_id 紐付けに使った X 側 folder ID (frontmatter デバッグ用) */
+  xFolderId?: string;
 }
 
 export interface FetchOptions {
@@ -428,8 +436,15 @@ export function tweetToApiBookmark(
 /**
  * BookmarksResponse を ApiBookmark[] に展開。
  * includes.users の id → XUser マップを構築して author を解決する。
+ *
+ * `folderId` を渡すと各 ApiBookmark に xFolderId をセット (session 紐付けに利用)。
+ * Unfiled fetch の場合は undefined のままにする。
  */
-export function expandBookmarksPage(page: BookmarksResponse, folderName: string): ApiBookmark[] {
+export function expandBookmarksPage(
+  page: BookmarksResponse,
+  folderName: string,
+  folderId?: string
+): ApiBookmark[] {
   const userMap = new Map<string, XUser>((page.includes?.users ?? []).map(u => [u.id, u]));
   const mediaMap = new Map<string, XMediaResponse>(
     (page.includes?.media ?? []).map(m => [m.media_key, m])
@@ -438,7 +453,9 @@ export function expandBookmarksPage(page: BookmarksResponse, folderName: string)
   const out: ApiBookmark[] = [];
   for (const post of page.data ?? []) {
     const author = post.author_id ? userMap.get(post.author_id) : undefined;
-    out.push(tweetToApiBookmark(post, author, folderName, resolver));
+    const bm = tweetToApiBookmark(post, author, folderName, resolver);
+    if (folderId) bm.xFolderId = folderId;
+    out.push(bm);
   }
   return out;
 }
@@ -603,7 +620,7 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
             buildFolderBookmarksUrl(userId, f.id, pToken),
             ctx
           );
-          const bms = expandBookmarksPage(page, f.name);
+          const bms = expandBookmarksPage(page, f.name, f.id);
           for (const bm of bms) folderTweetIds.add(bm.xTweetId);
           pToken = page.meta?.next_token;
         } while (pToken);
@@ -623,7 +640,7 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
         buildFolderBookmarksUrl(userId, folder.id, token),
         ctx
       );
-      const bookmarks = expandBookmarksPage(page, folder.name);
+      const bookmarks = expandBookmarksPage(page, folder.name, folder.id);
       for (const bm of bookmarks) {
         folderTweetIds.add(bm.xTweetId);
         if (skipKnownIds.has(bm.xTweetId)) {

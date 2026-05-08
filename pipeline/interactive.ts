@@ -77,6 +77,7 @@ async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
             createdAt: ax.date,
             xFolderName: ax.xFolderName,
             vaultPath: savedPath,
+            sessionId: ax.xSessionId,
           });
         } catch (dbErr: any) {
           console.warn(`   ⚠️  DB upsert 失敗 (続行): ${dbErr.message}`);

@@ -42,9 +42,33 @@ export interface BookmarkUpsertInput {
   createdAt?: string;
   xFolderName?: string;
   vaultPath?: string;
+  /** 当ブックマークが属する X folder の session_id (Vault 移動追跡用) */
+  sessionId?: string;
   engagementLikes?: number;
   engagementRetweets?: number;
   engagementReplies?: number;
+}
+
+export type SessionStatus = 'active' | 'orphaned_on_x' | 'orphaned_on_vault' | 'archived';
+
+export interface FolderSessionRow {
+  session_id: string;
+  x_folder_id: string | null;
+  x_folder_name: string | null;
+  vault_path: string | null;
+  parent_keyword: string | null;
+  status: SessionStatus;
+  created_at: string;
+  last_synced_at: string;
+}
+
+export interface FolderSessionUpsert {
+  sessionId: string;
+  xFolderId?: string | null;
+  xFolderName?: string | null;
+  vaultPath?: string | null;
+  parentKeyword?: string | null;
+  status?: SessionStatus;
 }
 
 const SCHEMA = `
@@ -57,6 +81,7 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   created_at TEXT,
   x_folder_name TEXT,
   vault_path TEXT,
+  session_id TEXT,
   saved_at TEXT NOT NULL,
   engagement_likes INTEGER,
   engagement_retweets INTEGER,
@@ -64,6 +89,21 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 );
 CREATE INDEX IF NOT EXISTS idx_folder ON bookmarks(x_folder_name);
 CREATE INDEX IF NOT EXISTS idx_saved_at ON bookmarks(saved_at);
+CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id);
+
+CREATE TABLE IF NOT EXISTS folder_sessions (
+  session_id TEXT PRIMARY KEY,
+  x_folder_id TEXT UNIQUE,
+  x_folder_name TEXT,
+  vault_path TEXT,
+  parent_keyword TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  last_synced_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_xfolder ON folder_sessions(x_folder_id);
+CREATE INDEX IF NOT EXISTS idx_session_vault ON folder_sessions(vault_path);
+CREATE INDEX IF NOT EXISTS idx_session_status ON folder_sessions(status);
 `;
 
 export class XBookmarksDb {
@@ -74,6 +114,7 @@ export class XBookmarksDb {
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
     this.migrateAddNoteTweetText();
+    this.migrateAddSessionId();
   }
 
   /**
@@ -87,6 +128,15 @@ export class XBookmarksDb {
     }
   }
 
+  /** bookmarks テーブルに session_id 列を idempotent に追加 (folder_sessions 連携用) */
+  private migrateAddSessionId(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'session_id')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN session_id TEXT");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id)");
+    }
+  }
+
   getKnownTweetIds(): Set<string> {
     const rows = this.db.prepare('SELECT tweet_id FROM bookmarks').all() as { tweet_id: string }[];
     return new Set(rows.map(r => r.tweet_id));
@@ -96,11 +146,11 @@ export class XBookmarksDb {
     const stmt = this.db.prepare(`
       INSERT INTO bookmarks (
         tweet_id, url, author, tweet_text, note_tweet_text, created_at,
-        x_folder_name, vault_path, saved_at,
+        x_folder_name, vault_path, session_id, saved_at,
         engagement_likes, engagement_retweets, engagement_replies
       ) VALUES (
         @tweet_id, @url, @author, @tweet_text, @note_tweet_text, @created_at,
-        @x_folder_name, @vault_path, @saved_at,
+        @x_folder_name, @vault_path, @session_id, @saved_at,
         @engagement_likes, @engagement_retweets, @engagement_replies
       )
       ON CONFLICT(tweet_id) DO UPDATE SET
@@ -111,6 +161,7 @@ export class XBookmarksDb {
         created_at = excluded.created_at,
         x_folder_name = excluded.x_folder_name,
         vault_path = excluded.vault_path,
+        session_id = excluded.session_id,
         saved_at = excluded.saved_at,
         engagement_likes = excluded.engagement_likes,
         engagement_retweets = excluded.engagement_retweets,
@@ -125,11 +176,77 @@ export class XBookmarksDb {
       created_at: input.createdAt ?? null,
       x_folder_name: input.xFolderName ?? null,
       vault_path: input.vaultPath ?? null,
+      session_id: input.sessionId ?? null,
       saved_at: new Date().toISOString(),
       engagement_likes: input.engagementLikes ?? null,
       engagement_retweets: input.engagementRetweets ?? null,
       engagement_replies: input.engagementReplies ?? null,
     });
+  }
+
+  // -----------------------------------------------------------------------
+  // folder_sessions CRUD
+  // -----------------------------------------------------------------------
+
+  upsertFolderSession(input: FolderSessionUpsert): void {
+    const now = new Date().toISOString();
+    const existing = this.db
+      .prepare('SELECT created_at FROM folder_sessions WHERE session_id = ?')
+      .get(input.sessionId) as { created_at: string } | undefined;
+    const stmt = this.db.prepare(`
+      INSERT INTO folder_sessions (
+        session_id, x_folder_id, x_folder_name, vault_path, parent_keyword,
+        status, created_at, last_synced_at
+      ) VALUES (
+        @session_id, @x_folder_id, @x_folder_name, @vault_path, @parent_keyword,
+        @status, @created_at, @last_synced_at
+      )
+      ON CONFLICT(session_id) DO UPDATE SET
+        x_folder_id = excluded.x_folder_id,
+        x_folder_name = excluded.x_folder_name,
+        vault_path = excluded.vault_path,
+        parent_keyword = excluded.parent_keyword,
+        status = excluded.status,
+        last_synced_at = excluded.last_synced_at
+    `);
+    stmt.run({
+      session_id: input.sessionId,
+      x_folder_id: input.xFolderId ?? null,
+      x_folder_name: input.xFolderName ?? null,
+      vault_path: input.vaultPath ?? null,
+      parent_keyword: input.parentKeyword ?? null,
+      status: input.status ?? 'active',
+      created_at: existing?.created_at ?? now,
+      last_synced_at: now,
+    });
+  }
+
+  getFolderSessionByXFolderId(xFolderId: string): FolderSessionRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM folder_sessions WHERE x_folder_id = ?')
+      .get(xFolderId) as FolderSessionRow | undefined;
+  }
+
+  getFolderSession(sessionId: string): FolderSessionRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM folder_sessions WHERE session_id = ?')
+      .get(sessionId) as FolderSessionRow | undefined;
+  }
+
+  listFolderSessions(): FolderSessionRow[] {
+    return this.db
+      .prepare('SELECT * FROM folder_sessions ORDER BY created_at ASC')
+      .all() as FolderSessionRow[];
+  }
+
+  setSessionStatus(sessionId: string, status: SessionStatus): void {
+    this.db
+      .prepare('UPDATE folder_sessions SET status = ?, last_synced_at = ? WHERE session_id = ?')
+      .run(status, new Date().toISOString(), sessionId);
+  }
+
+  deleteFolderSession(sessionId: string): void {
+    this.db.prepare('DELETE FROM folder_sessions WHERE session_id = ?').run(sessionId);
   }
 
   getFolderCounts(): { folder: string; count: number }[] {

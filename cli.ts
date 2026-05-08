@@ -12,6 +12,9 @@
  *   --x-bookmarks         X API v2 ブックマーク取込モード (全フォルダ自動)
  *   --x-pick              Stage 1 (フォルダ一覧) → 対話選択 → Stage 2 (本文取得)
  *                         --x-bookmarks を含意するので併記不要
+ *   --x-sync-folders      Sync Phase だけ実行して終了 (Vault 再編後の手動同期用)
+ *   --no-sync             X bookmarks コマンドの先頭で走る Sync Phase を抑止
+ *                         (cron 等で速度優先したい場合のエスケープ)
  *   --x-limit=N           X 取得件数上限
  *   --hands-on=<folder>   X ブックマーク DB からハンズオン生成
  *   --since=YYYY-MM-DD    --hands-on の対象期間起点
@@ -26,6 +29,10 @@ export interface ParsedCliArgs {
   xBookmarks: boolean;
   /** Stage 1 (フォルダ一覧) → 対話選択 → Stage 2 (本文取得) */
   xPick: boolean;
+  /** Sync Phase 単独実行モード (Vault 再編後 / orphan AI 判定のためだけに走らせたいとき) */
+  xSyncFolders: boolean;
+  /** Sync Phase を抑止 (cron 等で速度優先) */
+  noSync: boolean;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -60,6 +67,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
   }
 
   const xPick = argv.includes('--x-pick');
+  const xSyncFolders = argv.includes('--x-sync-folders');
 
   return {
     config: argv.includes('--config'),
@@ -69,6 +77,8 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     // --x-pick は --x-bookmarks を含意 (両者の単独/併記どちらも有効)
     xBookmarks: argv.includes('--x-bookmarks') || xPick,
     xPick,
+    xSyncFolders,
+    noSync: argv.includes('--no-sync'),
     xLimit,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
@@ -80,8 +90,9 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
 export function printUsage(): void {
   console.error('Usage:');
   console.error('  tsx index.ts <path-to-onetab.txt> [--config] [--dry-run]');
-  console.error('  tsx index.ts --x-bookmarks [--x-limit=N] [--dry-run]');
-  console.error('  tsx index.ts --x-pick      [--x-limit=N] [--dry-run]  (フォルダ対話選択)');
+  console.error('  tsx index.ts --x-bookmarks [--x-limit=N] [--dry-run] [--no-sync]');
+  console.error('  tsx index.ts --x-pick      [--x-limit=N] [--dry-run] [--no-sync]  (フォルダ対話選択)');
+  console.error('  tsx index.ts --x-sync-folders        (Vault再編後 / orphan AI 判定用の手動同期)');
   console.error('  tsx index.ts --x-auth                (X OAuth 初回認証)');
   console.error('  tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
   console.error('  tsx index.ts --sync-rules            (snippets→folder_rules 同期のみ)');

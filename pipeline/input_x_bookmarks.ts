@@ -7,7 +7,23 @@ import {
   writeGroupingProposal,
 } from '../x_folder_mapper';
 import { getDb } from '../x_bookmarks_db';
+import { lookupVaultPath } from '../x_session_registry';
 import { ParsedEntry, FailureRecord } from './types';
+
+/**
+ * session 経由の vault_path は Clippings/X-Bookmarks-claude/... のような
+ * フル相対パスで保存されている。input_x_bookmarks → processor の流れでは
+ * processor 側が base folder を再 prefix する設計なので、ここで一旦剥がす。
+ */
+function stripBaseFolderPrefix(vaultPath: string): string {
+  const base = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
+  const baseNorm = base.replace(/\/+$/, '');
+  if (vaultPath === baseNorm) return '';
+  if (vaultPath.startsWith(baseNorm + '/')) {
+    return vaultPath.slice(baseNorm.length + 1);
+  }
+  return vaultPath;
+}
 
 /**
  * X API v2 からブックマークを取得し ParsedEntry[] に変換。
@@ -62,6 +78,14 @@ export async function prepareXBookmarks(options: {
     includeUnfiled,
   });
 
+  // 各 ApiBookmark に session_id を注入 (folder_sessions DB ベース)。
+  // sync phase が走っていれば全 X 側 folder ID は session 登録済み。
+  for (const bm of bookmarks) {
+    if (!bm.xFolderId) continue;
+    const sess = db.getFolderSessionByXFolderId(bm.xFolderId);
+    if (sess) bm.xSessionId = sess.session_id;
+  }
+
   // 共通キーワード提案レポート (未マッチフォルダのみ対象)
   if (!suppressGroupingProposal) {
     const folderNamesRaw = [...new Set(bookmarks.map((b) => b.xFolderName))];
@@ -72,6 +96,9 @@ export async function prepareXBookmarks(options: {
       console.log('   → 親フォルダとして承認するなら x_forced_parents.json に追記してください。');
     }
   }
+
+  // 頻度優先のキーワード並び替えのため、当バッチ全フォルダ名を 1 度だけ集めておく
+  const allFolderNames = [...new Set(bookmarks.map(b => b.xFolderName))];
 
   for (let i = 0; i < bookmarks.length; i++) {
     const bm = bookmarks[i];
@@ -88,7 +115,24 @@ export async function prepareXBookmarks(options: {
     }
 
     // X 側フォルダ名 → Vault 階層パスに変換 (Tier 1/2/3)
-    const vaultSubPath = mapFolderToVaultPath(bm.xFolderName, forcedParents, approvedMap);
+    // session があれば session.vault_path を最優先 (Vault 移動・再編に追従)
+    let vaultSubPath: string;
+    if (bm.xSessionId) {
+      const sessionPath = lookupVaultPath(bm.xSessionId);
+      if (sessionPath) {
+        // session 経由のパスは X-Bookmarks ベース prefix が付いている可能性がある。
+        // processor 側で base prefix を再付与するので、prefix を剥がして相対 sub-path に直す。
+        vaultSubPath = stripBaseFolderPrefix(sessionPath);
+      } else {
+        vaultSubPath = mapFolderToVaultPath(bm.xFolderName, forcedParents, approvedMap, {
+          allFolderNames,
+        });
+      }
+    } else {
+      vaultSubPath = mapFolderToVaultPath(bm.xFolderName, forcedParents, approvedMap, {
+        allFolderNames,
+      });
+    }
     // 後段 processor の X bookmark 固定ルーティングで参照される
     bm.xFolderName = vaultSubPath;
 

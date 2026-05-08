@@ -113,10 +113,42 @@ export function stripKeyword(folderName: string, keyword: string): string {
 }
 
 /**
+ * 強制親キーワードを「親フォルダになる優先度」順にソートする。
+ *
+ * Score: 単語境界マッチで該当する xFolderName 数 (occurrence count)。
+ * 同点 tiebreak: 長さ desc → 元の配列順 asc。
+ *
+ * `allFolderNames` を渡さないと occurrence は 0 で同点になり、結局長さ desc
+ * → 配列順だけで決まるので、呼出し側が単発で使うなら従来挙動に近い。
+ */
+export function prioritizeForcedParents(
+  forcedParents: string[],
+  allFolderNames: string[]
+): string[] {
+  const cleaned = forcedParents.filter(k => k && k.trim().length > 0);
+  const score = new Map<string, number>();
+  for (const k of cleaned) {
+    let n = 0;
+    for (const f of allFolderNames) if (hasWordBoundaryMatch(f, k)) n++;
+    score.set(k, n);
+  }
+  const indexed = cleaned.map((k, i) => ({ k, i }));
+  indexed.sort((a, b) => {
+    const sa = score.get(a.k) ?? 0;
+    const sb = score.get(b.k) ?? 0;
+    if (sa !== sb) return sb - sa;          // 出現頻度 desc
+    if (a.k.length !== b.k.length) return b.k.length - a.k.length; // 長さ desc
+    return a.i - b.i;                       // 元の配列順
+  });
+  return indexed.map(x => x.k);
+}
+
+/**
  * X フォルダ名 → Vault 階層パス (相対) のマッピング。
  *
  * 適用順:
- *   1. 強制親キーワード (より長いキーワード優先・大小文字無視)
+ *   1. 強制親キーワード (デフォルト: 長いキーワード優先 / `options.allFolderNames` を
+ *      渡せば「出現頻度多い方優先」に切替・大小文字無視)
  *   2. 承認済み明示マッピング (完全一致)
  *   3. なにもなければ raw フォルダ名そのまま
  *
@@ -125,13 +157,17 @@ export function stripKeyword(folderName: string, keyword: string): string {
 export function mapFolderToVaultPath(
   xFolderName: string,
   forcedParents: string[],
-  approvedMappings: Record<string, string>
+  approvedMappings: Record<string, string>,
+  options?: { allFolderNames?: string[] }
 ): string {
   const folder = (xFolderName || '').trim();
   if (!folder) return '_Unfiled';
 
-  // Tier 1: 強制親キーワード (長い順にチェックして最長一致を優先)
-  const sortedKeywords = [...forcedParents].sort((a, b) => b.length - a.length);
+  // Tier 1: 強制親キーワード
+  // allFolderNames があれば頻度優先、なければ従来通り長さ優先
+  const sortedKeywords = options?.allFolderNames
+    ? prioritizeForcedParents(forcedParents, options.allFolderNames)
+    : [...forcedParents].sort((a, b) => b.length - a.length);
   for (const keyword of sortedKeywords) {
     if (!keyword.trim()) continue;
     if (hasWordBoundaryMatch(folder, keyword)) {
