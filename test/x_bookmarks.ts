@@ -31,7 +31,7 @@ import {
   lookupVaultPath,
 } from '../x_session_registry';
 import { runSyncPhase, __test as syncInternals } from '../x_session_sync';
-import { __test as aiInternals } from '../x_session_ai';
+import { __test as aiInternals, createInteractiveOrphanResolver } from '../x_session_ai';
 import { XBookmarksDb, getDb } from '../x_bookmarks_db';
 import { __test as apiInternals } from '../x_bookmarks_api';
 import { __test as authInternals } from '../x_auth_server';
@@ -2187,6 +2187,143 @@ body
     runner.test('大小文字は無視 (RECOMMEND: ARCHIVE も拾う)', () => {
       const v = aiInternals.parseAiOutput('RECOMMEND: ARCHIVE\n理由。');
       assert.strictEqual(v.recommend, 'archive');
+    });
+
+    // =====================================================
+    // x_session_ai: createInteractiveOrphanResolver (Codex P1)
+    // =====================================================
+    runner.section('x_session_ai: interactive resolver');
+
+    const fakeOrphan = () => ({
+      session: {
+        session_id: 'sess-test',
+        x_folder_id: 'fa',
+        x_folder_name: 'Test',
+        vault_path: 'Clippings/X-Bookmarks/Test',
+        parent_keyword: null,
+        status: 'active' as const,
+        created_at: 'c',
+        last_synced_at: 't',
+      },
+      vaultAbsoluteDir: '/tmp/Test',
+      mdCount: 5,
+      latestPostDate: '2026-04-01',
+    });
+
+    await runner.testAsync('Codex P1: 空入力では AI 推奨に関わらず keep にフォールバックする', async () => {
+      const prevDisable = process.env.X_SESSION_AI_DISABLE;
+      process.env.X_SESSION_AI_DISABLE = 'true'; // 実 LLM を呼ばずに verdict 固定
+      try {
+        const askEmpty = async () => '';
+        const resolver = createInteractiveOrphanResolver(askEmpty);
+        const result = await resolver.resolveOrphan(fakeOrphan());
+        assert.strictEqual(
+          result, 'keep',
+          'AI fallback verdict が keep の場合も含めて、空入力は明示的に keep にする'
+        );
+      } finally {
+        if (prevDisable === undefined) delete process.env.X_SESSION_AI_DISABLE;
+        else process.env.X_SESSION_AI_DISABLE = prevDisable;
+      }
+    });
+
+    await runner.testAsync('明示 "a" 入力なら archive を返す', async () => {
+      const prevDisable = process.env.X_SESSION_AI_DISABLE;
+      process.env.X_SESSION_AI_DISABLE = 'true';
+      try {
+        const resolver = createInteractiveOrphanResolver(async () => 'a');
+        assert.strictEqual(await resolver.resolveOrphan(fakeOrphan()), 'archive');
+      } finally {
+        if (prevDisable === undefined) delete process.env.X_SESSION_AI_DISABLE;
+        else process.env.X_SESSION_AI_DISABLE = prevDisable;
+      }
+    });
+
+    await runner.testAsync('明示 "s" 入力なら skip を返す', async () => {
+      const prevDisable = process.env.X_SESSION_AI_DISABLE;
+      process.env.X_SESSION_AI_DISABLE = 'true';
+      try {
+        const resolver = createInteractiveOrphanResolver(async () => 's');
+        assert.strictEqual(await resolver.resolveOrphan(fakeOrphan()), 'skip');
+      } finally {
+        if (prevDisable === undefined) delete process.env.X_SESSION_AI_DISABLE;
+        else process.env.X_SESSION_AI_DISABLE = prevDisable;
+      }
+    });
+
+    // =====================================================
+    // x_session_sync: archive failure rollback (Codex P2)
+    // =====================================================
+    runner.section('x_session_sync: archive failure rollback');
+
+    await runner.testAsync('Codex P2: archive 先が既存なら status は orphaned_on_x のまま (DB が嘘をつかない)', async () => {
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-archfail';
+      const baseAbs = path.join(tmpDir, baseFolder);
+
+      // 1 周目: フォルダ作成
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({
+          userId: 'u1', username: 't',
+          folders: [{ id: 'fconflict', name: 'Conflict' }],
+        }),
+      });
+
+      // archive 先を pre-occupy (同 session_id のディレクトリが既に存在 = 衝突)
+      const sessRow = getDb().listFolderSessions().find((s) => s.x_folder_name === 'Conflict')!;
+      const conflictDest = path.join(baseAbs, '_archived', sessRow.session_id);
+      fs.mkdirSync(conflictDest, { recursive: true });
+      fs.writeFileSync(path.join(conflictDest, 'old-file.md'), 'pre-existing', 'utf8');
+
+      // 2 周目: X 側で削除 + resolver=archive → 衝突で move 失敗
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({ userId: 'u1', username: 't', folders: [] }),
+        resolver: { resolveOrphan: async () => 'archive' as const },
+      });
+
+      const after = getDb().getFolderSession(sessRow.session_id)!;
+      assert.strictEqual(
+        after.status, 'orphaned_on_x',
+        `archive 失敗時は status=archived ではなく orphaned_on_x に倒す (実際: ${after.status})`
+      );
+      // 元のディレクトリは無傷で残っている
+      assert.ok(
+        fs.existsSync(path.join(baseAbs, 'Conflict')),
+        '元フォルダは renameSync 失敗で残っているはず'
+      );
+      // pre-existing archive content は破壊されない
+      assert.ok(
+        fs.existsSync(path.join(conflictDest, 'old-file.md')),
+        'archive 先の既存ファイルは破壊されない'
+      );
+    });
+
+    await runner.testAsync('Codex P2: Vault に実体無し (orphaned_on_vault) でも archive 指示は status=archived', async () => {
+      // vault_path が DB にあるが実体は既に消えている = 完全な orphan
+      // この場合 archive 対象がないので "archived" 扱いで問題ない
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-novault';
+      const baseAbs = path.join(tmpDir, baseFolder);
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({
+          userId: 'u1', username: 't',
+          folders: [{ id: 'fghost', name: 'Ghost' }],
+        }),
+      });
+      const sessRow = getDb().listFolderSessions().find((s) => s.x_folder_name === 'Ghost')!;
+      // ユーザーが Vault からも消した想定
+      fs.rmSync(path.join(baseAbs, 'Ghost'), { recursive: true, force: true });
+
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({ userId: 'u1', username: 't', folders: [] }),
+        resolver: { resolveOrphan: async () => 'archive' as const },
+      });
+      const after = getDb().getFolderSession(sessRow.session_id)!;
+      assert.strictEqual(after.status, 'archived');
     });
 
     return runner.report();

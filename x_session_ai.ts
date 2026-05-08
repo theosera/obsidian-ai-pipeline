@@ -138,10 +138,11 @@ export function createInteractiveOrphanResolver(askFn: AskFn): OrphanResolver {
       if (ans === 'a' || ans === 'archive') return 'archive';
       if (ans === 's' || ans === 'skip') return 'skip';
       if (ans === 'k' || ans === 'keep') return 'keep';
-      // 空入力なら AI 推奨を採用
-      if (ans === '') return verdict.recommend;
-      // それ以外は安全側
-      console.log('   入力不明のため "keep" を採用します。');
+      // 空入力 (= readline EOF / 非対話 / pipe 実行 / Enter のみ) は破壊的な
+      // archive を勝手に走らせない。Codex review P1 の指摘通り、unattended な
+      // run を想定して必ず "keep" にフォールバックする。
+      // AI 推奨を尊重したいユーザーは明示的に 'a' を入力する必要がある。
+      console.log('   明示入力なし: 安全側 "keep" を採用します。');
       return 'keep';
     },
   };

@@ -260,19 +260,35 @@ function applyOrphanDecision(
     return;
   }
   if (decision === 'archive') {
+    // Codex review P2: archive 移動が実際に成功したときだけ status='archived' に
+    // するのが正しい。失敗時 (権限 / 既存先 / I/O 例外) は DB が嘘をつかないよう
+    // 'orphaned_on_x' のままにし、次回 sync で再度ユーザーに判断させる。
+    let archived = false;
     if (session.vault_path) {
       const src = path.join(getVaultRoot(), session.vault_path);
       const archiveDir = path.join(baseAbs, '_archived', session.session_id);
-      try {
-        if (fs.existsSync(src)) {
+      if (!fs.existsSync(src)) {
+        // Vault 側にそもそも実体が無い → archive する対象が無い
+        // (orphaned_on_vault に近い状態)。status は archived 扱いで OK。
+        archived = true;
+      } else if (fs.existsSync(archiveDir)) {
+        console.warn(
+          `⚠️  [sync] archive 先 ${archiveDir} が既に存在するため archive をスキップ ` +
+          `(${session.session_id})。status は orphaned_on_x のまま、次回再判定。`
+        );
+      } else {
+        try {
           fs.mkdirSync(path.dirname(archiveDir), { recursive: true });
           fs.renameSync(src, archiveDir);
+          archived = true;
+        } catch (e: any) {
+          console.warn(`⚠️  [sync] archive 失敗 (${session.session_id}): ${e.message}`);
         }
-      } catch (e: any) {
-        console.warn(`⚠️  [sync] archive 失敗 (${session.session_id}): ${e.message}`);
       }
+    } else {
+      // vault_path 不明 → archive 不可能。orphaned_on_x にしておく。
     }
-    db.setSessionStatus(session.session_id, 'archived');
+    db.setSessionStatus(session.session_id, archived ? 'archived' : 'orphaned_on_x');
     return;
   }
   // 'skip' は何もしない (次回再判定)
