@@ -18,7 +18,7 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 
 | 実装 | 配置 | 設計思想 | 起動コマンド |
 |---|---|---|---|
-| **Claude 側** | リポジトリ直下 (`x_bookmarks_api.ts` / `x_auth_server.ts` / `hands_on_generator.ts` / `x_folder_mapper.ts` / `x_bookmarks_db.ts`) | フラット構成、既存 `index.ts` / `router.ts` / `storage.ts` と統合、SQLite メタキャッシュで差分同期、Claude Code CLI でハンズオン生成 | `pnpm start -- --x-auth` / `--x-bookmarks` / `--hands-on=...` |
+| **Claude 側** | リポジトリ直下 (`x_bookmarks_api.ts` / `x_auth_server.ts` / `hands_on_generator.ts` / `x_folder_mapper.ts` / `x_bookmarks_db.ts` / `x_session_*.ts`) | フラット構成、既存 `index.ts` / `router.ts` / `storage.ts` と統合、SQLite メタキャッシュで差分同期、UUID session_id で X↔Vault の drift 追跡、Claude Code CLI でハンズオン生成 | `pnpm start -- --x-auth` / `--x-bookmarks` / `--x-pick` / `--x-sync-folders` / `--hands-on=...` |
 | **Codex 側** | `apps/auth/` + `apps/sync/` + `packages/core/*` (pnpm workspace) | workspace 構成、`.md` を source of truth、`packages/core` に共通化、grouping 提案→承認の2段階フロー | `pnpm dev:auth` / `pnpm sync` / `pnpm propose:grouping` / `pnpm approve:grouping` |
 
 ### 衝突回避ルール（同居・同時運用のための規約）
@@ -379,6 +379,24 @@ Tree 構築ルール（[x_folder_tree.ts](x_folder_tree.ts)）:
 | 2 | 各 Vault フォルダの `_session.json` | Vault 移動追跡 (Obsidian で動かしても紐付け保持) |
 | 3 | `.md` frontmatter `session_id:` | ファイル単位の出自追跡 (個別 .md 移動の検知) |
 
+X ブックマーク .md は以下のような frontmatter を持つ:
+
+```yaml
+---
+title: "Foo Bar (@foo): tweet body..."
+source: "https://x.com/foo/status/12345"
+created: 2026-05-08
+tags:
+  - "clippings"
+session_id: "7a3f2b18-9c4e-4d1a-b7e6-3f2a8d6e9b12"
+x_folder_id: "1789012345"
+x_tweet_id: "12345"
+x_folder_name: "Claude Code/Tips"
+---
+```
+
+`session_id` は当該 .md が属する X folder session の UUID。Obsidian で別フォルダにドラッグしても、次回 sync で frontmatter を読んで「移動された」ことが検知され、新親フォルダの session に再 bind される。
+
 **Sync Phase の動作**（[x_session_sync.ts](x_session_sync.ts)）:
 
 ```
@@ -524,7 +542,10 @@ pipeline/
 ├── x_folder_mapper.ts      X フォルダ名 → Vault 階層パスの 2 層マッピング
 ├── x_folder_tree.ts        --x-pick 用 Tree ビルダ + ASCII レンダラ
 ├── x_interactive_picker.ts --x-pick 用 番号パーサ + 対話ループ
-├── x_bookmarks_db.ts       SQLite メタデータキャッシュ（差分同期用）
+├── x_session_registry.ts   X folder ↔ Vault の session_id レジストリ (DB + marker file)
+├── x_session_sync.ts       Sync Phase (X 側 / Vault 側 / .md 単位 の drift 検出と整合)
+├── x_session_ai.ts         orphan_on_x の AI 判定ループ (Claude / local LLM)
+├── x_bookmarks_db.ts       SQLite メタデータキャッシュ（差分同期用）+ folder_sessions
 ├── classifier.ts         AI 分類エンジン（Fast / Smart Pass）
 ├── router.ts             動的フォルダルーティング
 ├── sync-rules.ts         snippets→folder_rules 自動同期
