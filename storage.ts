@@ -152,6 +152,21 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
   const pubDate = articleData.date || '';
   const siteLink = articleData.siteName ? `\n  - "[[${escapeFrontmatter(articleData.siteName)}]]"` : '';
 
+  // X bookmark の場合だけ session_id 等の X 専用 frontmatter フィールドを書き出す。
+  // ファイル単位移動の追跡 (sync phase の reassignMisplacedFiles) で必要。
+  const ax = articleData as Partial<{
+    xSessionId: string;
+    xFolderId: string;
+    xTweetId: string;
+    xFolderName: string;
+  }>;
+  const xExtras: string[] = [];
+  if (ax.xSessionId) xExtras.push(`session_id: "${escapeFrontmatter(ax.xSessionId)}"`);
+  if (ax.xFolderId) xExtras.push(`x_folder_id: "${escapeFrontmatter(ax.xFolderId)}"`);
+  if (ax.xTweetId) xExtras.push(`x_tweet_id: "${escapeFrontmatter(ax.xTweetId)}"`);
+  if (ax.xFolderName) xExtras.push(`x_folder_name: "${escapeFrontmatter(ax.xFolderName)}"`);
+  const xExtrasBlock = xExtras.length > 0 ? '\n' + xExtras.join('\n') : '';
+
   const frontmatter = `---
 title: "${escapeFrontmatter(articleData.title || '')}"
 source: "${articleData.url || ''}"
@@ -160,7 +175,7 @@ published: ${pubDate}
 created: ${today}
 description: "${escapeFrontmatter(articleData.excerpt || '')}"
 tags:
-  - "clippings"
+  - "clippings"${xExtrasBlock}
 ---
 
 `;
