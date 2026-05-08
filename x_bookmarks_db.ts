@@ -89,7 +89,10 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 );
 CREATE INDEX IF NOT EXISTS idx_folder ON bookmarks(x_folder_name);
 CREATE INDEX IF NOT EXISTS idx_saved_at ON bookmarks(saved_at);
-CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id);
+-- NOTE: idx_session は migrateAddSessionId() 内で作成する。SCHEMA に書くと
+-- 旧 DB (session_id 列なし) を開いた瞬間 "no such column" で throw → getDb() の
+-- catch が DB を corrupted 退避 → ユーザーのキャッシュ消失 という致命バグになる。
+-- column 追加が確実に終わってから index を張ること。
 
 CREATE TABLE IF NOT EXISTS folder_sessions (
   session_id TEXT PRIMARY KEY,
@@ -128,13 +131,17 @@ export class XBookmarksDb {
     }
   }
 
-  /** bookmarks テーブルに session_id 列を idempotent に追加 (folder_sessions 連携用) */
+  /**
+   * bookmarks テーブルに session_id 列を idempotent に追加 (folder_sessions 連携用)。
+   * index は **column 追加後**に必ず作る (旧 DB を壊さないため SCHEMA からは外してある)。
+   */
   private migrateAddSessionId(): void {
     const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
     if (!cols.some(c => c.name === 'session_id')) {
       this.db.exec("ALTER TABLE bookmarks ADD COLUMN session_id TEXT");
-      this.db.exec("CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id)");
     }
+    // column が確実に存在する状態で index を作成 (idempotent)
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id)");
   }
 
   getKnownTweetIds(): Set<string> {
@@ -247,6 +254,25 @@ export class XBookmarksDb {
 
   deleteFolderSession(sessionId: string): void {
     this.db.prepare('DELETE FROM folder_sessions WHERE session_id = ?').run(sessionId);
+  }
+
+  /**
+   * .md ファイル移動検知時の再 bind 用 (sync phase から呼ばれる)。
+   * SQL を DB モジュール内に閉じ込めるための typed wrapper。
+   * `xFolderName` を渡すと `x_folder_name` も同時に更新する (stale 名前回避)。
+   */
+  reassignBookmarkSession(input: {
+    tweetId: string;
+    sessionId: string;
+    vaultPath: string;
+    xFolderName?: string | null;
+  }): void {
+    this.db
+      .prepare(
+        'UPDATE bookmarks SET session_id = ?, vault_path = ?, ' +
+          'x_folder_name = COALESCE(?, x_folder_name) WHERE tweet_id = ?'
+      )
+      .run(input.sessionId, input.vaultPath, input.xFolderName ?? null, input.tweetId);
   }
 
   getFolderCounts(): { folder: string; count: number }[] {

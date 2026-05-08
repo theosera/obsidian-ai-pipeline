@@ -33,6 +33,7 @@ import {
 import { runSyncPhase, __test as syncInternals } from '../x_session_sync';
 import { __test as aiInternals, createInteractiveOrphanResolver } from '../x_session_ai';
 import { XBookmarksDb, getDb } from '../x_bookmarks_db';
+import Database from 'better-sqlite3';
 import { __test as apiInternals } from '../x_bookmarks_api';
 import { __test as authInternals } from '../x_auth_server';
 import { __test as videoInternals } from '../x_video_frames';
@@ -337,6 +338,107 @@ export async function run(): Promise<TestSuiteResult> {
         'SELECT note_tweet_text FROM bookmarks WHERE tweet_id = ?'
       ).get('long1') as { note_tweet_text: string };
       assert.strictEqual(row.note_tweet_text, fullText);
+      db.close();
+    });
+
+    runner.test('CodeRabbit critical: session_id 列無し DB を開いてもデータ消失しない (上書き禁止)', () => {
+      // pre-PR DB は bookmarks テーブルに session_id 列が無い。
+      // SCHEMA 内に CREATE INDEX idx_session ON bookmarks(session_id) を書くと、
+      // CREATE TABLE IF NOT EXISTS が no-op になった後で index 作成が "no such column"
+      // で throw → getDb() の catch が DB を corrupted 退避 → ユーザーキャッシュ消失。
+      // 当テストは index 文を SCHEMA から外し、migrate 内で column 追加後に張る、
+      // という回帰防止用。
+      const dbDir = path.join(tmpDir, 'session-migration-test');
+      fs.mkdirSync(dbDir, { recursive: true });
+      const dbPath = path.join(dbDir, 'x_bookmarks.db');
+
+      // 旧 DB を擬似生成: bookmarks テーブルだけ作って既存行を入れる (session_id 列なし)
+      const legacy = new Database(dbPath);
+      legacy.exec(`
+        CREATE TABLE bookmarks (
+          tweet_id TEXT PRIMARY KEY,
+          url TEXT NOT NULL UNIQUE,
+          author TEXT,
+          tweet_text TEXT,
+          note_tweet_text TEXT,
+          created_at TEXT,
+          x_folder_name TEXT,
+          vault_path TEXT,
+          saved_at TEXT NOT NULL,
+          engagement_likes INTEGER,
+          engagement_retweets INTEGER,
+          engagement_replies INTEGER
+        );
+      `);
+      legacy.prepare(
+        'INSERT INTO bookmarks (tweet_id, url, saved_at) VALUES (?, ?, ?)'
+      ).run('legacy-1', 'https://x.com/a/status/legacy-1', new Date().toISOString());
+      legacy.close();
+
+      // ここで XBookmarksDb constructor を回す。SCHEMA に idx_session が残っていると
+      // throw して呼出側 (getDb) が DB を corrupted 退避してしまう。修正後は通る。
+      const reopened = new XBookmarksDb(dbPath);
+      try {
+        // 既存行が消えていない (=ユーザーキャッシュ無事)
+        const known = reopened.getKnownTweetIds();
+        assert.ok(known.has('legacy-1'), '旧データが消失している (回帰)');
+        // session_id 列が migrate で追加されている
+        const cols = (reopened as any).db
+          .prepare('PRAGMA table_info(bookmarks)')
+          .all() as { name: string }[];
+        assert.ok(cols.some(c => c.name === 'session_id'), 'session_id 列が追加されている');
+        // idx_session が存在する
+        const idx = (reopened as any).db
+          .prepare("PRAGMA index_list('bookmarks')")
+          .all() as { name: string }[];
+        assert.ok(idx.some(i => i.name === 'idx_session'), 'idx_session が migration で作成されている');
+      } finally {
+        reopened.close();
+      }
+    });
+
+    runner.test('reassignBookmarkSession は session_id / vault_path / x_folder_name を更新する', () => {
+      const db = new XBookmarksDb(':memory:');
+      db.upsertBookmark({
+        tweetId: 'rebind-1',
+        url: 'https://x.com/a/status/rebind-1',
+        sessionId: 'old-session',
+        vaultPath: 'old/path/file.md',
+        xFolderName: 'OldFolder',
+      });
+      db.reassignBookmarkSession({
+        tweetId: 'rebind-1',
+        sessionId: 'new-session',
+        vaultPath: 'new/path/file.md',
+        xFolderName: 'NewFolder',
+      });
+      const row = (db as any).db.prepare(
+        'SELECT session_id, vault_path, x_folder_name FROM bookmarks WHERE tweet_id = ?'
+      ).get('rebind-1') as { session_id: string; vault_path: string; x_folder_name: string };
+      assert.strictEqual(row.session_id, 'new-session');
+      assert.strictEqual(row.vault_path, 'new/path/file.md');
+      assert.strictEqual(row.x_folder_name, 'NewFolder');
+      db.close();
+    });
+
+    runner.test('reassignBookmarkSession に xFolderName=null を渡すと既存値を保持 (COALESCE)', () => {
+      const db = new XBookmarksDb(':memory:');
+      db.upsertBookmark({
+        tweetId: 'rebind-2',
+        url: 'https://x.com/a/status/rebind-2',
+        sessionId: 'old',
+        xFolderName: 'PreservedFolder',
+      });
+      db.reassignBookmarkSession({
+        tweetId: 'rebind-2',
+        sessionId: 'new',
+        vaultPath: 'p',
+        xFolderName: null,
+      });
+      const row = (db as any).db.prepare(
+        'SELECT x_folder_name FROM bookmarks WHERE tweet_id = ?'
+      ).get('rebind-2') as { x_folder_name: string };
+      assert.strictEqual(row.x_folder_name, 'PreservedFolder', 'null を渡したら既存値を保持');
       db.close();
     });
 

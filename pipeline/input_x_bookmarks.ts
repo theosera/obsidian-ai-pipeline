@@ -5,6 +5,7 @@ import {
   mapFolderToVaultPath,
   detectCommonKeywords,
   writeGroupingProposal,
+  prioritizeForcedParents,
 } from '../x_folder_mapper';
 import { getDb } from '../x_bookmarks_db';
 import { lookupVaultPath } from '../x_session_registry';
@@ -80,10 +81,16 @@ export async function prepareXBookmarks(options: {
 
   // 各 ApiBookmark に session_id を注入 (folder_sessions DB ベース)。
   // sync phase が走っていれば全 X 側 folder ID は session 登録済み。
+  // N+1 を避けるため xFolderId → session_id を一度だけキャッシュする。
+  const folderSessionCache = new Map<string, string>();
   for (const bm of bookmarks) {
     if (!bm.xFolderId) continue;
-    const sess = db.getFolderSessionByXFolderId(bm.xFolderId);
-    if (sess) bm.xSessionId = sess.session_id;
+    if (!folderSessionCache.has(bm.xFolderId)) {
+      const sess = db.getFolderSessionByXFolderId(bm.xFolderId);
+      folderSessionCache.set(bm.xFolderId, sess?.session_id ?? '');
+    }
+    const sid = folderSessionCache.get(bm.xFolderId);
+    if (sid) bm.xSessionId = sid;
   }
 
   // 共通キーワード提案レポート (未マッチフォルダのみ対象)
@@ -97,8 +104,9 @@ export async function prepareXBookmarks(options: {
     }
   }
 
-  // 頻度優先のキーワード並び替えのため、当バッチ全フォルダ名を 1 度だけ集めておく
+  // 頻度優先のキーワード並び替えはバッチに対して 1 度だけ計算 (per-iteration sort 回避)
   const allFolderNames = [...new Set(bookmarks.map(b => b.xFolderName))];
+  const sortedForcedParents = prioritizeForcedParents(forcedParents, allFolderNames);
 
   for (let i = 0; i < bookmarks.length; i++) {
     const bm = bookmarks[i];
@@ -114,25 +122,16 @@ export async function prepareXBookmarks(options: {
       continue;
     }
 
-    // X 側フォルダ名 → Vault 階層パスに変換 (Tier 1/2/3)
-    // session があれば session.vault_path を最優先 (Vault 移動・再編に追従)
-    let vaultSubPath: string;
-    if (bm.xSessionId) {
-      const sessionPath = lookupVaultPath(bm.xSessionId);
-      if (sessionPath) {
-        // session 経由のパスは X-Bookmarks ベース prefix が付いている可能性がある。
-        // processor 側で base prefix を再付与するので、prefix を剥がして相対 sub-path に直す。
-        vaultSubPath = stripBaseFolderPrefix(sessionPath);
-      } else {
-        vaultSubPath = mapFolderToVaultPath(bm.xFolderName, forcedParents, approvedMap, {
-          allFolderNames,
+    // session があれば session.vault_path を最優先 (Vault 移動・再編に追従)。
+    // 無ければ Tier 1/2/3 のキーワードベース解決にフォールバック。
+    // session 経由のパスには X-Bookmarks ベース prefix が付いている可能性があるため、
+    // processor 側の再 prefix と二重にならないように一度剥がす。
+    const sessionPath = bm.xSessionId ? lookupVaultPath(bm.xSessionId) : null;
+    const vaultSubPath = sessionPath
+      ? stripBaseFolderPrefix(sessionPath)
+      : mapFolderToVaultPath(bm.xFolderName, sortedForcedParents, approvedMap, {
+          presortedForcedParents: sortedForcedParents,
         });
-      }
-    } else {
-      vaultSubPath = mapFolderToVaultPath(bm.xFolderName, forcedParents, approvedMap, {
-        allFolderNames,
-      });
-    }
     // 後段 processor の X bookmark 固定ルーティングで参照される
     bm.xFolderName = vaultSubPath;
 

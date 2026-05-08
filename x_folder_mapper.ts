@@ -158,16 +158,24 @@ export function mapFolderToVaultPath(
   xFolderName: string,
   forcedParents: string[],
   approvedMappings: Record<string, string>,
-  options?: { allFolderNames?: string[] }
+  options?: {
+    allFolderNames?: string[];
+    /**
+     * 既に prioritizeForcedParents() で並び替え済みの配列を渡せばそれをそのまま使う
+     * (per-iteration sort のコスト回避)。指定時は forcedParents / allFolderNames は無視。
+     */
+    presortedForcedParents?: string[];
+  }
 ): string {
   const folder = (xFolderName || '').trim();
   if (!folder) return '_Unfiled';
 
   // Tier 1: 強制親キーワード
-  // allFolderNames があれば頻度優先、なければ従来通り長さ優先
-  const sortedKeywords = options?.allFolderNames
-    ? prioritizeForcedParents(forcedParents, options.allFolderNames)
-    : [...forcedParents].sort((a, b) => b.length - a.length);
+  // 優先度: presortedForcedParents > 頻度ソート (allFolderNames あり) > 長さソート (従来)
+  const sortedKeywords = options?.presortedForcedParents
+    ?? (options?.allFolderNames
+      ? prioritizeForcedParents(forcedParents, options.allFolderNames)
+      : [...forcedParents].sort((a, b) => b.length - a.length));
   for (const keyword of sortedKeywords) {
     if (!keyword.trim()) continue;
     if (hasWordBoundaryMatch(folder, keyword)) {

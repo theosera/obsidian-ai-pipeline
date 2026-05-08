@@ -327,13 +327,15 @@ function reassignMisplacedFiles(baseAbs: string): number {
       if (!parentMarker) continue;
       if (parentMarker.session_id === fileSession) continue;
 
-      // 食い違い: bookmarks 行を更新
+      // 食い違い: bookmarks 行を更新 (新 session の x_folder_name も同時に refresh)
       const tweetId = readMdTweetId(full);
       if (!tweetId) continue;
-      const stmt = (db as any).db.prepare(
-        'UPDATE bookmarks SET session_id = ?, vault_path = ? WHERE tweet_id = ?'
-      );
-      stmt.run(parentMarker.session_id, path.relative(vaultRoot, full), tweetId);
+      db.reassignBookmarkSession({
+        tweetId,
+        sessionId: parentMarker.session_id,
+        vaultPath: path.relative(vaultRoot, full),
+        xFolderName: parentMarker.x_folder_name ?? null,
+      });
       // .md frontmatter も新 session_id に書き換える (idempotent)
       rewriteMdSessionId(full, parentMarker.session_id);
       count++;

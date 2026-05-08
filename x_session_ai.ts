@@ -59,6 +59,9 @@ interface AiVerdict {
   source: 'ai' | 'fallback';
 }
 
+/** AI CLI 呼び出しのウォールクロックタイムアウト (ms)。0 で無制限 (非推奨)。 */
+const AI_CALL_TIMEOUT_MS = Number(process.env.X_SESSION_AI_TIMEOUT_MS) || 60_000;
+
 async function callAiBackend(prompt: string): Promise<AiVerdict> {
   if (process.env.X_SESSION_AI_DISABLE === 'true' || process.env.X_SESSION_AI_DISABLE === '1') {
     return {
@@ -68,8 +71,8 @@ async function callAiBackend(prompt: string): Promise<AiVerdict> {
     };
   }
   const bin = process.env.X_SESSION_AI_BIN || 'claude';
-  // 疎通チェック (claude CLI の hands_on_generator.ts と同パターン)
-  const probe = spawnSync(bin, ['--version'], { encoding: 'utf8' });
+  // 疎通チェックも timeout 付き (auth プロンプトで永久に止まるのを防止)
+  const probe = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 5_000 });
   if (probe.error || probe.status !== 0) {
     return {
       recommend: 'keep',
@@ -77,12 +80,27 @@ async function callAiBackend(prompt: string): Promise<AiVerdict> {
       source: 'fallback',
     };
   }
+  // spawn にネイティブ timeout が無いので setTimeout で SIGTERM を送る。
+  // ハング (network / interactive auth プロンプト / モデル無応答) で sync 全体が
+  // 止まるのを避ける。タイムアウト時は空応答 → parseAiOutput が "keep" にフォールバック。
   const out = await new Promise<string>((resolve) => {
     const proc = spawn(bin, ['-p', prompt], { stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
+    let settled = false;
+    const settle = (v: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGTERM'); } catch { /* noop */ }
+      // SIGTERM 後 close が来るかもだが、待たずにタイムアウト扱いで resolve
+      settle('');
+    }, AI_CALL_TIMEOUT_MS);
     proc.stdout.on('data', d => chunks.push(d));
-    proc.on('error', () => resolve(''));
-    proc.on('close', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    proc.on('error', () => settle(''));
+    proc.on('close', () => settle(Buffer.concat(chunks).toString('utf8')));
   });
   return parseAiOutput(out);
 }

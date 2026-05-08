@@ -161,9 +161,9 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
     xFolderName: string;
   }>;
   const xExtras: string[] = [];
-  if (ax.xSessionId) xExtras.push(`session_id: "${ax.xSessionId}"`);
-  if (ax.xFolderId) xExtras.push(`x_folder_id: "${ax.xFolderId}"`);
-  if (ax.xTweetId) xExtras.push(`x_tweet_id: "${ax.xTweetId}"`);
+  if (ax.xSessionId) xExtras.push(`session_id: "${escapeFrontmatter(ax.xSessionId)}"`);
+  if (ax.xFolderId) xExtras.push(`x_folder_id: "${escapeFrontmatter(ax.xFolderId)}"`);
+  if (ax.xTweetId) xExtras.push(`x_tweet_id: "${escapeFrontmatter(ax.xTweetId)}"`);
   if (ax.xFolderName) xExtras.push(`x_folder_name: "${escapeFrontmatter(ax.xFolderName)}"`);
   const xExtrasBlock = xExtras.length > 0 ? '\n' + xExtras.join('\n') : '';
 
