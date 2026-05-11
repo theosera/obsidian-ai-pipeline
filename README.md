@@ -220,12 +220,14 @@ X API v2 はフォルダ一覧・フォルダ内ポストの公式エンドポ�
 **機能**:
 
 - **フォルダ構造保持**: X 側のブックマークフォルダ階層を Vault 側に反映
-- **保存先**: `Clippings/X-Bookmarks/<X側フォルダ名>/`（環境変数 `X_BOOKMARKS_FOLDER` で上書き可）
-- **強制親フォルダ機能**: `<vault>/__skills/pipeline/x_forced_parents.json` に登録したキーワードを「単語境界マッチ」で含む X フォルダは、自動的に親フォルダ配下に階層化される
+- **保存先**: `<vault>/X_Bookmarks/<X側フォルダ名>/`（環境変数 `X_BOOKMARKS_FOLDER` で上書き可。旧 `Clippings/X-Bookmarks/` から移行する場合は `pnpm start -- --x-migrate-legacy`）
+- **1 グループ 1 MD + テーブルビュー**: 1 ツイート 1 MD ではなく、各グループフォルダに 1 枚の `<group>.md` を置き、`<vault>/X_Bookmarks/.x_bookmarks.json` を Dataview の `dv.io.load()` で読み込んでテーブル描画する。**Dataview コミュニティプラグインがインストール済みであること**を前提とする
+- **AI 要約列 (将来用)**: テーブルには `summary` 列が常に確保される (現状は空文字)。プロデューサーロジックは別 PR で実装予定
+- **強制親フォルダ機能**: `<vault>/__skills/pipeline/x_forced_parents.json` に登録したキーワードを「単語境界マッチ」で含む X フォルダは、自動的に親フォルダ配下に階層化される。`pnpm start -- --x-derive-rules` で現在の vault 構造から自動推定可能 (.bak を残して提案 diff を出力)
 - **共通キーワード自動検出**: 3 つ以上のフォルダに共通する単語を検出し、`<vault>/__skills/context/分類結果レポート/x_folder_grouping_proposal_YYYYMMDD.md` に提案レポートを出力
-- **SQLite メタデータキャッシュ** (`<vault>/__skills/pipeline/x_bookmarks.db`): 取得済みツイートID で差分同期（既知ツイート 3 件連続でページング打ち切り・API コール節約）
+- **SQLite メタデータキャッシュ** (`<vault>/__skills/pipeline/x_bookmarks.db`): 取得済みツイートID で差分同期（既知ツイート 3 件連続でページング打ち切り・API コール節約）。`.x_bookmarks.json` は SQLite から再生成される派生ファイル
+- **フォルダ数保存則**: X 側 distinct フォルダ数 == `X_Bookmarks/` 直下のリーフ数 (集約解除時)。sync 末尾でアサーション、不一致は警告
 - **Classifier をスキップ**: 短いツイート本文に AI 分類は不経済なため固定ルーティング
-- **Router 日付昇格は適用**: `QUARTERLY=10 / MONTHLY=20` 閾値で `Claude Code/Tips/2026-Q2/` のように自動細分化
 
 #### 初回セットアップ (OAuth 認証)
 
@@ -269,21 +271,21 @@ X API v2 はフォルダ一覧・フォルダ内ポストの公式エンドポ�
 
 | X 側フォルダ名 | Vault 階層 |
 |---|---|
-| `Claude Code` | `Clippings/X-Bookmarks/Claude Code/` |
-| `Claude Code Tips` | `Clippings/X-Bookmarks/Claude Code/Tips/` |
-| `Claude Code Hooks` | `Clippings/X-Bookmarks/Claude Code/Hooks/` |
-| `Obsidian Plugins` | `Clippings/X-Bookmarks/Obsidian/Plugins/` |
-| `MCP連携` | `Clippings/X-Bookmarks/MCP/連携/` |
-| `LangChain` | `Clippings/X-Bookmarks/LangChain/`（マッチなし） |
+| `Claude Code` | `X_Bookmarks/Claude Code/` |
+| `Claude Code Tips` | `X_Bookmarks/Claude Code/Tips/` |
+| `Claude Code Hooks` | `X_Bookmarks/Claude Code/Hooks/` |
+| `Obsidian Plugins` | `X_Bookmarks/Obsidian/Plugins/` |
+| `MCP連携` | `X_Bookmarks/MCP/連携/` |
+| `LangChain` | `X_Bookmarks/LangChain/`（マッチなし） |
 
 部分一致は禁止（`AI` キーワードは `AIRI` にマッチしない）。複数キーワードが同時マッチする場合は**より長いキーワードを優先**します。
 
 #### 共通キーワード提案の運用
 
-- **保存先**: `Clippings/X-Bookmarks/`（既存記事とは完全に別系統）
+- **保存先**: `X_Bookmarks/`（既存記事とは完全に別系統）
   - ※この節は既存パイプラインの `--x-bookmarks` モードについての説明です。workspace 版（`apps/sync`）の既定値は `Clippings/X-Bookmarks-codex` です。
   - 環境変数 `X_BOOKMARKS_FOLDER` で上書き可能
-  - Router の日付昇格ルール（QUARTERLY=10 / MONTHLY=20）に従い、件数が増えると `Clippings/X-Bookmarks/2026-Q2` のようなサブフォルダへ自動再編成
+  - Router の日付昇格ルール（QUARTERLY=10 / MONTHLY=20）に従い、件数が増えると `X_Bookmarks/Claude Code/2026-Q2` のようなサブフォルダへ自動再編成
 - **Classifier を通さない**: 短いツイート本文に対する AI 分類は不経済かつノイズ源になるため、固定ルーティング
 - **重複排除**: 既存 URL と同じツイートは `knownUrls` により自動スキップ
 
@@ -308,6 +310,12 @@ pnpm start -- --x-bookmarks --x-limit=20 --dry-run
 # Stage 1 でフォルダ一覧を表示 → 対話選択 → Stage 2 で本文取得
 pnpm start -- --x-pick
 pnpm start -- --x-pick --x-limit=10 --dry-run
+
+# vault フォルダ構造から x_forced_parents.json を自動推定 (.bak を残して y/N 確認)
+pnpm start -- --x-derive-rules
+
+# 旧 Clippings/X-Bookmarks/ を _Archived/ に退避 (新パス X_Bookmarks/ への一度きり移行)
+pnpm start -- --x-migrate-legacy
 ```
 
 #### `--x-pick`（フォルダ対話選択モード）
@@ -478,16 +486,16 @@ Vault に蓄積した X ブックマーク群を素材に、Claude Code CLI (OAu
 
 ```bash
 # Claude Code フォルダのポスト群からハンズオン生成
-pnpm start -- --hands-on="Clippings/X-Bookmarks/Claude Code"
+pnpm start -- --hands-on="X_Bookmarks/Claude Code"
 
 # 期間絞り込み
-pnpm start -- --hands-on="Clippings/X-Bookmarks/Claude Code" --since=2026-04-01
+pnpm start -- --hands-on="X_Bookmarks/Claude Code" --since=2026-04-01
 
 # dry-run: プロンプトのみ .prompt.txt に出力（claude を呼ばない）
-pnpm start -- --hands-on="Clippings/X-Bookmarks/Claude Code" --dry-run
+pnpm start -- --hands-on="X_Bookmarks/Claude Code" --dry-run
 ```
 
-生成先: `<vault>/__skills/context/ハンズオン/<folder>-YYYYMMDD.md`
+生成先: `<vault>/Permanent Note/09_X_Bookmarks/<folder>-YYYYMMDD.md`
 
 #### 今後の拡張 (Phase 2 以降)
 

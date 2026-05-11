@@ -8,11 +8,12 @@
  *
  * 素材の抽出元:
  *   <vault>/__skills/pipeline/x_bookmarks.db の bookmarks テーブル。
- *   vault_path が "Clippings/X-Bookmarks/<folder>/" で始まる行を対象に、
+ *   vault_path が "<X_Bookmarks base>/<folder>/" で始まる行を対象に、
  *   `--since=YYYY-MM-DD` 指定時は created_at の前方一致フィルタも併用する。
  *
  * 生成先:
- *   <vault>/__skills/context/ハンズオン/<folder-slug>-YYYYMMDD.md
+ *   <vault>/Permanent Note/09_X_Bookmarks/<folder-slug>-YYYYMMDD.md
+ *   (旧出力: <vault>/__skills/context/ハンズオン/ は 2026-05 リファクタで廃止)
  */
 import fs from 'fs';
 import path from 'path';
@@ -32,7 +33,7 @@ interface BookmarkRow {
 }
 
 export interface HandsOnOptions {
-  /** 対象 Vault フォルダ (例: "Clippings/X-Bookmarks/Claude Code") */
+  /** 対象 Vault フォルダ (例: "X_Bookmarks/Claude Code") */
   folder: string;
   /** YYYY-MM-DD 形式、指定日以降のポストのみ */
   since?: string;
@@ -98,7 +99,7 @@ export function renderPrompt(folder: string, corpus: string, date: string): stri
 }
 
 function folderSlug(folder: string): string {
-  // "Clippings/X-Bookmarks/Claude Code" → "Claude Code"
+  // "X_Bookmarks/Claude Code" → "Claude Code"
   const last = folder.split('/').filter(Boolean).pop() ?? 'unfiled';
   return last.replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
@@ -131,7 +132,7 @@ export async function generateHandsOn(options: HandsOnOptions): Promise<string> 
   const corpus = buildCorpus(rows);
   const prompt = renderPrompt(folder, corpus, dateStr);
 
-  const outDir = path.join(getVaultRoot(), '__skills', 'context', 'ハンズオン');
+  const outDir = path.join(getVaultRoot(), 'Permanent Note', '09_X_Bookmarks');
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
   const outPath = path.join(outDir, `${slug}-${dateCompact}.md`);
 

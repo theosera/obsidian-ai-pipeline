@@ -65,6 +65,14 @@ export interface ApiBookmark extends ArticleData {
   xSessionId?: string;
   /** session_id 紐付けに使った X 側 folder ID (frontmatter デバッグ用) */
   xFolderId?: string;
+  /** ツイート作者の @ハンドル (Dataview テーブルの author 列に表示) */
+  xAuthorHandle?: string;
+  /** public_metrics.like_count */
+  xLikes?: number;
+  /** public_metrics.retweet_count */
+  xRetweets?: number;
+  /** public_metrics.reply_count */
+  xReplies?: number;
 }
 
 export interface FetchOptions {
@@ -413,7 +421,11 @@ export function tweetToApiBookmark(
     siteName: 'X (Twitter)',
     xFolderName: folderName,
     xTweetId: post.id,
+    xAuthorHandle: username,
   };
+  if (typeof likes === 'number') result.xLikes = likes;
+  if (typeof retweets === 'number') result.xRetweets = retweets;
+  if (typeof replies === 'number') result.xReplies = replies;
   if (post.note_tweet?.text) {
     result.xNoteTweetText = post.note_tweet.text;
   }

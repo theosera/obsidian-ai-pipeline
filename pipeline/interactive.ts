@@ -4,6 +4,7 @@ import { tokenUsageMetrics } from '../classifier';
 import { ProcessingResult } from '../types';
 import { ApiBookmark } from '../x_bookmarks_api';
 import { getDb, closeDb } from '../x_bookmarks_db';
+import { exportAndWriteAllGroupPages } from '../x_group_page_writer';
 import { askQuestion, isPromptClosed } from './prompt';
 import { generateReport } from './report';
 
@@ -57,34 +58,62 @@ export async function interactiveReviewLoop(
 
 async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
   console.log('\n🚀 Approved! Proceeding to save files to Vault...');
+  let xBookmarkCount = 0;
 
   for (const res of results) {
     if (!(res.status === 'success' && res.articleContext && res.classification)) continue;
 
     try {
-      const savedPath = saveMarkdown(res.articleContext, res.classification.proposedPath);
-      console.log(` ✅ Saved: ${savedPath}`);
-
-      // X ブックマーク経由なら SQLite メタキャッシュにも反映 (差分スクレイプ用)
       const ax = res.articleContext as ApiBookmark;
-      if (res.policy === 'x_bookmark' && ax.xTweetId) {
+      const isXBookmark = res.policy === 'x_bookmark' && !!ax.xTweetId;
+
+      if (isXBookmark) {
+        // X ブックマークは 1 ツイート 1 MD を書かない。SQLite にだけ反映し、
+        // ユーザー向けには「1 グループ 1 MD + dataviewjs テーブル」で見せる。
         try {
           getDb().upsertBookmark({
-            tweetId: ax.xTweetId,
+            tweetId: ax.xTweetId!,
             url: ax.url,
+            author: ax.xAuthorHandle ?? undefined,
             tweetText: ax.textContent,
             noteTweetText: ax.xNoteTweetText,
             createdAt: ax.date,
             xFolderName: ax.xFolderName,
-            vaultPath: savedPath,
+            vaultPath: res.classification.proposedPath,
             sessionId: ax.xSessionId,
+            engagementLikes: ax.xLikes,
+            engagementRetweets: ax.xRetweets,
+            engagementReplies: ax.xReplies,
           });
+          xBookmarkCount++;
+          console.log(` 🔖 Indexed: ${ax.xTweetId} → ${res.classification.proposedPath}`);
         } catch (dbErr: any) {
           console.warn(`   ⚠️  DB upsert 失敗 (続行): ${dbErr.message}`);
         }
+        continue;
       }
+
+      // 非 X (OneTab / Hatena 等) は従来通り 1 記事 1 MD で保存。
+      const savedPath = saveMarkdown(res.articleContext, res.classification.proposedPath);
+      console.log(` ✅ Saved: ${savedPath}`);
     } catch (e: any) {
       console.error(` ❌ Error saving ${res.url}: ${e.message}`);
+    }
+  }
+
+  // X ブックマークが含まれていれば JSON ビューと group ページを再生成。
+  if (xBookmarkCount > 0) {
+    try {
+      const { jsonPath, pages } = exportAndWriteAllGroupPages();
+      console.log(`🗂  JSON ビュー更新: ${jsonPath}`);
+      const summary = pages.reduce<Record<string, number>>((acc, p) => {
+        acc[p.action] = (acc[p.action] ?? 0) + 1;
+        return acc;
+      }, {});
+      const summaryStr = Object.entries(summary).map(([k, v]) => `${k}=${v}`).join(', ');
+      console.log(`📄 Group ページ: ${pages.length} 件 (${summaryStr})`);
+    } catch (e: any) {
+      console.warn(`⚠️  JSON / group ページ更新失敗 (続行): ${e.message}`);
     }
   }
 

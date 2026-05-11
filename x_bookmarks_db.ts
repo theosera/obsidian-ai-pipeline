@@ -275,6 +275,41 @@ export class XBookmarksDb {
       .run(input.sessionId, input.vaultPath, input.xFolderName ?? null, input.tweetId);
   }
 
+  /**
+   * `session_id` を変えずに `vault_path` のみを書き換える。
+   * legacy migration で旧パス → `_Archived/` に bookmarks 行を rewrite する用途。
+   * `xFolderName` を渡すと同時に refresh する (現在の値を保ちたければ undefined を渡す)。
+   */
+  updateBookmarkVaultPath(input: {
+    tweetId: string;
+    vaultPath: string;
+    xFolderName?: string | null;
+  }): void {
+    this.db
+      .prepare(
+        'UPDATE bookmarks SET vault_path = ?, ' +
+          'x_folder_name = COALESCE(?, x_folder_name) WHERE tweet_id = ?'
+      )
+      .run(input.vaultPath, input.xFolderName ?? null, input.tweetId);
+  }
+
+  /**
+   * JSON エクスポート用に bookmarks 全行を読み出す。
+   * `x_bookmarks_json_export.ts` が `<vault>/<base>/.x_bookmarks.json` に書き出すための
+   * read-only スナップショット。`session_id` は Dataview 表示に不要なので返さない。
+   */
+  listBookmarksForExport(): BookmarkRow[] {
+    return this.db
+      .prepare(
+        `SELECT tweet_id, url, author, tweet_text, note_tweet_text, created_at,
+                x_folder_name, vault_path, saved_at,
+                engagement_likes, engagement_retweets, engagement_replies
+           FROM bookmarks
+          ORDER BY COALESCE(created_at, saved_at) DESC`
+      )
+      .all() as BookmarkRow[];
+  }
+
   getFolderCounts(): { folder: string; count: number }[] {
     const rows = this.db.prepare(`
       SELECT x_folder_name AS folder, COUNT(*) AS count

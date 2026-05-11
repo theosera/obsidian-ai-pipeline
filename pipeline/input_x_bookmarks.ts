@@ -9,16 +9,16 @@ import {
 } from '../x_folder_mapper';
 import { getDb } from '../x_bookmarks_db';
 import { lookupVaultPath } from '../x_session_registry';
+import { getXBookmarksBaseFolder } from '../config';
 import { ParsedEntry, FailureRecord } from './types';
 
 /**
- * session 経由の vault_path は Clippings/X-Bookmarks-claude/... のような
- * フル相対パスで保存されている。input_x_bookmarks → processor の流れでは
- * processor 側が base folder を再 prefix する設計なので、ここで一旦剥がす。
+ * session 経由の vault_path は X_Bookmarks/... のようなフル相対パスで保存されている。
+ * input_x_bookmarks → processor の流れでは processor 側が base folder を再 prefix する
+ * 設計なので、ここで一旦剥がす。
  */
 function stripBaseFolderPrefix(vaultPath: string): string {
-  const base = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
-  const baseNorm = base.replace(/\/+$/, '');
+  const baseNorm = getXBookmarksBaseFolder().replace(/\/+$/, '');
   if (vaultPath === baseNorm) return '';
   if (vaultPath.startsWith(baseNorm + '/')) {
     return vaultPath.slice(baseNorm.length + 1);

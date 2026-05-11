@@ -4,7 +4,7 @@ import { closeBrowser } from '../fetcher';
 import { getKnownUrls, updateVaultTreeSnapshot } from '../storage';
 import { tokenUsageMetrics } from '../classifier';
 import { loadFolderRules, updateThresholds, getRoutedPath } from '../router';
-import { getVaultRoot } from '../config';
+import { getVaultRoot, getXBookmarksBaseFolder } from '../config';
 import { ProcessingResult } from '../types';
 import { ParsedCliArgs } from '../cli';
 import { ParsedEntry, FailureRecord } from './types';
@@ -20,14 +20,14 @@ import { pickFolders } from '../x_interactive_picker';
 import { loadForcedParents, loadApprovedMappings } from '../x_folder_mapper';
 import { runSyncPhase } from '../x_session_sync';
 import { createInteractiveOrphanResolver } from '../x_session_ai';
+import { checkFolderCountInvariant, logInvariantCheck } from '../x_folder_invariant';
 
 /**
  * X API ブックマーク専用のベースフォルダ。
- * 通常記事の Classifier によるフォルダ分類とは別系統で、すべての X ブックマークを
- * ここに集約する（混入防止・監査容易化）。環境変数 X_BOOKMARKS_FOLDER で上書き可能。
- * Router の閾値 (QUARTERLY=10 / MONTHLY=20) を超えると、自動で日付サブフォルダへ昇格する。
+ * config.ts::getXBookmarksBaseFolder() に集中管理 (デフォルト `X_Bookmarks`)。
+ * 環境変数 X_BOOKMARKS_FOLDER で上書き可能。
  */
-const X_BOOKMARKS_BASE_FOLDER = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
+const X_BOOKMARKS_BASE_FOLDER = getXBookmarksBaseFolder();
 
 /**
  * 通常パイプライン (OneTab / X ブックマーク) のフロー制御。
@@ -68,6 +68,14 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
         `orphan_vault=${result.orphansOnVault}`,
       ].join(', ');
       console.log(`🔖 Sync Phase: ${summary}`);
+
+      // 不変条件: X distinct folder 数 == <base>/ リーフ数 (集約解除時)
+      try {
+        const inv = checkFolderCountInvariant();
+        logInvariantCheck(inv);
+      } catch (invErr: any) {
+        console.warn(`⚠️  Folder-count invariant チェック失敗 (続行): ${invErr.message}`);
+      }
     } catch (e: any) {
       console.warn(`⚠️  Sync Phase 失敗 (続行): ${e.message}`);
     }
