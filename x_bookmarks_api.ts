@@ -531,10 +531,21 @@ async function fetchFolderTweetIds(
   folderId: string,
   ctx: { accessToken: string; clientId: string; clientSecret: string; fetchFn: typeof fetch; onRefreshed?: (t: string) => void }
 ): Promise<string[]> {
-  const res = await xGet<{ data?: { id: string }[] }>(
+  // 実測 (11件フォルダ) では meta 自体返らず、pagination_token 以外の query は
+  // 「[id, folder_id] のみ受付」400 で弾かれた。pagination_token の可否は未検証。
+  // → meta.next_token が返ったら警告して可視化する (Codex PR #38 review への対応)。
+  const res = await xGet<{ data?: { id: string }[]; meta?: { next_token?: string } }>(
     buildFolderBookmarksUrl(userId, folderId),
     ctx
   );
+  if (res.meta?.next_token) {
+    console.warn(
+      `🔖 [X API] WARNING: folder ${folderId} returned meta.next_token but ` +
+      `/bookmarks/folders/{id} ページング実装は未対応 (X API がクエリ全般を拒否するため未検証)。` +
+      `このフォルダのブックマークが欠落している可能性があります。` +
+      `docs/x_api_v2_gotchas.md の「フォルダ索引のページング」項目を参照してください。`
+    );
+  }
   return (res.data ?? []).map(d => d.id);
 }
 
