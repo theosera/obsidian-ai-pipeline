@@ -40,9 +40,18 @@ interface CheckOptions {
   baseFolder?: string;
 }
 
+/** Obsidian の通常運用では 3〜4 階層程度しか想定しない。symlink ループや
+ *  ユーザーの想定外深さでスタックを潰さないよう保険として上限を切る。 */
+const MAX_DEPTH = 16;
+
 /**
  * Vault 側のリーフフォルダ相対パス一覧を再帰列挙。
- * `<base>` 直下から探す。深さ無制限だが Obsidian の通常運用では 3〜4 階層程度。
+ * `<base>` 直下から探す。
+ *
+ * 安全策:
+ *   - symlink (`Dirent.isSymbolicLink()`) はスキップ — vault 内 symlink は通常無く、
+ *     誤って symlink ループに迷い込むとプロセスが固まる
+ *   - 深さ上限 `MAX_DEPTH` を超えたら警告して停止
  */
 export function listLeafFolders(args: CheckOptions = {}): string[] {
   const vaultRoot = args.vaultRoot ?? getVaultRoot();
@@ -53,9 +62,15 @@ export function listLeafFolders(args: CheckOptions = {}): string[] {
   const leaves: string[] = [];
 
   function walk(absDir: string, relParts: string[]): void {
+    if (relParts.length >= MAX_DEPTH) {
+      console.warn(`⚠️  [invariant] 最大深さ ${MAX_DEPTH} を超えたためスキップ: ${relParts.join('/')}`);
+      return;
+    }
     let entries: fs.Dirent[];
     try { entries = fs.readdirSync(absDir, { withFileTypes: true }); } catch { return; }
-    const childDirs = entries.filter(e => e.isDirectory() && !shouldIgnore(e.name));
+    const childDirs = entries.filter(
+      e => e.isDirectory() && !e.isSymbolicLink() && !shouldIgnore(e.name)
+    );
     if (childDirs.length === 0) {
       // ここがリーフ。ただし `<base>` 直下自身はリーフではない (relParts.length === 0)
       if (relParts.length > 0) leaves.push(relParts.join('/'));

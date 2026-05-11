@@ -10,8 +10,9 @@
  * アルゴリズム:
  *   1. SQLite の folder_sessions を `vault_path` の第一階層 (= group) でバケット化
  *      (status は active / archived どちらも採用。orphaned 系は除外)
- *   2. バケット内 session 数 >= 2 のものを候補に採用
- *      (1 件しかない group は単なるフォルダ名なので強制親にする意味が薄い)
+ *   2. バケット内 distinct な x_folder_name が >= 2 個あるものを候補に採用
+ *      (同じ X folder 名の重複 session が複数あっても 1 とカウント。
+ *       1 つの X folder しか持たない group は強制親にする意味が薄い)
  *   3. "Claude" / "ClaudeCode" / "Claude Code" のように case/space が異なる候補は
  *      すべて別キーワードとして emit する (既存 word-boundary マッチで区別される)
  *   4. 現行 `x_forced_parents.json` との diff を出し、追記すべきもの・既知のものを表示

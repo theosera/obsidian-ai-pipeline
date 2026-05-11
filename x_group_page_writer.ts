@@ -31,7 +31,29 @@ import {
 export interface GroupPageWriteResult {
   group: string;
   filePath: string;
-  action: 'created' | 'updated' | 'unchanged' | 'dry-run';
+  /**
+   * `created`   = ファイル新規作成
+   * `updated`   = 既存ファイルの sentinel 区間を差し替え
+   * `appended`  = sentinel 無し既存ファイルの末尾に追記
+   * `unchanged` = 差分なし (idempotent)
+   * `dry-run`   = dry-run モードで実書き出しをスキップ
+   * `invalid-group` = group 名がパス安全条件を満たさず書き出しを拒否
+   */
+  action: 'created' | 'updated' | 'appended' | 'unchanged' | 'dry-run' | 'invalid-group';
+}
+
+/**
+ * `group` がディレクトリセグメントとして安全か検査する。
+ * deriveGroup() は通常 vault_path の先頭セグメントを返すだけなので、
+ * `..` や `/` を含む値は理論上発生しないが、DB が壊れていたり別系統で
+ * 値が注入された場合に path traversal を防ぐ最後の砦としてここで弾く。
+ */
+function isSafeGroupSegment(group: string): boolean {
+  if (!group || group === '.' || group === '..') return false;
+  if (group.includes('/') || group.includes('\\') || group.includes('\0')) return false;
+  // path.sep を多重ガード (Windows パス上の \\?\ 等)
+  if (group.includes(path.sep)) return false;
+  return true;
 }
 
 interface WriteOptions {
@@ -69,6 +91,12 @@ function writeSingleGroupPage(args: {
   jsonRel: string;
 }): GroupPageWriteResult {
   const { vaultRoot, baseFolder, group, jsonRel } = args;
+
+  if (!isSafeGroupSegment(group)) {
+    console.warn(`⚠️  [group-page-writer] 不正な group 名のためスキップ: ${JSON.stringify(group)}`);
+    return { group, filePath: '', action: 'invalid-group' };
+  }
+
   const dir = path.join(vaultRoot, baseFolder, group);
   const filePath = path.join(dir, `${group}.md`);
 
@@ -89,11 +117,10 @@ function writeSingleGroupPage(args: {
     return { group, filePath, action: 'unchanged' };
   }
   fs.writeFileSync(filePath, updated, 'utf8');
-  return {
-    group,
-    filePath,
-    action: existing.includes(SENTINEL_START) ? 'updated' : 'updated',
-  };
+  // `replaceAutoBlock` 内部で sentinel の有無を判定して挙動を切り替えるため、
+  // ここで判定し直して呼び出し側に観測情報を伝える。
+  const hadSentinel = existing.includes(SENTINEL_START);
+  return { group, filePath, action: hadSentinel ? 'updated' : 'appended' };
 }
 
 /**

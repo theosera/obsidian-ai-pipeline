@@ -2616,6 +2616,54 @@ body
           });
           for (const r of results) assert.strictEqual(r.action, 'unchanged');
         });
+
+        runner.test('writeSingleGroupPage: sentinel 無し既存ファイルは appended', () => {
+          // ユーザーが手書きで MD を置いていた想定
+          const handwritten = path.join(writerVault, 'X_Bookmarks', 'Handwritten');
+          fs.mkdirSync(handwritten, { recursive: true });
+          fs.writeFileSync(path.join(handwritten, 'Handwritten.md'),
+            '# Handwritten\n\nユーザーの手書きメモ\n', 'utf8');
+          const handPayload = {
+            ...payload,
+            rows: [{
+              tweet_id: 'h', url: 'https://x.com/h/status/1', author: null,
+              tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              engagement_likes: null, engagement_retweets: null, engagement_replies: null,
+              x_folder_name: null, vault_path: 'X_Bookmarks/Handwritten',
+              group: 'Handwritten', ai_summary: null,
+            }],
+          };
+          const results = writeAllGroupPages({
+            vaultRoot: writerVault,
+            baseFolder: 'X_Bookmarks',
+            payload: handPayload,
+          });
+          assert.strictEqual(results[0].action, 'appended');
+          const content = fs.readFileSync(path.join(handwritten, 'Handwritten.md'), 'utf8');
+          assert.ok(content.includes('ユーザーの手書きメモ'), '手書き本文は保護される');
+          assert.ok(content.includes('```dataviewjs'), 'auto block が追記される');
+        });
+
+        runner.test('writeSingleGroupPage: ".." を含む group は invalid-group で拒否', () => {
+          const evilPayload = {
+            ...payload,
+            rows: [{
+              tweet_id: 'evil', url: 'https://x.com/evil/status/1', author: null,
+              tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              engagement_likes: null, engagement_retweets: null, engagement_replies: null,
+              x_folder_name: null, vault_path: 'X_Bookmarks/../escape',
+              group: '..', ai_summary: null,
+            }],
+          };
+          const results = writeAllGroupPages({
+            vaultRoot: writerVault,
+            baseFolder: 'X_Bookmarks',
+            payload: evilPayload,
+          });
+          assert.strictEqual(results[0].action, 'invalid-group');
+          assert.ok(!fs.existsSync(path.join(writerVault, '..md')),
+            'base 外への path traversal は発生しない');
+        });
       } finally {
         fs.rmSync(writerVault, { recursive: true, force: true });
       }

@@ -421,8 +421,11 @@ export function tweetToApiBookmark(
     siteName: 'X (Twitter)',
     xFolderName: folderName,
     xTweetId: post.id,
-    xAuthorHandle: username,
   };
+  // 著者が API includes.users から解決できなかったケースでは URL/title の表示用
+  // フォールバック ('unknown') を流用しつつ、DB / JSON ビュー には書かない
+  // ことで「実値」と「不明」を区別できるようにする。
+  if (author?.username) result.xAuthorHandle = author.username;
   if (typeof likes === 'number') result.xLikes = likes;
   if (typeof retweets === 'number') result.xRetweets = retweets;
   if (typeof replies === 'number') result.xReplies = replies;

@@ -83,6 +83,7 @@ interface RawRow {
   engagement_replies: number | null;
   x_folder_name: string | null;
   vault_path: string | null;
+  ai_summary: string | null;
 }
 
 /**
@@ -111,7 +112,9 @@ export function buildExportPayload(options: ExportOptions = {}): ExportedJson {
     x_folder_name: r.x_folder_name,
     vault_path: r.vault_path,
     group: deriveGroup(r.vault_path, baseFolder),
-    ai_summary: null,
+    // SQLite に列はあるが書き込み経路はまだ無いため通常は常に NULL。
+    // 将来 producer がこの列を埋めたら JSON 経由で Dataview に伝わる。
+    ai_summary: r.ai_summary ?? null,
   }));
   return {
     version: 1,

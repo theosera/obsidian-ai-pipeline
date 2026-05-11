@@ -44,8 +44,7 @@ function resolveArchivePath(vaultRoot: string): { src: string; dest: string } {
   const now = new Date()
     .toISOString()
     .replace(/[:T]/g, '-')
-    .replace(/\..+$/, '')
-    .replace(/-/g, m => m); // YYYY-MM-DD-HH-MM-SS
+    .replace(/\..+$/, ''); // YYYY-MM-DD-HH-MM-SS
   const baseName = `Clippings-X-Bookmarks-${now}`;
   let dest = path.join(vaultRoot, ARCHIVE_ROOT, baseName);
   let suffix = 1;
@@ -128,11 +127,13 @@ export function runMigrateLegacy(options: RunMigrationOptions = {}): MigrationRe
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.renameSync(src, dest);
 
-  // SQLite を新パスに書き換え
+  // SQLite を新パスに書き換え。
+  // 既に archived な session は触らない (rerun 時の no-op を保証)。
   const db = getDb();
   let sessionsUpdated = 0;
   for (const s of db.listFolderSessions()) {
     if (!s.vault_path) continue;
+    if (s.status === 'archived') continue;
     const rewritten = rewritePrefix(s.vault_path, LEGACY_RELATIVE, newRelPrefix);
     if (rewritten !== s.vault_path) {
       db.upsertFolderSession({

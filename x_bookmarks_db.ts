@@ -30,6 +30,12 @@ export interface BookmarkRow {
   engagement_likes: number | null;
   engagement_retweets: number | null;
   engagement_replies: number | null;
+  /**
+   * 将来 AI 要約プロデューサーが書き込む列 (現状は常に NULL)。
+   * 2026-05 のリファクタでスキーマは確保するが、書き込みパスは未実装。
+   * JSON エクスポート + Dataview テーブルは `summary` 列を常に確保する。
+   */
+  ai_summary: string | null;
 }
 
 export interface BookmarkUpsertInput {
@@ -85,7 +91,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   saved_at TEXT NOT NULL,
   engagement_likes INTEGER,
   engagement_retweets INTEGER,
-  engagement_replies INTEGER
+  engagement_replies INTEGER,
+  ai_summary TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_folder ON bookmarks(x_folder_name);
 CREATE INDEX IF NOT EXISTS idx_saved_at ON bookmarks(saved_at);
@@ -118,6 +125,7 @@ export class XBookmarksDb {
     this.db.exec(SCHEMA);
     this.migrateAddNoteTweetText();
     this.migrateAddSessionId();
+    this.migrateAddAiSummary();
   }
 
   /**
@@ -142,6 +150,19 @@ export class XBookmarksDb {
     }
     // column が確実に存在する状態で index を作成 (idempotent)
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id)");
+  }
+
+  /**
+   * bookmarks テーブルに ai_summary 列を idempotent に追加。
+   * 現状この列に書き込むパスは無く (常に NULL)、テーブルビューの "summary" 列を
+   * 確保する目的でスキーマだけ用意する。将来の AI 要約プロデューサーがこの列に
+   * 書き込む想定。
+   */
+  private migrateAddAiSummary(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'ai_summary')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN ai_summary TEXT");
+    }
   }
 
   getKnownTweetIds(): Set<string> {
@@ -302,7 +323,7 @@ export class XBookmarksDb {
     return this.db
       .prepare(
         `SELECT tweet_id, url, author, tweet_text, note_tweet_text, created_at,
-                x_folder_name, vault_path, saved_at,
+                x_folder_name, vault_path, saved_at, ai_summary,
                 engagement_likes, engagement_retweets, engagement_replies
            FROM bookmarks
           ORDER BY COALESCE(created_at, saved_at) DESC`
