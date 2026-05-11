@@ -16,7 +16,7 @@
 
 フォルダ別取り込みは 1 リクエストで完結しない。**必ず 2 段**:
 
-```
+```text
 Step 1: GET /bookmarks/folders/{folder_id}    → ID 配列
 Step 2: GET /2/tweets?ids=id1,id2,...         → 本文・著者・メディア
 ```

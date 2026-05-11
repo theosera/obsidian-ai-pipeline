@@ -65,7 +65,7 @@ X API のフォルダ別ブックマーク取得は **1 リクエストで完結
 
 ## 推奨実装フロー
 
-```
+```text
 1. fetchFolderTweetIds(userId, folderId): string[]
      → [] for 空フォルダ
      → 全 ID を 1 回で取得 (現状ページングは観測されていない)
