@@ -20,6 +20,7 @@ import {
   renderGroupPage,
   replaceAutoBlock,
   SENTINEL_START,
+  SENTINEL_END,
 } from './x_group_page_template';
 import {
   exportBookmarksJson,
@@ -117,9 +118,13 @@ function writeSingleGroupPage(args: {
     return { group, filePath, action: 'unchanged' };
   }
   fs.writeFileSync(filePath, updated, 'utf8');
-  // `replaceAutoBlock` 内部で sentinel の有無を判定して挙動を切り替えるため、
-  // ここで判定し直して呼び出し側に観測情報を伝える。
-  const hadSentinel = existing.includes(SENTINEL_START);
+  // `replaceAutoBlock` の判定ロジックと一致させる: start/end の両方が存在し、
+  // かつ end が start より後にある well-formed なペアの時だけ 'updated'。
+  // 半壊 (start のみ / 順序逆転) の場合は `replaceAutoBlock` 側が末尾追記する
+  // ので 'appended' が観測実態と一致する。
+  const startIdx = existing.indexOf(SENTINEL_START);
+  const endIdx = existing.indexOf(SENTINEL_END);
+  const hadSentinel = startIdx !== -1 && endIdx !== -1 && endIdx > startIdx;
   return { group, filePath, action: hadSentinel ? 'updated' : 'appended' };
 }
 
