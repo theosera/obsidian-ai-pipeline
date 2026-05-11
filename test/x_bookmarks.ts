@@ -2490,6 +2490,33 @@ body
         assert.strictEqual(row.group, 'Claude Code');
         assert.strictEqual(row.engagement_likes, 3);
         assert.strictEqual(row.ai_summary, null, 'AI 要約は常に null (列のみ確保)');
+        assert.ok(typeof row.added_at === 'string' && row.added_at.length > 0,
+          'added_at は INSERT 時にセットされる');
+        db.close();
+      });
+
+      runner.test('upsertBookmark: re-upsert は added_at を保持 / saved_at は更新', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'reup',
+          url: 'https://x.com/reup/status/1',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        const first = buildExportPayload({ db, baseFolder: 'X_Bookmarks' }).rows[0];
+        // ISO ms 解像度の差を担保するため最低 5ms 待つ
+        await new Promise(r => setTimeout(r, 5));
+        db.upsertBookmark({
+          tweetId: 'reup',
+          url: 'https://x.com/reup/status/1',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+          tweetText: 'updated body',
+        });
+        const second = buildExportPayload({ db, baseFolder: 'X_Bookmarks' }).rows[0];
+        assert.strictEqual(second.added_at, first.added_at, 'added_at は不変');
+        assert.notStrictEqual(second.saved_at, first.saved_at, 'saved_at は再 upsert で更新');
+        assert.strictEqual(second.tweet_text, 'updated body');
         db.close();
       });
 
@@ -2541,6 +2568,15 @@ body
         assert.ok(md.includes('X_Bookmarks/.x_bookmarks.json'), 'JSON path');
       });
 
+      runner.test('renderGroupPage: 追加日列 + クリック式ソートを含む', () => {
+        const md = renderGroupPage(args);
+        assert.ok(md.includes('"added"'), 'added (追加日) 列ラベル');
+        assert.ok(md.includes('added_at'), 'JSON キー added_at');
+        assert.ok(md.includes('th.onclick'), '列ヘッダクリックハンドラ');
+        assert.ok(md.includes('sortDesc = !sortDesc'), '昇順/降順トグル');
+        assert.ok(md.includes('▼') && md.includes('▲'), 'ソート方向マーカー');
+      });
+
       runner.test('replaceAutoBlock: sentinel 区間だけ差し替え (ユーザー本文保護)', () => {
         const existing = `# Claude\n\nユーザーメモ\n\n${SENTINEL_START}\nOLD\n${SENTINEL_END}\n\n下のメモ\n`;
         const updated = replaceAutoBlock(existing, args);
@@ -2582,6 +2618,7 @@ body
             {
               tweet_id: 'a', url: 'https://x.com/a/status/1', author: null,
               tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              added_at: null,
               engagement_likes: null, engagement_retweets: null, engagement_replies: null,
               x_folder_name: null, vault_path: 'X_Bookmarks/Claude/Tips',
               group: 'Claude', ai_summary: null,
@@ -2589,6 +2626,7 @@ body
             {
               tweet_id: 'b', url: 'https://x.com/b/status/2', author: null,
               tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              added_at: null,
               engagement_likes: null, engagement_retweets: null, engagement_replies: null,
               x_folder_name: null, vault_path: 'X_Bookmarks/UI_LP作成',
               group: 'UI_LP作成', ai_summary: null,
@@ -2628,6 +2666,7 @@ body
             rows: [{
               tweet_id: 'h', url: 'https://x.com/h/status/1', author: null,
               tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              added_at: null,
               engagement_likes: null, engagement_retweets: null, engagement_replies: null,
               x_folder_name: null, vault_path: 'X_Bookmarks/Handwritten',
               group: 'Handwritten', ai_summary: null,
@@ -2650,6 +2689,7 @@ body
             rows: [{
               tweet_id: 'evil', url: 'https://x.com/evil/status/1', author: null,
               tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              added_at: null,
               engagement_likes: null, engagement_retweets: null, engagement_replies: null,
               x_folder_name: null, vault_path: 'X_Bookmarks/../escape',
               group: '..', ai_summary: null,

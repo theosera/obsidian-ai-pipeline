@@ -27,6 +27,13 @@ export interface BookmarkRow {
   x_folder_name: string | null;
   vault_path: string | null;
   saved_at: string;
+  /**
+   * 「追加日」= この tweet が初めて DB に取り込まれた時刻 (ISO 文字列)。
+   * `saved_at` (毎 sync で更新される last-touched) と区別する。
+   * INSERT 時のみ書かれ、ON CONFLICT DO UPDATE では維持される (Dataview の
+   * 「追加日」列のソート基準にする)。
+   */
+  added_at: string | null;
   engagement_likes: number | null;
   engagement_retweets: number | null;
   engagement_replies: number | null;
@@ -89,6 +96,7 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   vault_path TEXT,
   session_id TEXT,
   saved_at TEXT NOT NULL,
+  added_at TEXT,
   engagement_likes INTEGER,
   engagement_retweets INTEGER,
   engagement_replies INTEGER,
@@ -126,6 +134,7 @@ export class XBookmarksDb {
     this.migrateAddNoteTweetText();
     this.migrateAddSessionId();
     this.migrateAddAiSummary();
+    this.migrateAddAddedAt();
   }
 
   /**
@@ -165,20 +174,37 @@ export class XBookmarksDb {
     }
   }
 
+  /**
+   * bookmarks テーブルに added_at 列を idempotent に追加。
+   * 「DB 取り込み初回時刻」を保持し、以降の upsert (`ON CONFLICT DO UPDATE`)
+   * では維持される。既存行 (列追加前のデータ) は saved_at で backfill する
+   * — 過去の saved_at は最後の upsert 時刻だが、追加日の近似として最良。
+   */
+  private migrateAddAddedAt(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'added_at')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN added_at TEXT");
+      this.db.exec("UPDATE bookmarks SET added_at = saved_at WHERE added_at IS NULL");
+    }
+  }
+
   getKnownTweetIds(): Set<string> {
     const rows = this.db.prepare('SELECT tweet_id FROM bookmarks').all() as { tweet_id: string }[];
     return new Set(rows.map(r => r.tweet_id));
   }
 
   upsertBookmark(input: BookmarkUpsertInput): void {
+    // `added_at` は INSERT 時にだけ書く (DO UPDATE の SET 句に入れない =
+    // SQLite は当該列を変更しない)。これで「DB 取り込み初回時刻」が保持される。
+    // `saved_at` は毎 upsert で更新される (last-touched)。
     const stmt = this.db.prepare(`
       INSERT INTO bookmarks (
         tweet_id, url, author, tweet_text, note_tweet_text, created_at,
-        x_folder_name, vault_path, session_id, saved_at,
+        x_folder_name, vault_path, session_id, saved_at, added_at,
         engagement_likes, engagement_retweets, engagement_replies
       ) VALUES (
         @tweet_id, @url, @author, @tweet_text, @note_tweet_text, @created_at,
-        @x_folder_name, @vault_path, @session_id, @saved_at,
+        @x_folder_name, @vault_path, @session_id, @saved_at, @added_at,
         @engagement_likes, @engagement_retweets, @engagement_replies
       )
       ON CONFLICT(tweet_id) DO UPDATE SET
@@ -195,6 +221,7 @@ export class XBookmarksDb {
         engagement_retweets = excluded.engagement_retweets,
         engagement_replies = excluded.engagement_replies
     `);
+    const now = new Date().toISOString();
     stmt.run({
       tweet_id: input.tweetId,
       url: input.url,
@@ -205,7 +232,8 @@ export class XBookmarksDb {
       x_folder_name: input.xFolderName ?? null,
       vault_path: input.vaultPath ?? null,
       session_id: input.sessionId ?? null,
-      saved_at: new Date().toISOString(),
+      saved_at: now,
+      added_at: now,
       engagement_likes: input.engagementLikes ?? null,
       engagement_retweets: input.engagementRetweets ?? null,
       engagement_replies: input.engagementReplies ?? null,
@@ -323,7 +351,7 @@ export class XBookmarksDb {
     return this.db
       .prepare(
         `SELECT tweet_id, url, author, tweet_text, note_tweet_text, created_at,
-                x_folder_name, vault_path, saved_at, ai_summary,
+                x_folder_name, vault_path, saved_at, added_at, ai_summary,
                 engagement_likes, engagement_retweets, engagement_replies
            FROM bookmarks
           ORDER BY COALESCE(created_at, saved_at) DESC`

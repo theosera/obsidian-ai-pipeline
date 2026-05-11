@@ -6,8 +6,13 @@
  * (`<!-- x-bookmarks:auto:start -->` ... `<!-- x-bookmarks:auto:end -->`)
  * で囲って書き出す。再生成時はその間だけを差し替え、外側のユーザー記述は保護する。
  *
- * テーブル列は **常に同じ** ことが重要 (AI 要約プロデューサー未実装でも `summary` 列を確保):
- *   - published / author / tweet / likes / replies / summary / url
+ * テーブル仕様:
+ *   - 列は固定 (AI 要約プロデューサー未実装でも `summary` 列を確保):
+ *     published / added / author / tweet / likes / replies / summary / url
+ *   - 列ヘッダクリックで昇順/降順トグル (Excel / Google Sheets 風)
+ *   - 現ソート列に ▲ / ▼ を表示
+ *   - 初期ソート: `added` (DB 取り込み順) の降順
+ *   - 数値列は数値比較、文字列列は localeCompare
  *
  * `dv.io.load()` で読む JSON は `<base>/.x_bookmarks.json` (vault-relative)。
  */
@@ -39,26 +44,88 @@ export function renderGroupPage(args: RenderArgs): string {
  */
 export function renderAutoBlock(args: RenderArgs): string {
   const safeJsonPath = args.jsonRelativePath.replace(/\\/g, '/');
+  // dataviewjs ブロック内の JS は **ランタイムで Obsidian の dataview コンテキスト
+  // (dv, dv.container, dv.io, dv.current) に依存する**。ここでは文字列として
+  // テンプレ生成しているだけなので、TS の型チェックは通らないがそれで OK。
   const lines = [
     SENTINEL_START,
     '```dataviewjs',
     `const data = JSON.parse(await dv.io.load("${safeJsonPath}"));`,
     'const folder = dv.current().file.folder.split("/").pop();',
-    'const rows = (data.rows || [])',
-    '  .filter(r => r.group === folder)',
-    '  .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));',
-    'dv.table(',
-    '  ["published", "author", "tweet", "likes", "replies", "summary", "url"],',
-    '  rows.map(r => [',
-    '    (r.created_at || "").slice(0, 10),',
-    '    r.author || "",',
-    '    (r.tweet_text || "").slice(0, 280),',
-    '    r.engagement_likes ?? 0,',
-    '    r.engagement_replies ?? 0,',
-    '    r.ai_summary || "",',
-    '    r.url ? `[link](${r.url})` : "",',
-    '  ]),',
-    ');',
+    'const rows = (data.rows || []).filter(r => r.group === folder);',
+    '',
+    '// 列定義 — key は JSON のフィールド名、numeric は数値比較フラグ。',
+    '// 列追加時は columns[] に push するだけ (テンプレ再描画は自動)。',
+    'const columns = [',
+    '  { key: "created_at",         label: "published", numeric: false, render: r => (r.created_at || "").slice(0, 10) },',
+    '  { key: "added_at",           label: "added",     numeric: false, render: r => (r.added_at   || "").slice(0, 10) },',
+    '  { key: "author",             label: "author",    numeric: false, render: r => r.author || "" },',
+    '  { key: "tweet_text",         label: "tweet",     numeric: false, render: r => (r.tweet_text || "").slice(0, 280) },',
+    '  { key: "engagement_likes",   label: "likes",     numeric: true,  render: r => r.engagement_likes ?? 0 },',
+    '  { key: "engagement_replies", label: "replies",   numeric: true,  render: r => r.engagement_replies ?? 0 },',
+    '  { key: "ai_summary",         label: "summary",   numeric: false, render: r => r.ai_summary || "" },',
+    '  { key: "url",                label: "url",       numeric: false, render: r => r.url ? "link" : "" },',
+    '];',
+    '',
+    '// 初期ソート: 追加日の降順 (新しいものを上に)',
+    'let sortKey = "added_at";',
+    'let sortDesc = true;',
+    '',
+    'function compare(a, b, col) {',
+    '  const av = a[col.key];',
+    '  const bv = b[col.key];',
+    '  if (av == null && bv == null) return 0;',
+    '  if (av == null) return 1;',
+    '  if (bv == null) return -1;',
+    '  if (col.numeric) return Number(av) - Number(bv);',
+    '  return String(av).localeCompare(String(bv));',
+    '}',
+    '',
+    'const root = dv.container.createDiv({ cls: "x-bookmarks-sortable" });',
+    'function render() {',
+    '  root.empty();',
+    '  const col = columns.find(c => c.key === sortKey) || columns[0];',
+    '  const sorted = [...rows].sort((a, b) => {',
+    '    const cmp = compare(a, b, col);',
+    '    return sortDesc ? -cmp : cmp;',
+    '  });',
+    '  const table = root.createEl("table", { cls: "dataview" });',
+    '  table.style.width = "100%";',
+    '  const thead = table.createEl("thead");',
+    '  const headTr = thead.createEl("tr");',
+    '  for (const c of columns) {',
+    '    const arrow = c.key === sortKey ? (sortDesc ? " ▼" : " ▲") : "";',
+    '    const th = headTr.createEl("th", { text: c.label + arrow });',
+    '    th.style.cursor = "pointer";',
+    '    th.style.userSelect = "none";',
+    '    th.onclick = () => {',
+    '      if (c.key === sortKey) sortDesc = !sortDesc;',
+    '      else { sortKey = c.key; sortDesc = true; }',
+    '      render();',
+    '    };',
+    '  }',
+    '  const tbody = table.createEl("tbody");',
+    '  for (const r of sorted) {',
+    '    const tr = tbody.createEl("tr");',
+    '    for (const c of columns) {',
+    '      const td = tr.createEl("td");',
+    '      if (c.key === "url" && r.url) {',
+    '        const a = td.createEl("a", { text: "link", href: r.url });',
+    '        a.setAttribute("target", "_blank");',
+    '        a.setAttribute("rel", "noopener");',
+    '      } else if (c.key === "tweet_text") {',
+    '        td.setText(String(c.render(r)));',
+    '        td.style.maxWidth = "32em";',
+    '        td.style.whiteSpace = "normal";',
+    '      } else {',
+    '        td.setText(String(c.render(r)));',
+    '      }',
+    '    }',
+    '  }',
+    '  // 件数表示',
+    '  root.createEl("div", { text: `${sorted.length} 件`, cls: "x-bookmarks-count" });',
+    '}',
+    'render();',
     '```',
     SENTINEL_END,
   ];

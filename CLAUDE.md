@@ -81,6 +81,13 @@ Key facts to remember:
   dataviewjs template lives in `x_group_page_template.ts`; group pages
   use sentinel-bounded regeneration so user prose above/below the
   auto block is preserved.
+- The Dataview table renders a **custom HTML `<table>`** (not
+  `dv.table()`) so column headers are clickable for ascending/descending
+  sort (Excel / Google Sheets style). Default sort: `added_at` desc.
+- SQLite has both `saved_at` (last-touched, updated every upsert) and
+  `added_at` (first-seen, **preserved on `ON CONFLICT DO UPDATE`** —
+  do NOT add `added_at` to the SET clause). The Dataview "added" column
+  is bound to `added_at`.
 - `ai_summary` column is reserved in both the JSON schema and the
   Dataview template, but the **producer logic is deferred** to a
   separate PR (user reserved the "logic discussion"). Do not populate

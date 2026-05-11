@@ -25,6 +25,8 @@ export interface ExportedBookmarkRow {
   note_tweet_text: string | null;
   created_at: string | null;
   saved_at: string;
+  /** DB 取り込み初回時刻。Dataview の「追加日」列のソート基準。 */
+  added_at: string | null;
   engagement_likes: number | null;
   engagement_retweets: number | null;
   engagement_replies: number | null;
@@ -78,6 +80,7 @@ interface RawRow {
   note_tweet_text: string | null;
   created_at: string | null;
   saved_at: string;
+  added_at: string | null;
   engagement_likes: number | null;
   engagement_retweets: number | null;
   engagement_replies: number | null;
@@ -106,6 +109,7 @@ export function buildExportPayload(options: ExportOptions = {}): ExportedJson {
     note_tweet_text: r.note_tweet_text,
     created_at: r.created_at,
     saved_at: r.saved_at,
+    added_at: r.added_at,
     engagement_likes: r.engagement_likes,
     engagement_retweets: r.engagement_retweets,
     engagement_replies: r.engagement_replies,
