@@ -3,12 +3,11 @@
  * 文字列値は <str len=N> に置換、配列は先頭2件まで、URL は host のみに丸める。
  *
  * 実行:
- *   tsx inspect_folder_schema.ts <FOLDER_ID>
+ *   pnpm tsx --env-file=.env inspect_folder_schema.ts <FOLDER_ID>
  *
  * .env から X_CLIENT_ID / X_CLIENT_SECRET を読み込み、
  * x_tokens.json の access_token を auto-refresh して使用する。
  */
-import 'dotenv/config';
 import { getValidAccessToken, xGet } from './x_bookmarks_api';
 
 const USER_ID = '159735604';
