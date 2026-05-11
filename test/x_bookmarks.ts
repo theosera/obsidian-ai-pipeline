@@ -696,17 +696,22 @@ export async function run(): Promise<TestSuiteResult> {
       assert.ok(u.searchParams.get('media.fields')?.includes('variants'));
     });
 
-    runner.test('folder bookmarks URL にも note_tweet / media が含まれる', () => {
+    runner.test('folder bookmarks URL は索引専用でクエリパラメータを持たない', () => {
+      // /folders/:id は X API 側で id/folder_id 以外の query を 400 で拒否する。
+      // 本文は buildTweetsLookupUrl 経由でハイドレートする。
       const u = new URL(apiInternals.buildFolderBookmarksUrl('12345', '888'));
+      assert.strictEqual(u.pathname, '/2/users/12345/bookmarks/folders/888');
+      assert.strictEqual(u.search, '');
+    });
+
+    runner.test('tweets lookup URL は ids と本文系 expansions を持つ', () => {
+      const u = new URL(apiInternals.buildTweetsLookupUrl(['111', '222']));
+      assert.strictEqual(u.pathname, '/2/tweets');
+      assert.strictEqual(u.searchParams.get('ids'), '111,222');
       assert.ok(u.searchParams.get('tweet.fields')?.includes('note_tweet'));
       assert.ok(u.searchParams.get('expansions')?.includes('attachments.media_keys'));
       assert.ok(u.searchParams.get('media.fields')?.includes('variants'));
-    });
-
-    runner.test('pagination_token が与えられれば付与される', () => {
-      const u = new URL(apiInternals.buildFolderBookmarksUrl('12345', '888', 'tokenXYZ'));
-      assert.strictEqual(u.pathname, '/2/users/12345/bookmarks/folders/888');
-      assert.strictEqual(u.searchParams.get('pagination_token'), 'tokenXYZ');
+      assert.ok(u.searchParams.get('user.fields')?.includes('username'));
     });
 
     runner.test('folders URL は max_results のみ', () => {
@@ -1874,26 +1879,28 @@ export async function run(): Promise<TestSuiteResult> {
           if (url.includes('/users/me')) {
             return respond({ data: { id: 'u1', username: 'tester' } });
           }
+          // 索引: フォルダ → ツイートID列のみ
           if (url.includes('/bookmarks/folders/fa')) {
+            return respond({ data: [{ id: 'T_A1' }] });
+          }
+          if (url.includes('/bookmarks/folders/fb')) {
+            return respond({ data: [{ id: 'T_B1' }] });
+          }
+          if (url.includes('/bookmarks/folders')) {
+            // フォルダ一覧 (他フォルダ列挙で叩かれる)
+            return respond({
+              data: [{ id: 'fa', name: 'FolderA' }, { id: 'fb', name: 'FolderB' }],
+            });
+          }
+          // ハイドレーション: /2/tweets?ids=... (folder A 由来 ID のみ来る想定)
+          if (url.includes('/tweets?')) {
             return respond({
               data: [{ id: 'T_A1', text: 'in folder A', author_id: 'u1' }],
               includes: { users: [{ id: 'u1', name: 'A', username: 'a' }] },
             });
           }
-          if (url.includes('/bookmarks/folders/fb')) {
-            return respond({
-              data: [{ id: 'T_B1', text: 'in folder B', author_id: 'u1' }],
-              includes: { users: [{ id: 'u1', name: 'A', username: 'a' }] },
-            });
-          }
-          if (url.includes('/bookmarks/folders')) {
-            // フォルダ一覧 (3a の他フォルダ列挙で叩かれる)
-            return respond({
-              data: [{ id: 'fa', name: 'FolderA' }, { id: 'fb', name: 'FolderB' }],
-            });
-          }
           if (url.includes('/bookmarks')) {
-            // /users/:id/bookmarks (Unfiled 抽出元)
+            // /users/:id/bookmarks (Unfiled 抽出元) は従来通り本文込み
             return respond({
               data: [
                 { id: 'T_A1', text: 'in folder A', author_id: 'u1' },
@@ -1958,7 +1965,12 @@ export async function run(): Promise<TestSuiteResult> {
             status: 200, headers: { 'content-type': 'application/json' },
           });
           if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 'tester' } });
+          // 索引: ID 列のみ
           if (url.includes('/bookmarks/folders/fa')) {
+            return respond({ data: [{ id: 'T_A1' }] });
+          }
+          // ハイドレーション
+          if (url.includes('/tweets?')) {
             return respond({
               data: [{ id: 'T_A1', text: 'a', author_id: 'u1' }],
               includes: { users: [{ id: 'u1', username: 'a', name: 'A' }] },
