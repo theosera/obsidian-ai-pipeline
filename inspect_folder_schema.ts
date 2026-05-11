@@ -13,7 +13,10 @@ import { getValidAccessToken, xGet } from './x_bookmarks_api';
 const USER_ID = '159735604';
 
 function redact(o: unknown): unknown {
-  if (Array.isArray(o)) return o.slice(0, 2).map(redact);
+  if (Array.isArray(o)) {
+    const head = o.slice(0, 2).map(redact);
+    return o.length > 2 ? [...head, `<...${o.length - 2} more items, total=${o.length}>`] : head;
+  }
   if (o && typeof o === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(o)) {
@@ -51,36 +54,37 @@ async function main() {
 
   const accessToken = await getValidAccessToken(clientId, clientSecret);
 
-  // 1) フォルダのメタデータ単独取得 (path 形式)
-  const metaUrl = new URL(`https://api.x.com/2/users/${USER_ID}/bookmarks/folders/${folderId}`);
-  console.log('### [A] folder meta (path form, no extra params)');
-  const meta = await xGet<unknown>(metaUrl.toString(), {
-    accessToken,
-    clientId,
-    clientSecret,
-    fetchFn: fetch,
-  });
-  console.log(JSON.stringify(redact(meta), null, 2));
+  const ctx = { accessToken, clientId, clientSecret, fetchFn: fetch };
 
-  // 2) フォルダ別ブックマーク (query 形式: folder_id をクエリで渡す)
-  const listUrl = new URL(`https://api.x.com/2/users/${USER_ID}/bookmarks`);
-  listUrl.searchParams.set('folder_id', folderId);
-  listUrl.searchParams.set('max_results', '5');
-  listUrl.searchParams.set(
+  // [A] /bookmarks/folders/{id} → ツイートID一覧 (前回の結果から判明)
+  const idsUrl = new URL(`https://api.x.com/2/users/${USER_ID}/bookmarks/folders/${folderId}`);
+  console.log('### [A] folder → tweet IDs (no params)');
+  const idsRes = await xGet<{ data?: { id: string }[]; meta?: unknown }>(idsUrl.toString(), ctx);
+  console.log(JSON.stringify(redact(idsRes), null, 2));
+
+  // [A2] meta だけ生で覗く (pagination_token などがあるか)
+  console.log('\n### [A2] raw meta object (un-redacted, IDs only schema)');
+  console.log(JSON.stringify({ keys: Object.keys(idsRes), meta: idsRes.meta ?? null }, null, 2));
+
+  const tweetIds = (idsRes.data ?? []).map((d) => d.id).slice(0, 5);
+  if (tweetIds.length === 0) {
+    console.log('No tweet IDs returned; skipping hydration probe.');
+    return;
+  }
+
+  // [C] /2/tweets?ids=... でハイドレーション
+  const hydrateUrl = new URL('https://api.x.com/2/tweets');
+  hydrateUrl.searchParams.set('ids', tweetIds.join(','));
+  hydrateUrl.searchParams.set(
     'tweet.fields',
     'id,text,created_at,author_id,note_tweet,attachments,entities,referenced_tweets'
   );
-  listUrl.searchParams.set('expansions', 'author_id,attachments.media_keys');
-  listUrl.searchParams.set('user.fields', 'id,name,username');
-  listUrl.searchParams.set('media.fields', 'media_key,type,url,preview_image_url,variants');
-  console.log('\n### [B] bookmarks?folder_id=...');
-  const list = await xGet<unknown>(listUrl.toString(), {
-    accessToken,
-    clientId,
-    clientSecret,
-    fetchFn: fetch,
-  });
-  console.log(JSON.stringify(redact(list), null, 2));
+  hydrateUrl.searchParams.set('expansions', 'author_id,attachments.media_keys');
+  hydrateUrl.searchParams.set('user.fields', 'id,name,username');
+  hydrateUrl.searchParams.set('media.fields', 'media_key,type,url,preview_image_url,variants');
+  console.log('\n### [C] hydrate via /2/tweets?ids=...');
+  const hydrated = await xGet<unknown>(hydrateUrl.toString(), ctx);
+  console.log(JSON.stringify(redact(hydrated), null, 2));
 }
 
 main().catch((err) => {
