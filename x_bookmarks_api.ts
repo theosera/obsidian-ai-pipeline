@@ -2,9 +2,14 @@
  * X API v2 ブックマーク取得モジュール (Playwright スクレイパからの置換)。
  *
  * 公式エンドポイント:
- *   GET /2/users/:id/bookmarks                        — 全ブックマーク
+ *   GET /2/users/:id/bookmarks                        — 全ブックマーク (本文込み, ページング有)
  *   GET /2/users/:id/bookmarks/folders                — フォルダ一覧
- *   GET /2/users/:id/bookmarks/folders/:folder_id     — フォルダ内ポスト
+ *   GET /2/users/:id/bookmarks/folders/:folder_id     — フォルダ内ツイートID列のみ
+ *                                                       (params 不可, 本文無し)
+ *   GET /2/tweets?ids=...                             — ID から本文をハイドレート (最大100件/req)
+ *
+ *   フォルダ別取り込みは「索引 (folders/:id) → 本文 (tweets?ids=)」の 2 段。
+ *   詳細経緯は docs/x_bookmarks_api_research.md
  *
  * 認可: OAuth 2.0 Authorization Code Flow with PKCE
  *   scope: tweet.read users.read bookmark.read offline.access
@@ -12,13 +17,14 @@
  *   期限切れ時は refresh_token で自動更新。
  *
  * コスト配慮:
- *   - pay-per-use。同一 UTC 日内の同 Post 再取得は dedup されるが、
- *     DB の known_tweet_ids に当たったら早期終了して API コールを抑える。
+ *   - pay-per-use。skipKnownIds で DB 既知の ID は索引段階で除外し、
+ *     本文ハイドレーション (/2/tweets) を呼ばない。
  *
  * レート制限:
- *   /bookmarks         — 180 req / 15分
- *   /bookmarks/folders — 50 req / 15分
- *   /bookmarks/folders/{id} — 50 req / 15分
+ *   /bookmarks                — 180 req / 15分
+ *   /bookmarks/folders        — 50 req / 15分
+ *   /bookmarks/folders/{id}   — 50 req / 15分
+ *   /tweets                   — 300 req / 15分 (user)
  */
 import fs from 'fs';
 import path from 'path';
@@ -474,15 +480,73 @@ function buildBookmarksUrl(userId: string, paginationToken?: string): string {
   return url.toString();
 }
 
-function buildFolderBookmarksUrl(userId: string, folderId: string, paginationToken?: string): string {
-  const url = new URL(`${API_BASE}/users/${userId}/bookmarks/folders/${folderId}`);
-  url.searchParams.set('max_results', '100');
+// 索引専用エンドポイント。X API はクエリパラメータを一切受け付けず
+// `{ data: [{ id }, ...] }` (ツイートID列のみ) を返す。
+// 本文・著者・メディアは buildTweetsLookupUrl 経由でハイドレートする。
+// 参考: docs/x_bookmarks_api_research.md
+function buildFolderBookmarksUrl(userId: string, folderId: string): string {
+  return `${API_BASE}/users/${userId}/bookmarks/folders/${folderId}`;
+}
+
+// /2/tweets?ids=... は 1 リクエスト最大 100 件。
+// expansions / *.fields は通常の bookmarks 取得と揃えておく。
+function buildTweetsLookupUrl(ids: string[]): string {
+  const url = new URL(`${API_BASE}/tweets`);
+  url.searchParams.set('ids', ids.join(','));
   url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities,note_tweet,attachments');
   url.searchParams.set('expansions', 'author_id,attachments.media_keys');
   url.searchParams.set('user.fields', 'username,name');
   url.searchParams.set('media.fields', 'type,duration_ms,preview_image_url,variants,alt_text');
-  if (paginationToken) url.searchParams.set('pagination_token', paginationToken);
   return url.toString();
+}
+
+// 100 件ごとにチャンクして /2/tweets?ids= でハイドレート。
+// 戻り値は通常の BookmarksResponse 形式 (data + includes) にマージ。
+const TWEETS_LOOKUP_CHUNK = 100;
+
+async function hydrateTweetsByIds(
+  ids: string[],
+  ctx: { accessToken: string; clientId: string; clientSecret: string; fetchFn: typeof fetch; onRefreshed?: (t: string) => void }
+): Promise<BookmarksResponse> {
+  if (ids.length === 0) return { data: [], includes: { users: [], media: [] } };
+  const merged: BookmarksResponse = { data: [], includes: { users: [], media: [] } };
+  const seenUsers = new Set<string>();
+  const seenMedia = new Set<string>();
+  for (let i = 0; i < ids.length; i += TWEETS_LOOKUP_CHUNK) {
+    const chunk = ids.slice(i, i + TWEETS_LOOKUP_CHUNK);
+    const page = await xGet<BookmarksResponse>(buildTweetsLookupUrl(chunk), ctx);
+    if (page.data) merged.data!.push(...page.data);
+    for (const u of page.includes?.users ?? []) {
+      if (!seenUsers.has(u.id)) { seenUsers.add(u.id); merged.includes!.users!.push(u); }
+    }
+    for (const m of page.includes?.media ?? []) {
+      if (!seenMedia.has(m.media_key)) { seenMedia.add(m.media_key); merged.includes!.media!.push(m); }
+    }
+  }
+  return merged;
+}
+
+async function fetchFolderTweetIds(
+  userId: string,
+  folderId: string,
+  ctx: { accessToken: string; clientId: string; clientSecret: string; fetchFn: typeof fetch; onRefreshed?: (t: string) => void }
+): Promise<string[]> {
+  // 実測 (11件フォルダ) では meta 自体返らず、pagination_token 以外の query は
+  // 「[id, folder_id] のみ受付」400 で弾かれた。pagination_token の可否は未検証。
+  // → meta.next_token が返ったら警告して可視化する (Codex PR #38 review への対応)。
+  const res = await xGet<{ data?: { id: string }[]; meta?: { next_token?: string } }>(
+    buildFolderBookmarksUrl(userId, folderId),
+    ctx
+  );
+  if (res.meta?.next_token) {
+    console.warn(
+      `🔖 [X API] WARNING: folder ${folderId} returned meta.next_token but ` +
+      `/bookmarks/folders/{id} ページング実装は未対応 (X API がクエリ全般を拒否するため未検証)。` +
+      `このフォルダのブックマークが欠落している可能性があります。` +
+      `docs/x_api_v2_gotchas.md の「フォルダ索引のページング」項目を参照してください。`
+    );
+  }
+  return (res.data ?? []).map(d => d.id);
 }
 
 function buildFoldersUrl(userId: string, paginationToken?: string): string {
@@ -611,54 +675,34 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
     if (otherFolders.length > 0) {
       console.log(
         `🔖 [X API] _Unfiled 判定のため他 ${otherFolders.length} フォルダの ID を収集します ` +
-        `(本文は results に含めません)`
+        `(本文ハイドレーションはスキップ)`
       );
       for (const f of otherFolders) {
-        let pToken: string | undefined;
-        do {
-          const page = await xGet<BookmarksResponse>(
-            buildFolderBookmarksUrl(userId, f.id, pToken),
-            ctx
-          );
-          const bms = expandBookmarksPage(page, f.name, f.id);
-          for (const bm of bms) folderTweetIds.add(bm.xTweetId);
-          pToken = page.meta?.next_token;
-        } while (pToken);
+        const ids = await fetchFolderTweetIds(userId, f.id, ctx);
+        for (const id of ids) folderTweetIds.add(id);
       }
     }
   }
 
-  // 3. フォルダ毎にページング。3 件連続で既知ツイートなら早期終了。
+  // 3. フォルダ毎: 索引で全 ID 取得 → 既知除外 → /2/tweets でハイドレート。
+  //    (folders/:id はページング無し / params 不可。詳細 docs/x_bookmarks_api_research.md)
   for (const folder of folders) {
     if (all.length >= maxItems) break;
-    let token: string | undefined;
-    let consecutiveKnown = 0;
-    let folderCount = 0;
-    do {
-      if (all.length >= maxItems) break;
-      const page = await xGet<BookmarksResponse>(
-        buildFolderBookmarksUrl(userId, folder.id, token),
-        ctx
-      );
-      const bookmarks = expandBookmarksPage(page, folder.name, folder.id);
-      for (const bm of bookmarks) {
-        folderTweetIds.add(bm.xTweetId);
-        if (skipKnownIds.has(bm.xTweetId)) {
-          consecutiveKnown += 1;
-          if (consecutiveKnown >= 3) {
-            token = undefined; // ページング打ち切り
-            break;
-          }
-          continue;
-        }
-        consecutiveKnown = 0;
-        all.push(bm);
-        folderCount += 1;
-        if (all.length >= maxItems) break;
-      }
-      if (token !== undefined) token = page.meta?.next_token;
-    } while (token);
-    console.log(`🔖 [X API]   "${folder.name}": ${folderCount} 件 (新規)`);
+    const allIds = await fetchFolderTweetIds(userId, folder.id, ctx);
+    for (const id of allIds) folderTweetIds.add(id);
+    const newIds = allIds.filter(id => !skipKnownIds.has(id));
+    const remaining = maxItems - all.length;
+    const targetIds = remaining < newIds.length ? newIds.slice(0, remaining) : newIds;
+    if (targetIds.length === 0) {
+      console.log(`🔖 [X API]   "${folder.name}": 0 件 (新規) / index=${allIds.length}`);
+      continue;
+    }
+    const page = await hydrateTweetsByIds(targetIds, ctx);
+    const bookmarks = expandBookmarksPage(page, folder.name, folder.id);
+    all.push(...bookmarks);
+    console.log(
+      `🔖 [X API]   "${folder.name}": ${bookmarks.length} 件 (新規) / index=${allIds.length}`
+    );
   }
 
   // 4. Unfiled (All Bookmarks にあるがどのフォルダにも無いもの)
@@ -754,5 +798,6 @@ export const __test = {
   isTokenExpired,
   buildBookmarksUrl,
   buildFolderBookmarksUrl,
+  buildTweetsLookupUrl,
   buildFoldersUrl,
 };
