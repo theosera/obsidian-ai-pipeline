@@ -51,24 +51,36 @@ async function main() {
 
   const accessToken = await getValidAccessToken(clientId, clientSecret);
 
-  const url = new URL(`https://api.x.com/2/users/${USER_ID}/bookmarks/folders/${folderId}`);
-  url.searchParams.set('max_results', '5');
-  url.searchParams.set(
-    'tweet.fields',
-    'id,text,created_at,author_id,note_tweet,attachments,entities,referenced_tweets'
-  );
-  url.searchParams.set('expansions', 'author_id,attachments.media_keys');
-  url.searchParams.set('user.fields', 'id,name,username');
-  url.searchParams.set('media.fields', 'media_key,type,url,preview_image_url,variants');
-
-  const res = await xGet<unknown>(url.toString(), {
+  // 1) フォルダのメタデータ単独取得 (path 形式)
+  const metaUrl = new URL(`https://api.x.com/2/users/${USER_ID}/bookmarks/folders/${folderId}`);
+  console.log('### [A] folder meta (path form, no extra params)');
+  const meta = await xGet<unknown>(metaUrl.toString(), {
     accessToken,
     clientId,
     clientSecret,
     fetchFn: fetch,
   });
+  console.log(JSON.stringify(redact(meta), null, 2));
 
-  console.log(JSON.stringify(redact(res), null, 2));
+  // 2) フォルダ別ブックマーク (query 形式: folder_id をクエリで渡す)
+  const listUrl = new URL(`https://api.x.com/2/users/${USER_ID}/bookmarks`);
+  listUrl.searchParams.set('folder_id', folderId);
+  listUrl.searchParams.set('max_results', '5');
+  listUrl.searchParams.set(
+    'tweet.fields',
+    'id,text,created_at,author_id,note_tweet,attachments,entities,referenced_tweets'
+  );
+  listUrl.searchParams.set('expansions', 'author_id,attachments.media_keys');
+  listUrl.searchParams.set('user.fields', 'id,name,username');
+  listUrl.searchParams.set('media.fields', 'media_key,type,url,preview_image_url,variants');
+  console.log('\n### [B] bookmarks?folder_id=...');
+  const list = await xGet<unknown>(listUrl.toString(), {
+    accessToken,
+    clientId,
+    clientSecret,
+    fetchFn: fetch,
+  });
+  console.log(JSON.stringify(redact(list), null, 2));
 }
 
 main().catch((err) => {
