@@ -12,7 +12,8 @@ import { readOneTabFile } from './input_onetab';
 import { prepareXBookmarks } from './input_x_bookmarks';
 import { processEntries } from './processor';
 import { generateReport } from './report';
-import { interactiveReviewLoop } from './interactive';
+import { interactiveReviewLoop, regenerateXBookmarkArtifacts } from './interactive';
+import { closeDb } from '../x_bookmarks_db';
 import { askQuestion } from './prompt';
 import { listFolders } from '../x_bookmarks_api';
 import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
@@ -135,6 +136,22 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
   writeFailureLog(failures, INTERNAL_LOGS_DIR, sourceTag, dateStr);
 
   if (results.length === 0) {
+    // `--x-resummarize-all` の本来の用途 (モデル / プロンプト変更後の既存要約の
+    // 全件再生成) では「新規 0 件 + 全件再要約」が常態のため、ここで早期 return
+    // すると flag が完全 no-op になる。X ブックマークモード + resummarizeAll の
+    // 場合だけ regen パスを直接呼んで JSON / group ページまで一気通貫で更新する。
+    if (args.xBookmarks && args.xResummarizeAll) {
+      console.log('\n🔄 新規ブックマーク 0 件 — --x-resummarize-all で既存要約を再生成します。');
+      try {
+        await regenerateXBookmarkArtifacts({
+          xSummary: config?.xSummary,
+          resummarizeAll: true,
+        });
+      } finally {
+        closeDb();
+      }
+      return;
+    }
     console.log('\nNo items were successfully processed. Exiting.');
     return;
   }

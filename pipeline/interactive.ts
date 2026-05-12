@@ -108,43 +108,66 @@ async function saveApprovedResults(
   }
 
   // X ブックマークが含まれていれば AI 要約 → JSON ビュー → group ページ更新の順で実行。
-  // 要約を先に走らせるのは JSON エクスポート時点で summary 列が埋まっているように
-  // するため (Dataview が次に開かれた瞬間に新しい要約が反映される)。
-  if (xBookmarkCount > 0) {
-    try {
-      // xSummary は通常 `runXSummaryWizard` 経由で必ず埋まっているが、テストや
-      // 直叩きで未指定の場合は DEFAULT_X_SUMMARY (= cloud Anthropic Haiku 4.5)
-      // にフォールバックして classifier 側の AI_PROVIDER とは独立した動作を保つ。
-      const xSummary = options.xSummary ?? DEFAULT_X_SUMMARY;
-      const stats = await summarizePendingBookmarks({
-        resummarizeAll: options.resummarizeAll,
-        provider: xSummary.provider,
-        model: xSummary.model,
-      });
-      if (stats.pending > 0) {
-        console.log(`🤖 AI 要約: ${stats.succeeded}/${stats.pending} 件成功, ${stats.failed} 件失敗`);
-      }
-    } catch (e: any) {
-      console.warn(`⚠️  AI 要約失敗 (続行): ${e.message}`);
-    }
-
-    try {
-      const { jsonPath, pages } = exportAndWriteAllGroupPages();
-      console.log(`🗂  JSON ビュー更新: ${jsonPath}`);
-      const summary = pages.reduce<Record<string, number>>((acc, p) => {
-        acc[p.action] = (acc[p.action] ?? 0) + 1;
-        return acc;
-      }, {});
-      const summaryStr = Object.entries(summary).map(([k, v]) => `${k}=${v}`).join(', ');
-      console.log(`📄 Group ページ: ${pages.length} 件 (${summaryStr})`);
-    } catch (e: any) {
-      console.warn(`⚠️  JSON / group ページ更新失敗 (続行): ${e.message}`);
-    }
+  // `--x-resummarize-all` 指定時は、新規 upsert が 0 件でも既存 ai_summary を
+  // 再生成する必要があるため `xBookmarkCount === 0` でも走らせる (本フラグの本来の
+  // 用途 = モデル/プロンプト変更後の再生成では「新規 0 件 + 全件再要約」が常態)。
+  if (xBookmarkCount > 0 || options.resummarizeAll) {
+    await regenerateXBookmarkArtifacts({
+      xSummary: options.xSummary,
+      resummarizeAll: options.resummarizeAll,
+    });
   }
 
   console.log('🎉 All files saved.');
   updateVaultTreeSnapshot(); // 新規作成フォルダをスナップショットに反映
   closeDb();
+}
+
+/**
+ * X ブックマークの後処理セット (AI 要約 → JSON ビュー → group ページ).
+ *
+ * runner.ts の「新規 0 件 + `--x-resummarize-all`」パスからも直接呼ばれるため、
+ * `saveApprovedResults` の中身から分離して公開している。要約を先に走らせるのは
+ * JSON エクスポート時点で `ai_summary` 列が埋まっているようにするため (Dataview
+ * が次に開かれた瞬間に新しい要約が反映される)。
+ *
+ * いずれの段階も try/catch で個別に握り潰す: best-effort で動かし、ベスト
+ * エフォートで失敗ログだけ残して上位パイプを止めない方針 (要約失敗で JSON 更新
+ * まで失われると Dataview 画面が古いままになるため)。
+ */
+export async function regenerateXBookmarkArtifacts(
+  options: { xSummary?: XSummaryConfig; resummarizeAll?: boolean } = {}
+): Promise<void> {
+  // xSummary は通常 `runXSummaryWizard` 経由で必ず埋まっているが、テストや
+  // 直叩きで未指定の場合は DEFAULT_X_SUMMARY (= cloud Anthropic Haiku 4.5)
+  // にフォールバックして classifier 側の AI_PROVIDER とは独立した動作を保つ。
+  const xSummary = options.xSummary ?? DEFAULT_X_SUMMARY;
+
+  try {
+    const stats = await summarizePendingBookmarks({
+      resummarizeAll: options.resummarizeAll,
+      provider: xSummary.provider,
+      model: xSummary.model,
+    });
+    if (stats.pending > 0) {
+      console.log(`🤖 AI 要約: ${stats.succeeded}/${stats.pending} 件成功, ${stats.failed} 件失敗`);
+    }
+  } catch (e: any) {
+    console.warn(`⚠️  AI 要約失敗 (続行): ${e.message}`);
+  }
+
+  try {
+    const { jsonPath, pages } = exportAndWriteAllGroupPages();
+    console.log(`🗂  JSON ビュー更新: ${jsonPath}`);
+    const summary = pages.reduce<Record<string, number>>((acc, p) => {
+      acc[p.action] = (acc[p.action] ?? 0) + 1;
+      return acc;
+    }, {});
+    const summaryStr = Object.entries(summary).map(([k, v]) => `${k}=${v}`).join(', ');
+    console.log(`📄 Group ページ: ${pages.length} 件 (${summaryStr})`);
+  } catch (e: any) {
+    console.warn(`⚠️  JSON / group ページ更新失敗 (続行): ${e.message}`);
+  }
 }
 
 async function editOneClassification(

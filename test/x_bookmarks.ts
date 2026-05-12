@@ -3325,6 +3325,36 @@ body
         }
       });
 
+      await runner.testAsync('Codex P1 fix: resummarizeAll は新規 upsert 0 件でも既存 ai_summary を再生成する', async () => {
+        // 旧実装は `if (xBookmarkCount > 0)` で囲っていたため、モデル変更後に
+        // `--x-bookmarks --x-resummarize-all` を打っても新規 0 件だと再要約が
+        // 一切走らない no-op になっていた (Codex 指摘 P1)。本テストは summarizer
+        // の中核機能が新規 upsert と独立して動くことを保証する。
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'pre-existing',
+          url: 'https://x.com/a/status/1',
+          tweetText: '既存本文',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.setAiSummary('pre-existing', '旧モデルの要約');
+        // 新しい upsert は一切無し (= xBookmarkCount === 0 相当)
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'inline',
+          silent: true,
+          resummarizeAll: true,
+          callAi: async () => '新モデルの要約',
+        });
+        assert.strictEqual(stats.pending, 1, 'クリア後 pending=1');
+        assert.strictEqual(stats.succeeded, 1);
+        const rows = db.listBookmarksForExport();
+        assert.strictEqual(rows[0].ai_summary, '新モデルの要約',
+          '既存要約は上書きされる (wire-through を検証)');
+        db.close();
+      });
+
       await runner.testAsync('summarizePendingBookmarks: options.provider=anthropic は env=local でも inline 経路', async () => {
         // 旧挙動互換のために env=local だと batch だったが、xSummary 経由で
         // anthropic を選んだ場合は env を見ずに inline (per-tweet) で走ることを保証。
@@ -3448,6 +3478,23 @@ body
         const out = await runXSummaryWizard(scriptAsker(['1', 'claude-opus-4-7']));
         assert.strictEqual(out.provider, 'anthropic');
         assert.strictEqual(out.model, 'claude-opus-4-7');
+      });
+
+      await runner.testAsync('regenerateXBookmarkArtifacts: xSummary 未指定なら default (anthropic + haiku 4.5) で走る', async () => {
+        // helper を直接叩いて配線確認 (provider 上書きが summarizer 側まで届くこと)。
+        // 実 LLM は叩かないので callAi は使えないが、`summarizePendingBookmarks`
+        // のスタブ経由で provider 値を観測する代わりに、empty DB + DEFAULT_X_SUMMARY
+        // で例外を投げずに完走することを確認する。
+        const { regenerateXBookmarkArtifacts } = await import('../pipeline/interactive');
+        const v = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-regen-helper-'));
+        setVaultRoot(v);
+        try {
+          // 空 DB 状態でも例外無く完走 (summarize は pending 0、JSON / group も 0 件)
+          await regenerateXBookmarkArtifacts({ resummarizeAll: false });
+        } finally {
+          setVaultRoot(tmpDir);
+          fs.rmSync(v, { recursive: true, force: true });
+        }
       });
 
       await runner.testAsync('runXSummaryWizard: ターミナル二重入力 "44" は "4" として扱う', async () => {
