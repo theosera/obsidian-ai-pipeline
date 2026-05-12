@@ -37,6 +37,7 @@ import {
   pickVideoMedia,
   renderKeyFramesSection,
 } from './x_video_frames';
+import type { PartialFolderRecord } from './x_bookmarks_partial';
 
 const API_BASE = 'https://api.x.com/2';
 const TOKEN_ENDPOINT = `${API_BASE}/oauth2/token`;
@@ -93,6 +94,13 @@ export interface FetchOptions {
   includeUnfiled?: boolean;
   /** テストから fetch をモックするための差し替え口 */
   fetchFn?: typeof fetch;
+  /**
+   * `/bookmarks/folders/{id}` が `meta.next_token` を返したフォルダを記録するための
+   * コレクタ。呼び出し側が空配列を渡し、fetch 後に分類結果レポートと
+   * `x_bookmarks_partial_latest.json` に書き出す想定。
+   * 詳細は `x_bookmarks_partial.ts` 参照。
+   */
+  partialCollector?: PartialFolderRecord[];
 }
 
 /** Stage 1 (一覧表示) でだけ使う、軽量な folder list 取得結果 */
@@ -545,15 +553,17 @@ async function fetchFolderTweetIds(
   userId: string,
   folderId: string,
   ctx: { accessToken: string; clientId: string; clientSecret: string; fetchFn: typeof fetch; onRefreshed?: (t: string) => void }
-): Promise<string[]> {
+): Promise<{ ids: string[]; hadNextToken: boolean }> {
   // 実測 (11件フォルダ) では meta 自体返らず、pagination_token 以外の query は
   // 「[id, folder_id] のみ受付」400 で弾かれた。pagination_token の可否は未検証。
-  // → meta.next_token が返ったら警告して可視化する (Codex PR #38 review への対応)。
+  // → meta.next_token が返ったら警告 + 呼び出し側に hadNextToken を返して
+  //   partial レポートに記録できるようにする (x_bookmarks_partial.ts)。
   const res = await xGet<{ data?: { id: string }[]; meta?: { next_token?: string } }>(
     buildFolderBookmarksUrl(userId, folderId),
     ctx
   );
-  if (res.meta?.next_token) {
+  const hadNextToken = Boolean(res.meta?.next_token);
+  if (hadNextToken) {
     console.warn(
       `🔖 [X API] WARNING: folder ${folderId} returned meta.next_token but ` +
       `/bookmarks/folders/{id} ページング実装は未対応 (X API がクエリ全般を拒否するため未検証)。` +
@@ -561,7 +571,7 @@ async function fetchFolderTweetIds(
       `docs/x_api_v2_gotchas.md の「フォルダ索引のページング」項目を参照してください。`
     );
   }
-  return (res.data ?? []).map(d => d.id);
+  return { ids: (res.data ?? []).map(d => d.id), hadNextToken };
 }
 
 function buildFoldersUrl(userId: string, paginationToken?: string): string {
@@ -626,6 +636,7 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
   // selectedFolders が配列:        その {id,name} のフォルダのみ取得
   const selectedFolders = options.selectedFolders;
   const includeUnfiled = options.includeUnfiled ?? true;
+  const partialCollector = options.partialCollector;
 
   const clientId = process.env.X_CLIENT_ID ?? '';
   const clientSecret = process.env.X_CLIENT_SECRET ?? '';
@@ -693,8 +704,20 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
         `(本文ハイドレーションはスキップ)`
       );
       for (const f of otherFolders) {
-        const ids = await fetchFolderTweetIds(userId, f.id, ctx);
+        const { ids, hadNextToken } = await fetchFolderTweetIds(userId, f.id, ctx);
         for (const id of ids) folderTweetIds.add(id);
+        // 他フォルダ列挙は Unfiled 判定の ID 収集だけが目的だが、ここで欠損していると
+        // 「拾えなかった他フォルダのツイート」が Unfiled に誤分類される可能性が残るため、
+        // partial として記録しておく (本文は取り込まないので fetchedCount は 0)。
+        if (hadNextToken && partialCollector) {
+          partialCollector.push({
+            xFolderId: f.id,
+            xFolderName: f.name,
+            fetchedCount: 0,
+            reason: 'folder_next_token_unsupported',
+            detectedAt: new Date().toISOString(),
+          });
+        }
       }
     }
   }
@@ -703,8 +726,21 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
   //    (folders/:id はページング無し / params 不可。詳細 docs/x_bookmarks_api_research.md)
   for (const folder of folders) {
     if (all.length >= maxItems) break;
-    const allIds = await fetchFolderTweetIds(userId, folder.id, ctx);
+    const { ids: allIds, hadNextToken } = await fetchFolderTweetIds(userId, folder.id, ctx);
     for (const id of allIds) folderTweetIds.add(id);
+    if (hadNextToken && partialCollector) {
+      // index 段で next_token が返った = フォルダ内の一部 ID しか拾えていない。
+      // fetchedCount は今回ハイドレートを試みる予定の件数ではなく、
+      // 「実際に索引から取れた件数 (= allIds.length)」を記録する。差分計測の
+      // ベースラインを明確にするため。
+      partialCollector.push({
+        xFolderId: folder.id,
+        xFolderName: folder.name,
+        fetchedCount: allIds.length,
+        reason: 'folder_next_token_unsupported',
+        detectedAt: new Date().toISOString(),
+      });
+    }
     const newIds = allIds.filter(id => !skipKnownIds.has(id));
     const remaining = maxItems - all.length;
     const targetIds = remaining < newIds.length ? newIds.slice(0, remaining) : newIds;

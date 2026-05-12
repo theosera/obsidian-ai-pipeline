@@ -7,6 +7,11 @@ import {
   writeGroupingProposal,
   prioritizeForcedParents,
 } from '../x_folder_mapper';
+import {
+  PartialFolderRecord,
+  writePartialReport,
+  savePartialLatest,
+} from '../x_bookmarks_partial';
 import { getDb } from '../x_bookmarks_db';
 import { lookupVaultPath } from '../x_session_registry';
 import { getXBookmarksBaseFolder } from '../config';
@@ -72,12 +77,30 @@ export async function prepareXBookmarks(options: {
   );
   console.log(`🔖 既知ツイートID: ${knownTweetIds.size} 件 (DB キャッシュ)`);
 
+  // partial fetch (next_token を返したのに追加取得できないフォルダ) を
+  // 集めるためのコレクタ。fetch 後に MD レポート + 最新 JSON に書き出して、
+  // hands-on 生成側がフォルダ単位で「欠損あり」を検知できるようにする。
+  const partialCollector: PartialFolderRecord[] = [];
+
   const bookmarks: ApiBookmark[] = await fetchBookmarksViaApi({
     maxItems,
     skipKnownIds: knownTweetIds,
     selectedFolders,
     includeUnfiled,
+    partialCollector,
   });
+
+  // partial 出力は常に走らせる: 空でも `x_bookmarks_partial_latest.json` を
+  // 上書きすることで「前回 partial だったが今回は解消した」状態を表現できる。
+  const partialJsonPath = savePartialLatest(partialCollector);
+  if (partialCollector.length > 0) {
+    const partialMdPath = writePartialReport(partialCollector);
+    console.warn(
+      `⚠️  X API 取得欠損: ${partialCollector.length} フォルダで next_token を検出しました。`
+    );
+    if (partialMdPath) console.warn(`   レポート: ${partialMdPath}`);
+    console.warn(`   機械可読: ${partialJsonPath}`);
+  }
 
   // 各 ApiBookmark に session_id を注入 (folder_sessions DB ベース)。
   // sync phase が走っていれば全 X 側 folder ID は session 登録済み。

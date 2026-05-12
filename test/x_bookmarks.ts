@@ -21,7 +21,14 @@ import {
 } from '../x_folder_mapper';
 import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
 import { parseSelection } from '../x_interactive_picker';
-import { fetchBookmarksViaApi, saveTokens } from '../x_bookmarks_api';
+import { fetchBookmarksViaApi, saveTokens, type FetchOptions } from '../x_bookmarks_api';
+import {
+  writePartialReport,
+  savePartialLatest,
+  loadPartialLatest,
+  findPartialByXFolderId,
+  PartialFolderRecord,
+} from '../x_bookmarks_partial';
 import {
   newSessionId,
   writeSessionMarker,
@@ -2872,6 +2879,203 @@ body
         }
       });
     }
+
+    // =====================================================
+    // x_bookmarks_partial: 取得欠損レポート / 最新 JSON
+    // =====================================================
+    runner.section('x_bookmarks_partial');
+
+    runner.test('writePartialReport: 空配列なら何もせず空文字を返す', () => {
+      const result = writePartialReport([]);
+      assert.strictEqual(result, '');
+    });
+
+    runner.test('writePartialReport: 提案を 分類結果レポート/ 配下に書く', () => {
+      const result = writePartialReport([
+        {
+          xFolderId: 'fa',
+          xFolderName: 'FolderA',
+          fetchedCount: 7,
+          reason: 'folder_next_token_unsupported',
+          detectedAt: '2026-05-12T01:02:03.000Z',
+        },
+      ]);
+      assert.ok(result.length > 0);
+      assert.ok(fs.existsSync(result), `report file should exist: ${result}`);
+      const body = fs.readFileSync(result, 'utf8');
+      assert.ok(body.includes('FolderA'));
+      assert.ok(body.includes('`fa`'));
+      assert.ok(body.includes('7'));
+    });
+
+    runner.test('writePartialReport: ファイル名は claude_ prefix を持つ (対照実験)', () => {
+      const result = writePartialReport([
+        {
+          xFolderId: 'fb',
+          xFolderName: 'FolderB',
+          fetchedCount: 1,
+          reason: 'folder_next_token_unsupported',
+          detectedAt: '2026-05-12T01:02:03.000Z',
+        },
+      ]);
+      assert.ok(
+        path.basename(result).startsWith('x_bookmarks_partial_claude_'),
+        `expected claude_ prefix, got ${path.basename(result)}`
+      );
+    });
+
+    runner.test('savePartialLatest / loadPartialLatest: roundtrip + 空書き出しで前回状態をクリア', () => {
+      const records: PartialFolderRecord[] = [
+        {
+          xFolderId: 'fc',
+          xFolderName: 'C',
+          fetchedCount: 3,
+          reason: 'folder_next_token_unsupported',
+          detectedAt: '2026-05-12T00:00:00.000Z',
+        },
+      ];
+      savePartialLatest(records);
+      const loaded = loadPartialLatest();
+      assert.strictEqual(loaded.length, 1);
+      assert.strictEqual(loaded[0].xFolderId, 'fc');
+
+      // 空書き出しで「解消」を表現できる (上書きセマンティクス)
+      savePartialLatest([]);
+      assert.deepStrictEqual(loadPartialLatest(), []);
+    });
+
+    runner.test('findPartialByXFolderId: 該当のみ返す / 不在は undefined', () => {
+      const records: PartialFolderRecord[] = [
+        { xFolderId: 'fa', xFolderName: 'A', fetchedCount: 1, reason: 'folder_next_token_unsupported', detectedAt: 't' },
+        { xFolderId: 'fb', xFolderName: 'B', fetchedCount: 2, reason: 'folder_next_token_unsupported', detectedAt: 't' },
+      ];
+      assert.strictEqual(findPartialByXFolderId('fa', records)?.xFolderName, 'A');
+      assert.strictEqual(findPartialByXFolderId('zz', records), undefined);
+    });
+
+    runner.test('loadPartialLatest: ファイル不在なら空配列 (例外を投げない)', () => {
+      // 専用 vault root を切って未生成状態を再現
+      const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-xbm-partial-empty-'));
+      const prev = tmpDir;
+      setVaultRoot(isolated);
+      try {
+        assert.deepStrictEqual(loadPartialLatest(), []);
+      } finally {
+        setVaultRoot(prev);
+        fs.rmSync(isolated, { recursive: true, force: true });
+      }
+    });
+
+    // =====================================================
+    // x_bookmarks_api: partialCollector を介した next_token 検出
+    // =====================================================
+    runner.section('x_bookmarks_api: partialCollector');
+
+    await runner.testAsync('partialCollector: meta.next_token を返したフォルダを記録する', async () => {
+      saveTokens({
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh',
+        expires_in: 7200,
+        obtained_at: new Date().toISOString(),
+      });
+      const prevClientId = process.env.X_CLIENT_ID;
+      process.env.X_CLIENT_ID = 'test-client';
+
+      try {
+        const mockFetch: typeof fetch = (async (input: any) => {
+          const url = typeof input === 'string' ? input : input.url;
+          const respond = (body: any) =>
+            new Response(JSON.stringify(body), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 't' } });
+          if (url.includes('/bookmarks/folders/fa')) {
+            // next_token あり = partial を記録すべき
+            return respond({ data: [{ id: 'T_A1' }], meta: { next_token: 'NEXT' } });
+          }
+          if (url.includes('/bookmarks/folders/fb')) {
+            // next_token なし = partial に入らない
+            return respond({ data: [{ id: 'T_B1' }] });
+          }
+          if (url.includes('/tweets?')) {
+            return respond({
+              data: [
+                { id: 'T_A1', text: 'a', author_id: 'u1' },
+                { id: 'T_B1', text: 'b', author_id: 'u1' },
+              ],
+              includes: { users: [{ id: 'u1', username: 'u', name: 'U' }] },
+            });
+          }
+          throw new Error(`unexpected fetch url: ${url}`);
+        }) as any;
+
+        const partial: PartialFolderRecord[] = [];
+        await fetchBookmarksViaApi({
+          selectedFolders: [
+            { id: 'fa', name: 'FolderA' },
+            { id: 'fb', name: 'FolderB' },
+          ],
+          includeUnfiled: false,
+          fetchFn: mockFetch,
+          partialCollector: partial,
+        } satisfies FetchOptions);
+
+        // FolderA だけ partial として記録される
+        assert.strictEqual(partial.length, 1, `expected 1 partial, got ${JSON.stringify(partial)}`);
+        assert.strictEqual(partial[0].xFolderId, 'fa');
+        assert.strictEqual(partial[0].xFolderName, 'FolderA');
+        assert.strictEqual(partial[0].reason, 'folder_next_token_unsupported');
+        assert.strictEqual(partial[0].fetchedCount, 1);
+      } finally {
+        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prevClientId;
+      }
+    });
+
+    await runner.testAsync('partialCollector 未指定: 既存挙動を壊さない', async () => {
+      saveTokens({
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh',
+        expires_in: 7200,
+        obtained_at: new Date().toISOString(),
+      });
+      const prevClientId = process.env.X_CLIENT_ID;
+      process.env.X_CLIENT_ID = 'test-client';
+
+      try {
+        const mockFetch: typeof fetch = (async (input: any) => {
+          const url = typeof input === 'string' ? input : input.url;
+          const respond = (body: any) =>
+            new Response(JSON.stringify(body), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 't' } });
+          if (url.includes('/bookmarks/folders/fa')) {
+            return respond({ data: [{ id: 'T_A1' }], meta: { next_token: 'NEXT' } });
+          }
+          if (url.includes('/tweets?')) {
+            return respond({
+              data: [{ id: 'T_A1', text: 'a', author_id: 'u1' }],
+              includes: { users: [{ id: 'u1', username: 'u', name: 'U' }] },
+            });
+          }
+          throw new Error(`unexpected fetch url: ${url}`);
+        }) as any;
+
+        // partialCollector 未指定でも throw しないこと
+        const results = await fetchBookmarksViaApi({
+          selectedFolders: [{ id: 'fa', name: 'FolderA' }],
+          includeUnfiled: false,
+          fetchFn: mockFetch,
+        });
+        assert.strictEqual(results.length, 1);
+      } finally {
+        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prevClientId;
+      }
+    });
 
     return runner.report();
   } finally {

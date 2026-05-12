@@ -21,6 +21,7 @@ import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
 import { getVaultRoot } from './config';
 import Database from 'better-sqlite3';
+import { loadPartialLatest, PartialFolderRecord } from './x_bookmarks_partial';
 
 interface BookmarkRow {
   tweet_id: string;
@@ -30,6 +31,71 @@ interface BookmarkRow {
   created_at: string | null;
   x_folder_name: string | null;
   vault_path: string | null;
+}
+
+/**
+ * 指定 vault フォルダ配下の bookmarks に紐づく X 側 folder ID 群を返す。
+ * `bookmarks.x_folder_name` は X 側生 (raw) フォルダ名のままなので、
+ * これを `folder_sessions.x_folder_name` と JOIN して x_folder_id を引く。
+ * 1 つの vault フォルダが複数の X 側フォルダを束ねるケース (forced parents
+ * によるグルーピング) があるため戻り値は配列。
+ */
+function findXFolderIdsForVaultFolder(folder: string): { id: string; name: string }[] {
+  const p = dbPath();
+  if (!fs.existsSync(p)) return [];
+  const db = new Database(p, { readonly: true });
+  try {
+    const likePattern = `${folder.replace(/\/+$/, '')}/%`;
+    const exactPattern = folder.replace(/\/+$/, '');
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT fs.x_folder_id AS id, fs.x_folder_name AS name
+         FROM bookmarks b
+         JOIN folder_sessions fs ON fs.x_folder_name = b.x_folder_name
+         WHERE (b.vault_path LIKE ? OR b.vault_path = ?)
+           AND fs.x_folder_id IS NOT NULL`
+      )
+      .all(likePattern, exactPattern) as { id: string; name: string }[];
+    return rows;
+  } catch {
+    // 旧 DB で folder_sessions 列が無いケースなど、安全側にフォールバック。
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * 対象 vault フォルダに対応する X 側フォルダで partial fetch が記録されているかを返す。
+ * 1 件でも該当があればその全レコードを返す (hands-on バナーに列挙するため)。
+ */
+function detectPartialForFolder(folder: string): PartialFolderRecord[] {
+  const xFolders = findXFolderIdsForVaultFolder(folder);
+  if (xFolders.length === 0) return [];
+  const partials = loadPartialLatest();
+  if (partials.length === 0) return [];
+  const xIds = new Set(xFolders.map(f => f.id));
+  return partials.filter(p => xIds.has(p.xFolderId));
+}
+
+/**
+ * partial 検出時にハンズオン MD 冒頭へ差し込む警告バナー。
+ * hands-on の編集者がここで「素材が欠けている可能性」を把握できるようにする。
+ */
+function buildPartialBanner(records: PartialFolderRecord[]): string {
+  const lines: string[] = [];
+  lines.push('> [!warning] X API 取得欠損あり');
+  lines.push('>');
+  lines.push('> 以下の X 側フォルダで `meta.next_token` が返ったため、本ハンズオンの素材は');
+  lines.push('> X UI に表示される全件より少ない可能性があります。');
+  lines.push('>');
+  for (const r of records) {
+    lines.push(`> - \`${r.xFolderName}\` (id=\`${r.xFolderId}\`, 取得済み ${r.fetchedCount} 件 / ${r.detectedAt})`);
+  }
+  lines.push('>');
+  lines.push('> 必要なら X UI で件数を目視確認し、欠落分を手動補完してください。');
+  lines.push('');
+  return lines.join('\n');
 }
 
 export interface HandsOnOptions {
@@ -129,6 +195,17 @@ export async function generateHandsOn(options: HandsOnOptions): Promise<string> 
   }
   console.log(`📝 ${rows.length} 件のポストを素材にします。`);
 
+  // partial 検出: 該当 X フォルダで next_token が記録されていれば、生成 MD に
+  // バナーを差し込む (警告だけ出して続行=ユーザ承認済み)。
+  const partials = detectPartialForFolder(folder);
+  if (partials.length > 0) {
+    console.warn(
+      `⚠️  このフォルダに対応する X 側フォルダで取得欠損が記録されています (${partials.length} 件)。` +
+      ` ハンズオン MD 冒頭に警告バナーを差し込みます。`
+    );
+  }
+  const banner = partials.length > 0 ? buildPartialBanner(partials) : '';
+
   const corpus = buildCorpus(rows);
   const prompt = renderPrompt(folder, corpus, dateStr);
 
@@ -137,7 +214,9 @@ export async function generateHandsOn(options: HandsOnOptions): Promise<string> 
   const outPath = path.join(outDir, `${slug}-${dateCompact}.md`);
 
   if (options.dryRun) {
-    fs.writeFileSync(outPath + '.prompt.txt', prompt, 'utf8');
+    // dry-run でもバナーが付くかを検証できるよう、prompt の前にバナーを書いておく。
+    // 実運用のハンズオン MD には Claude の生成結果に banner を prepend する。
+    fs.writeFileSync(outPath + '.prompt.txt', banner + prompt, 'utf8');
     console.log(`🧪 dry-run: プロンプトを保存しました ${outPath}.prompt.txt`);
     return outPath + '.prompt.txt';
   }
@@ -169,7 +248,7 @@ export async function generateHandsOn(options: HandsOnOptions): Promise<string> 
     });
   });
 
-  fs.writeFileSync(outPath, generated, 'utf8');
+  fs.writeFileSync(outPath, banner + generated, 'utf8');
   console.log(`✅ ハンズオンを生成しました: ${outPath}`);
   return outPath;
 }
@@ -178,4 +257,6 @@ export const __test = {
   buildCorpus,
   renderPrompt,
   folderSlug,
+  buildPartialBanner,
+  detectPartialForFolder,
 };
