@@ -5,7 +5,7 @@ import { getKnownUrls, updateVaultTreeSnapshot } from '../storage';
 import { tokenUsageMetrics } from '../classifier';
 import { loadFolderRules, updateThresholds, getRoutedPath } from '../router';
 import { getVaultRoot, getXBookmarksBaseFolder } from '../config';
-import { ProcessingResult } from '../types';
+import { ProcessingResult, PipelineConfig } from '../types';
 import { ParsedCliArgs } from '../cli';
 import { ParsedEntry, FailureRecord } from './types';
 import { readOneTabFile } from './input_onetab';
@@ -42,7 +42,7 @@ const X_BOOKMARKS_BASE_FOLDER = getXBookmarksBaseFolder();
  *
  * 上位 (index.ts) は CLI 引数に応じて当関数を呼ぶだけで、パイプライン全体が完結する。
  */
-export async function runPipeline(args: ParsedCliArgs): Promise<void> {
+export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig): Promise<void> {
   const { REPORTS_DIR, INTERNAL_LOGS_DIR } = setupOutputDirs();
   updateVaultTreeSnapshot();
 
@@ -148,6 +148,7 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
   await interactiveReviewLoop(results, reportPath, {
     resummarizeAll: args.xResummarizeAll,
+    xSummary: config?.xSummary,
   });
 }
 

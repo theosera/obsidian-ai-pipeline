@@ -16,7 +16,16 @@
  *   3. ここの main() に dispatch 分岐を追加
  */
 import { parseArgs, printUsage } from './cli';
-import { loadConfig, runConfigWizard, applyConfigToEnv, setDryRun, getXBookmarksBaseFolder } from './config';
+import {
+  loadConfig,
+  runConfigWizard,
+  applyConfigToEnv,
+  setDryRun,
+  getXBookmarksBaseFolder,
+  runXSummaryWizard,
+  saveConfig,
+  getXSummaryConfig,
+} from './config';
 import { syncRulesFromSnippets } from './sync-rules';
 import { runAuthServer } from './x_auth_server';
 import { generateHandsOn } from './hands_on_generator';
@@ -154,16 +163,33 @@ async function main(): Promise<void> {
   }
 
   // ------------------------------------------------------------------
+  // X 要約 dedicated provider / model の初回セットアップ
+  //
+  // 分類フェーズの AI_PROVIDER とは独立した設定 (X 要約はあくまで 1 行 200 字の
+  // 軽量タスクで cloud Haiku 4.5 が推奨)。
+  //   - `--x-bookmarks` 系で xSummary 未保存 → 初回ウィザード
+  //   - `--x-summary-reconfig` 明示時 → 強制再選択
+  // ------------------------------------------------------------------
+  if (args.xBookmarks && (getXSummaryConfig(config) === null || args.xSummaryReconfig)) {
+    const xSummary = await runXSummaryWizard(askQuestion);
+    config = { ...config, xSummary };
+    saveConfig(config);
+  }
+
+  // ------------------------------------------------------------------
   // 通常パイプライン (OneTab / X ブックマーク)
   // ------------------------------------------------------------------
   console.log('\n======================================================');
   console.log(`🤖 AI Provider: ${config.provider}`);
   console.log(`🔹 Step 1 Model (Fast): ${config.fastModel}`);
   console.log(`🔸 Step 2 Model (Smart): ${config.smartModel}`);
+  if (config.xSummary) {
+    console.log(`🧵 X 要約: ${config.xSummary.provider} / ${config.xSummary.model}  (--x-summary-reconfig で変更)`);
+  }
   console.log('💡 Run with `--config` anytime to change these settings.');
   console.log('======================================================\n');
 
-  await runPipeline(args);
+  await runPipeline(args, config);
 
   closePrompt();
   process.exit(0);

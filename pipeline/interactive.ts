@@ -1,7 +1,8 @@
 import fs from 'fs';
 import { saveMarkdown, updateVaultTreeSnapshot, ensureSafePath } from '../storage';
 import { tokenUsageMetrics } from '../classifier';
-import { ProcessingResult } from '../types';
+import { ProcessingResult, XSummaryConfig } from '../types';
+import { DEFAULT_X_SUMMARY } from '../config';
 import { ApiBookmark } from '../x_bookmarks_api';
 import { getDb, closeDb } from '../x_bookmarks_db';
 import { exportAndWriteAllGroupPages } from '../x_group_page_writer';
@@ -25,7 +26,7 @@ import { generateReport } from './report';
 export async function interactiveReviewLoop(
   results: ProcessingResult[],
   reportMdPath: string,
-  options: { resummarizeAll?: boolean } = {}
+  options: { resummarizeAll?: boolean; xSummary?: XSummaryConfig } = {}
 ): Promise<void> {
   let reviewing = true;
 
@@ -60,7 +61,7 @@ export async function interactiveReviewLoop(
 
 async function saveApprovedResults(
   results: ProcessingResult[],
-  options: { resummarizeAll?: boolean } = {}
+  options: { resummarizeAll?: boolean; xSummary?: XSummaryConfig } = {}
 ): Promise<void> {
   console.log('\n🚀 Approved! Proceeding to save files to Vault...');
   let xBookmarkCount = 0;
@@ -111,8 +112,14 @@ async function saveApprovedResults(
   // するため (Dataview が次に開かれた瞬間に新しい要約が反映される)。
   if (xBookmarkCount > 0) {
     try {
+      // xSummary は通常 `runXSummaryWizard` 経由で必ず埋まっているが、テストや
+      // 直叩きで未指定の場合は DEFAULT_X_SUMMARY (= cloud Anthropic Haiku 4.5)
+      // にフォールバックして classifier 側の AI_PROVIDER とは独立した動作を保つ。
+      const xSummary = options.xSummary ?? DEFAULT_X_SUMMARY;
       const stats = await summarizePendingBookmarks({
         resummarizeAll: options.resummarizeAll,
+        provider: xSummary.provider,
+        model: xSummary.model,
       });
       if (stats.pending > 0) {
         console.log(`🤖 AI 要約: ${stats.succeeded}/${stats.pending} 件成功, ${stats.failed} 件失敗`);

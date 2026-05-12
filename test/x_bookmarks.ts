@@ -3306,6 +3306,157 @@ body
         assert.strictEqual(result.succeeded, 1);
         db.close();
       });
+
+      // -----------------------------------------------------
+      // Provider / model 注入 (xSummary 経路)
+      // -----------------------------------------------------
+
+      runner.test('resolveMode: options.provider が env を上書き', () => {
+        const prev = process.env.AI_PROVIDER;
+        try {
+          process.env.AI_PROVIDER = 'local';
+          // options.provider='anthropic' を渡せば env=local でも inline 経路
+          assert.strictEqual(resolveMode(undefined, 'anthropic'), 'inline');
+          // options.provider='local' は env と一致 → batch
+          assert.strictEqual(resolveMode(undefined, 'local'), 'batch');
+        } finally {
+          if (prev === undefined) delete process.env.AI_PROVIDER;
+          else process.env.AI_PROVIDER = prev;
+        }
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: options.provider=anthropic は env=local でも inline 経路', async () => {
+        // 旧挙動互換のために env=local だと batch だったが、xSummary 経由で
+        // anthropic を選んだ場合は env を見ずに inline (per-tweet) で走ることを保証。
+        const prev = process.env.AI_PROVIDER;
+        process.env.AI_PROVIDER = 'local';
+        try {
+          const db = new XBookmarksDb(':memory:');
+          db.upsertBookmark({
+            tweetId: 'p1',
+            url: 'https://x.com/u/status/1',
+            tweetText: '本文 1',
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+          db.upsertBookmark({
+            tweetId: 'p2',
+            url: 'https://x.com/u/status/2',
+            tweetText: '本文 2',
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+          // inline モードは 1 件 1 呼び出し / batch は複数件を 1 プロンプトに詰める
+          // → callAi の呼出回数で経路を判別できる。
+          let calls = 0;
+          await summarizePendingBookmarks({
+            db,
+            provider: 'anthropic',
+            silent: true,
+            callAi: async () => {
+              calls++;
+              return '要約 OK';
+            },
+          });
+          assert.strictEqual(calls, 2, 'inline 経路なら 2 件 = 2 回呼出 (batch なら 1 回)');
+          db.close();
+        } finally {
+          if (prev === undefined) delete process.env.AI_PROVIDER;
+          else process.env.AI_PROVIDER = prev;
+        }
+      });
+    }
+
+    // =====================================================
+    // X 要約ウィザード (runXSummaryWizard) + プリセット
+    // =====================================================
+    runner.section('runXSummaryWizard');
+
+    {
+      const { runXSummaryWizard, X_SUMMARY_PRESETS, DEFAULT_X_SUMMARY, getXSummaryConfig } =
+        await import('../config');
+
+      runner.test('X_SUMMARY_PRESETS: 先頭は cloud Anthropic Haiku 4.5 (default-default)', () => {
+        assert.strictEqual(X_SUMMARY_PRESETS[0].provider, 'anthropic');
+        assert.strictEqual(X_SUMMARY_PRESETS[0].model, 'claude-haiku-4-5-20251001');
+      });
+
+      runner.test('DEFAULT_X_SUMMARY: 先頭プリセットと一致', () => {
+        assert.strictEqual(DEFAULT_X_SUMMARY.provider, X_SUMMARY_PRESETS[0].provider);
+        assert.strictEqual(DEFAULT_X_SUMMARY.model, X_SUMMARY_PRESETS[0].model);
+      });
+
+      runner.test('getXSummaryConfig: 未設定 config は null', () => {
+        assert.strictEqual(getXSummaryConfig(null), null);
+        assert.strictEqual(
+          getXSummaryConfig({
+            vaultRoot: '/tmp/x',
+            provider: 'local',
+            fastModel: 'a',
+            smartModel: 'b',
+          }),
+          null
+        );
+      });
+
+      runner.test('getXSummaryConfig: 設定済みなら そのまま返す', () => {
+        const xs = { provider: 'openai' as const, model: 'gpt-4o-mini' };
+        const out = getXSummaryConfig({
+          vaultRoot: '/tmp/x',
+          provider: 'local',
+          fastModel: 'a',
+          smartModel: 'b',
+          xSummary: xs,
+        });
+        assert.deepStrictEqual(out, xs);
+      });
+
+      // 対話シミュレーション用のスクリプトを replay する ask 関数を作る。
+      // 各回の prompt 文字列は捨て、次の回答を返す (preset 順序依存テストを排除)。
+      const scriptAsker = (answers: string[]) => {
+        let i = 0;
+        return async (_q: string) => {
+          const a = answers[i] ?? '';
+          i++;
+          return a;
+        };
+      };
+
+      await runner.testAsync('runXSummaryWizard: 空 Enter で先頭プリセット (= anthropic + haiku4.5)', async () => {
+        const out = await runXSummaryWizard(scriptAsker(['', '']));
+        assert.strictEqual(out.provider, 'anthropic');
+        assert.strictEqual(out.model, 'claude-haiku-4-5-20251001');
+      });
+
+      await runner.testAsync('runXSummaryWizard: "4" で local プリセット選択', async () => {
+        // preset 配列の 4 番目が local (順序を変える場合は X_SUMMARY_PRESETS と同期)
+        const localIdx = X_SUMMARY_PRESETS.findIndex(p => p.provider === 'local');
+        assert.ok(localIdx >= 0, 'local プリセットが存在する');
+        const choice = String(localIdx + 1);
+        const out = await runXSummaryWizard(scriptAsker([choice, '']));
+        assert.strictEqual(out.provider, 'local');
+        assert.strictEqual(out.model, X_SUMMARY_PRESETS[localIdx].model);
+      });
+
+      await runner.testAsync('runXSummaryWizard: 不正入力 "x" は先頭プリセットにフォールバック', async () => {
+        const out = await runXSummaryWizard(scriptAsker(['x', '']));
+        assert.strictEqual(out.provider, 'anthropic');
+      });
+
+      await runner.testAsync('runXSummaryWizard: カスタムモデル ID 入力で model のみ上書き', async () => {
+        // "1" = anthropic preset, 続いて任意のモデル ID を渡す
+        const out = await runXSummaryWizard(scriptAsker(['1', 'claude-opus-4-7']));
+        assert.strictEqual(out.provider, 'anthropic');
+        assert.strictEqual(out.model, 'claude-opus-4-7');
+      });
+
+      await runner.testAsync('runXSummaryWizard: ターミナル二重入力 "44" は "4" として扱う', async () => {
+        // config wizard と同じ挙動 (一部端末でエコーが二重に乗る対策)
+        const localIdx = X_SUMMARY_PRESETS.findIndex(p => p.provider === 'local');
+        const doubled = String(localIdx + 1).repeat(2); // 例: "44"
+        const out = await runXSummaryWizard(scriptAsker([doubled, '']));
+        assert.strictEqual(out.provider, 'local');
+      });
     }
 
     // =====================================================
