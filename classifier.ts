@@ -403,6 +403,15 @@ export async function askAIText(
 ): Promise<string | null> {
   const provider = process.env.AI_PROVIDER || 'local';
 
+  // 各プロバイダのクライアント/キーが欠けている場合は早期 null。
+  // `askAI` (classification) は anthropic フォールバックを持つが、`askAIText`
+  // (短文要約等) は **明示的に「fallback 無し」契約** にしている (関数ドキュメント参照)。
+  // ここで黙って local 経由にすると、ユーザーが意図したプロバイダと別経路に
+  // データが流れる事故が起きるため、設定不備は呼出側で検知できるよう null を返す。
+  if (provider === 'openai' && !openaiClient) return null;
+  if (provider === 'gemini' && !geminiClient) return null;
+  if ((provider === 'anthropic' || provider === 'claude') && !anthropic.apiKey) return null;
+
   try {
     if (provider === 'openai' && openaiClient) {
       const model = taskType === 'smart'
@@ -455,7 +464,9 @@ export async function askAIText(
       return null;
     }
 
-    // Default: 'local'
+    // Default: explicit local provider only (未知の provider 名で local に流すと
+    // ユーザーの意図とズレるため、明示的に 'local' のときだけ実行)
+    if (provider !== 'local') return null;
     const model = taskType === 'smart'
       ? (process.env.LOCAL_AI_SMART_MODEL || process.env.LOCAL_AI_MODEL || 'local-model')
       : (process.env.LOCAL_AI_FAST_MODEL || process.env.LOCAL_AI_MODEL || 'local-model');

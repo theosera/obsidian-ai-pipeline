@@ -63,17 +63,21 @@ interface SummarizeOptions {
 
 /**
  * グラフェムクラスタ単位で安全に 200 文字に切り詰める。
- * `slice()` は UTF-16 code unit ベースなのでサロゲートペアを割る危険があり、
- * 絵文字や合成文字を含む X ポストでは事故になる。`Array.from` で
- * code-point 化してから join する。
+ *
+ * `slice()` (UTF-16 code unit) や `Array.from()` (code point) では、ZWJ
+ * シーケンスや合成文字 (例: 👨‍👩‍👧‍👦 family、肌色変更絵文字、結合濁点付き
+ * 仮名) を分割してしまい、表示が壊れる。`Intl.Segmenter`
+ * (`granularity: 'grapheme'`) で**ユーザーが視覚的に 1 文字と認識する単位**で
+ * 数えて切詰する。Node 16+ で利用可能。
  */
 export function truncateSummary(text: string, max: number = MAX_SUMMARY_CHARS): string {
   if (!text) return '';
   // 改行・タブを 1 つのスペースに圧縮
   const flat = text.replace(/[\r\n\t]+/g, ' ').replace(/  +/g, ' ').trim();
-  const codePoints = Array.from(flat);
-  if (codePoints.length <= max) return flat;
-  return codePoints.slice(0, max).join('');
+  const seg = new Intl.Segmenter('ja', { granularity: 'grapheme' });
+  const graphemes = Array.from(seg.segment(flat), s => s.segment);
+  if (graphemes.length <= max) return flat;
+  return graphemes.slice(0, max).join('');
 }
 
 /**
@@ -98,7 +102,9 @@ export async function summarizePendingBookmarks(
   options: SummarizeOptions = {}
 ): Promise<SummarizeStats> {
   const db = options.db ?? getDb();
-  const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+  // 0 や負値が渡ると `for (i += concurrency)` が進まず無限ループになる。
+  // 必ず 1 以上にクランプ。
+  const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
   const callAi = options.callAi;
   const silent = options.silent ?? false;
 

@@ -2865,6 +2865,19 @@ body
         assert.strictEqual(truncateSummary('a\nb\tc\n\nd'), 'a b c d');
       });
 
+      runner.test('truncateSummary: ZWJ family 絵文字を分割しない (grapheme aware)', () => {
+        // 👨‍👩‍👧‍👦 は ZWJ で結合された 7 code point の 1 グラフェム
+        const family = '👨‍👩‍👧‍👦';
+        // 200 グラフェム = 200 family を許容
+        const s = family.repeat(250);
+        const out = truncateSummary(s);
+        const seg = new Intl.Segmenter('ja', { granularity: 'grapheme' });
+        const count = Array.from(seg.segment(out)).length;
+        assert.strictEqual(count, 200, 'グラフェム数で 200');
+        // 末尾の family が割れていない (全 4 メンバー揃っている)
+        assert.ok(out.endsWith(family), 'ZWJ シーケンスが破壊されていない');
+      });
+
       await runner.testAsync('summarizeOnePost: callAi モックで要約を返す', async () => {
         const out = await summarizeOnePost('元ツイート本文', {
           callAi: async () => 'モック要約結果',
@@ -3015,6 +3028,60 @@ body
         // 既存要約は失われた (resummarizeAll の本来の意図通り) が、LLM 失敗なので NULL
         // → 次回 sync で NULL 行として自動再挑戦される
         assert.strictEqual(rows[0].ai_summary, null);
+        db.close();
+      });
+
+      await runner.testAsync('listPendingAiSummaries: 空文字/空白だけの本文は pending に含めない', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'has-text',
+          url: 'https://x.com/a/status/1',
+          tweetText: '本文あり',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.upsertBookmark({
+          tweetId: 'empty',
+          url: 'https://x.com/a/status/2',
+          tweetText: '',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.upsertBookmark({
+          tweetId: 'whitespace',
+          url: 'https://x.com/a/status/3',
+          tweetText: '   \n\t  ',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+
+        const pending = db.listPendingAiSummaries();
+        const ids = pending.map(r => r.tweet_id).sort();
+        assert.deepStrictEqual(ids, ['has-text'],
+          '空文字/空白のみの行は LLM を叩く意味が無いので除外');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: concurrency=0 でも無限ループしない (Math.max(1, ...) でクランプ)', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'c1',
+          url: 'https://x.com/a/status/1',
+          tweetText: 'クランプテスト',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        // 不正な concurrency=0 を渡しても進行することを timeout で担保
+        const result = await Promise.race([
+          summarizePendingBookmarks({
+            db,
+            silent: true,
+            concurrency: 0,
+            callAi: async () => 'OK',
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+        ]);
+        assert.strictEqual(result.succeeded, 1, 'concurrency=0 でも処理が進む');
         db.close();
       });
 
