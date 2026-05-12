@@ -2967,6 +2967,57 @@ body
         db.close();
       });
 
+      await runner.testAsync('summarizePendingBookmarks: resummarizeAll=true で既存要約もクリアして全件再生成', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'old',
+          url: 'https://x.com/a/status/100',
+          tweetText: '古い本文',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.setAiSummary('old', '古いモデルでの要約');
+
+        const stats = await summarizePendingBookmarks({
+          db,
+          silent: true,
+          resummarizeAll: true,
+          callAi: async () => '新しいモデルでの要約',
+        });
+        assert.strictEqual(stats.pending, 1, 'クリア後に 1 件 pending');
+        assert.strictEqual(stats.succeeded, 1);
+
+        const rows = db.listBookmarksForExport();
+        assert.strictEqual(rows[0].ai_summary, '新しいモデルでの要約', '古い要約が上書きされた');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: resummarizeAll でも callAi が全件 null なら summary は NULL のまま', async () => {
+        // Codex P1: 「クリアだけされて再生成されない」事故が起きないことを別角度で保証する。
+        // この関数を 1 回呼べばクリア + 再要約までやり切るのでアトミック性は OK。
+        // ただし LLM 側が全件失敗するとどうしようもなく NULL が残るのは仕様。
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'x',
+          url: 'https://x.com/x/status/1',
+          tweetText: '本文',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.setAiSummary('x', '既存要約');
+        await summarizePendingBookmarks({
+          db,
+          silent: true,
+          resummarizeAll: true,
+          callAi: async () => null,
+        });
+        const rows = db.listBookmarksForExport();
+        // 既存要約は失われた (resummarizeAll の本来の意図通り) が、LLM 失敗なので NULL
+        // → 次回 sync で NULL 行として自動再挑戦される
+        assert.strictEqual(rows[0].ai_summary, null);
+        db.close();
+      });
+
       runner.test('clearAllAiSummaries: 全行を NULL に戻す (--x-resummarize-all)', () => {
         const db = new XBookmarksDb(':memory:');
         db.upsertBookmark({ tweetId: 'a', url: 'https://x.com/a/status/1', tweetText: 'x' });

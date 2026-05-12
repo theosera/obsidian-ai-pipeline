@@ -21,7 +21,6 @@ import { loadForcedParents, loadApprovedMappings } from '../x_folder_mapper';
 import { runSyncPhase } from '../x_session_sync';
 import { createInteractiveOrphanResolver } from '../x_session_ai';
 import { checkFolderCountInvariant, logInvariantCheck } from '../x_folder_invariant';
-import { getDb } from '../x_bookmarks_db';
 
 /**
  * X API ブックマーク専用のベースフォルダ。
@@ -53,15 +52,10 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
     process.exit(1);
   }
 
-  // === -1. Opt-in: AI 要約の全件再生成 (sync より前に DB を NULL に揃える) ===
-  if (args.xBookmarks && args.xResummarizeAll) {
-    try {
-      const cleared = getDb().clearAllAiSummaries();
-      console.log(`🧹 --x-resummarize-all: ${cleared} 件の ai_summary を NULL に戻しました (sync 末尾で再生成)`);
-    } catch (e: any) {
-      console.warn(`⚠️  ai_summary クリア失敗 (続行): ${e.message}`);
-    }
-  }
+  // `--x-resummarize-all` のクリア処理はここでは行わない。
+  // ユーザーが confirmation で中止 / 処理 0 件の場合に「summary だけ消えて
+  // 再生成されない」事故を防ぐため、x_bookmarks_summarizer.ts の中で
+  // クリアと再生成をアトミックに実行する (interactive.ts から呼ばれる)。
 
   // === 0. Sync Phase (X bookmarks モードの先頭で必ず走る・--no-sync で抑止) ===
   if (args.xBookmarks && !args.noSync) {
@@ -152,7 +146,9 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   const reportLabel = args.xBookmarks ? 'X-Bookmarks' : 'OneTab';
   const reportPath = path.join(REPORTS_DIR, `${reportLabel}分類結果レポート-${dateStr}.md`);
   fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
-  await interactiveReviewLoop(results, reportPath);
+  await interactiveReviewLoop(results, reportPath, {
+    resummarizeAll: args.xResummarizeAll,
+  });
 }
 
 /**

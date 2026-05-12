@@ -52,6 +52,13 @@ interface SummarizeOptions {
   callAi?: (prompt: string, system: string) => Promise<string | null>;
   /** 進捗ログを抑止 (テスト用) */
   silent?: boolean;
+  /**
+   * `--x-resummarize-all` 用: 全行の ai_summary を NULL に戻してから要約する。
+   * **クリアと再要約を同じ関数呼び出し内で行うことが重要** — 早期 (sync 開始前)
+   * にクリアしてしまうと、ユーザーが confirmation で中止した場合や処理対象が
+   * 0 件だった場合に summary が消えるだけで再生成されない事故になる。
+   */
+  resummarizeAll?: boolean;
 }
 
 /**
@@ -94,6 +101,15 @@ export async function summarizePendingBookmarks(
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   const callAi = options.callAi;
   const silent = options.silent ?? false;
+
+  // 全件再要約: ここで NULL に戻す (この関数の中で再生成までやり切るので
+  // ユーザー中止や 0 件処理で「クリアだけされて再生成されない」事故が起きない)
+  if (options.resummarizeAll) {
+    const cleared = db.clearAllAiSummaries();
+    if (!silent) {
+      console.log(`🧹 --x-resummarize-all: ${cleared} 件の ai_summary をクリア → 再要約します`);
+    }
+  }
 
   const pending = db.listPendingAiSummaries();
   const stats: SummarizeStats = { pending: pending.length, succeeded: 0, failed: 0 };
