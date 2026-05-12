@@ -27,9 +27,22 @@ export interface BookmarkRow {
   x_folder_name: string | null;
   vault_path: string | null;
   saved_at: string;
+  /**
+   * 「追加日」= この tweet が初めて DB に取り込まれた時刻 (ISO 文字列)。
+   * `saved_at` (毎 sync で更新される last-touched) と区別する。
+   * INSERT 時のみ書かれ、ON CONFLICT DO UPDATE では維持される (Dataview の
+   * 「追加日」列のソート基準にする)。
+   */
+  added_at: string | null;
   engagement_likes: number | null;
   engagement_retweets: number | null;
   engagement_replies: number | null;
+  /**
+   * 将来 AI 要約プロデューサーが書き込む列 (現状は常に NULL)。
+   * 2026-05 のリファクタでスキーマは確保するが、書き込みパスは未実装。
+   * JSON エクスポート + Dataview テーブルは `summary` 列を常に確保する。
+   */
+  ai_summary: string | null;
 }
 
 export interface BookmarkUpsertInput {
@@ -83,9 +96,11 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   vault_path TEXT,
   session_id TEXT,
   saved_at TEXT NOT NULL,
+  added_at TEXT,
   engagement_likes INTEGER,
   engagement_retweets INTEGER,
-  engagement_replies INTEGER
+  engagement_replies INTEGER,
+  ai_summary TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_folder ON bookmarks(x_folder_name);
 CREATE INDEX IF NOT EXISTS idx_saved_at ON bookmarks(saved_at);
@@ -118,6 +133,8 @@ export class XBookmarksDb {
     this.db.exec(SCHEMA);
     this.migrateAddNoteTweetText();
     this.migrateAddSessionId();
+    this.migrateAddAiSummary();
+    this.migrateAddAddedAt();
   }
 
   /**
@@ -144,20 +161,50 @@ export class XBookmarksDb {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id)");
   }
 
+  /**
+   * bookmarks テーブルに ai_summary 列を idempotent に追加。
+   * 現状この列に書き込むパスは無く (常に NULL)、テーブルビューの "summary" 列を
+   * 確保する目的でスキーマだけ用意する。将来の AI 要約プロデューサーがこの列に
+   * 書き込む想定。
+   */
+  private migrateAddAiSummary(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'ai_summary')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN ai_summary TEXT");
+    }
+  }
+
+  /**
+   * bookmarks テーブルに added_at 列を idempotent に追加。
+   * 「DB 取り込み初回時刻」を保持し、以降の upsert (`ON CONFLICT DO UPDATE`)
+   * では維持される。既存行 (列追加前のデータ) は saved_at で backfill する
+   * — 過去の saved_at は最後の upsert 時刻だが、追加日の近似として最良。
+   */
+  private migrateAddAddedAt(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'added_at')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN added_at TEXT");
+      this.db.exec("UPDATE bookmarks SET added_at = saved_at WHERE added_at IS NULL");
+    }
+  }
+
   getKnownTweetIds(): Set<string> {
     const rows = this.db.prepare('SELECT tweet_id FROM bookmarks').all() as { tweet_id: string }[];
     return new Set(rows.map(r => r.tweet_id));
   }
 
   upsertBookmark(input: BookmarkUpsertInput): void {
+    // `added_at` は INSERT 時にだけ書く (DO UPDATE の SET 句に入れない =
+    // SQLite は当該列を変更しない)。これで「DB 取り込み初回時刻」が保持される。
+    // `saved_at` は毎 upsert で更新される (last-touched)。
     const stmt = this.db.prepare(`
       INSERT INTO bookmarks (
         tweet_id, url, author, tweet_text, note_tweet_text, created_at,
-        x_folder_name, vault_path, session_id, saved_at,
+        x_folder_name, vault_path, session_id, saved_at, added_at,
         engagement_likes, engagement_retweets, engagement_replies
       ) VALUES (
         @tweet_id, @url, @author, @tweet_text, @note_tweet_text, @created_at,
-        @x_folder_name, @vault_path, @session_id, @saved_at,
+        @x_folder_name, @vault_path, @session_id, @saved_at, @added_at,
         @engagement_likes, @engagement_retweets, @engagement_replies
       )
       ON CONFLICT(tweet_id) DO UPDATE SET
@@ -174,6 +221,7 @@ export class XBookmarksDb {
         engagement_retweets = excluded.engagement_retweets,
         engagement_replies = excluded.engagement_replies
     `);
+    const now = new Date().toISOString();
     stmt.run({
       tweet_id: input.tweetId,
       url: input.url,
@@ -184,7 +232,8 @@ export class XBookmarksDb {
       x_folder_name: input.xFolderName ?? null,
       vault_path: input.vaultPath ?? null,
       session_id: input.sessionId ?? null,
-      saved_at: new Date().toISOString(),
+      saved_at: now,
+      added_at: now,
       engagement_likes: input.engagementLikes ?? null,
       engagement_retweets: input.engagementRetweets ?? null,
       engagement_replies: input.engagementReplies ?? null,
@@ -273,6 +322,41 @@ export class XBookmarksDb {
           'x_folder_name = COALESCE(?, x_folder_name) WHERE tweet_id = ?'
       )
       .run(input.sessionId, input.vaultPath, input.xFolderName ?? null, input.tweetId);
+  }
+
+  /**
+   * `session_id` を変えずに `vault_path` のみを書き換える。
+   * legacy migration で旧パス → `_Archived/` に bookmarks 行を rewrite する用途。
+   * `xFolderName` を渡すと同時に refresh する (現在の値を保ちたければ undefined を渡す)。
+   */
+  updateBookmarkVaultPath(input: {
+    tweetId: string;
+    vaultPath: string;
+    xFolderName?: string | null;
+  }): void {
+    this.db
+      .prepare(
+        'UPDATE bookmarks SET vault_path = ?, ' +
+          'x_folder_name = COALESCE(?, x_folder_name) WHERE tweet_id = ?'
+      )
+      .run(input.vaultPath, input.xFolderName ?? null, input.tweetId);
+  }
+
+  /**
+   * JSON エクスポート用に bookmarks 全行を読み出す。
+   * `x_bookmarks_json_export.ts` が `<vault>/<base>/.x_bookmarks.json` に書き出すための
+   * read-only スナップショット。`session_id` は Dataview 表示に不要なので返さない。
+   */
+  listBookmarksForExport(): BookmarkRow[] {
+    return this.db
+      .prepare(
+        `SELECT tweet_id, url, author, tweet_text, note_tweet_text, created_at,
+                x_folder_name, vault_path, saved_at, added_at, ai_summary,
+                engagement_likes, engagement_retweets, engagement_replies
+           FROM bookmarks
+          ORDER BY COALESCE(created_at, saved_at) DESC`
+      )
+      .all() as BookmarkRow[];
   }
 
   getFolderCounts(): { folder: string; count: number }[] {

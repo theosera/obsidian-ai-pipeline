@@ -33,6 +33,16 @@ export interface ParsedCliArgs {
   xSyncFolders: boolean;
   /** Sync Phase を抑止 (cron 等で速度優先) */
   noSync: boolean;
+  /**
+   * 旧パス `Clippings/X-Bookmarks/` を `_Archived/` に退避するワンショット移行。
+   * 2026-05 のテーブルビュー化リファクタに伴うパス移行用。
+   */
+  xMigrateLegacy: boolean;
+  /**
+   * 現行 vault フォルダ構造から `x_forced_parents.json` を自動推定し
+   * (.bak を残して) 上書き提案する。`pnpm start -- --x-derive-rules`
+   */
+  xDeriveRules: boolean;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -79,6 +89,8 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     xPick,
     xSyncFolders,
     noSync: argv.includes('--no-sync'),
+    xMigrateLegacy: argv.includes('--x-migrate-legacy'),
+    xDeriveRules: argv.includes('--x-derive-rules'),
     xLimit,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
@@ -93,6 +105,8 @@ export function printUsage(): void {
   console.error('  tsx index.ts --x-bookmarks [--x-limit=N] [--dry-run] [--no-sync]');
   console.error('  tsx index.ts --x-pick      [--x-limit=N] [--dry-run] [--no-sync]  (フォルダ対話選択)');
   console.error('  tsx index.ts --x-sync-folders        (Vault再編後 / orphan AI 判定用の手動同期)');
+  console.error('  tsx index.ts --x-migrate-legacy      (旧 Clippings/X-Bookmarks/ → _Archived/ への一度きり移行)');
+  console.error('  tsx index.ts --x-derive-rules        (vault 構造から x_forced_parents.json を自動推定)');
   console.error('  tsx index.ts --x-auth                (X OAuth 初回認証)');
   console.error('  tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
   console.error('  tsx index.ts --sync-rules            (snippets→folder_rules 同期のみ)');

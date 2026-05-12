@@ -61,6 +61,45 @@ Pull Requests. See `docs/branch-protection.md` for the full setup.
 - Chrome-extension job — isolated workspace (`--ignore-workspace`),
   independent lockfile
 
+## X bookmarks: group-page table view (2026-05)
+
+The Claude side moved from **1 MD per tweet under `Clippings/X-Bookmarks/`**
+to **1 MD per group folder under `X_Bookmarks/`**, with a sortable /
+filterable Dataview table backed by `<vault>/X_Bookmarks/.x_bookmarks.json`.
+
+Key facts to remember:
+
+- New default base: `X_Bookmarks/` (override via `X_BOOKMARKS_FOLDER`).
+  Helper: `config.ts::getXBookmarksBaseFolder()`.
+- Per-tweet MD writes are gated off for X bookmarks in
+  `pipeline/interactive.ts`. Non-X clippings (Hatena/RSS) still write
+  1 MD each via `saveMarkdown()`.
+- SQLite (`__skills/pipeline/x_bookmarks.db`) is the transactional core
+  (folder_sessions / dedupe / lifecycle). `.x_bookmarks.json` is a
+  read-only **exported view** rewritten every sync.
+- Dataview is a **project prerequisite** (community plugin). The
+  dataviewjs template lives in `x_group_page_template.ts`; group pages
+  use sentinel-bounded regeneration so user prose above/below the
+  auto block is preserved.
+- The Dataview table renders a **custom HTML `<table>`** (not
+  `dv.table()`) so column headers are clickable for ascending/descending
+  sort (Excel / Google Sheets style). Default sort: `added_at` desc.
+- SQLite has both `saved_at` (last-touched, updated every upsert) and
+  `added_at` (first-seen, **preserved on `ON CONFLICT DO UPDATE`** —
+  do NOT add `added_at` to the SET clause). The Dataview "added" column
+  is bound to `added_at`.
+- `ai_summary` column is reserved in both the JSON schema and the
+  Dataview template, but the **producer logic is deferred** to a
+  separate PR (user reserved the "logic discussion"). Do not populate
+  `ai_summary` in this codebase yet — always write `null`.
+- Folder-count invariant (enforced at sync end via
+  `x_folder_invariant.ts`): X distinct folder count == leaf folder
+  count under `X_Bookmarks/`. Mismatch logs a warning, not an error.
+- Hands-on output moved to `Permanent Note/09_X_Bookmarks/`.
+- New CLI flags: `--x-derive-rules` (auto-derive
+  `x_forced_parents.json` from current vault), `--x-migrate-legacy`
+  (one-shot move of `Clippings/X-Bookmarks/` → `_Archived/`).
+
 ## Claude-vs-Codex experiment
 
 Two independent X bookmarks implementations live side-by-side:

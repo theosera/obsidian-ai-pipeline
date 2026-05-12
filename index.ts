@@ -16,7 +16,7 @@
  *   3. ここの main() に dispatch 分岐を追加
  */
 import { parseArgs, printUsage } from './cli';
-import { loadConfig, runConfigWizard, applyConfigToEnv, setDryRun } from './config';
+import { loadConfig, runConfigWizard, applyConfigToEnv, setDryRun, getXBookmarksBaseFolder } from './config';
 import { syncRulesFromSnippets } from './sync-rules';
 import { runAuthServer } from './x_auth_server';
 import { generateHandsOn } from './hands_on_generator';
@@ -58,6 +58,46 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // --x-migrate-legacy: 旧 Clippings/X-Bookmarks/ を _Archived/ に退避するワンショット移行
+  if (args.xMigrateLegacy) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { runMigrateLegacy } = await import('./x_migrate_legacy');
+      const result = runMigrateLegacy();
+      if (result.skipped) {
+        console.log(`ℹ️  移行スキップ: ${result.reason}`);
+      } else {
+        console.log('\n📦 旧 X ブックマークパスを退避しました:');
+        console.log(`   ${result.legacyPath}`);
+        console.log(`   → ${result.archivedPath}`);
+        console.log(`   .md ファイル: ${result.filesMoved} 件`);
+        console.log(`   folder_sessions 書き換え: ${result.sessionsUpdated} 件`);
+        console.log(`   bookmarks 書き換え:       ${result.bookmarksUpdated} 件`);
+      }
+    } catch (e: any) {
+      console.error(`❌ 移行失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
+  // --x-derive-rules: vault 構造を解析して x_forced_parents.json を自動推定 (.bak 残し)
+  if (args.xDeriveRules) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { runDeriveRulesCli } = await import('./x_rule_deriver');
+      await runDeriveRulesCli({ ask: askQuestion });
+    } catch (e: any) {
+      console.error(`❌ ルール推定失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
   // --x-sync-folders: Sync Phase 単独実行 (Vault 再編後 / orphan AI 判定だけ走らせたいとき)
   if (args.xSyncFolders) {
     if (!config) config = await runConfigWizard(askQuestion);
@@ -65,7 +105,7 @@ async function main(): Promise<void> {
     try {
       const { runSyncPhase } = await import('./x_session_sync');
       const { createInteractiveOrphanResolver } = await import('./x_session_ai');
-      const baseFolder = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
+      const baseFolder = getXBookmarksBaseFolder();
       const result = await runSyncPhase({
         baseFolder,
         resolver: createInteractiveOrphanResolver(askQuestion),
@@ -77,6 +117,12 @@ async function main(): Promise<void> {
       console.log(`  ファイル再 bind: ${result.fileReassignments}`);
       console.log(`  orphan_on_x:    ${result.orphansOnX}`);
       console.log(`  orphan_on_vault: ${result.orphansOnVault}`);
+      try {
+        const { checkFolderCountInvariant, logInvariantCheck } = await import('./x_folder_invariant');
+        logInvariantCheck(checkFolderCountInvariant());
+      } catch (invErr: any) {
+        console.warn(`⚠️  Folder-count invariant チェック失敗: ${invErr.message}`);
+      }
     } catch (e: any) {
       console.error(`❌ Sync 失敗: ${e.message}`);
       process.exit(1);

@@ -39,6 +39,21 @@ export function getVaultRoot(): string {
 }
 
 // ---------------------------------------------------------------------------
+// X ブックマーク Vault 内ベースフォルダ
+//
+// 旧パス `Clippings/X-Bookmarks` は 2026-05 のテーブルビュー化リファクタで
+// 廃止され、`X_Bookmarks` 直下に集約された (詳細は plan
+// `wobbly-percolating-yeti.md`)。レガシーから移行する場合は
+// `pnpm start -- --x-migrate-legacy` で `_Archived/` に退避する。
+// `X_BOOKMARKS_FOLDER` 環境変数で上書き可能 (テスト・特殊環境用)。
+// ---------------------------------------------------------------------------
+const X_BOOKMARKS_BASE_DEFAULT = 'X_Bookmarks';
+
+export function getXBookmarksBaseFolder(): string {
+  return process.env.X_BOOKMARKS_FOLDER || X_BOOKMARKS_BASE_DEFAULT;
+}
+
+// ---------------------------------------------------------------------------
 // Dry-Run モード（renameSync 一括移動を安全にプレビュー）
 // ---------------------------------------------------------------------------
 let _dryRun = false;
