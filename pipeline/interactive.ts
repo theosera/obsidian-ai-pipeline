@@ -49,11 +49,14 @@ export async function interactiveReviewLoop(
       reviewing = false;
     } else if (cmd === '' && isPromptClosed()) {
       // stdin EOF: 非対話環境。レポートは既に生成済みなので Vault への
-      // 保存はスキップして安全に終了する。
+      // 保存はスキップして安全に終了する。`--x-resummarize-all` を伴って実行された
+      // 場合はモデル / プロンプト変更後の再要約意図が乗っているので、rescue 提案
+      // にも flag を引き継ぐ (CodeRabbit 指摘)。
+      const extraFlags = options.resummarizeAll ? ' --x-resummarize-all' : '';
       console.log('\n⚠️ stdin が閉じられました（非対話実行）。');
       console.log(`   レポートは生成済み: ${reportMdPath}`);
       console.log('   レビュー後、以下で Vault への保存を実行できます:');
-      console.log(`   pnpm start -- --rescue "${reportMdPath}"`);
+      console.log(`   pnpm start -- --rescue "${reportMdPath}"${extraFlags}`);
       reviewing = false;
     }
   }

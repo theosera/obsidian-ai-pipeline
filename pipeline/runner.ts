@@ -141,6 +141,14 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
     // すると flag が完全 no-op になる。X ブックマークモード + resummarizeAll の
     // 場合だけ regen パスを直接呼んで JSON / group ページまで一気通貫で更新する。
     if (args.xBookmarks && args.xResummarizeAll) {
+      // dry-run 時は SQLite ai_summary クリア + JSON / group MD 書き換えという
+      // 副作用を全て止める (CodeRabbit 指摘: confirmBeforeRun が「--dry-run は
+      // Vault 書き込み無し」と明示しているため、ここも整合させる)。
+      if (args.dryRun) {
+        console.log('\n🧪 --dry-run: --x-resummarize-all の再生成はスキップしました。');
+        closeDb();
+        return;
+      }
       console.log('\n🔄 新規ブックマーク 0 件 — --x-resummarize-all で既存要約を再生成します。');
       try {
         await regenerateXBookmarkArtifacts({
