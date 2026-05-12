@@ -43,6 +43,12 @@ export interface ParsedCliArgs {
    * (.bak を残して) 上書き提案する。`pnpm start -- --x-derive-rules`
    */
   xDeriveRules: boolean;
+  /**
+   * `--x-bookmarks` 時に AI 要約を全件再生成する (`bookmarks.ai_summary` を
+   * 一旦全 NULL にしてから summarize を走らせる)。モデル変更やプロンプト改善
+   * を反映したいときの opt-in 再要約。
+   */
+  xResummarizeAll: boolean;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -91,6 +97,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     noSync: argv.includes('--no-sync'),
     xMigrateLegacy: argv.includes('--x-migrate-legacy'),
     xDeriveRules: argv.includes('--x-derive-rules'),
+    xResummarizeAll: argv.includes('--x-resummarize-all'),
     xLimit,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
@@ -107,6 +114,7 @@ export function printUsage(): void {
   console.error('  tsx index.ts --x-sync-folders        (Vault再編後 / orphan AI 判定用の手動同期)');
   console.error('  tsx index.ts --x-migrate-legacy      (旧 Clippings/X-Bookmarks/ → _Archived/ への一度きり移行)');
   console.error('  tsx index.ts --x-derive-rules        (vault 構造から x_forced_parents.json を自動推定)');
+  console.error('  tsx index.ts --x-bookmarks --x-resummarize-all  (AI 要約を全件再生成)');
   console.error('  tsx index.ts --x-auth                (X OAuth 初回認証)');
   console.error('  tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
   console.error('  tsx index.ts --sync-rules            (snippets→folder_rules 同期のみ)');

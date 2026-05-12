@@ -88,10 +88,17 @@ Key facts to remember:
   `added_at` (first-seen, **preserved on `ON CONFLICT DO UPDATE`** —
   do NOT add `added_at` to the SET clause). The Dataview "added" column
   is bound to `added_at`.
-- `ai_summary` column is reserved in both the JSON schema and the
-  Dataview template, but the **producer logic is deferred** to a
-  separate PR (user reserved the "logic discussion"). Do not populate
-  `ai_summary` in this codebase yet — always write `null`.
+- `ai_summary` column is populated by `x_bookmarks_summarizer.ts` at the
+  end of `--x-bookmarks` sync (inline, before JSON export + group MD
+  regeneration). Output is **always Japanese, 200 graphemes max, single
+  line**. Provider plumbing is shared with `classifier.ts` via
+  `askAIText()` and uses `taskType: 'fast'` (Haiku 4.5 / GPT-5.4 mini /
+  Gemini 3.1 Flash-Lite / local — `AI_PROVIDER` env). Already-filled
+  rows are skipped (`ai_summary IS NULL` filter). Use
+  `pnpm start -- --x-bookmarks --x-resummarize-all` to clear and
+  re-generate all summaries after a model / prompt change. Failed
+  rows stay `NULL` and are retried on next sync (best-effort, never
+  throws).
 - Folder-count invariant (enforced at sync end via
   `x_folder_invariant.ts`): X distinct folder count == leaf folder
   count under `X_Bookmarks/`. Mismatch logs a warning, not an error.

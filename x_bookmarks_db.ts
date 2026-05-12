@@ -347,6 +347,38 @@ export class XBookmarksDb {
    * `x_bookmarks_json_export.ts` が `<vault>/<base>/.x_bookmarks.json` に書き出すための
    * read-only スナップショット。`session_id` は Dataview 表示に不要なので返さない。
    */
+  /**
+   * AI 要約待ち (ai_summary IS NULL かつ tweet_text が空でない) の行を返す。
+   * x_bookmarks_summarizer.ts が sync 末尾でこれをループして埋める。
+   */
+  listPendingAiSummaries(): Pick<BookmarkRow, 'tweet_id' | 'tweet_text' | 'note_tweet_text'>[] {
+    return this.db
+      .prepare(
+        `SELECT tweet_id, tweet_text, note_tweet_text
+           FROM bookmarks
+          WHERE ai_summary IS NULL
+            AND (tweet_text IS NOT NULL OR note_tweet_text IS NOT NULL)
+          ORDER BY COALESCE(created_at, saved_at) DESC`
+      )
+      .all() as Pick<BookmarkRow, 'tweet_id' | 'tweet_text' | 'note_tweet_text'>[];
+  }
+
+  /** 単一 tweet の ai_summary を更新 (NULL で消去も可能)。 */
+  setAiSummary(tweetId: string, summary: string | null): void {
+    this.db
+      .prepare('UPDATE bookmarks SET ai_summary = ? WHERE tweet_id = ?')
+      .run(summary, tweetId);
+  }
+
+  /**
+   * 全行の ai_summary を NULL に戻す。`--x-resummarize-all` 用。
+   * 戻り値は影響行数。
+   */
+  clearAllAiSummaries(): number {
+    const info = this.db.prepare('UPDATE bookmarks SET ai_summary = NULL').run();
+    return info.changes;
+  }
+
   listBookmarksForExport(): BookmarkRow[] {
     return this.db
       .prepare(

@@ -21,6 +21,7 @@ import { loadForcedParents, loadApprovedMappings } from '../x_folder_mapper';
 import { runSyncPhase } from '../x_session_sync';
 import { createInteractiveOrphanResolver } from '../x_session_ai';
 import { checkFolderCountInvariant, logInvariantCheck } from '../x_folder_invariant';
+import { getDb } from '../x_bookmarks_db';
 
 /**
  * X API ブックマーク専用のベースフォルダ。
@@ -50,6 +51,16 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
     console.error('Usage: tsx index.ts <path-to-onetab.txt>');
     console.error('   or: tsx index.ts --x-bookmarks [--x-limit=N]');
     process.exit(1);
+  }
+
+  // === -1. Opt-in: AI 要約の全件再生成 (sync より前に DB を NULL に揃える) ===
+  if (args.xBookmarks && args.xResummarizeAll) {
+    try {
+      const cleared = getDb().clearAllAiSummaries();
+      console.log(`🧹 --x-resummarize-all: ${cleared} 件の ai_summary を NULL に戻しました (sync 末尾で再生成)`);
+    } catch (e: any) {
+      console.warn(`⚠️  ai_summary クリア失敗 (続行): ${e.message}`);
+    }
   }
 
   // === 0. Sync Phase (X bookmarks モードの先頭で必ず走る・--no-sync で抑止) ===
