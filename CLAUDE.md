@@ -99,6 +99,19 @@ Key facts to remember:
   re-generate all summaries after a model / prompt change. Failed
   rows stay `NULL` and are retried on next sync (best-effort, never
   throws).
+- **Execution mode auto-switches by `AI_PROVIDER`** (no extra CLI flag):
+  - `local` → **batch** mode: 10 posts packed into one prompt expecting
+    `{"summaries": [...]}` JSON, processed sequentially. LM Studio's
+    per-call overhead dominates, so batching is much faster overall.
+    Batch is **all-or-nothing** — JSON parse failure / count mismatch
+    leaves the whole chunk `NULL` for next-sync retry (avoids partial
+    misalignment).
+  - cloud (`anthropic` / `openai` / `gemini`) → **inline** mode:
+    1 post = 1 call, 3-way concurrent. Cloud APIs benefit from
+    parallelism and short outputs reduce hallucination risk.
+  - Override via `mode: 'inline' | 'batch'` option on
+    `summarizePendingBookmarks` (used by tests; no CLI flag exposed
+    to keep the user-facing surface minimal).
 - Folder-count invariant (enforced at sync end via
   `x_folder_invariant.ts`): X distinct folder count == leaf folder
   count under `X_Bookmarks/`. Mismatch logs a warning, not an error.

@@ -2839,6 +2839,9 @@ body
         truncateSummary,
         summarizeOnePost,
         summarizePendingBookmarks,
+        summarizeBatchPosts,
+        parseBatchResponse,
+        resolveMode,
       } = await import('../x_bookmarks_summarizer');
 
       runner.test('truncateSummary: 200 文字以内ならそのまま', () => {
@@ -2926,6 +2929,7 @@ body
         let calls = 0;
         const stats = await summarizePendingBookmarks({
           db,
+          mode: 'inline',
           concurrency: 2,
           silent: true,
           callAi: async (prompt) => {
@@ -2966,6 +2970,7 @@ body
 
         const stats = await summarizePendingBookmarks({
           db,
+          mode: 'inline',
           silent: true,
           callAi: async (prompt) => prompt.includes('失敗ケース') ? null : '要約結果',
         });
@@ -2993,6 +2998,7 @@ body
 
         const stats = await summarizePendingBookmarks({
           db,
+          mode: 'inline',
           silent: true,
           resummarizeAll: true,
           callAi: async () => '新しいモデルでの要約',
@@ -3020,6 +3026,7 @@ body
         db.setAiSummary('x', '既存要約');
         await summarizePendingBookmarks({
           db,
+          mode: 'inline',
           silent: true,
           resummarizeAll: true,
           callAi: async () => null,
@@ -3075,6 +3082,7 @@ body
         const result = await Promise.race([
           summarizePendingBookmarks({
             db,
+            mode: 'inline',
             silent: true,
             concurrency: 0,
             callAi: async () => 'OK',
@@ -3095,6 +3103,207 @@ body
         assert.strictEqual(cleared, 2);
         const rows = db.listBookmarksForExport();
         for (const r of rows) assert.strictEqual(r.ai_summary, null);
+        db.close();
+      });
+
+      // -----------------------------------------------------
+      // Batch (Local) モード
+      // -----------------------------------------------------
+
+      runner.test('resolveMode: AI_PROVIDER=local → batch / 他 → inline', () => {
+        assert.strictEqual(resolveMode(undefined, 'local'), 'batch');
+        assert.strictEqual(resolveMode(undefined, undefined), 'batch', 'デフォルトは local 扱い → batch');
+        assert.strictEqual(resolveMode(undefined, 'anthropic'), 'inline');
+        assert.strictEqual(resolveMode(undefined, 'openai'), 'inline');
+        assert.strictEqual(resolveMode(undefined, 'gemini'), 'inline');
+        // 明示指定が最優先
+        assert.strictEqual(resolveMode('inline', 'local'), 'inline', '明示 inline は local でも上書き');
+        assert.strictEqual(resolveMode('batch', 'anthropic'), 'batch', '明示 batch は anthropic でも上書き');
+      });
+
+      runner.test('parseBatchResponse: 正常な JSON を配列で返す', () => {
+        const out = parseBatchResponse('{"summaries":["a","b","c"]}', 3);
+        assert.deepStrictEqual(out, ['a', 'b', 'c']);
+      });
+
+      runner.test('parseBatchResponse: コードフェンスや前置きを剥がして抽出', () => {
+        // Local モデルがやりがちな出力 (説明文 + ```json ... ```)
+        const raw = 'はい、要約しました:\n```json\n{"summaries":["要約1","要約2"]}\n```\n';
+        assert.deepStrictEqual(parseBatchResponse(raw, 2), ['要約1', '要約2']);
+      });
+
+      runner.test('parseBatchResponse: 件数ミスマッチは null', () => {
+        assert.strictEqual(parseBatchResponse('{"summaries":["a","b"]}', 3), null);
+      });
+
+      runner.test('parseBatchResponse: JSON 不正 / 形不正は null', () => {
+        assert.strictEqual(parseBatchResponse('not json at all', 1), null);
+        assert.strictEqual(parseBatchResponse('{"summaries": "not array"}', 1), null);
+        assert.strictEqual(parseBatchResponse('{"foo": ["a"]}', 1), null, 'summaries キー無し');
+        assert.strictEqual(parseBatchResponse('{"summaries":[1,2]}', 2), null, '非 string 要素');
+      });
+
+      await runner.testAsync('summarizeBatchPosts: 1 回の callAi で全件分の要約が返る', async () => {
+        let callCount = 0;
+        const out = await summarizeBatchPosts(
+          [
+            { tweet_id: 't1', text: '本文 1' },
+            { tweet_id: 't2', text: '本文 2' },
+            { tweet_id: 't3', text: '本文 3' },
+          ],
+          {
+            callAi: async () => {
+              callCount++;
+              return '{"summaries":["要約1","要約2","要約3"]}';
+            },
+          }
+        );
+        assert.strictEqual(callCount, 1, 'バッチは 1 呼出のみ');
+        assert.deepStrictEqual(out, ['要約1', '要約2', '要約3']);
+      });
+
+      await runner.testAsync('summarizeBatchPosts: JSON 不正なら全件 null (バッチ単位 all-or-nothing)', async () => {
+        const out = await summarizeBatchPosts(
+          [
+            { tweet_id: 't1', text: '本文 1' },
+            { tweet_id: 't2', text: '本文 2' },
+          ],
+          { callAi: async () => 'totally broken response' }
+        );
+        assert.deepStrictEqual(out, [null, null]);
+      });
+
+      await runner.testAsync('summarizeBatchPosts: callAi が null なら全件 null', async () => {
+        const out = await summarizeBatchPosts(
+          [{ tweet_id: 't1', text: '本文' }],
+          { callAi: async () => null }
+        );
+        assert.deepStrictEqual(out, [null]);
+      });
+
+      await runner.testAsync('summarizeBatchPosts: 各要素も 200 文字に切詰', async () => {
+        const long = 'あ'.repeat(500);
+        const out = await summarizeBatchPosts(
+          [{ tweet_id: 't1', text: '本文' }],
+          { callAi: async () => `{"summaries":[${JSON.stringify(long)}]}` }
+        );
+        assert.ok(out[0]);
+        assert.strictEqual(Array.from(out[0]!).length, 200);
+      });
+
+      await runner.testAsync('summarizePendingBookmarks (batch): 12 件は 10+2 の 2 バッチで処理', async () => {
+        const db = new XBookmarksDb(':memory:');
+        for (let i = 0; i < 12; i++) {
+          db.upsertBookmark({
+            tweetId: `b${i}`,
+            url: `https://x.com/u/status/${i}`,
+            tweetText: `本文 ${i}`,
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+        }
+        let calls = 0;
+        const sizes: number[] = [];
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'batch',
+          batchSize: 10,
+          silent: true,
+          callAi: async (prompt) => {
+            calls++;
+            // 区切りの `---` を数えて期待件数を逆算 (n-1 個の区切り)
+            const n = prompt.split('\n---\n').length;
+            sizes.push(n);
+            const summaries = Array.from({ length: n }, (_, i) => `要約-${calls}-${i}`);
+            return JSON.stringify({ summaries });
+          },
+        });
+        assert.strictEqual(calls, 2, 'バッチ呼出は 2 回');
+        assert.deepStrictEqual(sizes.slice().sort((a, b) => a - b), [2, 10], '10 件 + 2 件のチャンク');
+        assert.strictEqual(stats.succeeded, 12);
+        assert.strictEqual(stats.failed, 0);
+        const rows = db.listBookmarksForExport();
+        for (const r of rows) {
+          assert.ok(r.ai_summary && r.ai_summary.startsWith('要約-'), `${r.tweet_id} 要約済み`);
+        }
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks (batch): 不正レスポンスのバッチは全件 NULL のまま (再挑戦可)', async () => {
+        const db = new XBookmarksDb(':memory:');
+        for (let i = 0; i < 5; i++) {
+          db.upsertBookmark({
+            tweetId: `r${i}`,
+            url: `https://x.com/u/status/${i}`,
+            tweetText: `本文 ${i}`,
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+        }
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'batch',
+          batchSize: 10,
+          silent: true,
+          callAi: async () => 'broken non-json',
+        });
+        assert.strictEqual(stats.succeeded, 0);
+        assert.strictEqual(stats.failed, 5);
+        const rows = db.listBookmarksForExport();
+        for (const r of rows) assert.strictEqual(r.ai_summary, null);
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks (batch): 1 つ目失敗・2 つ目成功は独立 (バッチ間は影響しない)', async () => {
+        const db = new XBookmarksDb(':memory:');
+        for (let i = 0; i < 6; i++) {
+          db.upsertBookmark({
+            tweetId: `m${i}`,
+            url: `https://x.com/u/status/${i}`,
+            tweetText: `本文 ${i}`,
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+        }
+        let batchIdx = 0;
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'batch',
+          batchSize: 3,
+          silent: true,
+          callAi: async (prompt) => {
+            batchIdx++;
+            const n = prompt.split('\n---\n').length;
+            if (batchIdx === 1) return 'broken'; // 1 バッチ目だけ壊す
+            const summaries = Array.from({ length: n }, (_, i) => `s${batchIdx}-${i}`);
+            return JSON.stringify({ summaries });
+          },
+        });
+        assert.strictEqual(stats.succeeded, 3, '2 バッチ目の 3 件は成功');
+        assert.strictEqual(stats.failed, 3, '1 バッチ目の 3 件は失敗 → NULL のまま');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks (batch): batchSize=0 でもクランプされ無限ループしない', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'clamp1',
+          url: 'https://x.com/u/status/1',
+          tweetText: 'clamp',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        const result = await Promise.race([
+          summarizePendingBookmarks({
+            db,
+            mode: 'batch',
+            batchSize: 0,
+            silent: true,
+            callAi: async () => '{"summaries":["ok"]}',
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+        ]);
+        assert.strictEqual(result.succeeded, 1);
         db.close();
       });
     }
