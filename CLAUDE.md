@@ -170,6 +170,24 @@ workspace package (root + apps/* + packages/*) inherits via `catalog:`
 references in their own `package.json`. Chrome-extension is intentionally
 outside the catalog (isolated workspace).
 
+## Secrets / sensitive files — never commit
+
+`.gitignore` で除外済みだが、後追いで既追跡化される事故を避けるため明示する:
+
+- **絶対に `git add` / commit しないファイル**:
+  - `.env` / `.env.*` (`.env.example` だけ allow)
+  - `<vault>/__skills/pipeline/x_tokens.json` (X OAuth refresh token)
+  - `pipeline_config.json` の API キーを含む派生バージョン
+  - `*.key` / `*.pem` / `credentials*.json`
+- **`git add -A` / `git add .` は使わない** — 具体的なファイル名を列挙する
+  (誤って untracked secrets を巻き込む事故を避ける)。本リポジトリの commit
+  ワークフローは `git add classifier.ts cli.ts ...` のように個別指定で揃える
+- 既追跡の secret を発見した場合: `git rm --cached <file>` で index から外し、
+  必要なら history を `git filter-repo` で消す。public push 済みなら **キーは
+  即時 rotate** (gitignore 追加だけでは漏洩は止まらない)
+- `--no-verify` で commit hook をスキップしない (secret-scan hook が将来入る
+  ことを想定し、bypass 文化を作らない)
+
 ## Branch naming
 
 - `claude/<short-kebab-description>` for Claude-authored branches
