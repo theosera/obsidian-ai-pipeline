@@ -32,6 +32,7 @@
 
 import { askAIText } from './classifier';
 import { getDb, XBookmarksDb } from './x_bookmarks_db';
+import type { AiProvider } from './types';
 
 const SYSTEM_PROMPT = [
   '与えられた X (Twitter) のポスト本文を日本語で要約してください。',
@@ -79,10 +80,21 @@ interface SummarizeOptions {
   /** バッチ 1 回あたりの最大ポスト件数 (batch モードのみ)。デフォルト 10。 */
   batchSize?: number;
   /**
-   * 実行モード。デフォルト 'auto' (AI_PROVIDER から自動判定)。
+   * 実行モード。デフォルト 'auto' (provider から自動判定: local → batch / 他 → inline)。
    * テストや実験での明示指定用。
    */
   mode?: SummarizeMode;
+  /**
+   * X 要約 dedicated provider (classifier の AI_PROVIDER 環境変数とは独立)。
+   * 未指定なら `process.env.AI_PROVIDER` ('local' fallback) を使う = 旧挙動互換。
+   * 通常は `pipeline_config.json::xSummary.provider` から渡される。
+   */
+  provider?: AiProvider;
+  /**
+   * provider に応じたモデル ID 上書き。未指定なら provider の env デフォルトを使う。
+   * 通常は `pipeline_config.json::xSummary.model` から渡される。
+   */
+  model?: string;
   /** テスト注入用: askAIText の代わりに使う関数。 */
   callAi?: (prompt: string, system: string) => Promise<string | null>;
   /** 進捗ログを抑止 (テスト用) */
@@ -96,7 +108,7 @@ interface SummarizeOptions {
   resummarizeAll?: boolean;
 }
 
-/** AI_PROVIDER から実行モードを決定 (auto 解決)。 */
+/** provider から実行モードを決定 (auto 解決)。 */
 export function resolveMode(mode: SummarizeMode | undefined, provider: string | undefined): 'inline' | 'batch' {
   if (mode === 'inline' || mode === 'batch') return mode;
   return (provider ?? 'local') === 'local' ? 'batch' : 'inline';
@@ -123,12 +135,22 @@ export function truncateSummary(text: string, max: number = MAX_SUMMARY_CHARS): 
 
 /**
  * 単一ポストを要約。失敗時 null。テストから直接叩けるよう export。
+ *
+ * provider / model は `--x-bookmarks` 経由なら `pipeline_config.json::xSummary`
+ * から渡される (cloud=Anthropic Haiku 4.5 がデフォルトのデフォルト)。
  */
 export async function summarizeOnePost(
   text: string,
-  options: { callAi?: (prompt: string, system: string) => Promise<string | null> } = {}
+  options: {
+    callAi?: (prompt: string, system: string) => Promise<string | null>;
+    provider?: AiProvider;
+    model?: string;
+  } = {}
 ): Promise<string | null> {
-  const call = options.callAi ?? ((p, s) => askAIText(p, s, 'fast', 400));
+  const call = options.callAi ?? ((p, s) => askAIText(p, s, 'fast', 400, {
+    provider: options.provider,
+    model: options.model,
+  }));
   const raw = await call(text, SYSTEM_PROMPT);
   if (!raw) return null;
   const truncated = truncateSummary(raw);
@@ -178,11 +200,18 @@ export function parseBatchResponse(raw: string, expectedCount: number): string[]
  */
 export async function summarizeBatchPosts(
   items: Array<{ tweet_id: string; text: string }>,
-  options: { callAi?: (prompt: string, system: string) => Promise<string | null> } = {}
+  options: {
+    callAi?: (prompt: string, system: string) => Promise<string | null>;
+    provider?: AiProvider;
+    model?: string;
+  } = {}
 ): Promise<Array<string | null>> {
   if (items.length === 0) return [];
   const call = options.callAi
-    ?? ((p, s) => askAIText(p, s, 'fast', BATCH_TOKENS_PER_ITEM * items.length));
+    ?? ((p, s) => askAIText(p, s, 'fast', BATCH_TOKENS_PER_ITEM * items.length, {
+      provider: options.provider,
+      model: options.model,
+    }));
   // 各ポストを `[N] 本文` で連結。区切りは `---` 行。
   const userPrompt = items
     .map((it, i) => `[${i + 1}]\n${it.text}`)
@@ -210,7 +239,11 @@ export async function summarizePendingBookmarks(
   const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
   const callAi = options.callAi;
   const silent = options.silent ?? false;
-  const mode = resolveMode(options.mode, process.env.AI_PROVIDER);
+  // X 要約は dedicated provider (xSummary.provider) を優先し、未指定なら
+  // 旧挙動互換で AI_PROVIDER env を見る (classifier と共通の経路)。
+  const provider = options.provider ?? (process.env.AI_PROVIDER as AiProvider | undefined);
+  const model = options.model;
+  const mode = resolveMode(options.mode, provider);
 
   // 全件再要約: ここで NULL に戻す (この関数の中で再生成までやり切るので
   // ユーザー中止や 0 件処理で「クリアだけされて再生成されない」事故が起きない)
@@ -231,7 +264,8 @@ export async function summarizePendingBookmarks(
     const detail = mode === 'batch'
       ? `バッチ ${batchSize} 件/回 順次 (Local モデル向け)`
       : `${concurrency} 並列 (per-tweet)`;
-    console.log(`🤖 AI 要約を ${pending.length} 件 ${detail} で生成します...`);
+    const target = `${provider ?? 'local'}${model ? ` / ${model}` : ''}`;
+    console.log(`🤖 AI 要約を ${pending.length} 件 ${detail} で生成します (${target})...`);
   }
 
   if (mode === 'batch') {
@@ -248,7 +282,10 @@ export async function summarizePendingBookmarks(
       stats.failed += empties.length;
 
       if (fillable.length > 0) {
-        const summaries = await summarizeBatchPosts(fillable, callAi ? { callAi } : undefined);
+        const summaries = await summarizeBatchPosts(
+          fillable,
+          callAi ? { callAi } : { provider, model }
+        );
         for (let j = 0; j < fillable.length; j++) {
           const s = summaries[j];
           if (s) {
@@ -274,7 +311,10 @@ export async function summarizePendingBookmarks(
       chunk.map(async row => {
         const text = (row.note_tweet_text ?? row.tweet_text ?? '').trim();
         if (!text) return { tweet_id: row.tweet_id, ok: false };
-        const summary = await summarizeOnePost(text, callAi ? { callAi } : undefined);
+        const summary = await summarizeOnePost(
+          text,
+          callAi ? { callAi } : { provider, model }
+        );
         if (summary) {
           db.setAiSummary(row.tweet_id, summary);
           return { tweet_id: row.tweet_id, ok: true };

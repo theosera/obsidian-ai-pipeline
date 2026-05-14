@@ -49,6 +49,12 @@ export interface ParsedCliArgs {
    * を反映したいときの opt-in 再要約。
    */
   xResummarizeAll: boolean;
+  /**
+   * X 要約の provider / model を再選択するウィザードを起動 (`--x-bookmarks` と
+   * 併用)。初回 `--x-bookmarks` 実行時は xSummary 未保存なら自動でウィザードが
+   * 走るので、このフラグは「保存済みの設定を変えたい」とき専用。
+   */
+  xSummaryReconfig: boolean;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -98,6 +104,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     xMigrateLegacy: argv.includes('--x-migrate-legacy'),
     xDeriveRules: argv.includes('--x-derive-rules'),
     xResummarizeAll: argv.includes('--x-resummarize-all'),
+    xSummaryReconfig: argv.includes('--x-summary-reconfig'),
     xLimit,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
@@ -115,6 +122,7 @@ export function printUsage(): void {
   console.error('  tsx index.ts --x-migrate-legacy      (旧 Clippings/X-Bookmarks/ → _Archived/ への一度きり移行)');
   console.error('  tsx index.ts --x-derive-rules        (vault 構造から x_forced_parents.json を自動推定)');
   console.error('  tsx index.ts --x-bookmarks --x-resummarize-all  (AI 要約を全件再生成)');
+  console.error('  tsx index.ts --x-bookmarks --x-summary-reconfig (AI 要約の provider / model を再選択)');
   console.error('  tsx index.ts --x-auth                (X OAuth 初回認証)');
   console.error('  tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
   console.error('  tsx index.ts --sync-rules            (snippets→folder_rules 同期のみ)');

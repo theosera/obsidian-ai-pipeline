@@ -5,14 +5,15 @@ import { getKnownUrls, updateVaultTreeSnapshot } from '../storage';
 import { tokenUsageMetrics } from '../classifier';
 import { loadFolderRules, updateThresholds, getRoutedPath } from '../router';
 import { getVaultRoot, getXBookmarksBaseFolder } from '../config';
-import { ProcessingResult } from '../types';
+import { ProcessingResult, PipelineConfig } from '../types';
 import { ParsedCliArgs } from '../cli';
 import { ParsedEntry, FailureRecord } from './types';
 import { readOneTabFile } from './input_onetab';
 import { prepareXBookmarks } from './input_x_bookmarks';
 import { processEntries } from './processor';
 import { generateReport } from './report';
-import { interactiveReviewLoop } from './interactive';
+import { interactiveReviewLoop, regenerateXBookmarkArtifacts } from './interactive';
+import { closeDb } from '../x_bookmarks_db';
 import { askQuestion } from './prompt';
 import { listFolders } from '../x_bookmarks_api';
 import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
@@ -42,7 +43,7 @@ const X_BOOKMARKS_BASE_FOLDER = getXBookmarksBaseFolder();
  *
  * 上位 (index.ts) は CLI 引数に応じて当関数を呼ぶだけで、パイプライン全体が完結する。
  */
-export async function runPipeline(args: ParsedCliArgs): Promise<void> {
+export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig): Promise<void> {
   const { REPORTS_DIR, INTERNAL_LOGS_DIR } = setupOutputDirs();
   updateVaultTreeSnapshot();
 
@@ -135,6 +136,30 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   writeFailureLog(failures, INTERNAL_LOGS_DIR, sourceTag, dateStr);
 
   if (results.length === 0) {
+    // `--x-resummarize-all` の本来の用途 (モデル / プロンプト変更後の既存要約の
+    // 全件再生成) では「新規 0 件 + 全件再要約」が常態のため、ここで早期 return
+    // すると flag が完全 no-op になる。X ブックマークモード + resummarizeAll の
+    // 場合だけ regen パスを直接呼んで JSON / group ページまで一気通貫で更新する。
+    if (args.xBookmarks && args.xResummarizeAll) {
+      // dry-run 時は SQLite ai_summary クリア + JSON / group MD 書き換えという
+      // 副作用を全て止める (CodeRabbit 指摘: confirmBeforeRun が「--dry-run は
+      // Vault 書き込み無し」と明示しているため、ここも整合させる)。
+      if (args.dryRun) {
+        console.log('\n🧪 --dry-run: --x-resummarize-all の再生成はスキップしました。');
+        closeDb();
+        return;
+      }
+      console.log('\n🔄 新規ブックマーク 0 件 — --x-resummarize-all で既存要約を再生成します。');
+      try {
+        await regenerateXBookmarkArtifacts({
+          xSummary: config?.xSummary,
+          resummarizeAll: true,
+        });
+      } finally {
+        closeDb();
+      }
+      return;
+    }
     console.log('\nNo items were successfully processed. Exiting.');
     return;
   }
@@ -148,6 +173,7 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
   await interactiveReviewLoop(results, reportPath, {
     resummarizeAll: args.xResummarizeAll,
+    xSummary: config?.xSummary,
   });
 }
 

@@ -395,28 +395,53 @@ async function askAI(prompt: string, systemContext: string = 'Respond exactly wi
  *
  * @returns 成功時は LLM のテキスト出力 (trim 済み)、失敗時は null
  */
+/**
+ * `askAIText` の振る舞いを呼出側から上書きするオプション。
+ *
+ * 主用途は X ブックマーク要約 (`x_bookmarks_summarizer`) の per-call 制御:
+ *   - `provider` を上書きすることで AI_PROVIDER 環境変数 (= 分類フェーズの設定)
+ *     から独立した経路にルーティングできる
+ *   - `model` を上書きすることで preset 以外のモデル ID も叩ける
+ *
+ * どちらも未指定なら従来挙動 (env から解決)。
+ */
+export interface AskAITextOverride {
+  provider?: 'local' | 'anthropic' | 'openai' | 'gemini';
+  model?: string;
+}
+
 export async function askAIText(
   prompt: string,
   systemContext: string,
   taskType: 'fast' | 'smart' = 'fast',
-  maxTokens: number = 400
+  maxTokens: number = 400,
+  override: AskAITextOverride = {}
 ): Promise<string | null> {
-  const provider = process.env.AI_PROVIDER || 'local';
+  const provider = override.provider ?? process.env.AI_PROVIDER ?? 'local';
 
   // 各プロバイダのクライアント/キーが欠けている場合は早期 null。
   // `askAI` (classification) は anthropic フォールバックを持つが、`askAIText`
   // (短文要約等) は **明示的に「fallback 無し」契約** にしている (関数ドキュメント参照)。
   // ここで黙って local 経由にすると、ユーザーが意図したプロバイダと別経路に
   // データが流れる事故が起きるため、設定不備は呼出側で検知できるよう null を返す。
-  if (provider === 'openai' && !openaiClient) return null;
-  if (provider === 'gemini' && !geminiClient) return null;
-  if ((provider === 'anthropic' || provider === 'claude') && !anthropic.apiKey) return null;
+  if (provider === 'openai' && !openaiClient) {
+    console.warn('[askAIText] OPENAI_API_KEY が未設定です。pnpm start -- --x-summary-reconfig で別 provider に切替できます。');
+    return null;
+  }
+  if (provider === 'gemini' && !geminiClient) {
+    console.warn('[askAIText] GEMINI_API_KEY が未設定です。pnpm start -- --x-summary-reconfig で別 provider に切替できます。');
+    return null;
+  }
+  if ((provider === 'anthropic' || provider === 'claude') && !anthropic.apiKey) {
+    console.warn('[askAIText] ANTHROPIC_API_KEY が未設定です。pnpm start -- --x-summary-reconfig で別 provider に切替できます。');
+    return null;
+  }
 
   try {
     if (provider === 'openai' && openaiClient) {
-      const model = taskType === 'smart'
+      const model = override.model ?? (taskType === 'smart'
         ? (process.env.OPENAI_SMART_MODEL || 'gpt-4o')
-        : (process.env.OPENAI_FAST_MODEL || 'gpt-4o-mini');
+        : (process.env.OPENAI_FAST_MODEL || 'gpt-4o-mini'));
       const response = await openaiClient.chat.completions.create({
         model,
         max_tokens: maxTokens,
@@ -431,9 +456,9 @@ export async function askAIText(
     }
 
     if (provider === 'gemini' && geminiClient) {
-      const model = taskType === 'smart'
+      const model = override.model ?? (taskType === 'smart'
         ? (process.env.GEMINI_SMART_MODEL || 'gemini-2.5-pro')
-        : (process.env.GEMINI_FAST_MODEL || 'gemini-2.5-flash');
+        : (process.env.GEMINI_FAST_MODEL || 'gemini-2.5-flash'));
       const response = await geminiClient.chat.completions.create({
         model,
         max_tokens: maxTokens,
@@ -448,9 +473,9 @@ export async function askAIText(
     }
 
     if ((provider === 'anthropic' || provider === 'claude') && anthropic.apiKey) {
-      const model = taskType === 'smart'
+      const model = override.model ?? (taskType === 'smart'
         ? (process.env.ANTHROPIC_SMART_MODEL || 'claude-sonnet-4-6')
-        : (process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5-20251001');
+        : (process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5-20251001'));
       const response = await anthropic.messages.create({
         model,
         max_tokens: maxTokens,
@@ -467,9 +492,9 @@ export async function askAIText(
     // Default: explicit local provider only (未知の provider 名で local に流すと
     // ユーザーの意図とズレるため、明示的に 'local' のときだけ実行)
     if (provider !== 'local') return null;
-    const model = taskType === 'smart'
+    const model = override.model ?? (taskType === 'smart'
       ? (process.env.LOCAL_AI_SMART_MODEL || process.env.LOCAL_AI_MODEL || 'local-model')
-      : (process.env.LOCAL_AI_FAST_MODEL || process.env.LOCAL_AI_MODEL || 'local-model');
+      : (process.env.LOCAL_AI_FAST_MODEL || process.env.LOCAL_AI_MODEL || 'local-model'));
     const response = await localAI.chat.completions.create({
       model,
       max_tokens: maxTokens,
