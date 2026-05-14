@@ -52,6 +52,11 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
     process.exit(1);
   }
 
+  // `--x-resummarize-all` のクリア処理はここでは行わない。
+  // ユーザーが confirmation で中止 / 処理 0 件の場合に「summary だけ消えて
+  // 再生成されない」事故を防ぐため、x_bookmarks_summarizer.ts の中で
+  // クリアと再生成をアトミックに実行する (interactive.ts から呼ばれる)。
+
   // === 0. Sync Phase (X bookmarks モードの先頭で必ず走る・--no-sync で抑止) ===
   if (args.xBookmarks && !args.noSync) {
     try {
@@ -141,7 +146,9 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   const reportLabel = args.xBookmarks ? 'X-Bookmarks' : 'OneTab';
   const reportPath = path.join(REPORTS_DIR, `${reportLabel}分類結果レポート-${dateStr}.md`);
   fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
-  await interactiveReviewLoop(results, reportPath);
+  await interactiveReviewLoop(results, reportPath, {
+    resummarizeAll: args.xResummarizeAll,
+  });
 }
 
 /**

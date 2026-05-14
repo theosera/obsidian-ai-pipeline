@@ -347,6 +347,49 @@ export class XBookmarksDb {
    * `x_bookmarks_json_export.ts` が `<vault>/<base>/.x_bookmarks.json` に書き出すための
    * read-only スナップショット。`session_id` は Dataview 表示に不要なので返さない。
    */
+  /**
+   * AI 要約待ち (ai_summary IS NULL かつ tweet_text が空でない) の行を返す。
+   * x_bookmarks_summarizer.ts が sync 末尾でこれをループして埋める。
+   */
+  listPendingAiSummaries(): Pick<BookmarkRow, 'tweet_id' | 'tweet_text' | 'note_tweet_text'>[] {
+    // `IS NOT NULL` だけだと `''` や空白だけの行を毎 sync で取り直して LLM を
+    // 無駄に叩いてしまう (LLM は空文字に対して NULL を返し、その行は再度 pending
+    // のループに戻る = 無限リトライ)。TRIM 後に長さ > 0 を要求して弾く。
+    //
+    // 注意: SQLite の `TRIM(x)` (第二引数省略) は **半角スペース (0x20) しか
+    // 剥がさない**。`\t \n \r` を含む whitespace-only な本文は素通りしてしまうので、
+    // 第二引数で除去対象を明示する。 ` \t\n\r` (32, 9, 10, 13) をカバー。
+    const WS = " \t\n\r";
+    return this.db
+      .prepare(
+        `SELECT tweet_id, tweet_text, note_tweet_text
+           FROM bookmarks
+          WHERE ai_summary IS NULL
+            AND (
+              LENGTH(TRIM(COALESCE(note_tweet_text, ''), ?)) > 0
+              OR LENGTH(TRIM(COALESCE(tweet_text, ''), ?)) > 0
+            )
+          ORDER BY COALESCE(created_at, saved_at) DESC`
+      )
+      .all(WS, WS) as Pick<BookmarkRow, 'tweet_id' | 'tweet_text' | 'note_tweet_text'>[];
+  }
+
+  /** 単一 tweet の ai_summary を更新 (NULL で消去も可能)。 */
+  setAiSummary(tweetId: string, summary: string | null): void {
+    this.db
+      .prepare('UPDATE bookmarks SET ai_summary = ? WHERE tweet_id = ?')
+      .run(summary, tweetId);
+  }
+
+  /**
+   * 全行の ai_summary を NULL に戻す。`--x-resummarize-all` 用。
+   * 戻り値は影響行数。
+   */
+  clearAllAiSummaries(): number {
+    const info = this.db.prepare('UPDATE bookmarks SET ai_summary = NULL').run();
+    return info.changes;
+  }
+
   listBookmarksForExport(): BookmarkRow[] {
     return this.db
       .prepare(

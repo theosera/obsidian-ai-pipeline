@@ -384,6 +384,109 @@ async function askAI(prompt: string, systemContext: string = 'Respond exactly wi
   return { proposedPath: 'Clippings/Inbox', isNewFolderRequired: false, isNewFolder: false, reasoning: 'Fallback due to classification errors', confidence: 0 };
 }
 
+/**
+ * AI 呼び出しの **raw text** 版。`askAI` と同じプロバイダ分岐 (Local / Anthropic /
+ * OpenAI / Gemini) を使い、レスポンスを JSON parse せず文字列のまま返す。
+ *
+ * 用途: X ブックマークの AI 要約のような「短いテキストだけが欲しい」タスク。
+ *   - JSON モードを無効化 (text 応答を期待)
+ *   - フォールバックチェーンは持たない (失敗時は null を返す = 呼出側でリトライ/スキップ判断)
+ *   - トークン使用量は `tokenUsageMetrics` に集計される
+ *
+ * @returns 成功時は LLM のテキスト出力 (trim 済み)、失敗時は null
+ */
+export async function askAIText(
+  prompt: string,
+  systemContext: string,
+  taskType: 'fast' | 'smart' = 'fast',
+  maxTokens: number = 400
+): Promise<string | null> {
+  const provider = process.env.AI_PROVIDER || 'local';
+
+  // 各プロバイダのクライアント/キーが欠けている場合は早期 null。
+  // `askAI` (classification) は anthropic フォールバックを持つが、`askAIText`
+  // (短文要約等) は **明示的に「fallback 無し」契約** にしている (関数ドキュメント参照)。
+  // ここで黙って local 経由にすると、ユーザーが意図したプロバイダと別経路に
+  // データが流れる事故が起きるため、設定不備は呼出側で検知できるよう null を返す。
+  if (provider === 'openai' && !openaiClient) return null;
+  if (provider === 'gemini' && !geminiClient) return null;
+  if ((provider === 'anthropic' || provider === 'claude') && !anthropic.apiKey) return null;
+
+  try {
+    if (provider === 'openai' && openaiClient) {
+      const model = taskType === 'smart'
+        ? (process.env.OPENAI_SMART_MODEL || 'gpt-4o')
+        : (process.env.OPENAI_FAST_MODEL || 'gpt-4o-mini');
+      const response = await openaiClient.chat.completions.create({
+        model,
+        max_tokens: maxTokens,
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: systemContext },
+          { role: 'user', content: prompt },
+        ],
+      });
+      if (response.usage) addTokenUsage(model, response.usage.prompt_tokens, response.usage.completion_tokens);
+      return response.choices[0]?.message?.content?.trim() ?? null;
+    }
+
+    if (provider === 'gemini' && geminiClient) {
+      const model = taskType === 'smart'
+        ? (process.env.GEMINI_SMART_MODEL || 'gemini-2.5-pro')
+        : (process.env.GEMINI_FAST_MODEL || 'gemini-2.5-flash');
+      const response = await geminiClient.chat.completions.create({
+        model,
+        max_tokens: maxTokens,
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: systemContext },
+          { role: 'user', content: prompt },
+        ],
+      });
+      if (response.usage) addTokenUsage(model, response.usage.prompt_tokens, response.usage.completion_tokens);
+      return response.choices[0]?.message?.content?.trim() ?? null;
+    }
+
+    if ((provider === 'anthropic' || provider === 'claude') && anthropic.apiKey) {
+      const model = taskType === 'smart'
+        ? (process.env.ANTHROPIC_SMART_MODEL || 'claude-sonnet-4-6')
+        : (process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5-20251001');
+      const response = await anthropic.messages.create({
+        model,
+        max_tokens: maxTokens,
+        system: [{ type: 'text', text: systemContext, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: prompt }],
+      });
+      if (response.usage) addTokenUsage(model, response.usage.input_tokens, response.usage.output_tokens);
+      if (response.content[0]?.type === 'text') {
+        return response.content[0].text.trim();
+      }
+      return null;
+    }
+
+    // Default: explicit local provider only (未知の provider 名で local に流すと
+    // ユーザーの意図とズレるため、明示的に 'local' のときだけ実行)
+    if (provider !== 'local') return null;
+    const model = taskType === 'smart'
+      ? (process.env.LOCAL_AI_SMART_MODEL || process.env.LOCAL_AI_MODEL || 'local-model')
+      : (process.env.LOCAL_AI_FAST_MODEL || process.env.LOCAL_AI_MODEL || 'local-model');
+    const response = await localAI.chat.completions.create({
+      model,
+      max_tokens: maxTokens,
+      temperature: 0.2,
+      messages: [
+        { role: 'system', content: systemContext },
+        { role: 'user', content: prompt },
+      ],
+    });
+    if (response.usage) addTokenUsage(model, response.usage.prompt_tokens, response.usage.completion_tokens);
+    return response.choices[0]?.message?.content?.trim() ?? null;
+  } catch (e: any) {
+    console.warn(`[askAIText] provider '${provider}' failed: ${e.message}`);
+    return null;
+  }
+}
+
 export async function classifyArticle(url: string | undefined, title: string | undefined, content: string | undefined): Promise<ClassificationResult> {
   const resultObj = await _classifyInternal(url, title, content);
   

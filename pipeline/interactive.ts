@@ -5,6 +5,7 @@ import { ProcessingResult } from '../types';
 import { ApiBookmark } from '../x_bookmarks_api';
 import { getDb, closeDb } from '../x_bookmarks_db';
 import { exportAndWriteAllGroupPages } from '../x_group_page_writer';
+import { summarizePendingBookmarks } from '../x_bookmarks_summarizer';
 import { askQuestion, isPromptClosed } from './prompt';
 import { generateReport } from './report';
 
@@ -23,7 +24,8 @@ import { generateReport } from './report';
  */
 export async function interactiveReviewLoop(
   results: ProcessingResult[],
-  reportMdPath: string
+  reportMdPath: string,
+  options: { resummarizeAll?: boolean } = {}
 ): Promise<void> {
   let reviewing = true;
 
@@ -37,7 +39,7 @@ export async function interactiveReviewLoop(
     const cmd = (await askQuestion('Command [y/e/q]: ')).toLowerCase();
 
     if (cmd === 'y') {
-      await saveApprovedResults(results);
+      await saveApprovedResults(results, options);
       reviewing = false;
     } else if (cmd === 'e') {
       await editOneClassification(results, reportMdPath);
@@ -56,7 +58,10 @@ export async function interactiveReviewLoop(
   }
 }
 
-async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
+async function saveApprovedResults(
+  results: ProcessingResult[],
+  options: { resummarizeAll?: boolean } = {}
+): Promise<void> {
   console.log('\n🚀 Approved! Proceeding to save files to Vault...');
   let xBookmarkCount = 0;
 
@@ -101,8 +106,21 @@ async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
     }
   }
 
-  // X ブックマークが含まれていれば JSON ビューと group ページを再生成。
+  // X ブックマークが含まれていれば AI 要約 → JSON ビュー → group ページ更新の順で実行。
+  // 要約を先に走らせるのは JSON エクスポート時点で summary 列が埋まっているように
+  // するため (Dataview が次に開かれた瞬間に新しい要約が反映される)。
   if (xBookmarkCount > 0) {
+    try {
+      const stats = await summarizePendingBookmarks({
+        resummarizeAll: options.resummarizeAll,
+      });
+      if (stats.pending > 0) {
+        console.log(`🤖 AI 要約: ${stats.succeeded}/${stats.pending} 件成功, ${stats.failed} 件失敗`);
+      }
+    } catch (e: any) {
+      console.warn(`⚠️  AI 要約失敗 (続行): ${e.message}`);
+    }
+
     try {
       const { jsonPath, pages } = exportAndWriteAllGroupPages();
       console.log(`🗂  JSON ビュー更新: ${jsonPath}`);
