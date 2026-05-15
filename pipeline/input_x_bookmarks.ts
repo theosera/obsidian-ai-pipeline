@@ -77,6 +77,7 @@ export async function prepareXBookmarks(options: {
     skipKnownIds: knownTweetIds,
     selectedFolders,
     includeUnfiled,
+    dbForWatermark: db,
   });
 
   // 各 ApiBookmark に session_id を注入 (folder_sessions DB ベース)。

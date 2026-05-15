@@ -6,6 +6,7 @@ import { ApiBookmark } from '../x_bookmarks_api';
 import { getDb, closeDb } from '../x_bookmarks_db';
 import { askQuestion, isPromptClosed } from './prompt';
 import { generateReport } from './report';
+import { isDryRun } from '../config';
 
 /**
  * 分類結果に対する人間レビュー + 保存確定ループ。
@@ -56,13 +57,30 @@ export async function interactiveReviewLoop(
 }
 
 async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
-  console.log('\n🚀 Approved! Proceeding to save files to Vault...');
+  const dry = isDryRun();
+  if (dry) {
+    // runner の confirmBeforeRun でも告知済みだが、ここでも明示する。
+    // 以前は --dry-run でも saveMarkdown / DB upsert が実行されてしまっていた (回帰防止)
+    console.log('\n🧪 dry-run: Vault 書き込み・DB upsert はスキップします (計画のみログ出力)');
+  } else {
+    console.log('\n🚀 Approved! Proceeding to save files to Vault...');
+  }
 
   for (const res of results) {
     if (!(res.status === 'success' && res.articleContext && res.classification)) continue;
 
     try {
-      const savedPath = saveMarkdown(res.articleContext, res.classification.proposedPath);
+      const targetPath = res.classification.proposedPath;
+      if (dry) {
+        console.log(` [DRY-RUN] would save: ${targetPath}/<title>.md (url=${res.url})`);
+        const ax = res.articleContext as ApiBookmark;
+        if (res.policy === 'x_bookmark' && ax.xTweetId) {
+          console.log(`   [DRY-RUN] would upsert bookmark tweet_id=${ax.xTweetId} session=${ax.xSessionId ?? '(none)'}`);
+        }
+        continue;
+      }
+
+      const savedPath = saveMarkdown(res.articleContext, targetPath);
       console.log(` ✅ Saved: ${savedPath}`);
 
       // X ブックマーク経由なら SQLite メタキャッシュにも反映 (差分スクレイプ用)
@@ -88,8 +106,12 @@ async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
     }
   }
 
-  console.log('🎉 All files saved.');
-  updateVaultTreeSnapshot(); // 新規作成フォルダをスナップショットに反映
+  if (dry) {
+    console.log('🧪 dry-run 終了: 実体は変更されていません。');
+  } else {
+    console.log('🎉 All files saved.');
+    updateVaultTreeSnapshot();
+  }
   closeDb();
 }
 

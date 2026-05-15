@@ -60,6 +60,12 @@ export interface FolderSessionRow {
   status: SessionStatus;
   created_at: string;
   last_synced_at: string;
+  /**
+   * 当 folder で **最後に取得した最新ツイート ID** (差分同期の watermark)。
+   * X API は newest-first を返すので、次回 fetch でこの ID にヒットしたら
+   * 以降は既知 → 即時 page 打ち切り (fast-termination)。
+   */
+  last_fetched_tweet_id: string | null;
 }
 
 export interface FolderSessionUpsert {
@@ -107,6 +113,7 @@ CREATE TABLE IF NOT EXISTS folder_sessions (
 CREATE INDEX IF NOT EXISTS idx_session_xfolder ON folder_sessions(x_folder_id);
 CREATE INDEX IF NOT EXISTS idx_session_vault ON folder_sessions(vault_path);
 CREATE INDEX IF NOT EXISTS idx_session_status ON folder_sessions(status);
+-- NOTE: last_fetched_tweet_id は migrateAddLastFetchedTweetId() で追加する
 `;
 
 export class XBookmarksDb {
@@ -118,6 +125,7 @@ export class XBookmarksDb {
     this.db.exec(SCHEMA);
     this.migrateAddNoteTweetText();
     this.migrateAddSessionId();
+    this.migrateAddLastFetchedTweetId();
   }
 
   /**
@@ -142,6 +150,16 @@ export class XBookmarksDb {
     }
     // column が確実に存在する状態で index を作成 (idempotent)
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id)");
+  }
+
+  /**
+   * folder_sessions に last_fetched_tweet_id 列を idempotent に追加 (差分同期用)。
+   */
+  private migrateAddLastFetchedTweetId(): void {
+    const cols = this.db.prepare("PRAGMA table_info(folder_sessions)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'last_fetched_tweet_id')) {
+      this.db.exec("ALTER TABLE folder_sessions ADD COLUMN last_fetched_tweet_id TEXT");
+    }
   }
 
   getKnownTweetIds(): Set<string> {
@@ -254,6 +272,23 @@ export class XBookmarksDb {
 
   deleteFolderSession(sessionId: string): void {
     this.db.prepare('DELETE FROM folder_sessions WHERE session_id = ?').run(sessionId);
+  }
+
+  /**
+   * 差分同期用 watermark の取得・更新。fetchBookmarksViaApi が叩く。
+   * x_folder_id ベースで保持 (X 側 folder ID が永続的なため)。
+   */
+  getLastFetchedTweetId(xFolderId: string): string | null {
+    const row = this.db
+      .prepare('SELECT last_fetched_tweet_id FROM folder_sessions WHERE x_folder_id = ?')
+      .get(xFolderId) as { last_fetched_tweet_id: string | null } | undefined;
+    return row?.last_fetched_tweet_id ?? null;
+  }
+
+  setLastFetchedTweetId(xFolderId: string, tweetId: string): void {
+    this.db
+      .prepare('UPDATE folder_sessions SET last_fetched_tweet_id = ?, last_synced_at = ? WHERE x_folder_id = ?')
+      .run(tweetId, new Date().toISOString(), xFolderId);
   }
 
   /**

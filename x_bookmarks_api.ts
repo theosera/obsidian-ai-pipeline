@@ -79,6 +79,15 @@ export interface FetchOptions {
   includeUnfiled?: boolean;
   /** テストから fetch をモックするための差し替え口 */
   fetchFn?: typeof fetch;
+  /**
+   * 差分同期 watermark の読み書き用 DB ハンドル。undefined だと fast-termination
+   * が無効化されて従来の "3件連続既知" フォールバックのみで動く。
+   * テストや単発実行で in-memory DB を渡したい場面のために injectable。
+   */
+  dbForWatermark?: {
+    getLastFetchedTweetId(xFolderId: string): string | null;
+    setLastFetchedTweetId(xFolderId: string, tweetId: string): void;
+  };
 }
 
 /** Stage 1 (一覧表示) でだけ使う、軽量な folder list 取得結果 */
@@ -628,12 +637,20 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
     }
   }
 
-  // 3. フォルダ毎にページング。3 件連続で既知ツイートなら早期終了。
+  // 3. フォルダ毎にページング。
+  //    差分同期戦略:
+  //      a) folder_sessions.last_fetched_tweet_id (watermark) と一致したら即終了
+  //         (X API は newest-first を返すので、その ID 以降はすべて既知のはず)
+  //      b) フォールバック: 既知ツイートが 3 件連続したらページング打ち切り
+  //    各フォルダの fetch 完了後、当回の最新 ID で watermark を更新する。
+  const db = options.dbForWatermark; // 注入可能 (テスト用)。本番は内部 import。
   for (const folder of folders) {
     if (all.length >= maxItems) break;
     let token: string | undefined;
     let consecutiveKnown = 0;
     let folderCount = 0;
+    let watermarkCandidate: string | null = null;
+    const previousWatermark = db ? db.getLastFetchedTweetId(folder.id) : null;
     do {
       if (all.length >= maxItems) break;
       const page = await xGet<BookmarksResponse>(
@@ -641,12 +658,21 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
         ctx
       );
       const bookmarks = expandBookmarksPage(page, folder.name, folder.id);
+      let hitWatermark = false;
       for (const bm of bookmarks) {
         folderTweetIds.add(bm.xTweetId);
+        // 最新 ID を覚えておく (当回 fetch の先頭 = 新しい順なので最初に見たやつ)
+        if (watermarkCandidate === null) watermarkCandidate = bm.xTweetId;
+        // 戦略 a: watermark ヒット → 即終了
+        if (previousWatermark && bm.xTweetId === previousWatermark) {
+          hitWatermark = true;
+          token = undefined;
+          break;
+        }
         if (skipKnownIds.has(bm.xTweetId)) {
           consecutiveKnown += 1;
           if (consecutiveKnown >= 3) {
-            token = undefined; // ページング打ち切り
+            token = undefined;
             break;
           }
           continue;
@@ -657,8 +683,14 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
         if (all.length >= maxItems) break;
       }
       if (token !== undefined) token = page.meta?.next_token;
+      if (hitWatermark) break;
     } while (token);
-    console.log(`🔖 [X API]   "${folder.name}": ${folderCount} 件 (新規)`);
+    const tag = previousWatermark ? '差分' : '初回';
+    console.log(`🔖 [X API]   "${folder.name}": ${folderCount} 件 (新規・${tag})`);
+    // watermark 更新 (folder_sessions に当回の最新 ID を記録)
+    if (db && watermarkCandidate) {
+      try { db.setLastFetchedTweetId(folder.id, watermarkCandidate); } catch { /* noop */ }
+    }
   }
 
   // 4. Unfiled (All Bookmarks にあるがどのフォルダにも無いもの)

@@ -32,6 +32,7 @@ import {
 } from '../x_session_registry';
 import { runSyncPhase, __test as syncInternals } from '../x_session_sync';
 import { __test as aiInternals, createInteractiveOrphanResolver } from '../x_session_ai';
+import { __test as rebuildInternals, rebuildDbFromVault } from '../x_bookmarks_rebuild_db';
 import { XBookmarksDb, getDb } from '../x_bookmarks_db';
 import Database from 'better-sqlite3';
 import { __test as apiInternals } from '../x_bookmarks_api';
@@ -2306,6 +2307,7 @@ body
         status: 'active' as const,
         created_at: 'c',
         last_synced_at: 't',
+        last_fetched_tweet_id: null,
       },
       vaultAbsoluteDir: '/tmp/Test',
       mdCount: 5,
@@ -2426,6 +2428,242 @@ body
       });
       const after = getDb().getFolderSession(sessRow.session_id)!;
       assert.strictEqual(after.status, 'archived');
+    });
+
+    // =====================================================
+    // x_bookmarks_db: last_fetched_tweet_id (differential sync watermark)
+    // =====================================================
+    runner.section('x_bookmarks_db: last_fetched_tweet_id');
+
+    runner.test('getLastFetchedTweetId は未設定なら null', () => {
+      const db = new XBookmarksDb(':memory:');
+      db.upsertFolderSession({ sessionId: 'sw1', xFolderId: 'fw1', status: 'active' });
+      assert.strictEqual(db.getLastFetchedTweetId('fw1'), null);
+      db.close();
+    });
+
+    runner.test('setLastFetchedTweetId → getLastFetchedTweetId で読める', () => {
+      const db = new XBookmarksDb(':memory:');
+      db.upsertFolderSession({ sessionId: 'sw2', xFolderId: 'fw2', status: 'active' });
+      db.setLastFetchedTweetId('fw2', 'tweet-NEW');
+      assert.strictEqual(db.getLastFetchedTweetId('fw2'), 'tweet-NEW');
+      db.close();
+    });
+
+    await runner.testAsync('fetchBookmarksViaApi が folder fetch 後に watermark を更新する', async () => {
+      saveTokens({
+        access_token: 'fake', refresh_token: 'r',
+        expires_in: 7200, obtained_at: new Date().toISOString(),
+      });
+      const prev = process.env.X_CLIENT_ID;
+      process.env.X_CLIENT_ID = 'test-client';
+      try {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertFolderSession({ sessionId: 'sw3', xFolderId: 'fw3', status: 'active' });
+        const respond = (b: any) => new Response(JSON.stringify(b), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+        const mockFetch: typeof fetch = (async (input: any) => {
+          const url = typeof input === 'string' ? input : input.url;
+          if (url.includes('/users/me')) return respond({ data: { id: 'u', username: 'a' } });
+          if (url.includes('/bookmarks/folders/fw3')) {
+            return respond({
+              data: [
+                { id: 'NEW-1', text: 'newest', author_id: 'u' },
+                { id: 'NEW-2', text: 'second', author_id: 'u' },
+              ],
+              includes: { users: [{ id: 'u', name: 'A', username: 'a' }] },
+            });
+          }
+          throw new Error(`unexpected: ${url}`);
+        }) as any;
+        await fetchBookmarksViaApi({
+          selectedFolders: [{ id: 'fw3', name: 'F' }],
+          includeUnfiled: false,
+          fetchFn: mockFetch,
+          dbForWatermark: db,
+        });
+        // newest tweet が watermark に記録される
+        assert.strictEqual(db.getLastFetchedTweetId('fw3'), 'NEW-1');
+        db.close();
+      } finally {
+        if (prev === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prev;
+      }
+    });
+
+    await runner.testAsync('watermark ヒット時は以降のページングを即終了する (fast-termination)', async () => {
+      saveTokens({
+        access_token: 'fake', refresh_token: 'r',
+        expires_in: 7200, obtained_at: new Date().toISOString(),
+      });
+      const prev = process.env.X_CLIENT_ID;
+      process.env.X_CLIENT_ID = 'test-client';
+      try {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertFolderSession({ sessionId: 'sw4', xFolderId: 'fw4', status: 'active' });
+        db.setLastFetchedTweetId('fw4', 'OLD-WATERMARK'); // 既に既知の最新 ID
+        let callCount = 0;
+        const respond = (b: any) => new Response(JSON.stringify(b), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+        const mockFetch: typeof fetch = (async (input: any) => {
+          const url = typeof input === 'string' ? input : input.url;
+          if (url.includes('/users/me')) return respond({ data: { id: 'u', username: 'a' } });
+          if (url.includes('/bookmarks/folders/fw4')) {
+            callCount++;
+            // 当回 response: newest-first で NEW-A, NEW-B, OLD-WATERMARK の順
+            return respond({
+              data: [
+                { id: 'NEW-A', text: 'new1', author_id: 'u' },
+                { id: 'NEW-B', text: 'new2', author_id: 'u' },
+                { id: 'OLD-WATERMARK', text: 'known', author_id: 'u' },
+                { id: 'OLDER-1', text: 'should-not-reach', author_id: 'u' },
+              ],
+              meta: { next_token: 'page2' },
+              includes: { users: [{ id: 'u', name: 'A', username: 'a' }] },
+            });
+          }
+          throw new Error(`unexpected: ${url}`);
+        }) as any;
+        const out = await fetchBookmarksViaApi({
+          selectedFolders: [{ id: 'fw4', name: 'F' }],
+          includeUnfiled: false,
+          fetchFn: mockFetch,
+          dbForWatermark: db,
+        });
+        // page2 は叩かない (watermark ヒットで打ち切り)
+        assert.strictEqual(callCount, 1);
+        // NEW-A / NEW-B は新規として取得済み、OLDER-1 は取得されない
+        const ids = out.map(b => b.xTweetId).sort();
+        assert.deepStrictEqual(ids, ['NEW-A', 'NEW-B']);
+        // watermark は新しい最新 ID (NEW-A) に更新される
+        assert.strictEqual(db.getLastFetchedTweetId('fw4'), 'NEW-A');
+        db.close();
+      } finally {
+        if (prev === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prev;
+      }
+    });
+
+    // =====================================================
+    // x_bookmarks_rebuild_db: frontmatter → DB
+    // =====================================================
+    runner.section('x_bookmarks_rebuild_db');
+
+    runner.test('parseFrontmatter は X bookmark .md の主要フィールドを抽出', () => {
+      const md = `---
+title: "Foo Bar (@foo): tweet body"
+source: "https://x.com/foo/status/12345"
+author:
+published: 2026-05-08
+created: 2026-05-08
+description: "desc"
+tags:
+  - "clippings"
+session_id: "abcd-1234"
+x_folder_id: "fid-1"
+x_tweet_id: "12345"
+x_folder_name: "Claude Code/Tips"
+---
+
+body
+`;
+      const fm = rebuildInternals.parseFrontmatter(md);
+      assert.strictEqual(fm.title, 'Foo Bar (@foo): tweet body');
+      assert.strictEqual(fm.source, 'https://x.com/foo/status/12345');
+      assert.strictEqual(fm.session_id, 'abcd-1234');
+      assert.strictEqual(fm.x_folder_id, 'fid-1');
+      assert.strictEqual(fm.x_tweet_id, '12345');
+      assert.strictEqual(fm.x_folder_name, 'Claude Code/Tips');
+      assert.strictEqual(fm.published, '2026-05-08');
+    });
+
+    runner.test('parseFrontmatter は frontmatter 不在で空オブジェクト', () => {
+      assert.deepStrictEqual(rebuildInternals.parseFrontmatter('no frontmatter here'), {});
+    });
+
+    runner.test('parseFrontmatter はクォート内のエスケープを復元', () => {
+      const md = `---
+title: "Say \\"Hello\\""
+x_tweet_id: "111"
+---
+`;
+      const fm = rebuildInternals.parseFrontmatter(md);
+      assert.strictEqual(fm.title, 'Say "Hello"');
+      assert.strictEqual(fm.x_tweet_id, '111');
+    });
+
+    runner.test('rebuildDbFromVault: .md + _session.json から bookmarks + folder_sessions を復元', () => {
+      // reset DB
+      (getDb() as any).db.exec('DELETE FROM bookmarks; DELETE FROM folder_sessions;');
+
+      const baseFolder = 'Clippings/X-Bookmarks-rebuild-test';
+      const baseAbs = path.join(tmpDir, baseFolder);
+      const folderDir = path.join(baseAbs, 'TestFolder');
+      fs.mkdirSync(folderDir, { recursive: true });
+
+      // marker
+      fs.writeFileSync(
+        path.join(folderDir, '_session.json'),
+        JSON.stringify({
+          session_id: 'sess-rb-1',
+          x_folder_id: 'fid-rb-1',
+          x_folder_name: 'TestFolder',
+          created_at: '2026-05-08',
+          last_synced_at: '2026-05-08',
+        }, null, 2),
+        'utf8'
+      );
+
+      // X bookmark .md (frontmatter から復元される)
+      fs.writeFileSync(
+        path.join(folderDir, 'post1.md'),
+        `---
+title: "Test Post"
+source: "https://x.com/u/status/999"
+published: 2026-05-01
+tags:
+  - "clippings"
+session_id: "sess-rb-1"
+x_folder_id: "fid-rb-1"
+x_tweet_id: "999"
+x_folder_name: "TestFolder"
+---
+body
+`,
+        'utf8'
+      );
+
+      // X bookmark でない .md (x_tweet_id 無し → スキップされるはず)
+      fs.writeFileSync(
+        path.join(folderDir, 'non-x.md'),
+        `---
+title: "Random article"
+source: "https://example.com/post"
+---
+body
+`,
+        'utf8'
+      );
+
+      const r = rebuildDbFromVault(baseFolder);
+      assert.strictEqual(r.scannedFiles, 2);
+      assert.strictEqual(r.bookmarksUpserted, 1, 'X bookmark のみ upsert');
+      assert.strictEqual(r.skippedFiles, 1, 'x_tweet_id 無し .md はスキップ');
+      assert.strictEqual(r.sessionsUpserted, 1);
+
+      // DB に復元されている
+      assert.ok(getDb().getKnownTweetIds().has('999'));
+      const sess = getDb().getFolderSession('sess-rb-1');
+      assert.strictEqual(sess?.x_folder_id, 'fid-rb-1');
+      assert.strictEqual(sess?.x_folder_name, 'TestFolder');
+    });
+
+    runner.test('rebuildDbFromVault: 不存在 base folder は警告のみで no-op', () => {
+      const r = rebuildDbFromVault('Clippings/Does-Not-Exist');
+      assert.strictEqual(r.scannedFiles, 0);
+      assert.strictEqual(r.bookmarksUpserted, 0);
     });
 
     return runner.report();

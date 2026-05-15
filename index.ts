@@ -58,6 +58,28 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // --x-bookmarks-rebuild-db: Vault .md + _session.json から DB を再構築 (復旧用)
+  if (args.xBookmarksRebuildDb) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { rebuildDbFromVault } = await import('./x_bookmarks_rebuild_db');
+      const baseFolder = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
+      console.log(`🔧 ${baseFolder} 配下の .md / _session.json から DB を再構築します...`);
+      const r = rebuildDbFromVault(baseFolder);
+      console.log('\n🔧 rebuild-db 完了:');
+      console.log(`  scanned .md     : ${r.scannedFiles}`);
+      console.log(`  upserted bookmarks: ${r.bookmarksUpserted}`);
+      console.log(`  upserted sessions : ${r.sessionsUpserted}`);
+      console.log(`  skipped (non-X .md): ${r.skippedFiles}`);
+    } catch (e: any) {
+      console.error(`❌ rebuild-db 失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
   // --x-sync-folders: Sync Phase 単独実行 (Vault 再編後 / orphan AI 判定だけ走らせたいとき)
   if (args.xSyncFolders) {
     if (!config) config = await runConfigWizard(askQuestion);

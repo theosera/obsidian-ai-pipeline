@@ -435,7 +435,10 @@ AI バックエンドは Claude Code CLI (デフォルト) または環境変数
 ```bash
 export X_SESSION_AI_BIN=/path/to/local-llm-cli   # local LLM 使用
 export X_SESSION_AI_DISABLE=true                  # AI を呼ばずに常に "keep" 推奨
+export X_SESSION_AI_TIMEOUT_MS=60000              # AI 応答待ち上限 (デフォルト 60s)
 ```
+
+AI CLI がハング (network / 再認証プロンプト / 無応答) しても `X_SESSION_AI_TIMEOUT_MS` で打ち切られて "keep" にフォールバックします。
 
 **手動 Sync 実行**: `pnpm start -- --x-sync-folders`（Vault を再編した直後など）
 
@@ -489,11 +492,44 @@ pnpm start -- --hands-on="Clippings/X-Bookmarks/Claude Code" --dry-run
 
 生成先: `<vault>/__skills/context/ハンズオン/<folder>-YYYYMMDD.md`
 
+#### 差分同期 (watermark)
+
+`folder_sessions.last_fetched_tweet_id` を各フォルダごとに保持し、前回 fetch 時の **最新ツイート ID** を記録します。X API が newest-first 順を返すため、次回 fetch でこの ID にヒットしたら **即時打ち切り** (= fast-termination)。 従来の「3 件連続既知でページング打ち切り」を上回る差分効率になります（特に新規 0 件のフォルダで顕著）。
+
+ログには `初回` / `差分` のタグが出ます:
+
+```
+🔖 [X API]   "Claude Code/Tips": 3 件 (新規・差分)
+🔖 [X API]   "AI/Agents":        0 件 (新規・差分)
+```
+
+#### `--x-bookmarks-rebuild-db`: DB 復旧
+
+DB ファイル破損 / 別マシン移行 / `.corrupted_*` 退避からの復旧用。Vault の `.md` frontmatter + `_session.json` を歩いて `bookmarks` / `folder_sessions` テーブルを再構築します:
+
+```bash
+pnpm start -- --x-bookmarks-rebuild-db
+```
+
+出力例:
+
+```
+🔧 Clippings/X-Bookmarks-claude 配下の .md / _session.json から DB を再構築します...
+🔧 rebuild-db 完了:
+  scanned .md       : 420
+  upserted bookmarks: 412
+  upserted sessions : 18
+  skipped (non-X .md): 8
+```
+
+- **`.md` が source of truth**: 既存 DB を消してから実行すれば完全再構築。残したまま実行すると UPSERT で merge 動作
+- `x_tweet_id` 列が frontmatter に無い `.md` は X bookmark 以外とみなして skip
+- `_session.json` から `folder_sessions` も同時に復元 (session_id 維持)
+
 #### 今後の拡張 (Phase 2 以降)
 
 - フォルダ件数 50 超で LLM サブカテゴリ提案 → 承認フロー → 自動再分類
 - フォルダ単位の `_INDEX.md` 自動生成（要約 + 件数 + 最終更新）
-- `--x-bookmarks-rebuild-db`: .md frontmatter から DB を再構築する CLI
 
 ### 中断からの再開（API コスト $0）
 
