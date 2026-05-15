@@ -79,7 +79,7 @@ function loadBookmarksForFolder(folder: string, since?: string): BookmarkRow[] {
   }
 }
 
-export function buildCorpus(rows: BookmarkRow[]): string {
+function buildCorpus(rows: BookmarkRow[]): string {
   if (rows.length === 0) return '(素材なし)';
   return rows
     .map((r, i) => {
@@ -90,7 +90,7 @@ export function buildCorpus(rows: BookmarkRow[]): string {
     .join('\n---\n\n');
 }
 
-export function renderPrompt(folder: string, corpus: string, date: string): string {
+function renderPrompt(folder: string, corpus: string, date: string): string {
   const tpl = fs.readFileSync(PROMPT_TEMPLATE_PATH, 'utf8');
   return tpl
     .replace(/\{\{folder\}\}/g, folder)
@@ -173,9 +173,3 @@ export async function generateHandsOn(options: HandsOnOptions): Promise<string> 
   console.log(`✅ ハンズオンを生成しました: ${outPath}`);
   return outPath;
 }
-
-export const __test = {
-  buildCorpus,
-  renderPrompt,
-  folderSlug,
-};
