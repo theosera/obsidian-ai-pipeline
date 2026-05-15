@@ -29,7 +29,7 @@ import {
   X_JSON_FILENAME,
 } from './x_bookmarks_json_export';
 
-export interface GroupPageWriteResult {
+interface GroupPageWriteResult {
   group: string;
   filePath: string;
   /**

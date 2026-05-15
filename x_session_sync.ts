@@ -374,11 +374,7 @@ function rewriteMdSessionId(file: string, sessionId: string): void {
   }
 }
 
-// re-export for tests
+// re-export for tests (only symbols actually referenced from test/*.ts)
 export const __test = {
-  countMdFiles,
-  findLatestPostDate,
   reassignMisplacedFiles,
-  readMdSessionId,
-  readMdTweetId,
 };
