@@ -156,7 +156,7 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
 
 | ツール | バージョン |
 |---|---|
-| Node.js | v18+ （推奨: v22） |
+| Node.js | v20+ （推奨: v22） |
 | pnpm | v9+ （推奨: v10、`packageManager` で固定） |
 | tsx | `pnpm install` で自動インストール |
 | Playwright Chromium | `pnpm exec playwright install chromium` |
