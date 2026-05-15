@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obsidian AI Pipeline — Overview</title>
+
+<!-- Markdown parser + sanitizer + syntax highlight (CDN, pinned) -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github.min.css" id="hljs-light-style">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github-dark.min.css" id="hljs-dark-style" disabled>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/typescript.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/javascript.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/bash.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/json.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/languages/plaintext.min.js"></script>
+
+<style>
+  :root {
+    /* 視認性最優先のライトテーマ (WCAG AA 7:1 以上) */
+    --bg: #fdfcf9;
+    --bg-elevated: #ffffff;
+    --bg-sidebar: #f5f4f0;
+    --bg-code: #f3f2ed;
+    --border: #d8d4ca;
+    --border-strong: #b8b3a5;
+    --text: #1a1a1a;
+    --text-soft: #4a4a4a;
+    --text-muted: #6b6b6b;
+    --accent: #0969da;
+    --accent-soft: #ddf4ff;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+
+    --font-sans: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Segoe UI", Roboto, sans-serif;
+    --font-mono: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --font-size-base: 16.5px;
+    --line-height: 1.78;
+    --sidebar-w: 260px;
+    --content-max: 860px;
+  }
+
+  /* OS ダーク優先 + 手動トグルで上書き */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a1a;
+      --bg-elevated: #232323;
+      --bg-sidebar: #1f1f1f;
+      --bg-code: #2a2a2a;
+      --border: #383838;
+      --border-strong: #555555;
+      --text: #f0eee6;
+      --text-soft: #c8c5b8;
+      --text-muted: #999488;
+      --accent: #58a6ff;
+      --accent-soft: #1a3556;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a1a;
+    --bg-elevated: #232323;
+    --bg-sidebar: #1f1f1f;
+    --bg-code: #2a2a2a;
+    --border: #383838;
+    --border-strong: #555555;
+    --text: #f0eee6;
+    --text-soft: #c8c5b8;
+    --text-muted: #999488;
+    --accent: #58a6ff;
+    --accent-soft: #1a3556;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--font-size-base);
+    line-height: var(--line-height);
+    color: var(--text);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* ---------- レイアウト ---------- */
+  .app {
+    display: grid;
+    grid-template-columns: var(--sidebar-w) 1fr;
+    min-height: 100vh;
+  }
+  .sidebar {
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    padding: 24px 20px;
+    overflow-y: auto;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+  .main {
+    padding: 32px 48px 80px;
+    max-width: calc(var(--content-max) + 96px);
+    margin: 0 auto;
+    width: 100%;
+  }
+
+  /* ---------- ヘッダ ---------- */
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .topbar h1 {
+    margin: 0;
+    font-size: 1.05em;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  .controls button {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 0.875em;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .controls button:hover {
+    border-color: var(--border-strong);
+    background: var(--accent-soft);
+  }
+  .controls button[aria-pressed="true"] {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+  .status {
+    color: var(--text-muted);
+    font-size: 0.85em;
+    margin-left: 8px;
+  }
+
+  /* ---------- サイドバー TOC ---------- */
+  .sidebar h2 {
+    font-size: 0.75em;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin: 24px 0 8px;
+    font-weight: 600;
+  }
+  .sidebar h2:first-child { margin-top: 0; }
+  .sidebar a {
+    display: block;
+    color: var(--text-soft);
+    text-decoration: none;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    line-height: 1.5;
+    margin: 1px 0;
+  }
+  .sidebar a:hover { background: var(--accent-soft); color: var(--accent); }
+  .sidebar a.depth-3 { padding-left: 20px; font-size: 0.85em; }
+  .sidebar a.depth-4 { padding-left: 32px; font-size: 0.82em; }
+  .sidebar a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .sidebar-section { margin-bottom: 4px; }
+
+  /* ---------- README コンテンツ ---------- */
+  .content {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 40px 56px;
+    box-shadow: var(--shadow);
+    max-width: var(--content-max);
+  }
+  .content h1, .content h2, .content h3, .content h4 {
+    color: var(--text);
+    font-weight: 700;
+    line-height: 1.35;
+    margin-top: 1.8em;
+    margin-bottom: 0.6em;
+    scroll-margin-top: 16px;
+  }
+  .content h1 { font-size: 2em; border-bottom: 2px solid var(--border); padding-bottom: 0.3em; margin-top: 0; }
+  .content h2 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.25em; }
+  .content h3 { font-size: 1.22em; }
+  .content h4 { font-size: 1.05em; color: var(--text-soft); }
+  .content p, .content li { color: var(--text); }
+  .content a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+  .content a:hover { border-bottom-color: var(--accent); }
+  .content ul, .content ol { padding-left: 1.8em; }
+  .content li { margin: 0.3em 0; }
+  .content blockquote {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.6em 1.2em;
+    margin: 1em 0;
+    color: var(--text-soft);
+    border-radius: 0 6px 6px 0;
+  }
+  .content code:not(pre code) {
+    background: var(--bg-code);
+    padding: 0.15em 0.45em;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .content pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    line-height: 1.55;
+    font-size: 0.92em;
+    margin: 1em 0;
+    position: relative;
+  }
+  .content pre code {
+    font-family: var(--font-mono);
+    background: transparent;
+    padding: 0;
+    color: var(--text);
+  }
+  .copy-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 0.75em;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .content pre:hover .copy-btn { opacity: 1; }
+  .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+  .content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1.2em 0;
+    overflow-x: auto;
+    display: block;
+  }
+  .content thead { background: var(--bg-sidebar); }
+  .content th, .content td {
+    border: 1px solid var(--border);
+    padding: 8px 14px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .content th { font-weight: 600; color: var(--text); }
+  .content tr:nth-child(even) td { background: var(--bg-sidebar); }
+  .content hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
+
+  /* heading anchor link */
+  .heading-anchor {
+    color: var(--text-muted);
+    margin-left: 0.4em;
+    text-decoration: none;
+    font-weight: 400;
+    opacity: 0;
+    transition: opacity 0.15s;
+    border-bottom: none !important;
+  }
+  .content h1:hover .heading-anchor,
+  .content h2:hover .heading-anchor,
+  .content h3:hover .heading-anchor,
+  .content h4:hover .heading-anchor { opacity: 0.6; }
+
+  /* ---------- メタデータパネル ---------- */
+  .metadata {
+    margin-top: 32px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 36px;
+    box-shadow: var(--shadow);
+  }
+  .metadata h2 {
+    margin: 0 0 16px;
+    font-size: 1.4em;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+  .metadata h3 {
+    margin: 22px 0 10px;
+    font-size: 1.05em;
+    color: var(--text-soft);
+  }
+  .pipeline-stages {
+    list-style: none;
+    padding: 0;
+    counter-reset: stage;
+  }
+  .pipeline-stages li {
+    counter-increment: stage;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 8px 0;
+    background: var(--bg);
+    position: relative;
+    padding-left: 50px;
+  }
+  .pipeline-stages li::before {
+    content: counter(stage);
+    position: absolute;
+    left: 12px;
+    top: 12px;
+    background: var(--accent);
+    color: white;
+    border-radius: 50%;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85em;
+  }
+  .pipeline-stages .stage-name { font-weight: 600; }
+  .pipeline-stages .stage-module {
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    color: var(--text-muted);
+    display: block;
+    margin: 2px 0 4px;
+  }
+  .pipeline-stages .stage-summary {
+    font-size: 0.92em;
+    color: var(--text-soft);
+  }
+
+  .cli-table, .modules-grid, .datastore-grid {
+    display: grid;
+    gap: 8px;
+  }
+  .cli-table { grid-template-columns: minmax(180px, auto) 1fr auto; align-items: baseline; }
+  .cli-table .row { display: contents; }
+  .cli-flag {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    background: var(--bg-code);
+    padding: 4px 10px;
+    border-radius: 4px;
+    color: var(--text);
+    border: 1px solid var(--border);
+    align-self: start;
+  }
+  .cli-desc { padding: 4px 0; color: var(--text-soft); font-size: 0.92em; }
+  .cli-cat {
+    font-size: 0.72em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    white-space: nowrap;
+    align-self: start;
+  }
+
+  .module-group { margin-top: 16px; }
+  .module-group-header {
+    font-weight: 600;
+    color: var(--text);
+    margin: 12px 0 6px;
+    padding: 4px 10px;
+    background: var(--accent-soft);
+    border-radius: 4px;
+    font-size: 0.95em;
+  }
+  .module-group-desc {
+    color: var(--text-muted);
+    font-size: 0.82em;
+    margin-left: 12px;
+    font-weight: 400;
+  }
+  .modules-grid { grid-template-columns: 1fr; gap: 4px; }
+  .module-item {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) 2fr;
+    gap: 12px;
+    padding: 5px 10px;
+    border-radius: 4px;
+    align-items: baseline;
+  }
+  .module-item:hover { background: var(--bg-sidebar); }
+  .module-path {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--text);
+  }
+  .module-path.key::before {
+    content: "★ ";
+    color: var(--accent);
+  }
+  .module-role { color: var(--text-soft); font-size: 0.9em; }
+
+  .datastore-grid { grid-template-columns: 1fr; gap: 8px; }
+  .datastore-item {
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+  }
+  .datastore-name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text);
+  }
+  .datastore-loc {
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    color: var(--text-muted);
+    margin-left: 8px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 0.72em;
+    margin-left: 6px;
+    background: var(--bg-code);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  .badge.warn { background: #fff4e5; color: #8a5d00; border-color: #f5d68a; }
+  .badge.danger { background: #fde8e8; color: #8a1c1c; border-color: #f5a5a5; }
+  :root[data-theme="dark"] .badge.warn,
+  :root:not([data-theme="light"]) .badge.warn {
+    background: #3d2f10; color: #f0d175; border-color: #5d4a1f;
+  }
+  :root[data-theme="dark"] .badge.danger,
+  :root:not([data-theme="light"]) .badge.danger {
+    background: #3d1a1a; color: #f5a5a5; border-color: #6b2929;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .badge.warn {
+      background: #3d2f10; color: #f0d175; border-color: #5d4a1f;
+    }
+    :root:not([data-theme="light"]) .badge.danger {
+      background: #3d1a1a; color: #f5a5a5; border-color: #6b2929;
+    }
+  }
+  .datastore-purpose {
+    font-size: 0.88em;
+    color: var(--text-soft);
+    margin-top: 4px;
+  }
+  .datastore-tables {
+    font-family: var(--font-mono);
+    font-size: 0.8em;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .concept-item {
+    padding: 10px 14px;
+    margin: 6px 0;
+    border-left: 3px solid var(--accent);
+    background: var(--bg);
+    border-radius: 0 6px 6px 0;
+  }
+  .concept-name { font-weight: 600; }
+  .concept-desc { font-size: 0.9em; color: var(--text-soft); margin-top: 2px; }
+
+  /* ---------- ロード / エラー状態 ---------- */
+  .loading, .error {
+    padding: 40px 36px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    text-align: center;
+  }
+  .loading { color: var(--text-muted); }
+  .error { color: var(--text); border-color: #f5a5a5; }
+  .error pre {
+    text-align: left;
+    background: var(--bg-code);
+    padding: 12px 18px;
+    border-radius: 6px;
+    font-size: 0.92em;
+  }
+  .spinner {
+    display: inline-block;
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 10px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- レスポンシブ ---------- */
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar {
+      position: relative;
+      height: auto;
+      max-height: 50vh;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .main { padding: 20px 16px 60px; }
+    .content { padding: 28px 24px; }
+    .metadata { padding: 22px 20px; }
+    .module-item { grid-template-columns: 1fr; gap: 2px; }
+    .cli-table { grid-template-columns: 1fr; gap: 4px; }
+    .cli-table .row { display: block; padding: 6px 0; border-bottom: 1px solid var(--border); }
+    :root { --font-size-base: 15.5px; }
+  }
+
+  /* ---------- アクセシビリティ ---------- */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div id="toc"></div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <h1>Obsidian AI Pipeline — Overview Viewer</h1>
+      <div class="controls">
+        <span class="status" id="status"></span>
+        <button id="theme-toggle" aria-label="Toggle dark mode">🌓 テーマ</button>
+        <button id="reload-btn" aria-label="Reload README">↻ 再読込</button>
+      </div>
+    </div>
+
+    <article class="content" id="readme-content">
+      <div class="loading">
+        <span class="spinner"></span>
+        README.md を読み込んでいます…
+      </div>
+    </article>
+
+    <section class="metadata" id="metadata-panel" hidden>
+      <h2>📐 構造化メタデータ <span class="status" id="meta-version"></span></h2>
+
+      <h3>パイプライン (6 ステージ)</h3>
+      <ol class="pipeline-stages" id="stages"></ol>
+
+      <h3>CLI コマンド</h3>
+      <div class="cli-table" id="cli-list"></div>
+
+      <h3>主要モジュール</h3>
+      <div id="modules-list"></div>
+
+      <h3>データストア</h3>
+      <div class="datastore-grid" id="datastore-list"></div>
+
+      <h3>環境変数</h3>
+      <div class="cli-table" id="envvar-list"></div>
+
+      <h3>キーコンセプト</h3>
+      <div id="concepts-list"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+'use strict';
+
+// ============================================================================
+// テーマ管理
+// ============================================================================
+const themeToggle = document.getElementById('theme-toggle');
+const root = document.documentElement;
+const savedTheme = localStorage.getItem('obsidian-pipeline-theme');
+if (savedTheme === 'light' || savedTheme === 'dark') {
+  root.setAttribute('data-theme', savedTheme);
+  syncHljsTheme(savedTheme);
+}
+themeToggle.addEventListener('click', () => {
+  const current = root.getAttribute('data-theme');
+  const next = current === 'dark' || (current === null && matchMedia('(prefers-color-scheme: dark)').matches) ? 'light' : 'dark';
+  root.setAttribute('data-theme', next);
+  localStorage.setItem('obsidian-pipeline-theme', next);
+  syncHljsTheme(next);
+});
+function syncHljsTheme(theme) {
+  const isDark = theme === 'dark' || (theme === null && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.getElementById('hljs-light-style').disabled = isDark;
+  document.getElementById('hljs-dark-style').disabled = !isDark;
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+  if (!root.hasAttribute('data-theme')) syncHljsTheme(e.matches ? 'dark' : 'light');
+});
+syncHljsTheme(root.getAttribute('data-theme'));
+
+// ============================================================================
+// Markdown レンダリング
+// ============================================================================
+marked.use({
+  gfm: true,
+  breaks: false,
+  pedantic: false,
+});
+
+const renderer = new marked.Renderer();
+const origHeading = renderer.heading.bind(renderer);
+renderer.heading = function(text, level, raw) {
+  const slug = slugify(raw);
+  return `<h${level} id="${slug}">${text}<a class="heading-anchor" href="#${slug}" aria-label="permalink">#</a></h${level}>`;
+};
+renderer.code = function(code, lang) {
+  let highlighted = escapeHtml(code);
+  const language = (lang || '').toLowerCase();
+  if (language && hljs.getLanguage(language)) {
+    try { highlighted = hljs.highlight(code, { language }).value; } catch (_) {}
+  } else if (!language) {
+    try { highlighted = hljs.highlightAuto(code).value; } catch (_) {}
+  }
+  return `<pre><button class="copy-btn" aria-label="copy">copy</button><code class="hljs language-${language || 'plaintext'}">${highlighted}</code></pre>`;
+};
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function slugify(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-');
+}
+
+// ============================================================================
+// README ロード
+// ============================================================================
+const statusEl = document.getElementById('status');
+const contentEl = document.getElementById('readme-content');
+
+async function loadReadme() {
+  contentEl.innerHTML = '<div class="loading"><span class="spinner"></span>README.md を読み込んでいます…</div>';
+  statusEl.textContent = '';
+  try {
+    const res = await fetch('./README.md', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    const md = await res.text();
+    const rawHtml = marked.parse(md, { renderer });
+    const safeHtml = DOMPurify.sanitize(rawHtml, {
+      ADD_ATTR: ['target', 'id', 'aria-label'],
+    });
+    contentEl.innerHTML = safeHtml;
+    statusEl.textContent = `✓ ${md.length.toLocaleString()} bytes / ${new Date().toLocaleTimeString()}`;
+    buildToc();
+    attachCopyButtons();
+    setupScrollSpy();
+  } catch (err) {
+    contentEl.innerHTML = renderError(err);
+    statusEl.textContent = '✗ load failed';
+  }
+}
+
+function renderError(err) {
+  const isFileProto = location.protocol === 'file:';
+  return `
+    <div class="error">
+      <h3>❌ README の読み込みに失敗しました</h3>
+      <p><strong>エラー:</strong> ${escapeHtml(err.message)}</p>
+      ${isFileProto ? `
+        <p><strong>原因の可能性が高い:</strong> ブラウザは <code>file://</code> 直開きで <code>fetch()</code> を許可しません (CORS)。
+           リポジトリ直下で簡易 HTTP サーバを起動してから開いてください:</p>
+        <pre>cd /path/to/obsidian-ai-pipeline
+python3 -m http.server 8000
+# → ブラウザで http://localhost:8000/ を開く
+
+# あるいは Node 環境なら:
+npx serve .</pre>
+      ` : `
+        <p>README.md がリポジトリ直下に存在することを確認してください。</p>
+      `}
+    </div>
+  `;
+}
+
+// ============================================================================
+// TOC 構築
+// ============================================================================
+function buildToc() {
+  const tocEl = document.getElementById('toc');
+  const headings = contentEl.querySelectorAll('h1, h2, h3, h4');
+  let html = '<h2>目次</h2>';
+  headings.forEach(h => {
+    const level = parseInt(h.tagName.substring(1));
+    const id = h.id;
+    const text = h.textContent.replace(/#$/, '').trim();
+    html += `<a href="#${id}" class="depth-${level}" data-target="${id}">${escapeHtml(text)}</a>`;
+  });
+  html += '<h2>メタデータ</h2>';
+  html += '<a href="#metadata-panel">構造化メタデータ</a>';
+  html += '<a href="#stages-section">パイプライン</a>';
+  html += '<a href="#cli-section">CLI コマンド</a>';
+  html += '<a href="#modules-section">モジュール</a>';
+  html += '<a href="#datastore-section">データストア</a>';
+  html += '<a href="#concepts-section">キーコンセプト</a>';
+  tocEl.innerHTML = html;
+}
+
+function setupScrollSpy() {
+  const links = document.querySelectorAll('.sidebar a[data-target]');
+  if (links.length === 0) return;
+  const idToLink = new Map();
+  links.forEach(a => idToLink.set(a.dataset.target, a));
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      const link = idToLink.get(entry.target.id);
+      if (!link) return;
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -75% 0px' });
+  contentEl.querySelectorAll('h1, h2, h3, h4').forEach(h => observer.observe(h));
+}
+
+function attachCopyButtons() {
+  contentEl.querySelectorAll('.copy-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const code = btn.nextElementSibling?.textContent ?? '';
+      try {
+        await navigator.clipboard.writeText(code);
+        const original = btn.textContent;
+        btn.textContent = 'copied!';
+        setTimeout(() => { btn.textContent = original; }, 1500);
+      } catch (_) { /* noop */ }
+    });
+  });
+}
+
+// ============================================================================
+// app-overview.json ロード
+// ============================================================================
+async function loadOverview() {
+  try {
+    const res = await fetch('./app-overview.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderOverview(data);
+    document.getElementById('metadata-panel').hidden = false;
+  } catch (err) {
+    console.warn('[overview] load failed:', err);
+  }
+}
+
+function renderOverview(data) {
+  document.getElementById('meta-version').textContent = `v${data.version} / ${data.generatedAt}`;
+
+  // Stages
+  const stagesEl = document.getElementById('stages');
+  stagesEl.id = 'stages-section';
+  stagesEl.innerHTML = data.pipelineStages.map(s => `
+    <li>
+      <span class="stage-name">${escapeHtml(s.name)}</span>
+      <code class="stage-module">${escapeHtml(s.module)}</code>
+      <span class="stage-summary">${escapeHtml(s.summary)}</span>
+    </li>
+  `).join('');
+
+  // CLI
+  const cliEl = document.getElementById('cli-list');
+  cliEl.id = 'cli-section';
+  cliEl.innerHTML = data.cliCommands.map(c => `
+    <div class="row">
+      <code class="cli-flag">${escapeHtml(c.flag)}</code>
+      <span class="cli-desc">${escapeHtml(c.description)}</span>
+      <span class="cli-cat">${escapeHtml(c.category)}</span>
+    </div>
+  `).join('');
+
+  // Modules grouped
+  const modulesEl = document.getElementById('modules-list');
+  modulesEl.id = 'modules-section';
+  let modulesHtml = '';
+  for (const group of data.moduleGroups) {
+    const groupMods = data.modules.filter(m => m.group === group.id);
+    if (groupMods.length === 0) continue;
+    modulesHtml += `
+      <div class="module-group">
+        <div class="module-group-header">${escapeHtml(group.label)}
+          <span class="module-group-desc">${escapeHtml(group.description)}</span>
+        </div>
+        <div class="modules-grid">
+          ${groupMods.map(m => `
+            <div class="module-item">
+              <code class="module-path${m.key ? ' key' : ''}">${escapeHtml(m.path)}</code>
+              <span class="module-role">${escapeHtml(m.role)}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+  modulesEl.innerHTML = modulesHtml;
+
+  // Data stores
+  const dsEl = document.getElementById('datastore-list');
+  dsEl.id = 'datastore-section';
+  dsEl.innerHTML = data.dataStores.map(d => `
+    <div class="datastore-item">
+      <span class="datastore-name">${escapeHtml(d.name)}</span>
+      <span class="datastore-loc">${escapeHtml(d.location || '')}</span>
+      <span class="badge">${escapeHtml(d.type)}</span>
+      ${d.gitignored ? '<span class="badge warn">gitignored</span>' : ''}
+      ${d.sensitive ? '<span class="badge danger">sensitive</span>' : ''}
+      <div class="datastore-purpose">${escapeHtml(d.purpose || '')}</div>
+      ${d.tables ? `<div class="datastore-tables">tables: ${d.tables.map(t => `<strong>${escapeHtml(t.name)}</strong> (${escapeHtml(t.purpose)})`).join(' / ')}</div>` : ''}
+    </div>
+  `).join('');
+
+  // Env vars
+  const envEl = document.getElementById('envvar-list');
+  envEl.innerHTML = data.envVars.map(e => `
+    <div class="row">
+      <code class="cli-flag">${escapeHtml(e.name)}</code>
+      <span class="cli-desc">${escapeHtml(e.description)}${e.required ? ' <strong>(required)</strong>' : ''}</span>
+      <span class="cli-cat">${escapeHtml(e.scope)}</span>
+    </div>
+  `).join('');
+
+  // Concepts
+  const conEl = document.getElementById('concepts-list');
+  conEl.id = 'concepts-section';
+  conEl.innerHTML = data.keyConcepts.map(c => `
+    <div class="concept-item">
+      <div class="concept-name">${escapeHtml(c.name)}</div>
+      <div class="concept-desc">${escapeHtml(c.description)}</div>
+    </div>
+  `).join('');
+}
+
+// ============================================================================
+// 初期化 + リロードボタン
+// ============================================================================
+document.getElementById('reload-btn').addEventListener('click', () => {
+  loadReadme();
+  loadOverview();
+});
+
+loadReadme();
+loadOverview();
+</script>
+
+</body>
+</html>
