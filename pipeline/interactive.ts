@@ -2,7 +2,7 @@ import fs from 'fs';
 import { saveMarkdown, updateVaultTreeSnapshot, ensureSafePath } from '../storage';
 import { tokenUsageMetrics } from '../classifier';
 import { ProcessingResult, XSummaryConfig } from '../types';
-import { DEFAULT_X_SUMMARY } from '../config';
+import { DEFAULT_X_SUMMARY, isDryRun } from '../config';
 import { ApiBookmark } from '../x_bookmarks_api';
 import { getDb, closeDb } from '../x_bookmarks_db';
 import { exportAndWriteAllGroupPages } from '../x_group_page_writer';
@@ -66,7 +66,18 @@ async function saveApprovedResults(
   results: ProcessingResult[],
   options: { resummarizeAll?: boolean; xSummary?: XSummaryConfig } = {}
 ): Promise<void> {
-  console.log('\n🚀 Approved! Proceeding to save files to Vault...');
+  const dry = isDryRun();
+  if (dry) {
+    // runner の confirmBeforeRun が "🧪 dry-run: Vault 書き込みはスキップ" と
+    // 明示しているのに、ここで saveMarkdown / DB upsert /
+    // regenerateXBookmarkArtifacts (= AI 要約 + JSON 書出 + group MD) を実行
+    // すると整合性が崩れ、ユーザー期待を裏切る (回帰防止)。
+    // --x-resummarize-all + 新規 0 件パスは runner.ts:154 で既に同様の dry-run
+    // ガードがあるため、ここではこのパスを揃える役割。
+    console.log('\n🧪 dry-run: Vault 書き込み・DB upsert・group ページ再生成はスキップします (計画のみログ出力)');
+  } else {
+    console.log('\n🚀 Approved! Proceeding to save files to Vault...');
+  }
   let xBookmarkCount = 0;
 
   for (const res of results) {
@@ -75,8 +86,14 @@ async function saveApprovedResults(
     try {
       const ax = res.articleContext as ApiBookmark;
       const isXBookmark = res.policy === 'x_bookmark' && !!ax.xTweetId;
+      const targetPath = res.classification.proposedPath;
 
       if (isXBookmark) {
+        if (dry) {
+          console.log(` [DRY-RUN] would upsert bookmark tweet_id=${ax.xTweetId} → ${targetPath}`);
+          xBookmarkCount++;
+          continue;
+        }
         // X ブックマークは 1 ツイート 1 MD を書かない。SQLite にだけ反映し、
         // ユーザー向けには「1 グループ 1 MD + dataviewjs テーブル」で見せる。
         try {
@@ -88,14 +105,14 @@ async function saveApprovedResults(
             noteTweetText: ax.xNoteTweetText,
             createdAt: ax.date,
             xFolderName: ax.xFolderName,
-            vaultPath: res.classification.proposedPath,
+            vaultPath: targetPath,
             sessionId: ax.xSessionId,
             engagementLikes: ax.xLikes,
             engagementRetweets: ax.xRetweets,
             engagementReplies: ax.xReplies,
           });
           xBookmarkCount++;
-          console.log(` 🔖 Indexed: ${ax.xTweetId} → ${res.classification.proposedPath}`);
+          console.log(` 🔖 Indexed: ${ax.xTweetId} → ${targetPath}`);
         } catch (dbErr: any) {
           console.warn(`   ⚠️  DB upsert 失敗 (続行): ${dbErr.message}`);
         }
@@ -103,7 +120,11 @@ async function saveApprovedResults(
       }
 
       // 非 X (OneTab / Hatena 等) は従来通り 1 記事 1 MD で保存。
-      const savedPath = saveMarkdown(res.articleContext, res.classification.proposedPath);
+      if (dry) {
+        console.log(` [DRY-RUN] would save: ${targetPath}/<title>.md (url=${res.url})`);
+        continue;
+      }
+      const savedPath = saveMarkdown(res.articleContext, targetPath);
       console.log(` ✅ Saved: ${savedPath}`);
     } catch (e: any) {
       console.error(` ❌ Error saving ${res.url}: ${e.message}`);
@@ -114,15 +135,22 @@ async function saveApprovedResults(
   // `--x-resummarize-all` 指定時は、新規 upsert が 0 件でも既存 ai_summary を
   // 再生成する必要があるため `xBookmarkCount === 0` でも走らせる (本フラグの本来の
   // 用途 = モデル/プロンプト変更後の再生成では「新規 0 件 + 全件再要約」が常態)。
-  if (xBookmarkCount > 0 || options.resummarizeAll) {
+  // dry-run は AI コスト + Vault 書き込みを伴うのでスキップする。
+  if ((xBookmarkCount > 0 || options.resummarizeAll) && !dry) {
     await regenerateXBookmarkArtifacts({
       xSummary: options.xSummary,
       resummarizeAll: options.resummarizeAll,
     });
+  } else if ((xBookmarkCount > 0 || options.resummarizeAll) && dry) {
+    console.log('   [DRY-RUN] would regenerate X artifacts (AI summary + JSON + group MD)');
   }
 
-  console.log('🎉 All files saved.');
-  updateVaultTreeSnapshot(); // 新規作成フォルダをスナップショットに反映
+  if (dry) {
+    console.log('🧪 dry-run 終了: 実体は変更されていません。');
+  } else {
+    console.log('🎉 All files saved.');
+    updateVaultTreeSnapshot(); // 新規作成フォルダをスナップショットに反映
+  }
   closeDb();
 }
 
@@ -202,3 +230,8 @@ async function editOneClassification(
   const newReportMd = generateReport(results, tokenUsageMetrics);
   fs.writeFileSync(reportMdPath, newReportMd, 'utf8');
 }
+
+// テスト用 export (dry-run ガードの回帰防止)
+export const __test = {
+  saveApprovedResults,
+};
