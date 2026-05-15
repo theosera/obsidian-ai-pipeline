@@ -57,6 +57,11 @@ jobs:
         # や apps/* の型崩れを検知できない。workspace 全体を走らせる。
         run: pnpm typecheck
 
+      - name: ESLint (root Claude-side only)
+        # 最小 ESLint: バグ検出ルールのみ (no-floating-promises 等)。
+        # apps/* / packages/* (Codex 側) は eslint.config.js の ignores で対象外。
+        run: pnpm lint
+
   chrome-extension:
     name: Chrome extension - build & typecheck
     runs-on: ubuntu-latest

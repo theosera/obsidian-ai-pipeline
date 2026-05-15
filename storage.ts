@@ -122,7 +122,7 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
   const date = new Date();
 
   // パストラバーサル防止: AI出力パスを検証
-  let finalPath = ensureSafePath(folderPath);
+  const finalPath = ensureSafePath(folderPath);
 
   const fullDirPath = path.join(vaultRoot, finalPath);
 
@@ -131,7 +131,6 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
   }
 
   const today = date.toISOString().split('T')[0];
-  const saveDate = articleData.date || today; // Fallback to today if no date
 
   let mm_dd = today.substring(5); // Default to today's MM-DD
   // Use frontmatter date logic if it matches YYYY-MM-DD

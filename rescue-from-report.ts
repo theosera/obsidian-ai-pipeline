@@ -1,6 +1,5 @@
 // @ts-nocheck
 import fs from 'fs';
-import path from 'path';
 import { fetchRenderedHtml, closeBrowser } from './fetcher.js';
 import { extractAndConvert } from './extractor.js';
 import { saveMarkdown, updateVaultTreeSnapshot, ensureSafePath } from './storage.js';
@@ -103,4 +102,7 @@ async function main() {
   process.exit(0);
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

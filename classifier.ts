@@ -51,7 +51,7 @@ function loadSnippetsStructured() {
     const parser = new XMLParser({ ignoreAttributes: false });
     const parsed = parser.parse(xmlData);
 
-    let arr: { title: string, content: string }[] = [];
+    const arr: { title: string, content: string }[] = [];
     const folders = parsed.folders?.folder || [];
     const folderArray = Array.isArray(folders) ? folders : [folders];
 
@@ -83,7 +83,7 @@ function compressFolderTree(folders: string[]): string {
     });
   });
 
-  let lines: string[] = [];
+  const lines: string[] = [];
   function render(node: Record<string, any>, indent: string) {
     for (const key of Object.keys(node).sort()) {
       if (Object.keys(node[key]).length === 0) {
@@ -248,10 +248,10 @@ function validateClassificationResult(result: ClassificationResult): Classificat
 function extractJson(rawJson: string): any {
   try {
     return JSON.parse(rawJson);
-  } catch (err) {
+  } catch {
     const match = rawJson.match(/\{[\s\S]*\}/);
     if (match) {
-      try { return JSON.parse(match[0]); } catch (e) {}
+      try { return JSON.parse(match[0]); } catch {}
     }
     throw new Error('Could not parse valid JSON from AI response.');
   }
