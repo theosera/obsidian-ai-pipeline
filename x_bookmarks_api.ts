@@ -80,14 +80,26 @@ export interface FetchOptions {
   /** テストから fetch をモックするための差し替え口 */
   fetchFn?: typeof fetch;
   /**
-   * 差分同期 watermark の読み書き用 DB ハンドル。undefined だと fast-termination
-   * が無効化されて従来の "3件連続既知" フォールバックのみで動く。
-   * テストや単発実行で in-memory DB を渡したい場面のために injectable。
+   * 差分同期 watermark の **読み取り専用**ハンドル (fast-termination のため)。
+   * 書き込みは `fetchBookmarksViaApi` の戻り値 `pendingWatermarks` 経由で
+   * 呼出側に委ね、ユーザーが実際に永続化を承認したタイミングで commit する。
+   * (Codex P1: fetch 時点で write すると --dry-run / [q]uit のとき watermark が
+   *  進んでしまい、永続化されなかったツイートが次回 fast-termination でスキップ
+   *  される回帰を防ぐ)
    */
   dbForWatermark?: {
     getLastFetchedTweetId(xFolderId: string): string | null;
-    setLastFetchedTweetId(xFolderId: string, tweetId: string): void;
   };
+}
+
+export interface FetchResult {
+  bookmarks: ApiBookmark[];
+  /**
+   * xFolderId → 当回 fetch で見た最新ツイート ID。
+   * 呼出側が persistence 確定後に `setLastFetchedTweetId` で commit する責務を持つ。
+   * 値が空なら watermark の更新不要。
+   */
+  pendingWatermarks: Map<string, string>;
 }
 
 /** Stage 1 (一覧表示) でだけ使う、軽量な folder list 取得結果 */
@@ -547,7 +559,7 @@ export async function listFolders(
 // ---------------------------------------------------------------------------
 // Main fetch entry
 // ---------------------------------------------------------------------------
-export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<ApiBookmark[]> {
+export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<FetchResult> {
   const maxItems = options.maxItems ?? Infinity;
   const skipKnownIds = options.skipKnownIds ?? new Set<string>();
   const fetchFn = options.fetchFn ?? fetch;
@@ -642,8 +654,10 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
   //      a) folder_sessions.last_fetched_tweet_id (watermark) と一致したら即終了
   //         (X API は newest-first を返すので、その ID 以降はすべて既知のはず)
   //      b) フォールバック: 既知ツイートが 3 件連続したらページング打ち切り
-  //    各フォルダの fetch 完了後、当回の最新 ID で watermark を更新する。
-  const db = options.dbForWatermark; // 注入可能 (テスト用)。本番は内部 import。
+  //    Codex P1: watermark は fetch 直後には書かない。pendingWatermarks Map に貯めて
+  //    呼出側に返し、persistence 確定 ([y] かつ非 dry-run) のときだけ commit する。
+  const db = options.dbForWatermark;
+  const pendingWatermarks = new Map<string, string>();
   for (const folder of folders) {
     if (all.length >= maxItems) break;
     let token: string | undefined;
@@ -687,9 +701,9 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
     } while (token);
     const tag = previousWatermark ? '差分' : '初回';
     console.log(`🔖 [X API]   "${folder.name}": ${folderCount} 件 (新規・${tag})`);
-    // watermark 更新 (folder_sessions に当回の最新 ID を記録)
-    if (db && watermarkCandidate) {
-      try { db.setLastFetchedTweetId(folder.id, watermarkCandidate); } catch { /* noop */ }
+    // watermark 候補を保留 (呼出側が persistence 確定で commit する)
+    if (watermarkCandidate) {
+      pendingWatermarks.set(folder.id, watermarkCandidate);
     }
   }
 
@@ -730,7 +744,7 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
     await enrichBookmarksWithFrames(all);
   }
 
-  return all;
+  return { bookmarks: all, pendingWatermarks };
 }
 
 /**

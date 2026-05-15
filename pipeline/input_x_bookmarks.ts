@@ -57,7 +57,15 @@ export async function prepareXBookmarks(options: {
   includeUnfiled?: boolean;
   /** --x-pick 経由のときは Tier 3 提案レポート出力をスキップ (Stage 1 で表示済み)。 */
   suppressGroupingProposal?: boolean;
-}): Promise<{ entries: ParsedEntry[]; failures: FailureRecord[] }> {
+}): Promise<{
+  entries: ParsedEntry[];
+  failures: FailureRecord[];
+  /**
+   * 当回 fetch で観測した folder watermark 候補 (xFolderId → newest tweet ID)。
+   * persistence 確定 ([y] かつ非 dry-run) のときに interactive.ts が DB へ commit する。
+   */
+  pendingWatermarks: Map<string, string>;
+}> {
   const { maxItems, knownUrls, selectedFolders, includeUnfiled, suppressGroupingProposal } = options;
   const entries: ParsedEntry[] = [];
   const failures: FailureRecord[] = [];
@@ -72,7 +80,7 @@ export async function prepareXBookmarks(options: {
   );
   console.log(`🔖 既知ツイートID: ${knownTweetIds.size} 件 (DB キャッシュ)`);
 
-  const bookmarks: ApiBookmark[] = await fetchBookmarksViaApi({
+  const { bookmarks, pendingWatermarks } = await fetchBookmarksViaApi({
     maxItems,
     skipKnownIds: knownTweetIds,
     selectedFolders,
@@ -140,5 +148,5 @@ export async function prepareXBookmarks(options: {
     entries.push({ url, title, policy: 'x_bookmark', preFetched: bm });
   }
 
-  return { entries, failures };
+  return { entries, failures, pendingWatermarks };
 }

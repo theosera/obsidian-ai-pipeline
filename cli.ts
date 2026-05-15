@@ -74,6 +74,26 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
   const xSyncFolders = argv.includes('--x-sync-folders');
   const xBookmarksRebuildDb = argv.includes('--x-bookmarks-rebuild-db');
 
+  // --x-bookmarks-rebuild-db はオフライン復旧用なので、他モードフラグとの併記を禁止する。
+  // (CodeRabbit: 黙って受け流すと意図しない動作になる)
+  if (xBookmarksRebuildDb) {
+    const conflictFlags = [
+      argv.includes('--x-bookmarks') && '--x-bookmarks',
+      xPick && '--x-pick',
+      xSyncFolders && '--x-sync-folders',
+      argv.includes('--x-auth') && '--x-auth',
+      argv.includes('--sync-rules') && '--sync-rules',
+      !!handsOnArg && '--hands-on=...',
+    ].filter((v): v is string => Boolean(v));
+    if (conflictFlags.length > 0) {
+      console.error(
+        `Error: --x-bookmarks-rebuild-db は他モードと併用できません (検出: ${conflictFlags.join(', ')})`
+      );
+      printUsage();
+      process.exit(1);
+    }
+  }
+
   return {
     config: argv.includes('--config'),
     dryRun: argv.includes('--dry-run'),

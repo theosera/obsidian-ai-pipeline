@@ -23,7 +23,16 @@ import { isDryRun } from '../config';
  */
 export async function interactiveReviewLoop(
   results: ProcessingResult[],
-  reportMdPath: string
+  reportMdPath: string,
+  options?: {
+    /**
+     * fetchBookmarksViaApi が返した pending watermarks。
+     * [y] かつ非 dry-run のとき DB へ commit する。
+     * (Codex P1: fetch 時に書くと cancel/dry-run で watermark だけ進んで
+     *  次回 fast-termination で未永続化ツイートが skip される)
+     */
+    pendingWatermarks?: Map<string, string>;
+  }
 ): Promise<void> {
   let reviewing = true;
 
@@ -37,7 +46,7 @@ export async function interactiveReviewLoop(
     const cmd = (await askQuestion('Command [y/e/q]: ')).toLowerCase();
 
     if (cmd === 'y') {
-      await saveApprovedResults(results);
+      await saveApprovedResults(results, options?.pendingWatermarks);
       reviewing = false;
     } else if (cmd === 'e') {
       await editOneClassification(results, reportMdPath);
@@ -45,8 +54,6 @@ export async function interactiveReviewLoop(
       console.log('Aborted execution.');
       reviewing = false;
     } else if (cmd === '' && isPromptClosed()) {
-      // stdin EOF: 非対話環境。レポートは既に生成済みなので Vault への
-      // 保存はスキップして安全に終了する。
       console.log('\n⚠️ stdin が閉じられました（非対話実行）。');
       console.log(`   レポートは生成済み: ${reportMdPath}`);
       console.log('   レビュー後、以下で Vault への保存を実行できます:');
@@ -56,7 +63,10 @@ export async function interactiveReviewLoop(
   }
 }
 
-async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
+async function saveApprovedResults(
+  results: ProcessingResult[],
+  pendingWatermarks?: Map<string, string>
+): Promise<void> {
   const dry = isDryRun();
   if (dry) {
     // runner の confirmBeforeRun でも告知済みだが、ここでも明示する。
@@ -108,7 +118,23 @@ async function saveApprovedResults(results: ProcessingResult[]): Promise<void> {
 
   if (dry) {
     console.log('🧪 dry-run 終了: 実体は変更されていません。');
+    if (pendingWatermarks && pendingWatermarks.size > 0) {
+      console.log(`   (watermark ${pendingWatermarks.size} 件も保留中: dry-run のため commit せず)`);
+    }
   } else {
+    // 永続化が完了したので watermark を commit (Codex P1)
+    if (pendingWatermarks && pendingWatermarks.size > 0) {
+      let committed = 0;
+      for (const [folderId, tweetId] of pendingWatermarks) {
+        try {
+          getDb().setLastFetchedTweetId(folderId, tweetId);
+          committed++;
+        } catch (e: any) {
+          console.warn(`   ⚠️  watermark commit 失敗 (folder=${folderId}): ${e.message}`);
+        }
+      }
+      console.log(`🔖 watermark commit: ${committed}/${pendingWatermarks.size} フォルダ`);
+    }
     console.log('🎉 All files saved.');
     updateVaultTreeSnapshot();
   }

@@ -80,7 +80,7 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   const knownUrls = getKnownUrls();
   console.log(`Found ${knownUrls.size} unique URLs already saved.\n`);
 
-  const { entries, failures } = await buildEntries(args, knownUrls);
+  const { entries, failures, pendingWatermarks } = await buildEntries(args, knownUrls);
 
   // --x-pick で「中止」が選ばれると entries も failures も 0 件で返る。
   // この場合は y/n 確認をスキップして即終了 (再度プロンプトを出すと UX が悪い)。
@@ -133,7 +133,7 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   const reportLabel = args.xBookmarks ? 'X-Bookmarks' : 'OneTab';
   const reportPath = path.join(REPORTS_DIR, `${reportLabel}分類結果レポート-${dateStr}.md`);
   fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
-  await interactiveReviewLoop(results, reportPath);
+  await interactiveReviewLoop(results, reportPath, { pendingWatermarks });
 }
 
 /**
@@ -152,7 +152,11 @@ function setupOutputDirs(): { REPORTS_DIR: string; INTERNAL_LOGS_DIR: string } {
 async function buildEntries(
   args: ParsedCliArgs,
   knownUrls: Set<string>
-): Promise<{ entries: ParsedEntry[]; failures: FailureRecord[] }> {
+): Promise<{
+  entries: ParsedEntry[];
+  failures: FailureRecord[];
+  pendingWatermarks?: Map<string, string>;
+}> {
   if (args.xBookmarks) {
     try {
       // --x-pick: Stage 1 (フォルダ一覧表示) → 選択 → Stage 2 (本文取得)

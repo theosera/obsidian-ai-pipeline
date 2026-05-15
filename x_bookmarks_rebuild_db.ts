@@ -81,18 +81,28 @@ export function rebuildDbFromVault(baseFolder: string): RebuildResult {
   return result;
 }
 
+const VALID_STATUSES = new Set(['active', 'orphaned_on_x', 'orphaned_on_vault', 'archived']);
+
 function upsertSessionFromMarker(file: string, dir: string, baseFolder: string): boolean {
   const db = getDb();
   try {
     const marker = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (typeof marker?.session_id !== 'string') return false;
     const vaultRelative = path.relative(getVaultRoot(), dir);
+    // marker.status を尊重しつつ、無ければパスから推測 (_archived 配下なら archived)。
+    // どちらも該当しないときだけ 'active' に倒す。
+    // (CodeRabbit: 強制 'active' で archived/orphaned が resurrect されるリグレッション防止)
+    const markerStatus = typeof marker?.status === 'string' && VALID_STATUSES.has(marker.status)
+      ? marker.status as 'active' | 'orphaned_on_x' | 'orphaned_on_vault' | 'archived'
+      : null;
+    const looksArchived = vaultRelative.split(path.sep).includes('_archived');
+    const status = markerStatus ?? (looksArchived ? 'archived' : 'active');
     db.upsertFolderSession({
       sessionId: marker.session_id,
       xFolderId: marker.x_folder_id ?? null,
       xFolderName: marker.x_folder_name ?? null,
       vaultPath: vaultRelative,
-      status: 'active',
+      status,
     });
     return true;
   } catch (e: any) {

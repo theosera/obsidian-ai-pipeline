@@ -498,10 +498,12 @@ pnpm start -- --hands-on="Clippings/X-Bookmarks/Claude Code" --dry-run
 
 ログには `初回` / `差分` のタグが出ます:
 
-```
+```text
 🔖 [X API]   "Claude Code/Tips": 3 件 (新規・差分)
 🔖 [X API]   "AI/Agents":        0 件 (新規・差分)
 ```
+
+> **重要**: watermark は **persistence 確定（`[y]` かつ非 dry-run）でのみ更新**されます。`--dry-run` や `[q]uit` した場合、watermark は進まないので、次回実行で同じツイートを再 fetch できます (Codex P1 対応)。
 
 #### `--x-bookmarks-rebuild-db`: DB 復旧
 
@@ -513,7 +515,7 @@ pnpm start -- --x-bookmarks-rebuild-db
 
 出力例:
 
-```
+```text
 🔧 Clippings/X-Bookmarks-claude 配下の .md / _session.json から DB を再構築します...
 🔧 rebuild-db 完了:
   scanned .md       : 420

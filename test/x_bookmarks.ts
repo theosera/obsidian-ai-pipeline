@@ -1907,25 +1907,21 @@ export async function run(): Promise<TestSuiteResult> {
           throw new Error(`unexpected fetch url: ${url}`);
         }) as any;
 
-        const results = await fetchBookmarksViaApi({
+        const { bookmarks: results } = await fetchBookmarksViaApi({
           selectedFolders: [{ id: 'fa', name: 'FolderA' }],
           includeUnfiled: true,
           fetchFn: mockFetch,
         });
 
         const tweetIds = results.map(r => r.xTweetId).sort();
-        // T_A1 (folder A から) + T_U1 (Unfiled) のみ
-        // T_B1 は別フォルダにあるので Unfiled として誤分類されてはならない
         assert.deepStrictEqual(
           tweetIds,
           ['T_A1', 'T_U1'],
           `T_B1 が Unfiled に誤分類されている: ${JSON.stringify(tweetIds)}`
         );
 
-        // T_U1 は Unfiled grouping
         const tu1 = results.find(r => r.xTweetId === 'T_U1');
         assert.strictEqual(tu1?.xFolderName, '_Unfiled');
-        // T_A1 は FolderA grouping
         const ta1 = results.find(r => r.xTweetId === 'T_A1');
         assert.strictEqual(ta1?.xFolderName, 'FolderA');
 
@@ -2450,7 +2446,7 @@ body
       db.close();
     });
 
-    await runner.testAsync('fetchBookmarksViaApi が folder fetch 後に watermark を更新する', async () => {
+    await runner.testAsync('Codex P1: fetchBookmarksViaApi は DB に watermark を書かず pendingWatermarks Map で返す', async () => {
       saveTokens({
         access_token: 'fake', refresh_token: 'r',
         expires_in: 7200, obtained_at: new Date().toISOString(),
@@ -2477,19 +2473,36 @@ body
           }
           throw new Error(`unexpected: ${url}`);
         }) as any;
-        await fetchBookmarksViaApi({
+        const result = await fetchBookmarksViaApi({
           selectedFolders: [{ id: 'fw3', name: 'F' }],
           includeUnfiled: false,
           fetchFn: mockFetch,
           dbForWatermark: db,
         });
-        // newest tweet が watermark に記録される
-        assert.strictEqual(db.getLastFetchedTweetId('fw3'), 'NEW-1');
+        // DB は触られない (persistence 確定まで watermark は据え置き)
+        assert.strictEqual(db.getLastFetchedTweetId('fw3'), null, 'DB watermark は据え置き');
+        // pendingWatermarks で返ってくる
+        assert.strictEqual(result.pendingWatermarks.get('fw3'), 'NEW-1');
         db.close();
       } finally {
         if (prev === undefined) delete process.env.X_CLIENT_ID;
         else process.env.X_CLIENT_ID = prev;
       }
+    });
+
+    runner.test('Codex P1: dry-run 後の commit シナリオ - watermark 据え置き → next run で同 tweet を再 fetch 可能', () => {
+      // fetchBookmarksViaApi は DB を直接書かないので、呼出側がスキップすれば
+      // 次回 fast-termination は前回の watermark で動く (= 同じ tweet を再 fetch できる)
+      const db = new XBookmarksDb(':memory:');
+      db.upsertFolderSession({ sessionId: 'sN', xFolderId: 'fN', status: 'active' });
+      // 1回目の dry-run: pendingWatermarks があっても DB には書かない
+      const pending = new Map<string, string>([['fN', 'TWEET-NEW']]);
+      // (dry-run の場合は commit ループをスキップ)
+      assert.strictEqual(db.getLastFetchedTweetId('fN'), null);
+      // 2回目の real run: 同じ pending を commit
+      for (const [k, v] of pending) db.setLastFetchedTweetId(k, v);
+      assert.strictEqual(db.getLastFetchedTweetId('fN'), 'TWEET-NEW');
+      db.close();
     });
 
     await runner.testAsync('watermark ヒット時は以降のページングを即終了する (fast-termination)', async () => {
@@ -2526,7 +2539,7 @@ body
           }
           throw new Error(`unexpected: ${url}`);
         }) as any;
-        const out = await fetchBookmarksViaApi({
+        const { bookmarks: out, pendingWatermarks } = await fetchBookmarksViaApi({
           selectedFolders: [{ id: 'fw4', name: 'F' }],
           includeUnfiled: false,
           fetchFn: mockFetch,
@@ -2537,8 +2550,9 @@ body
         // NEW-A / NEW-B は新規として取得済み、OLDER-1 は取得されない
         const ids = out.map(b => b.xTweetId).sort();
         assert.deepStrictEqual(ids, ['NEW-A', 'NEW-B']);
-        // watermark は新しい最新 ID (NEW-A) に更新される
-        assert.strictEqual(db.getLastFetchedTweetId('fw4'), 'NEW-A');
+        // 新 watermark 候補は pendingWatermarks 経由 (DB はまだ古い)
+        assert.strictEqual(pendingWatermarks.get('fw4'), 'NEW-A');
+        assert.strictEqual(db.getLastFetchedTweetId('fw4'), 'OLD-WATERMARK', 'DB は据え置き');
         db.close();
       } finally {
         if (prev === undefined) delete process.env.X_CLIENT_ID;
