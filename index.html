@@ -599,26 +599,43 @@
 const themeToggle = document.getElementById('theme-toggle');
 const root = document.documentElement;
 const savedTheme = localStorage.getItem('obsidian-pipeline-theme');
+
+// data-theme 属性値 (null = OS 設定追従) を実効テーマ ('dark'|'light') に解決
+function effectiveTheme(theme) {
+  if (theme === 'dark' || theme === 'light') return theme;
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+// トグルボタンの aria-pressed を実効テーマに同期 (支援技術 + pressed-state CSS)
+function setThemeToggleState(theme) {
+  themeToggle.setAttribute('aria-pressed', String(effectiveTheme(theme) === 'dark'));
+}
+
 if (savedTheme === 'light' || savedTheme === 'dark') {
   root.setAttribute('data-theme', savedTheme);
   syncHljsTheme(savedTheme);
 }
 themeToggle.addEventListener('click', () => {
   const current = root.getAttribute('data-theme');
-  const next = current === 'dark' || (current === null && matchMedia('(prefers-color-scheme: dark)').matches) ? 'light' : 'dark';
+  const next = effectiveTheme(current) === 'dark' ? 'light' : 'dark';
   root.setAttribute('data-theme', next);
   localStorage.setItem('obsidian-pipeline-theme', next);
   syncHljsTheme(next);
+  setThemeToggleState(next);
 });
 function syncHljsTheme(theme) {
-  const isDark = theme === 'dark' || (theme === null && matchMedia('(prefers-color-scheme: dark)').matches);
+  const isDark = effectiveTheme(theme) === 'dark';
   document.getElementById('hljs-light-style').disabled = isDark;
   document.getElementById('hljs-dark-style').disabled = !isDark;
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-  if (!root.hasAttribute('data-theme')) syncHljsTheme(e.matches ? 'dark' : 'light');
+  if (!root.hasAttribute('data-theme')) {
+    const next = e.matches ? 'dark' : 'light';
+    syncHljsTheme(next);
+    setThemeToggleState(next);
+  }
 });
 syncHljsTheme(root.getAttribute('data-theme'));
+setThemeToggleState(root.getAttribute('data-theme'));
 
 // ============================================================================
 // Markdown レンダリング
@@ -724,11 +741,11 @@ function buildToc() {
   });
   html += '<h2>メタデータ</h2>';
   html += '<a href="#metadata-panel">構造化メタデータ</a>';
-  html += '<a href="#stages-section">パイプライン</a>';
-  html += '<a href="#cli-section">CLI コマンド</a>';
-  html += '<a href="#modules-section">モジュール</a>';
-  html += '<a href="#datastore-section">データストア</a>';
-  html += '<a href="#concepts-section">キーコンセプト</a>';
+  html += '<a href="#stages">パイプライン</a>';
+  html += '<a href="#cli-list">CLI コマンド</a>';
+  html += '<a href="#modules-list">モジュール</a>';
+  html += '<a href="#datastore-list">データストア</a>';
+  html += '<a href="#concepts-list">キーコンセプト</a>';
   tocEl.innerHTML = html;
 }
 
@@ -784,7 +801,6 @@ function renderOverview(data) {
 
   // Stages
   const stagesEl = document.getElementById('stages');
-  stagesEl.id = 'stages-section';
   stagesEl.innerHTML = data.pipelineStages.map(s => `
     <li>
       <span class="stage-name">${escapeHtml(s.name)}</span>
@@ -795,7 +811,6 @@ function renderOverview(data) {
 
   // CLI
   const cliEl = document.getElementById('cli-list');
-  cliEl.id = 'cli-section';
   cliEl.innerHTML = data.cliCommands.map(c => `
     <div class="row">
       <code class="cli-flag">${escapeHtml(c.flag)}</code>
@@ -806,7 +821,6 @@ function renderOverview(data) {
 
   // Modules grouped
   const modulesEl = document.getElementById('modules-list');
-  modulesEl.id = 'modules-section';
   let modulesHtml = '';
   for (const group of data.moduleGroups) {
     const groupMods = data.modules.filter(m => m.group === group.id);
@@ -831,7 +845,6 @@ function renderOverview(data) {
 
   // Data stores
   const dsEl = document.getElementById('datastore-list');
-  dsEl.id = 'datastore-section';
   dsEl.innerHTML = data.dataStores.map(d => `
     <div class="datastore-item">
       <span class="datastore-name">${escapeHtml(d.name)}</span>
@@ -856,7 +869,6 @@ function renderOverview(data) {
 
   // Concepts
   const conEl = document.getElementById('concepts-list');
-  conEl.id = 'concepts-section';
   conEl.innerHTML = data.keyConcepts.map(c => `
     <div class="concept-item">
       <div class="concept-name">${escapeHtml(c.name)}</div>
