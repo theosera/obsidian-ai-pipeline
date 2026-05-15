@@ -3550,6 +3550,83 @@ body
       });
     }
 
+    // =====================================================
+    // pipeline/interactive.ts: dry-run gating in saveApprovedResults
+    // =====================================================
+    runner.section('pipeline/interactive: dry-run gating');
+
+    await runner.testAsync('dry-run: X bookmark の upsertBookmark をスキップする', async () => {
+      const { __test: interactiveInternals } = await import('../pipeline/interactive');
+      const { setDryRun, isDryRun } = await import('../config');
+      const { getDb } = await import('../x_bookmarks_db');
+
+      // 事前: DB を空にする
+      (getDb() as any).db.exec('DELETE FROM bookmarks');
+      const before = getDb().count();
+
+      const prev = isDryRun();
+      setDryRun(true);
+      try {
+        await interactiveInternals.saveApprovedResults([
+          {
+            id: 1,
+            status: 'success',
+            url: 'https://x.com/foo/status/dry-1',
+            policy: 'x_bookmark',
+            classification: { proposedPath: 'Clippings/X-Bookmarks-claude/Test', confidence: 1, isNewFolder: false, reasoning: 'test' },
+            articleContext: {
+              url: 'https://x.com/foo/status/dry-1',
+              title: 't',
+              content: 'c',
+              textContent: 'c',
+              xTweetId: 'dry-1',
+              xFolderName: 'Test',
+            } as any,
+          },
+        ]);
+      } finally {
+        setDryRun(prev);
+      }
+
+      const after = getDb().count();
+      assert.strictEqual(after, before, 'dry-run でも upsertBookmark が走ると行数が増える (回帰)');
+    });
+
+    await runner.testAsync('dry-run: 非 X bookmark の saveMarkdown をスキップする (.md を書かない)', async () => {
+      const { __test: interactiveInternals } = await import('../pipeline/interactive');
+      const { setDryRun, isDryRun } = await import('../config');
+
+      const dryDir = path.join(tmpDir, 'Clippings/DryRunNonX');
+      const prev = isDryRun();
+      setDryRun(true);
+      try {
+        await interactiveInternals.saveApprovedResults([
+          {
+            id: 1,
+            status: 'success',
+            url: 'https://example.com/article',
+            policy: 'hatena',
+            classification: { proposedPath: 'Clippings/DryRunNonX', confidence: 1, isNewFolder: false, reasoning: 'test' },
+            articleContext: {
+              url: 'https://example.com/article',
+              title: 'DryRunArticle',
+              content: 'body',
+              textContent: 'body',
+            } as any,
+          },
+        ]);
+      } finally {
+        setDryRun(prev);
+      }
+      // フォルダ自体は (saveMarkdown が走らない以上) 作られていないはず。
+      // saveMarkdown は mkdir + writeFile を一気にやるので、フォルダの不在で
+      // 書き込みスキップを検出できる。
+      assert.ok(
+        !fs.existsSync(dryDir),
+        `dry-run でも Clippings 配下にフォルダが作られた: ${dryDir} (= saveMarkdown 抑止が破れている)`
+      );
+    });
+
     return runner.report();
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
