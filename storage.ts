@@ -150,6 +150,10 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
   for (let seq = 2; seq < 1000 && fs.existsSync(path.join(fullDirPath, fileName)); seq++) {
     fileName = `${baseName}_${seq}.md`;
   }
+  // 連番が上限に達した場合、最後の候補が空きとは限らないため再検証する。
+  if (fs.existsSync(path.join(fullDirPath, fileName))) {
+    throw new Error(`[Storage] ファイル名の空きが見つかりません: "${baseName}"`);
+  }
   const filePath = path.join(fullDirPath, fileName);
 
   // 保存直前の最終防御: ensureSafePath / safeTitle で前段防御済みだが、
