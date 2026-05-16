@@ -90,7 +90,6 @@ X API v2 はフォルダ一覧・フォルダ内ポストの公式エンドポ�
 ### 共通キーワード提案の運用
 
 - **保存先**: `X_Bookmarks/`（既存記事とは完全に別系統）
-  - ※この節は既存パイプラインの `--x-bookmarks` モードについての説明です。workspace 版（`apps/sync`）の既定値は `Clippings/X-Bookmarks-codex` です。
   - 環境変数 `X_BOOKMARKS_FOLDER` で上書き可能
   - Router の日付昇格ルール（QUARTERLY=10 / MONTHLY=20）に従い、件数が増えると `X_Bookmarks/Claude Code/2026-Q2` のようなサブフォルダへ自動再編成
 - **Classifier を通さない**: 短いツイート本文に対する AI 分類は不経済かつノイズ源になるため、固定ルーティング
@@ -214,8 +213,8 @@ x_folder_name: "Claude Code/Tips"
 
 **Sync Phase の動作**（[x_session_sync.ts](../x_session_sync.ts)）:
 
-```
-1. <vault>/Clippings/X-Bookmarks-claude/ を再帰走査して全 _session.json を収集
+```text
+1. <vault>/X_Bookmarks/ を再帰走査して全 _session.json を収集
 2. /2/users/:id/bookmarks/folders で X 側 folder ID を全列挙
 3. 4 軸の drift を検出:
    ├─ X 側に新規 folder       → UUID 発行 + DB row + marker 作成
@@ -228,10 +227,10 @@ x_folder_name: "Claude Code/Tips"
 
 **X 側でフォルダを削除した場合 (orphan_on_x)**: AI が状況を判断して推奨を出します。
 
-```
+```text
 ⚠️  X 側で削除されたフォルダを検出: "OldProject"
    session_id: 7a3f...
-   Vault: Clippings/X-Bookmarks-claude/OldProject
+   Vault: X_Bookmarks/OldProject
    配下 .md: 30 件 / 最新更新: 2026-04-22T03:14:00.000Z
 🤖 AI 判定中...
    AI 推奨: 保持
@@ -304,7 +303,7 @@ pnpm start -- --hands-on="X_Bookmarks/Claude Code" --dry-run
 
 生成先: `<vault>/Permanent Note/09_X_Bookmarks/<folder>-YYYYMMDD.md`
 
-### 今後の拡張 (Phase 2 以降)
+### 今後の拡張
 
 - フォルダ件数 50 超で LLM サブカテゴリ提案 → 承認フロー → 自動再分類
 - フォルダ単位の `_INDEX.md` 自動生成（要約 + 件数 + 最終更新）
