@@ -30,7 +30,7 @@ export function extractAndConvert(html: string, url: string): ArticleData & { le
       if (!isNaN(d.getTime())) {
         formattedDate = d.toISOString().split('T')[0];
       }
-    } catch(e){}
+    } catch {}
   }
 
   const elementsToRemove = document.querySelectorAll('script, style, noscript, svg, nav, footer, iframe');

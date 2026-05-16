@@ -14,7 +14,6 @@
  */
 
 import { spawn, spawnSync } from 'child_process';
-import path from 'path';
 import { OrphanOnX, OrphanResolver, OrphanResolution } from './x_session_sync';
 
 export interface AskFn {

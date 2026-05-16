@@ -26,7 +26,6 @@ import {
   writeSessionMarker,
   readSessionMarker,
   newSessionId,
-  markerFilename,
 } from './x_session_registry';
 import { listFolders, FolderListing } from './x_bookmarks_api';
 import {

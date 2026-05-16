@@ -27,8 +27,6 @@ import {
   writeSessionMarker,
   readSessionMarker,
   walkSessionMarkers,
-  getOrCreateSession,
-  lookupVaultPath,
 } from '../x_session_registry';
 import { runSyncPhase, __test as syncInternals } from '../x_session_sync';
 import { __test as aiInternals, createInteractiveOrphanResolver } from '../x_session_ai';
@@ -579,7 +577,7 @@ export async function run(): Promise<TestSuiteResult> {
         id: 'p1', text: '画像のみ', author_id: 'u1',
         attachments: { media_keys: ['mk1'] },
       };
-      const resolver = (key: string) => ({
+      const resolver = (_key: string) => ({
         media_key: 'mk1', type: 'photo',
       });
       const bm = apiInternals.tweetToApiBookmark(
@@ -2495,7 +2493,7 @@ body
         db.close();
       });
 
-      runner.test('upsertBookmark: re-upsert は added_at を保持 / saved_at は更新', async () => {
+      await runner.testAsync('upsertBookmark: re-upsert は added_at を保持 / saved_at は更新', async () => {
         const db = new XBookmarksDb(':memory:');
         db.upsertBookmark({
           tweetId: 'reup',

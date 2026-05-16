@@ -122,7 +122,13 @@ export async function runAuthServer(): Promise<void> {
 
   const pkce = new Map<string, { verifier: string }>();
 
-  const server = http.createServer(async (req, res) => {
+  // 非同期ハンドラを名前付き関数に切り出し、createServer には void 返却の
+  // 同期ラッパを渡す (typescript-eslint/no-misused-promises 対応)。
+  // ハンドラ rejection はラッパの .catch で 500 応答 + ログに集約する。
+  const handleRequest = async (
+    req: http.IncomingMessage,
+    res: http.ServerResponse
+  ): Promise<void> => {
     const reqUrl = new URL(req.url ?? '/', `http://localhost:${port}`);
 
     if (reqUrl.pathname === '/' || reqUrl.pathname === '/auth/login') {
@@ -177,6 +183,17 @@ export async function runAuthServer(): Promise<void> {
 
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
+  };
+
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`❌ [x-auth] リクエスト処理エラー: ${msg}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      }
+      res.end('Internal error');
+    });
   });
 
   server.listen(port, () => {

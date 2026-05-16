@@ -80,7 +80,7 @@ export function loadConfig(): PipelineConfig | null {
         setVaultRoot(config.vaultRoot);
       }
       return config;
-    } catch (e) {
+    } catch {
       return null;
     }
   }
@@ -103,10 +103,10 @@ export async function runConfigWizard(ask?: (q: string) => Promise<string>): Pro
   // --- Vault Root ---
   console.log('\n=== 📂 Obsidian Vault Root Configuration ===');
   const currentVault = _vaultRoot || process.env.VAULT_ROOT || '';
-  let vaultRootInput = await askFunc(
+  const vaultRootInput = await askFunc(
     `Obsidian Vault のルートパス${currentVault ? ` (default: ${currentVault})` : ''}: `
   );
-  let vaultRoot = vaultRootInput.trim() || currentVault;
+  const vaultRoot = vaultRootInput.trim() || currentVault;
   if (!vaultRoot) {
     console.error('Vault Root は必須です。');
     process.exit(1);
@@ -129,8 +129,8 @@ export async function runConfigWizard(ask?: (q: string) => Promise<string>): Pro
   console.log('3. openai (ChatGPT)');
   console.log('4. gemini');
 
-  let providerInput = await askFunc('Select AI Provider [1-4] (default 1): ');
-  let providerChoice = providerInput.trim()[0]; // 環境によってターミナルのエコーで '44' のように二重入力される問題への対策
+  const providerInput = await askFunc('Select AI Provider [1-4] (default 1): ');
+  const providerChoice = providerInput.trim()[0]; // 環境によってターミナルのエコーで '44' のように二重入力される問題への対策
 
   let provider: PipelineConfig['provider'] = 'local';
   if (providerChoice === '2') provider = 'anthropic';

@@ -239,10 +239,15 @@ async function main() {
 
   } catch (err) {
     console.error(`\n❌ エラーが発生しました: ${err.message}`);
+    rl.close();
+    process.exit(1);
   }
 
   rl.close();
   process.exit(0);
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
