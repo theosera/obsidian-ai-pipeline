@@ -1,6 +1,6 @@
 # 詳細仕様
 
-このドキュメントは [Obsidian AI Pipeline](../README.md) の詳細仕様をまとめたものです。実行コマンドのリファレンスは [実行コマンドリファレンス](USAGE.md) を参照してください。
+このドキュメントは [Obsidian AI Pipeline](../README.md) の詳細仕様をまとめたものです。実行コマンドのリファレンスは [実行コマンドリファレンス](cli-reference.md) を参照してください。
 
 ---
 

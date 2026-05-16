@@ -13,7 +13,7 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | ドキュメント | 内容 |
 |---|---|
 | 本 README | 導入・アーキテクチャ・主要機能・環境要件・セットアップ・基本実行コマンド |
-| [docs/USAGE.md](docs/USAGE.md) | 実行コマンドリファレンス（フォルダルール同期 / X ブックマーク取り込み / ハンズオン生成 / 中断再開 / ナレッジ統合 / 対話型レビュー） |
+| [docs/cli-reference.md](docs/cli-reference.md) | 実行コマンドリファレンス（フォルダルール同期 / X ブックマーク取り込み / ハンズオン生成 / 中断再開 / ナレッジ統合 / 対話型レビュー） |
 | [docs/SPECIFICATION.md](docs/SPECIFICATION.md) | 詳細仕様（Claude vs Codex 対照実験 / ファイル構成） |
 
 ---
@@ -91,7 +91,7 @@ pnpm exec playwright install chromium
 
 ## 実行コマンド
 
-基本的な実行コマンドを以下に示します。応用的なコマンド（フォルダルール同期 / X ブックマーク取り込み / ハンズオン生成 / 中断再開 / ナレッジ統合 / 対話型レビュー）は [実行コマンドリファレンス](docs/USAGE.md) を参照してください。
+基本的な実行コマンドを以下に示します。応用的なコマンド（フォルダルール同期 / X ブックマーク取り込み / ハンズオン生成 / 中断再開 / ナレッジ統合 / 対話型レビュー）は [実行コマンドリファレンス](docs/cli-reference.md) を参照してください。
 
 ### 初回設定ウィザード
 
@@ -133,7 +133,7 @@ export GEMINI_API_KEY="AIza..."
 
 `~/.zshrc` への追記を推奨します。
 
-> **X (Twitter) ブックマーク取り込みは OAuth 2.0 PKCE ベースです**。`X_CLIENT_ID` / `X_CLIENT_SECRET` を `.env` に設定し、`pnpm start -- --x-auth` で初回認可してください。詳細は [実行コマンドリファレンス](docs/USAGE.md) の「X (Twitter) ブックマークの取り込み」節を参照。
+> **X (Twitter) ブックマーク取り込みは OAuth 2.0 PKCE ベースです**。`X_CLIENT_ID` / `X_CLIENT_SECRET` を `.env` に設定し、`pnpm start -- --x-auth` で初回認可してください。詳細は [実行コマンドリファレンス](docs/cli-reference.md) の「X (Twitter) ブックマークの取り込み」節を参照。
 
 ---
 
