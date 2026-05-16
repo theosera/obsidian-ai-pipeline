@@ -239,6 +239,8 @@ async function main() {
 
   } catch (err) {
     console.error(`\n❌ エラーが発生しました: ${err.message}`);
+    rl.close();
+    process.exit(1);
   }
 
   rl.close();
