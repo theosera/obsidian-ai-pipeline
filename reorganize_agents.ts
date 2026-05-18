@@ -41,7 +41,7 @@ function collectMarkdownFiles(dir) {
         results.push(fullPath);
       }
     }
-  } catch(err) { }
+  } catch {}
   return results;
 }
 
@@ -97,9 +97,9 @@ for (const filePath of allFiles) {
 
 // Create directories and apply router logic dynamically
 for (const [baseCat, data] of Object.entries(folderAnalysis)) {
-  let totalCount = data.pendingFiles.length;
+  const totalCount = data.pendingFiles.length;
 
-  let currentRule = rules[baseCat] || 'none';
+  const currentRule = rules[baseCat] || 'none';
   let newRule = currentRule;
 
   if (currentRule !== 'monthly') {
@@ -113,16 +113,16 @@ for (const [baseCat, data] of Object.entries(folderAnalysis)) {
   }
 
   // Physically move files
-  let tempRule = { [baseCat]: newRule };
+  const tempRule = { [baseCat]: newRule };
   data.pendingFiles.forEach(fileMeta => {
-     let routedRel = getRoutedPath(baseCat, fileMeta.publishedDate, tempRule);
-     let newAbsoluteDir = path.join(VAULT_ROOT, routedRel);
+     const routedRel = getRoutedPath(baseCat, fileMeta.publishedDate, tempRule);
+     const newAbsoluteDir = path.join(VAULT_ROOT, routedRel);
 
      if (!isDryRun() && !fs.existsSync(newAbsoluteDir)) {
         fs.mkdirSync(newAbsoluteDir, { recursive: true });
      }
 
-     let targetPath = path.join(newAbsoluteDir, fileMeta.fileName);
+     const targetPath = path.join(newAbsoluteDir, fileMeta.fileName);
      if (fileMeta.filePath !== targetPath) {
         safeRename(fileMeta.filePath, targetPath);
      }
@@ -142,7 +142,7 @@ function cleanupEmpty(dir) {
     const full = path.join(dir, item);
     if (fs.statSync(full).isDirectory()) {
       cleanupEmpty(full);
-      try { fs.rmdirSync(full); } catch(e) {}
+      try { fs.rmdirSync(full); } catch {}
     }
   }
 }

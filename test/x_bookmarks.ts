@@ -17,11 +17,21 @@ import {
   loadForcedParents,
   loadApprovedMappings,
   writeGroupingProposal,
+  prioritizeForcedParents,
 } from '../x_folder_mapper';
 import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
 import { parseSelection } from '../x_interactive_picker';
 import { fetchBookmarksViaApi, saveTokens } from '../x_bookmarks_api';
-import { XBookmarksDb } from '../x_bookmarks_db';
+import {
+  newSessionId,
+  writeSessionMarker,
+  readSessionMarker,
+  walkSessionMarkers,
+} from '../x_session_registry';
+import { runSyncPhase, __test as syncInternals } from '../x_session_sync';
+import { __test as aiInternals, createInteractiveOrphanResolver } from '../x_session_ai';
+import { XBookmarksDb, getDb } from '../x_bookmarks_db';
+import Database from 'better-sqlite3';
 import { __test as apiInternals } from '../x_bookmarks_api';
 import { __test as authInternals } from '../x_auth_server';
 import { __test as videoInternals } from '../x_video_frames';
@@ -329,6 +339,107 @@ export async function run(): Promise<TestSuiteResult> {
       db.close();
     });
 
+    runner.test('CodeRabbit critical: session_id 列無し DB を開いてもデータ消失しない (上書き禁止)', () => {
+      // pre-PR DB は bookmarks テーブルに session_id 列が無い。
+      // SCHEMA 内に CREATE INDEX idx_session ON bookmarks(session_id) を書くと、
+      // CREATE TABLE IF NOT EXISTS が no-op になった後で index 作成が "no such column"
+      // で throw → getDb() の catch が DB を corrupted 退避 → ユーザーキャッシュ消失。
+      // 当テストは index 文を SCHEMA から外し、migrate 内で column 追加後に張る、
+      // という回帰防止用。
+      const dbDir = path.join(tmpDir, 'session-migration-test');
+      fs.mkdirSync(dbDir, { recursive: true });
+      const dbPath = path.join(dbDir, 'x_bookmarks.db');
+
+      // 旧 DB を擬似生成: bookmarks テーブルだけ作って既存行を入れる (session_id 列なし)
+      const legacy = new Database(dbPath);
+      legacy.exec(`
+        CREATE TABLE bookmarks (
+          tweet_id TEXT PRIMARY KEY,
+          url TEXT NOT NULL UNIQUE,
+          author TEXT,
+          tweet_text TEXT,
+          note_tweet_text TEXT,
+          created_at TEXT,
+          x_folder_name TEXT,
+          vault_path TEXT,
+          saved_at TEXT NOT NULL,
+          engagement_likes INTEGER,
+          engagement_retweets INTEGER,
+          engagement_replies INTEGER
+        );
+      `);
+      legacy.prepare(
+        'INSERT INTO bookmarks (tweet_id, url, saved_at) VALUES (?, ?, ?)'
+      ).run('legacy-1', 'https://x.com/a/status/legacy-1', new Date().toISOString());
+      legacy.close();
+
+      // ここで XBookmarksDb constructor を回す。SCHEMA に idx_session が残っていると
+      // throw して呼出側 (getDb) が DB を corrupted 退避してしまう。修正後は通る。
+      const reopened = new XBookmarksDb(dbPath);
+      try {
+        // 既存行が消えていない (=ユーザーキャッシュ無事)
+        const known = reopened.getKnownTweetIds();
+        assert.ok(known.has('legacy-1'), '旧データが消失している (回帰)');
+        // session_id 列が migrate で追加されている
+        const cols = (reopened as any).db
+          .prepare('PRAGMA table_info(bookmarks)')
+          .all() as { name: string }[];
+        assert.ok(cols.some(c => c.name === 'session_id'), 'session_id 列が追加されている');
+        // idx_session が存在する
+        const idx = (reopened as any).db
+          .prepare("PRAGMA index_list('bookmarks')")
+          .all() as { name: string }[];
+        assert.ok(idx.some(i => i.name === 'idx_session'), 'idx_session が migration で作成されている');
+      } finally {
+        reopened.close();
+      }
+    });
+
+    runner.test('reassignBookmarkSession は session_id / vault_path / x_folder_name を更新する', () => {
+      const db = new XBookmarksDb(':memory:');
+      db.upsertBookmark({
+        tweetId: 'rebind-1',
+        url: 'https://x.com/a/status/rebind-1',
+        sessionId: 'old-session',
+        vaultPath: 'old/path/file.md',
+        xFolderName: 'OldFolder',
+      });
+      db.reassignBookmarkSession({
+        tweetId: 'rebind-1',
+        sessionId: 'new-session',
+        vaultPath: 'new/path/file.md',
+        xFolderName: 'NewFolder',
+      });
+      const row = (db as any).db.prepare(
+        'SELECT session_id, vault_path, x_folder_name FROM bookmarks WHERE tweet_id = ?'
+      ).get('rebind-1') as { session_id: string; vault_path: string; x_folder_name: string };
+      assert.strictEqual(row.session_id, 'new-session');
+      assert.strictEqual(row.vault_path, 'new/path/file.md');
+      assert.strictEqual(row.x_folder_name, 'NewFolder');
+      db.close();
+    });
+
+    runner.test('reassignBookmarkSession に xFolderName=null を渡すと既存値を保持 (COALESCE)', () => {
+      const db = new XBookmarksDb(':memory:');
+      db.upsertBookmark({
+        tweetId: 'rebind-2',
+        url: 'https://x.com/a/status/rebind-2',
+        sessionId: 'old',
+        xFolderName: 'PreservedFolder',
+      });
+      db.reassignBookmarkSession({
+        tweetId: 'rebind-2',
+        sessionId: 'new',
+        vaultPath: 'p',
+        xFolderName: null,
+      });
+      const row = (db as any).db.prepare(
+        'SELECT x_folder_name FROM bookmarks WHERE tweet_id = ?'
+      ).get('rebind-2') as { x_folder_name: string };
+      assert.strictEqual(row.x_folder_name, 'PreservedFolder', 'null を渡したら既存値を保持');
+      db.close();
+    });
+
     runner.test('既存 (note_tweet_text 列無し) DB に対しても constructor migration で復活する', () => {
       // ファイル backed DB で本物の constructor → migration パスを通す。
       // (in-memory + private 直叩きだと「constructor が migration を呼び忘れた」
@@ -466,7 +577,7 @@ export async function run(): Promise<TestSuiteResult> {
         id: 'p1', text: '画像のみ', author_id: 'u1',
         attachments: { media_keys: ['mk1'] },
       };
-      const resolver = (key: string) => ({
+      const resolver = (_key: string) => ({
         media_key: 'mk1', type: 'photo',
       });
       const bm = apiInternals.tweetToApiBookmark(
@@ -583,17 +694,22 @@ export async function run(): Promise<TestSuiteResult> {
       assert.ok(u.searchParams.get('media.fields')?.includes('variants'));
     });
 
-    runner.test('folder bookmarks URL にも note_tweet / media が含まれる', () => {
+    runner.test('folder bookmarks URL は索引専用でクエリパラメータを持たない', () => {
+      // /folders/:id は X API 側で id/folder_id 以外の query を 400 で拒否する。
+      // 本文は buildTweetsLookupUrl 経由でハイドレートする。
       const u = new URL(apiInternals.buildFolderBookmarksUrl('12345', '888'));
+      assert.strictEqual(u.pathname, '/2/users/12345/bookmarks/folders/888');
+      assert.strictEqual(u.search, '');
+    });
+
+    runner.test('tweets lookup URL は ids と本文系 expansions を持つ', () => {
+      const u = new URL(apiInternals.buildTweetsLookupUrl(['111', '222']));
+      assert.strictEqual(u.pathname, '/2/tweets');
+      assert.strictEqual(u.searchParams.get('ids'), '111,222');
       assert.ok(u.searchParams.get('tweet.fields')?.includes('note_tweet'));
       assert.ok(u.searchParams.get('expansions')?.includes('attachments.media_keys'));
       assert.ok(u.searchParams.get('media.fields')?.includes('variants'));
-    });
-
-    runner.test('pagination_token が与えられれば付与される', () => {
-      const u = new URL(apiInternals.buildFolderBookmarksUrl('12345', '888', 'tokenXYZ'));
-      assert.strictEqual(u.pathname, '/2/users/12345/bookmarks/folders/888');
-      assert.strictEqual(u.searchParams.get('pagination_token'), 'tokenXYZ');
+      assert.ok(u.searchParams.get('user.fields')?.includes('username'));
     });
 
     runner.test('folders URL は max_results のみ', () => {
@@ -1468,7 +1584,9 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(root?.remainder, '');
     });
 
-    runner.test('長いキーワードが優先される (Claude Code > Code)', () => {
+    runner.test('頻度優先: より多くマッチするキーワードが親になる (Code 2 > Claude Code 1)', () => {
+      // 'Code' は 2 フォルダ、'Claude Code' は 1 フォルダにマッチ → Code 親が勝つ
+      // 全フォルダが 'Code' 親に吸収され、'Claude Code' 親は生成されない
       const tree = buildFolderTree(
         [
           { id: 'f1', name: 'Claude Code Tips' },
@@ -1477,12 +1595,22 @@ export async function run(): Promise<TestSuiteResult> {
         ['Code', 'Claude Code'],
         {}
       );
-      const cc = tree.groups.find(g => g.label === 'Claude Code');
       const codeOnly = tree.groups.find(g => g.label === 'Code');
+      const cc = tree.groups.find(g => g.label === 'Claude Code');
+      assert.strictEqual(codeOnly?.children.length, 2);
+      assert.strictEqual(cc, undefined, '長いキーワードでも頻度負けすれば親にならない');
+    });
+
+    runner.test('頻度同点なら長一致 tiebreak (Claude Code = Code = 1 → Claude Code 親)', () => {
+      // 'Code' / 'Claude Code' どちらも 1 フォルダのみマッチ → tiebreak 長い方が勝つ
+      const tree = buildFolderTree(
+        [{ id: 'f1', name: 'Claude Code Tips' }],
+        ['Code', 'Claude Code'],
+        {}
+      );
+      const cc = tree.groups.find(g => g.label === 'Claude Code');
       assert.strictEqual(cc?.children.length, 1);
       assert.strictEqual(cc?.children[0].rawName, 'Claude Code Tips');
-      assert.strictEqual(codeOnly?.children.length, 1);
-      assert.strictEqual(codeOnly?.children[0].rawName, 'Random Code Snippet');
     });
 
     runner.test('approved mapping が Tier 2 として親パス先頭でグルーピングされる', () => {
@@ -1749,26 +1877,28 @@ export async function run(): Promise<TestSuiteResult> {
           if (url.includes('/users/me')) {
             return respond({ data: { id: 'u1', username: 'tester' } });
           }
+          // 索引: フォルダ → ツイートID列のみ
           if (url.includes('/bookmarks/folders/fa')) {
+            return respond({ data: [{ id: 'T_A1' }] });
+          }
+          if (url.includes('/bookmarks/folders/fb')) {
+            return respond({ data: [{ id: 'T_B1' }] });
+          }
+          if (url.includes('/bookmarks/folders')) {
+            // フォルダ一覧 (他フォルダ列挙で叩かれる)
+            return respond({
+              data: [{ id: 'fa', name: 'FolderA' }, { id: 'fb', name: 'FolderB' }],
+            });
+          }
+          // ハイドレーション: /2/tweets?ids=... (folder A 由来 ID のみ来る想定)
+          if (url.includes('/tweets?')) {
             return respond({
               data: [{ id: 'T_A1', text: 'in folder A', author_id: 'u1' }],
               includes: { users: [{ id: 'u1', name: 'A', username: 'a' }] },
             });
           }
-          if (url.includes('/bookmarks/folders/fb')) {
-            return respond({
-              data: [{ id: 'T_B1', text: 'in folder B', author_id: 'u1' }],
-              includes: { users: [{ id: 'u1', name: 'A', username: 'a' }] },
-            });
-          }
-          if (url.includes('/bookmarks/folders')) {
-            // フォルダ一覧 (3a の他フォルダ列挙で叩かれる)
-            return respond({
-              data: [{ id: 'fa', name: 'FolderA' }, { id: 'fb', name: 'FolderB' }],
-            });
-          }
           if (url.includes('/bookmarks')) {
-            // /users/:id/bookmarks (Unfiled 抽出元)
+            // /users/:id/bookmarks (Unfiled 抽出元) は従来通り本文込み
             return respond({
               data: [
                 { id: 'T_A1', text: 'in folder A', author_id: 'u1' },
@@ -1833,7 +1963,12 @@ export async function run(): Promise<TestSuiteResult> {
             status: 200, headers: { 'content-type': 'application/json' },
           });
           if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 'tester' } });
+          // 索引: ID 列のみ
           if (url.includes('/bookmarks/folders/fa')) {
+            return respond({ data: [{ id: 'T_A1' }] });
+          }
+          // ハイドレーション
+          if (url.includes('/tweets?')) {
             return respond({
               data: [{ id: 'T_A1', text: 'a', author_id: 'u1' }],
               includes: { users: [{ id: 'u1', username: 'a', name: 'A' }] },
@@ -1861,6 +1996,1633 @@ export async function run(): Promise<TestSuiteResult> {
         if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
         else process.env.X_CLIENT_ID = prevClientId;
       }
+    });
+
+    // =====================================================
+    // x_folder_mapper: prioritizeForcedParents (occurrence-frequency)
+    // =====================================================
+    runner.section('x_folder_mapper: prioritizeForcedParents');
+
+    runner.test('出現頻度が多いキーワードが優先される', () => {
+      // "Code" は 3 フォルダ, "Claude Code" は 1 フォルダにマッチ → "Code" が先頭
+      const sorted = prioritizeForcedParents(
+        ['Claude Code', 'Code'],
+        ['Claude Code Tips', 'Random Code', 'My Code Notes', 'Code Garden']
+      );
+      assert.strictEqual(sorted[0], 'Code', `expected Code first, got ${sorted.join(',')}`);
+    });
+
+    runner.test('同点なら長いキーワードが優先 (tiebreak)', () => {
+      const sorted = prioritizeForcedParents(
+        ['Code', 'Claude Code'],
+        ['Claude Code', 'Claude Code Tips']  // 両方 2 件マッチ
+      );
+      assert.strictEqual(sorted[0], 'Claude Code');
+    });
+
+    runner.test('長さも同点なら配列順 (元の優先度を尊重)', () => {
+      const sorted = prioritizeForcedParents(
+        ['BB', 'AA'],
+        ['AAX', 'BBX']
+      );
+      assert.strictEqual(sorted[0], 'BB');
+    });
+
+    runner.test('空文字キーワードは除外される', () => {
+      const sorted = prioritizeForcedParents(['', '  ', 'AI'], ['AI Agent']);
+      assert.deepStrictEqual(sorted, ['AI']);
+    });
+
+    runner.test('mapFolderToVaultPath は allFolderNames があれば頻度優先で動く', () => {
+      // forced=['Claude Code', 'Code']
+      //   "Claude Code Notes" は両方マッチ可能
+      //   全体 ["Claude Code Notes", "Random Code", "Code Hub"] では Code が 3 件 / Claude Code は 1 件
+      //   → 頻度優先なら "Code Hub" 等は Code 親に落ち、"Claude Code Notes" も Code 親 (Claude Code よりスコア高)
+      assert.strictEqual(
+        mapFolderToVaultPath(
+          'Claude Code Notes',
+          ['Claude Code', 'Code'],
+          {},
+          { allFolderNames: ['Claude Code Notes', 'Random Code', 'Code Hub'] }
+        ),
+        'Code/Claude Notes'
+      );
+    });
+
+    runner.test('mapFolderToVaultPath は allFolderNames 無しなら従来通り長さ優先', () => {
+      // 後方互換: 既存呼出しは挙動を変えない
+      assert.strictEqual(
+        mapFolderToVaultPath('Claude Code Tips', ['Claude Code', 'Code'], {}),
+        'Claude Code/Tips'
+      );
+    });
+
+    // =====================================================
+    // x_session_registry
+    // =====================================================
+    runner.section('x_session_registry');
+
+    runner.test('newSessionId は UUID v4 形式', () => {
+      const id = newSessionId();
+      assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      assert.notStrictEqual(newSessionId(), id);
+    });
+
+    runner.test('writeSessionMarker / readSessionMarker は roundtrip する', () => {
+      const dir = path.join(tmpDir, 'marker-test-1');
+      fs.mkdirSync(dir, { recursive: true });
+      const sessionId = newSessionId();
+      writeSessionMarker(dir, {
+        session_id: sessionId,
+        x_folder_id: 'fa',
+        x_folder_name: 'Folder A',
+        created_at: new Date().toISOString(),
+        last_synced_at: new Date().toISOString(),
+      });
+      const read = readSessionMarker(dir);
+      assert.strictEqual(read?.session_id, sessionId);
+      assert.strictEqual(read?.x_folder_id, 'fa');
+    });
+
+    runner.test('writeSessionMarker は既存マーカーの session_id を維持する (idempotent)', () => {
+      const dir = path.join(tmpDir, 'marker-test-2');
+      fs.mkdirSync(dir, { recursive: true });
+      const original = newSessionId();
+      writeSessionMarker(dir, {
+        session_id: original,
+        x_folder_id: 'fa',
+        x_folder_name: 'A',
+        created_at: 'c1',
+        last_synced_at: 't1',
+      });
+      // 別の session_id で上書きしようとしても、既存値が優先される
+      writeSessionMarker(dir, {
+        session_id: 'should-not-override',
+        x_folder_id: 'fa',
+        x_folder_name: 'A',
+        created_at: 'c1',
+        last_synced_at: 't2',
+      });
+      assert.strictEqual(readSessionMarker(dir)?.session_id, original);
+    });
+
+    runner.test('walkSessionMarkers は再帰走査で全マーカーを集める', () => {
+      const root = path.join(tmpDir, 'walk-root');
+      fs.mkdirSync(path.join(root, 'a/b/c'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'a/d'), { recursive: true });
+      writeSessionMarker(path.join(root, 'a/b/c'), {
+        session_id: newSessionId(),
+        x_folder_id: 'fc',
+        x_folder_name: 'C',
+        created_at: 'c',
+        last_synced_at: 'c',
+      });
+      writeSessionMarker(path.join(root, 'a/d'), {
+        session_id: newSessionId(),
+        x_folder_id: 'fd',
+        x_folder_name: 'D',
+        created_at: 'c',
+        last_synced_at: 'c',
+      });
+      const found = walkSessionMarkers(root);
+      assert.strictEqual(found.length, 2);
+      const ids = found.map(f => f.marker.x_folder_id).sort();
+      assert.deepStrictEqual(ids, ['fc', 'fd']);
+    });
+
+    runner.test('readSessionMarker は壊れた JSON で null を返す', () => {
+      const dir = path.join(tmpDir, 'bad-marker');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, '_session.json'), '{not valid', 'utf8');
+      assert.strictEqual(readSessionMarker(dir), null);
+    });
+
+    // =====================================================
+    // x_session_sync
+    // =====================================================
+    runner.section('x_session_sync: runSyncPhase');
+
+    /**
+     * sync テストは同じ vault root (tmpDir) を共有する関係で、テスト間で
+     * folder_sessions が累積する。各テスト先頭で DELETE して隔離する。
+     */
+    function resetSessionsForSyncTest() {
+      (getDb() as any).db.exec('DELETE FROM folder_sessions');
+    }
+
+    await runner.testAsync('X 側新規フォルダ → session 発行 + marker 作成', async () => {
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-test';
+      const fakeListing = async () => ({
+        userId: 'u1',
+        username: 'tester',
+        folders: [{ id: 'fnew', name: 'NewFolder' }],
+      });
+      const result = await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: fakeListing,
+      });
+      assert.strictEqual(result.newSessions, 1);
+      const baseAbs = path.join(tmpDir, baseFolder);
+      const targetDir = path.join(baseAbs, 'NewFolder');
+      assert.ok(fs.existsSync(path.join(targetDir, '_session.json')), '_session.json が作成されている');
+    });
+
+    await runner.testAsync('X 側で削除された folder → resolver=keep で status=orphaned_on_x', async () => {
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-test-2';
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({
+          userId: 'u1', username: 't',
+          folders: [{ id: 'fdel', name: 'WillBeDeleted' }],
+        }),
+      });
+      const result = await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({ userId: 'u1', username: 't', folders: [] }),
+        resolver: { resolveOrphan: async () => 'keep' as const },
+      });
+      assert.strictEqual(result.orphansOnX, 1);
+      const sess = getDb().listFolderSessions().find((s) => s.x_folder_name === 'WillBeDeleted');
+      assert.strictEqual(sess?.status, 'orphaned_on_x');
+    });
+
+    await runner.testAsync('resolver=archive で _archived/ に移動 + status=archived', async () => {
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-test-3';
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({
+          userId: 'u1', username: 't',
+          folders: [{ id: 'farch', name: 'ToArchive' }],
+        }),
+      });
+      const baseAbs = path.join(tmpDir, baseFolder);
+      assert.ok(fs.existsSync(path.join(baseAbs, 'ToArchive')));
+
+      const result = await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({ userId: 'u1', username: 't', folders: [] }),
+        resolver: { resolveOrphan: async () => 'archive' as const },
+      });
+      assert.strictEqual(result.orphansOnX, 1);
+      const sess = getDb().listFolderSessions().find((s) => s.x_folder_name === 'ToArchive');
+      assert.strictEqual(sess?.status, 'archived');
+      assert.ok(!fs.existsSync(path.join(baseAbs, 'ToArchive')), '元のディレクトリは消えている');
+      assert.ok(
+        fs.existsSync(path.join(baseAbs, '_archived', sess!.session_id)),
+        'archive 先に移動されている'
+      );
+    });
+
+    runner.test('reassignMisplacedFiles: ファイル移動を frontmatter から検知して bookmarks 行を更新', () => {
+      const baseFolder = 'Clippings/X-Bookmarks-reassign';
+      const baseAbs = path.join(tmpDir, baseFolder);
+      const folderA = path.join(baseAbs, 'FolderA');
+      const folderB = path.join(baseAbs, 'FolderB');
+      fs.mkdirSync(folderA, { recursive: true });
+      fs.mkdirSync(folderB, { recursive: true });
+
+      const sessionA = newSessionId();
+      const sessionB = newSessionId();
+      writeSessionMarker(folderA, {
+        session_id: sessionA, x_folder_id: 'fa', x_folder_name: 'A',
+        created_at: 'c', last_synced_at: 'c',
+      });
+      writeSessionMarker(folderB, {
+        session_id: sessionB, x_folder_id: 'fb', x_folder_name: 'B',
+        created_at: 'c', last_synced_at: 'c',
+      });
+      // sessionA に属する .md (元) を folderB に置く (= ユーザーが移動した想定)
+      const mdContent = `---
+title: "test"
+session_id: "${sessionA}"
+x_tweet_id: "12345"
+---
+body
+`;
+      const mdPath = path.join(folderB, 'moved.md');
+      fs.writeFileSync(mdPath, mdContent, 'utf8');
+
+      // 事前 DB row 投入
+      getDb().upsertBookmark({
+        tweetId: '12345',
+        url: 'https://x.com/u/status/12345',
+        sessionId: sessionA,
+        vaultPath: path.join(baseFolder, 'FolderA', 'orig.md'),
+      });
+
+      const count = syncInternals.reassignMisplacedFiles(baseAbs);
+      assert.strictEqual(count, 1);
+
+      // .md frontmatter が sessionB に書き換わっている
+      const updated = fs.readFileSync(mdPath, 'utf8');
+      assert.ok(updated.includes(`session_id: "${sessionB}"`), '.md が新 session_id に書き換わる');
+      // bookmarks 行も sessionB に更新されている
+      const row = (getDb() as any).db.prepare(
+        'SELECT session_id FROM bookmarks WHERE tweet_id = ?'
+      ).get('12345') as { session_id: string };
+      assert.strictEqual(row.session_id, sessionB);
+    });
+
+    // =====================================================
+    // x_session_ai: parseAiOutput
+    // =====================================================
+    runner.section('x_session_ai: parseAiOutput');
+
+    runner.test('正常な "RECOMMEND: keep" 応答をパース', () => {
+      const v = aiInternals.parseAiOutput('RECOMMEND: keep\n最近 .md が更新されており参照価値が高い。');
+      assert.strictEqual(v.recommend, 'keep');
+      assert.strictEqual(v.source, 'ai');
+      assert.ok(v.reason.includes('参照価値'));
+    });
+
+    runner.test('正常な "RECOMMEND: archive" 応答をパース', () => {
+      const v = aiInternals.parseAiOutput('RECOMMEND: archive\n古いフォルダで配下に新規ポストもない。');
+      assert.strictEqual(v.recommend, 'archive');
+      assert.strictEqual(v.source, 'ai');
+    });
+
+    runner.test('フォーマット不正は keep にフォールバック', () => {
+      const v = aiInternals.parseAiOutput('わからない');
+      assert.strictEqual(v.recommend, 'keep');
+      assert.strictEqual(v.source, 'fallback');
+    });
+
+    runner.test('空応答は keep にフォールバック', () => {
+      const v = aiInternals.parseAiOutput('');
+      assert.strictEqual(v.recommend, 'keep');
+      assert.strictEqual(v.source, 'fallback');
+    });
+
+    runner.test('大小文字は無視 (RECOMMEND: ARCHIVE も拾う)', () => {
+      const v = aiInternals.parseAiOutput('RECOMMEND: ARCHIVE\n理由。');
+      assert.strictEqual(v.recommend, 'archive');
+    });
+
+    // =====================================================
+    // x_session_ai: createInteractiveOrphanResolver (Codex P1)
+    // =====================================================
+    runner.section('x_session_ai: interactive resolver');
+
+    const fakeOrphan = () => ({
+      session: {
+        session_id: 'sess-test',
+        x_folder_id: 'fa',
+        x_folder_name: 'Test',
+        vault_path: 'Clippings/X-Bookmarks/Test',
+        parent_keyword: null,
+        status: 'active' as const,
+        created_at: 'c',
+        last_synced_at: 't',
+      },
+      vaultAbsoluteDir: '/tmp/Test',
+      mdCount: 5,
+      latestPostDate: '2026-04-01',
+    });
+
+    await runner.testAsync('Codex P1: 空入力では AI 推奨に関わらず keep にフォールバックする', async () => {
+      const prevDisable = process.env.X_SESSION_AI_DISABLE;
+      process.env.X_SESSION_AI_DISABLE = 'true'; // 実 LLM を呼ばずに verdict 固定
+      try {
+        const askEmpty = async () => '';
+        const resolver = createInteractiveOrphanResolver(askEmpty);
+        const result = await resolver.resolveOrphan(fakeOrphan());
+        assert.strictEqual(
+          result, 'keep',
+          'AI fallback verdict が keep の場合も含めて、空入力は明示的に keep にする'
+        );
+      } finally {
+        if (prevDisable === undefined) delete process.env.X_SESSION_AI_DISABLE;
+        else process.env.X_SESSION_AI_DISABLE = prevDisable;
+      }
+    });
+
+    await runner.testAsync('明示 "a" 入力なら archive を返す', async () => {
+      const prevDisable = process.env.X_SESSION_AI_DISABLE;
+      process.env.X_SESSION_AI_DISABLE = 'true';
+      try {
+        const resolver = createInteractiveOrphanResolver(async () => 'a');
+        assert.strictEqual(await resolver.resolveOrphan(fakeOrphan()), 'archive');
+      } finally {
+        if (prevDisable === undefined) delete process.env.X_SESSION_AI_DISABLE;
+        else process.env.X_SESSION_AI_DISABLE = prevDisable;
+      }
+    });
+
+    await runner.testAsync('明示 "s" 入力なら skip を返す', async () => {
+      const prevDisable = process.env.X_SESSION_AI_DISABLE;
+      process.env.X_SESSION_AI_DISABLE = 'true';
+      try {
+        const resolver = createInteractiveOrphanResolver(async () => 's');
+        assert.strictEqual(await resolver.resolveOrphan(fakeOrphan()), 'skip');
+      } finally {
+        if (prevDisable === undefined) delete process.env.X_SESSION_AI_DISABLE;
+        else process.env.X_SESSION_AI_DISABLE = prevDisable;
+      }
+    });
+
+    // =====================================================
+    // x_session_sync: archive failure rollback (Codex P2)
+    // =====================================================
+    runner.section('x_session_sync: archive failure rollback');
+
+    await runner.testAsync('Codex P2: archive 先が既存なら status は orphaned_on_x のまま (DB が嘘をつかない)', async () => {
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-archfail';
+      const baseAbs = path.join(tmpDir, baseFolder);
+
+      // 1 周目: フォルダ作成
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({
+          userId: 'u1', username: 't',
+          folders: [{ id: 'fconflict', name: 'Conflict' }],
+        }),
+      });
+
+      // archive 先を pre-occupy (同 session_id のディレクトリが既に存在 = 衝突)
+      const sessRow = getDb().listFolderSessions().find((s) => s.x_folder_name === 'Conflict')!;
+      const conflictDest = path.join(baseAbs, '_archived', sessRow.session_id);
+      fs.mkdirSync(conflictDest, { recursive: true });
+      fs.writeFileSync(path.join(conflictDest, 'old-file.md'), 'pre-existing', 'utf8');
+
+      // 2 周目: X 側で削除 + resolver=archive → 衝突で move 失敗
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({ userId: 'u1', username: 't', folders: [] }),
+        resolver: { resolveOrphan: async () => 'archive' as const },
+      });
+
+      const after = getDb().getFolderSession(sessRow.session_id)!;
+      assert.strictEqual(
+        after.status, 'orphaned_on_x',
+        `archive 失敗時は status=archived ではなく orphaned_on_x に倒す (実際: ${after.status})`
+      );
+      // 元のディレクトリは無傷で残っている
+      assert.ok(
+        fs.existsSync(path.join(baseAbs, 'Conflict')),
+        '元フォルダは renameSync 失敗で残っているはず'
+      );
+      // pre-existing archive content は破壊されない
+      assert.ok(
+        fs.existsSync(path.join(conflictDest, 'old-file.md')),
+        'archive 先の既存ファイルは破壊されない'
+      );
+    });
+
+    await runner.testAsync('Codex P2: Vault に実体無し (orphaned_on_vault) でも archive 指示は status=archived', async () => {
+      // vault_path が DB にあるが実体は既に消えている = 完全な orphan
+      // この場合 archive 対象がないので "archived" 扱いで問題ない
+      resetSessionsForSyncTest();
+      const baseFolder = 'Clippings/X-Bookmarks-novault';
+      const baseAbs = path.join(tmpDir, baseFolder);
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({
+          userId: 'u1', username: 't',
+          folders: [{ id: 'fghost', name: 'Ghost' }],
+        }),
+      });
+      const sessRow = getDb().listFolderSessions().find((s) => s.x_folder_name === 'Ghost')!;
+      // ユーザーが Vault からも消した想定
+      fs.rmSync(path.join(baseAbs, 'Ghost'), { recursive: true, force: true });
+
+      await runSyncPhase({
+        baseFolder,
+        fetchFolderListing: async () => ({ userId: 'u1', username: 't', folders: [] }),
+        resolver: { resolveOrphan: async () => 'archive' as const },
+      });
+      const after = getDb().getFolderSession(sessRow.session_id)!;
+      assert.strictEqual(after.status, 'archived');
+    });
+
+    // =====================================================
+    // x_bookmarks_json_export
+    // =====================================================
+    runner.section('x_bookmarks_json_export');
+
+    {
+      const { deriveGroup, buildExportPayload, exportBookmarksJson } =
+        await import('../x_bookmarks_json_export');
+
+      runner.test('deriveGroup: <base>/<group>/<sub> → <group>', () => {
+        assert.strictEqual(deriveGroup('X_Bookmarks/Claude/Tips', 'X_Bookmarks'), 'Claude');
+      });
+      runner.test('deriveGroup: <base> 自身 → _Unfiled', () => {
+        assert.strictEqual(deriveGroup('X_Bookmarks', 'X_Bookmarks'), '_Unfiled');
+      });
+      runner.test('deriveGroup: base 外 → _Unfiled', () => {
+        assert.strictEqual(deriveGroup('Clippings/Other', 'X_Bookmarks'), '_Unfiled');
+      });
+      runner.test('deriveGroup: trailing slash 許容', () => {
+        assert.strictEqual(deriveGroup('X_Bookmarks/Claude/', 'X_Bookmarks'), 'Claude');
+      });
+      runner.test('deriveGroup: null → _Unfiled', () => {
+        assert.strictEqual(deriveGroup(null, 'X_Bookmarks'), '_Unfiled');
+      });
+
+      runner.test('buildExportPayload: row schema + ai_summary 列が常に null', () => {
+        // in-memory DB をセットアップして 1 件 upsert
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'tw1',
+          url: 'https://x.com/foo/status/1',
+          author: 'foo',
+          tweetText: 'hello',
+          createdAt: '2026-05-01',
+          xFolderName: 'Claude Code Tips',
+          vaultPath: 'X_Bookmarks/Claude Code/Tips',
+          engagementLikes: 3,
+          engagementRetweets: 1,
+          engagementReplies: 0,
+        });
+        const payload = buildExportPayload({ db, baseFolder: 'X_Bookmarks' });
+        assert.strictEqual(payload.version, 1);
+        assert.strictEqual(payload.base_folder, 'X_Bookmarks');
+        assert.strictEqual(payload.rows.length, 1);
+        const row = payload.rows[0];
+        assert.strictEqual(row.tweet_id, 'tw1');
+        assert.strictEqual(row.author, 'foo');
+        assert.strictEqual(row.group, 'Claude Code');
+        assert.strictEqual(row.engagement_likes, 3);
+        assert.strictEqual(row.ai_summary, null, 'AI 要約は常に null (列のみ確保)');
+        assert.ok(typeof row.added_at === 'string' && row.added_at.length > 0,
+          'added_at は INSERT 時にセットされる');
+        db.close();
+      });
+
+      await runner.testAsync('upsertBookmark: re-upsert は added_at を保持 / saved_at は更新', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'reup',
+          url: 'https://x.com/reup/status/1',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        const first = buildExportPayload({ db, baseFolder: 'X_Bookmarks' }).rows[0];
+        // ISO ms 解像度の差を担保するため最低 5ms 待つ
+        await new Promise(r => setTimeout(r, 5));
+        db.upsertBookmark({
+          tweetId: 'reup',
+          url: 'https://x.com/reup/status/1',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+          tweetText: 'updated body',
+        });
+        const second = buildExportPayload({ db, baseFolder: 'X_Bookmarks' }).rows[0];
+        assert.strictEqual(second.added_at, first.added_at, 'added_at は不変');
+        assert.notStrictEqual(second.saved_at, first.saved_at, 'saved_at は再 upsert で更新');
+        assert.strictEqual(second.tweet_text, 'updated body');
+        db.close();
+      });
+
+      runner.test('exportBookmarksJson: atomic 書き出し ( .tmp 残らず JSON parseable )', () => {
+        const subVault = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-xbm-export-'));
+        try {
+          const db = new XBookmarksDb(':memory:');
+          db.upsertBookmark({
+            tweetId: 'tw2',
+            url: 'https://x.com/bar/status/2',
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+          const payload = buildExportPayload({ db, baseFolder: 'X_Bookmarks' });
+          const out = exportBookmarksJson({
+            db,
+            vaultRoot: subVault,
+            baseFolder: 'X_Bookmarks',
+            payload,
+          });
+          assert.ok(fs.existsSync(out), 'JSON ファイル存在');
+          assert.ok(!fs.existsSync(out + '.tmp'), '.tmp が残らない');
+          const parsed = JSON.parse(fs.readFileSync(out, 'utf8'));
+          assert.strictEqual(parsed.rows.length, 1);
+          db.close();
+        } finally {
+          fs.rmSync(subVault, { recursive: true, force: true });
+        }
+      });
+    }
+
+    // =====================================================
+    // x_group_page_template
+    // =====================================================
+    runner.section('x_group_page_template');
+
+    {
+      const { renderGroupPage, replaceAutoBlock, SENTINEL_START, SENTINEL_END } =
+        await import('../x_group_page_template');
+      const args = { group: 'Claude', jsonRelativePath: 'X_Bookmarks/.x_bookmarks.json' };
+
+      runner.test('renderGroupPage: header + sentinel + dataviewjs を含む', () => {
+        const md = renderGroupPage(args);
+        assert.ok(md.startsWith('# Claude\n'), 'h1 header');
+        assert.ok(md.includes(SENTINEL_START), 'start sentinel');
+        assert.ok(md.includes(SENTINEL_END), 'end sentinel');
+        assert.ok(md.includes('```dataviewjs'), 'dataviewjs fence');
+        assert.ok(md.includes('summary'), 'AI summary 列が常にある');
+        assert.ok(md.includes('X_Bookmarks/.x_bookmarks.json'), 'JSON path');
+      });
+
+      runner.test('renderGroupPage: 追加日列 + クリック式ソートを含む', () => {
+        const md = renderGroupPage(args);
+        assert.ok(md.includes('"added"'), 'added (追加日) 列ラベル');
+        assert.ok(md.includes('added_at'), 'JSON キー added_at');
+        assert.ok(md.includes('th.onclick'), '列ヘッダクリックハンドラ');
+        assert.ok(md.includes('sortDesc = !sortDesc'), '昇順/降順トグル');
+        assert.ok(md.includes('▼') && md.includes('▲'), 'ソート方向マーカー');
+      });
+
+      runner.test('replaceAutoBlock: sentinel 区間だけ差し替え (ユーザー本文保護)', () => {
+        const existing = `# Claude\n\nユーザーメモ\n\n${SENTINEL_START}\nOLD\n${SENTINEL_END}\n\n下のメモ\n`;
+        const updated = replaceAutoBlock(existing, args);
+        assert.ok(updated.includes('ユーザーメモ'), '前段ユーザー本文保護');
+        assert.ok(updated.includes('下のメモ'), '後段ユーザー本文保護');
+        assert.ok(!updated.includes('OLD'), '旧 auto block は除去');
+        assert.ok(updated.includes('```dataviewjs'), '新 auto block 挿入');
+      });
+
+      runner.test('replaceAutoBlock: sentinel 無し → 末尾に追記', () => {
+        const existing = `# Claude\n\nユーザーが手書きしたメモ\n`;
+        const updated = replaceAutoBlock(existing, args);
+        assert.ok(updated.includes('ユーザーが手書きしたメモ'), 'ユーザー本文保護');
+        assert.ok(updated.includes(SENTINEL_START), '新規 sentinel 追加');
+      });
+
+      runner.test('replaceAutoBlock: idempotent (2 回適用しても出力は安定)', () => {
+        const existing = renderGroupPage(args);
+        const once = replaceAutoBlock(existing, args);
+        const twice = replaceAutoBlock(once, args);
+        assert.strictEqual(once, twice, '2 回適用しても変化しない');
+      });
+    }
+
+    // =====================================================
+    // x_group_page_writer
+    // =====================================================
+    runner.section('x_group_page_writer');
+
+    {
+      const { writeAllGroupPages } = await import('../x_group_page_writer');
+      const writerVault = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-xbm-writer-'));
+      try {
+        const payload = {
+          version: 1 as const,
+          generated_at: new Date().toISOString(),
+          base_folder: 'X_Bookmarks',
+          rows: [
+            {
+              tweet_id: 'a', url: 'https://x.com/a/status/1', author: null,
+              tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              added_at: null,
+              engagement_likes: null, engagement_retweets: null, engagement_replies: null,
+              x_folder_name: null, vault_path: 'X_Bookmarks/Claude/Tips',
+              group: 'Claude', ai_summary: null,
+            },
+            {
+              tweet_id: 'b', url: 'https://x.com/b/status/2', author: null,
+              tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              added_at: null,
+              engagement_likes: null, engagement_retweets: null, engagement_replies: null,
+              x_folder_name: null, vault_path: 'X_Bookmarks/UI_LP作成',
+              group: 'UI_LP作成', ai_summary: null,
+            },
+          ],
+        };
+
+        runner.test('writeAllGroupPages: 新規グループは created', () => {
+          const results = writeAllGroupPages({
+            vaultRoot: writerVault,
+            baseFolder: 'X_Bookmarks',
+            payload,
+          });
+          assert.strictEqual(results.length, 2);
+          for (const r of results) assert.strictEqual(r.action, 'created');
+          assert.ok(fs.existsSync(path.join(writerVault, 'X_Bookmarks', 'Claude', 'Claude.md')));
+          assert.ok(fs.existsSync(path.join(writerVault, 'X_Bookmarks', 'UI_LP作成', 'UI_LP作成.md')));
+        });
+
+        runner.test('writeAllGroupPages: 2 回目は unchanged (idempotent)', () => {
+          const results = writeAllGroupPages({
+            vaultRoot: writerVault,
+            baseFolder: 'X_Bookmarks',
+            payload,
+          });
+          for (const r of results) assert.strictEqual(r.action, 'unchanged');
+        });
+
+        runner.test('writeSingleGroupPage: sentinel 無し既存ファイルは appended', () => {
+          // ユーザーが手書きで MD を置いていた想定
+          const handwritten = path.join(writerVault, 'X_Bookmarks', 'Handwritten');
+          fs.mkdirSync(handwritten, { recursive: true });
+          fs.writeFileSync(path.join(handwritten, 'Handwritten.md'),
+            '# Handwritten\n\nユーザーの手書きメモ\n', 'utf8');
+          const handPayload = {
+            ...payload,
+            rows: [{
+              tweet_id: 'h', url: 'https://x.com/h/status/1', author: null,
+              tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              added_at: null,
+              engagement_likes: null, engagement_retweets: null, engagement_replies: null,
+              x_folder_name: null, vault_path: 'X_Bookmarks/Handwritten',
+              group: 'Handwritten', ai_summary: null,
+            }],
+          };
+          const results = writeAllGroupPages({
+            vaultRoot: writerVault,
+            baseFolder: 'X_Bookmarks',
+            payload: handPayload,
+          });
+          assert.strictEqual(results[0].action, 'appended');
+          const content = fs.readFileSync(path.join(handwritten, 'Handwritten.md'), 'utf8');
+          assert.ok(content.includes('ユーザーの手書きメモ'), '手書き本文は保護される');
+          assert.ok(content.includes('```dataviewjs'), 'auto block が追記される');
+        });
+
+        runner.test('writeSingleGroupPage: ".." を含む group は invalid-group で拒否', () => {
+          const evilPayload = {
+            ...payload,
+            rows: [{
+              tweet_id: 'evil', url: 'https://x.com/evil/status/1', author: null,
+              tweet_text: null, note_tweet_text: null, created_at: null, saved_at: '',
+              added_at: null,
+              engagement_likes: null, engagement_retweets: null, engagement_replies: null,
+              x_folder_name: null, vault_path: 'X_Bookmarks/../escape',
+              group: '..', ai_summary: null,
+            }],
+          };
+          const results = writeAllGroupPages({
+            vaultRoot: writerVault,
+            baseFolder: 'X_Bookmarks',
+            payload: evilPayload,
+          });
+          assert.strictEqual(results[0].action, 'invalid-group');
+          assert.ok(!fs.existsSync(path.join(writerVault, '..md')),
+            'base 外への path traversal は発生しない');
+        });
+      } finally {
+        fs.rmSync(writerVault, { recursive: true, force: true });
+      }
+    }
+
+    // =====================================================
+    // x_rule_deriver
+    // =====================================================
+    runner.section('x_rule_deriver');
+
+    {
+      const { deriveForcedParents, writeForcedParents } =
+        await import('../x_rule_deriver');
+
+      runner.test('deriveForcedParents: group に 2+ session があれば候補化', () => {
+        const sessions = [
+          { session_id: 's1', x_folder_id: 'f1', x_folder_name: 'Claude Code Tips',
+            vault_path: 'X_Bookmarks/Claude Code/Tips', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+          { session_id: 's2', x_folder_id: 'f2', x_folder_name: 'Claude Code Hooks',
+            vault_path: 'X_Bookmarks/Claude Code/Hooks', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+          { session_id: 's3', x_folder_id: 'f3', x_folder_name: 'Standalone',
+            vault_path: 'X_Bookmarks/Standalone', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+        ];
+        const r = deriveForcedParents({
+          sessions, baseFolder: 'X_Bookmarks', forcedParents: [],
+        });
+        assert.deepStrictEqual(r.proposed, ['Claude Code']);
+        assert.deepStrictEqual(r.toAdd, ['Claude Code']);
+        assert.deepStrictEqual(r.evidence.get('Claude Code'),
+          ['Claude Code Hooks', 'Claude Code Tips']);
+      });
+
+      runner.test('deriveForcedParents: Claude / Claude Code / ClaudeCode は別キーワード', () => {
+        const sessions = [
+          { session_id: 'a1', x_folder_id: 'x1', x_folder_name: 'Claude Memos',
+            vault_path: 'X_Bookmarks/Claude/Memos', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+          { session_id: 'a2', x_folder_id: 'x2', x_folder_name: 'Claude Notes',
+            vault_path: 'X_Bookmarks/Claude/Notes', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+          { session_id: 'b1', x_folder_id: 'y1', x_folder_name: 'Claude Code Tips',
+            vault_path: 'X_Bookmarks/Claude Code/Tips', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+          { session_id: 'b2', x_folder_id: 'y2', x_folder_name: 'Claude Code Hooks',
+            vault_path: 'X_Bookmarks/Claude Code/Hooks', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+          { session_id: 'c1', x_folder_id: 'z1', x_folder_name: 'ClaudeCode 試行',
+            vault_path: 'X_Bookmarks/ClaudeCode/試行1', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+          { session_id: 'c2', x_folder_id: 'z2', x_folder_name: 'ClaudeCode 別',
+            vault_path: 'X_Bookmarks/ClaudeCode/試行2', parent_keyword: null,
+            status: 'active' as const, created_at: '', last_synced_at: '' },
+        ];
+        const r = deriveForcedParents({
+          sessions, baseFolder: 'X_Bookmarks', forcedParents: [],
+        });
+        // 順序はソート済み (localeCompare)
+        assert.deepStrictEqual(r.proposed, ['Claude', 'Claude Code', 'ClaudeCode']);
+      });
+
+      runner.test('writeForcedParents: .bak を残す', () => {
+        const v = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-deriver-'));
+        try {
+          const dir = path.join(v, '__skills', 'pipeline');
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(path.join(dir, 'x_forced_parents.json'), '["OLD"]\n', 'utf8');
+          writeForcedParents(['OLD', 'NEW'], { vaultRoot: v });
+          assert.ok(fs.existsSync(path.join(dir, 'x_forced_parents.json.bak')));
+          const cur = JSON.parse(fs.readFileSync(path.join(dir, 'x_forced_parents.json'), 'utf8'));
+          assert.deepStrictEqual(cur, ['OLD', 'NEW']);
+        } finally {
+          fs.rmSync(v, { recursive: true, force: true });
+        }
+      });
+    }
+
+    // =====================================================
+    // x_folder_invariant
+    // =====================================================
+    runner.section('x_folder_invariant');
+
+    {
+      const { listLeafFolders, checkFolderCountInvariant } =
+        await import('../x_folder_invariant');
+      const invVault = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-inv-'));
+      try {
+        // base 配下に 2 リーフ (Tips, Hooks) と 1 中間 (Claude Code) を作成
+        const base = path.join(invVault, 'X_Bookmarks');
+        fs.mkdirSync(path.join(base, 'Claude Code', 'Tips'), { recursive: true });
+        fs.mkdirSync(path.join(base, 'Claude Code', 'Hooks'), { recursive: true });
+        fs.mkdirSync(path.join(base, '_Unfiled'), { recursive: true });   // 無視
+        fs.mkdirSync(path.join(base, '2026-Q1'), { recursive: true });    // 日付ベース無視
+
+        runner.test('listLeafFolders: 中間ノードは除外、リーフのみ', () => {
+          const leaves = listLeafFolders({ vaultRoot: invVault, baseFolder: 'X_Bookmarks' });
+          assert.deepStrictEqual(leaves.sort(), ['Claude Code/Hooks', 'Claude Code/Tips']);
+        });
+
+        runner.test('checkFolderCountInvariant: X 数 == leaf 数で matched=true', () => {
+          const check = checkFolderCountInvariant({
+            vaultRoot: invVault,
+            baseFolder: 'X_Bookmarks',
+            xFolderNames: ['Claude Code Tips', 'Claude Code Hooks'],
+          });
+          assert.strictEqual(check.matched, true);
+          assert.strictEqual(check.xFolderCount, 2);
+          assert.strictEqual(check.leafFolderCount, 2);
+        });
+
+        runner.test('checkFolderCountInvariant: 差分があれば matched=false', () => {
+          const check = checkFolderCountInvariant({
+            vaultRoot: invVault,
+            baseFolder: 'X_Bookmarks',
+            xFolderNames: ['Claude Code Tips'],
+          });
+          assert.strictEqual(check.matched, false);
+        });
+      } finally {
+        fs.rmSync(invVault, { recursive: true, force: true });
+      }
+    }
+
+    // =====================================================
+    // x_bookmarks_summarizer
+    // =====================================================
+    runner.section('x_bookmarks_summarizer');
+
+    {
+      const {
+        truncateSummary,
+        summarizeOnePost,
+        summarizePendingBookmarks,
+        summarizeBatchPosts,
+        parseBatchResponse,
+        resolveMode,
+      } = await import('../x_bookmarks_summarizer');
+
+      runner.test('truncateSummary: 200 文字以内ならそのまま', () => {
+        const s = 'あ'.repeat(150);
+        assert.strictEqual(truncateSummary(s), s);
+      });
+
+      runner.test('truncateSummary: 200 文字超は切詰', () => {
+        const s = 'あ'.repeat(300);
+        const out = truncateSummary(s);
+        assert.strictEqual(Array.from(out).length, 200);
+      });
+
+      runner.test('truncateSummary: 絵文字/サロゲートペアを割らない', () => {
+        // 200 個の 🙂 は UTF-16 で 400 code unit (1 絵文字=2 code unit)
+        const s = '🙂'.repeat(250);
+        const out = truncateSummary(s);
+        assert.strictEqual(Array.from(out).length, 200);
+        // 完全な絵文字のみで構成され、末尾が割れていない
+        assert.ok(out.endsWith('🙂'), '末尾が壊れていない');
+      });
+
+      runner.test('truncateSummary: 改行/タブをスペース 1 個に圧縮', () => {
+        assert.strictEqual(truncateSummary('a\nb\tc\n\nd'), 'a b c d');
+      });
+
+      runner.test('truncateSummary: ZWJ family 絵文字を分割しない (grapheme aware)', () => {
+        // 👨‍👩‍👧‍👦 は ZWJ で結合された 7 code point の 1 グラフェム
+        const family = '👨‍👩‍👧‍👦';
+        // 200 グラフェム = 200 family を許容
+        const s = family.repeat(250);
+        const out = truncateSummary(s);
+        const seg = new Intl.Segmenter('ja', { granularity: 'grapheme' });
+        const count = Array.from(seg.segment(out)).length;
+        assert.strictEqual(count, 200, 'グラフェム数で 200');
+        // 末尾の family が割れていない (全 4 メンバー揃っている)
+        assert.ok(out.endsWith(family), 'ZWJ シーケンスが破壊されていない');
+      });
+
+      await runner.testAsync('summarizeOnePost: callAi モックで要約を返す', async () => {
+        const out = await summarizeOnePost('元ツイート本文', {
+          callAi: async () => 'モック要約結果',
+        });
+        assert.strictEqual(out, 'モック要約結果');
+      });
+
+      await runner.testAsync('summarizeOnePost: LLM が長文返しても 200 文字に切詰', async () => {
+        const out = await summarizeOnePost('元ツイート本文', {
+          callAi: async () => 'あ'.repeat(500),
+        });
+        assert.strictEqual(Array.from(out!).length, 200);
+      });
+
+      await runner.testAsync('summarizeOnePost: callAi 失敗時は null', async () => {
+        const out = await summarizeOnePost('元', { callAi: async () => null });
+        assert.strictEqual(out, null);
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: NULL の行だけ要約 + 既存 summary は触らない', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'pending1',
+          url: 'https://x.com/a/status/1',
+          tweetText: '要約対象の本文 1',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.upsertBookmark({
+          tweetId: 'pending2',
+          url: 'https://x.com/a/status/2',
+          tweetText: '要約対象の本文 2',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        // 既に要約済みの行を 1 件用意
+        db.upsertBookmark({
+          tweetId: 'done',
+          url: 'https://x.com/a/status/3',
+          tweetText: 'もう要約済み',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.setAiSummary('done', '既存の要約 - 触らないこと');
+
+        let calls = 0;
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'inline',
+          concurrency: 2,
+          silent: true,
+          callAi: async (prompt) => {
+            calls++;
+            return `要約: ${prompt.slice(0, 5)}`;
+          },
+        });
+
+        assert.strictEqual(stats.pending, 2, 'pending=2 (done はカウント外)');
+        assert.strictEqual(stats.succeeded, 2);
+        assert.strictEqual(stats.failed, 0);
+        assert.strictEqual(calls, 2, 'LLM 呼び出しは 2 回のみ');
+
+        const rows = db.listBookmarksForExport();
+        const done = rows.find(r => r.tweet_id === 'done')!;
+        assert.strictEqual(done.ai_summary, '既存の要約 - 触らないこと', '既存 summary は不変');
+        const p1 = rows.find(r => r.tweet_id === 'pending1')!;
+        assert.ok(p1.ai_summary && p1.ai_summary.startsWith('要約:'), '新規要約が書かれる');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: 失敗行は NULL のまま、他行は成功', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'ok',
+          url: 'https://x.com/a/status/10',
+          tweetText: '成功ケース',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.upsertBookmark({
+          tweetId: 'fail',
+          url: 'https://x.com/a/status/11',
+          tweetText: '失敗ケース',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'inline',
+          silent: true,
+          callAi: async (prompt) => prompt.includes('失敗ケース') ? null : '要約結果',
+        });
+        assert.strictEqual(stats.succeeded, 1);
+        assert.strictEqual(stats.failed, 1);
+
+        const rows = db.listBookmarksForExport();
+        const ok = rows.find(r => r.tweet_id === 'ok')!;
+        const fail = rows.find(r => r.tweet_id === 'fail')!;
+        assert.strictEqual(ok.ai_summary, '要約結果');
+        assert.strictEqual(fail.ai_summary, null, '失敗は NULL のまま (次回 sync で再挑戦)');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: resummarizeAll=true で既存要約もクリアして全件再生成', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'old',
+          url: 'https://x.com/a/status/100',
+          tweetText: '古い本文',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.setAiSummary('old', '古いモデルでの要約');
+
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'inline',
+          silent: true,
+          resummarizeAll: true,
+          callAi: async () => '新しいモデルでの要約',
+        });
+        assert.strictEqual(stats.pending, 1, 'クリア後に 1 件 pending');
+        assert.strictEqual(stats.succeeded, 1);
+
+        const rows = db.listBookmarksForExport();
+        assert.strictEqual(rows[0].ai_summary, '新しいモデルでの要約', '古い要約が上書きされた');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: resummarizeAll でも callAi が全件 null なら summary は NULL のまま', async () => {
+        // Codex P1: 「クリアだけされて再生成されない」事故が起きないことを別角度で保証する。
+        // この関数を 1 回呼べばクリア + 再要約までやり切るのでアトミック性は OK。
+        // ただし LLM 側が全件失敗するとどうしようもなく NULL が残るのは仕様。
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'x',
+          url: 'https://x.com/x/status/1',
+          tweetText: '本文',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.setAiSummary('x', '既存要約');
+        await summarizePendingBookmarks({
+          db,
+          mode: 'inline',
+          silent: true,
+          resummarizeAll: true,
+          callAi: async () => null,
+        });
+        const rows = db.listBookmarksForExport();
+        // 既存要約は失われた (resummarizeAll の本来の意図通り) が、LLM 失敗なので NULL
+        // → 次回 sync で NULL 行として自動再挑戦される
+        assert.strictEqual(rows[0].ai_summary, null);
+        db.close();
+      });
+
+      await runner.testAsync('listPendingAiSummaries: 空文字/空白だけの本文は pending に含めない', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'has-text',
+          url: 'https://x.com/a/status/1',
+          tweetText: '本文あり',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.upsertBookmark({
+          tweetId: 'empty',
+          url: 'https://x.com/a/status/2',
+          tweetText: '',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.upsertBookmark({
+          tweetId: 'whitespace',
+          url: 'https://x.com/a/status/3',
+          tweetText: '   \n\t  ',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+
+        const pending = db.listPendingAiSummaries();
+        const ids = pending.map(r => r.tweet_id).sort();
+        assert.deepStrictEqual(ids, ['has-text'],
+          '空文字/空白のみの行は LLM を叩く意味が無いので除外');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: concurrency=0 でも無限ループしない (Math.max(1, ...) でクランプ)', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'c1',
+          url: 'https://x.com/a/status/1',
+          tweetText: 'クランプテスト',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        // 不正な concurrency=0 を渡しても進行することを timeout で担保
+        const result = await Promise.race([
+          summarizePendingBookmarks({
+            db,
+            mode: 'inline',
+            silent: true,
+            concurrency: 0,
+            callAi: async () => 'OK',
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+        ]);
+        assert.strictEqual(result.succeeded, 1, 'concurrency=0 でも処理が進む');
+        db.close();
+      });
+
+      runner.test('clearAllAiSummaries: 全行を NULL に戻す (--x-resummarize-all)', () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({ tweetId: 'a', url: 'https://x.com/a/status/1', tweetText: 'x' });
+        db.upsertBookmark({ tweetId: 'b', url: 'https://x.com/b/status/2', tweetText: 'y' });
+        db.setAiSummary('a', '要約 A');
+        db.setAiSummary('b', '要約 B');
+        const cleared = db.clearAllAiSummaries();
+        assert.strictEqual(cleared, 2);
+        const rows = db.listBookmarksForExport();
+        for (const r of rows) assert.strictEqual(r.ai_summary, null);
+        db.close();
+      });
+
+      // -----------------------------------------------------
+      // Batch (Local) モード
+      // -----------------------------------------------------
+
+      runner.test('resolveMode: AI_PROVIDER=local → batch / 他 → inline', () => {
+        assert.strictEqual(resolveMode(undefined, 'local'), 'batch');
+        assert.strictEqual(resolveMode(undefined, undefined), 'batch', 'デフォルトは local 扱い → batch');
+        assert.strictEqual(resolveMode(undefined, 'anthropic'), 'inline');
+        assert.strictEqual(resolveMode(undefined, 'openai'), 'inline');
+        assert.strictEqual(resolveMode(undefined, 'gemini'), 'inline');
+        // 明示指定が最優先
+        assert.strictEqual(resolveMode('inline', 'local'), 'inline', '明示 inline は local でも上書き');
+        assert.strictEqual(resolveMode('batch', 'anthropic'), 'batch', '明示 batch は anthropic でも上書き');
+      });
+
+      runner.test('parseBatchResponse: 正常な JSON を配列で返す', () => {
+        const out = parseBatchResponse('{"summaries":["a","b","c"]}', 3);
+        assert.deepStrictEqual(out, ['a', 'b', 'c']);
+      });
+
+      runner.test('parseBatchResponse: コードフェンスや前置きを剥がして抽出', () => {
+        // Local モデルがやりがちな出力 (説明文 + ```json ... ```)
+        const raw = 'はい、要約しました:\n```json\n{"summaries":["要約1","要約2"]}\n```\n';
+        assert.deepStrictEqual(parseBatchResponse(raw, 2), ['要約1', '要約2']);
+      });
+
+      runner.test('parseBatchResponse: 件数ミスマッチは null', () => {
+        assert.strictEqual(parseBatchResponse('{"summaries":["a","b"]}', 3), null);
+      });
+
+      runner.test('parseBatchResponse: JSON 不正 / 形不正は null', () => {
+        assert.strictEqual(parseBatchResponse('not json at all', 1), null);
+        assert.strictEqual(parseBatchResponse('{"summaries": "not array"}', 1), null);
+        assert.strictEqual(parseBatchResponse('{"foo": ["a"]}', 1), null, 'summaries キー無し');
+        assert.strictEqual(parseBatchResponse('{"summaries":[1,2]}', 2), null, '非 string 要素');
+      });
+
+      await runner.testAsync('summarizeBatchPosts: 1 回の callAi で全件分の要約が返る', async () => {
+        let callCount = 0;
+        const out = await summarizeBatchPosts(
+          [
+            { tweet_id: 't1', text: '本文 1' },
+            { tweet_id: 't2', text: '本文 2' },
+            { tweet_id: 't3', text: '本文 3' },
+          ],
+          {
+            callAi: async () => {
+              callCount++;
+              return '{"summaries":["要約1","要約2","要約3"]}';
+            },
+          }
+        );
+        assert.strictEqual(callCount, 1, 'バッチは 1 呼出のみ');
+        assert.deepStrictEqual(out, ['要約1', '要約2', '要約3']);
+      });
+
+      await runner.testAsync('summarizeBatchPosts: JSON 不正なら全件 null (バッチ単位 all-or-nothing)', async () => {
+        const out = await summarizeBatchPosts(
+          [
+            { tweet_id: 't1', text: '本文 1' },
+            { tweet_id: 't2', text: '本文 2' },
+          ],
+          { callAi: async () => 'totally broken response' }
+        );
+        assert.deepStrictEqual(out, [null, null]);
+      });
+
+      await runner.testAsync('summarizeBatchPosts: callAi が null なら全件 null', async () => {
+        const out = await summarizeBatchPosts(
+          [{ tweet_id: 't1', text: '本文' }],
+          { callAi: async () => null }
+        );
+        assert.deepStrictEqual(out, [null]);
+      });
+
+      await runner.testAsync('summarizeBatchPosts: 各要素も 200 文字に切詰', async () => {
+        const long = 'あ'.repeat(500);
+        const out = await summarizeBatchPosts(
+          [{ tweet_id: 't1', text: '本文' }],
+          { callAi: async () => `{"summaries":[${JSON.stringify(long)}]}` }
+        );
+        assert.ok(out[0]);
+        assert.strictEqual(Array.from(out[0]!).length, 200);
+      });
+
+      await runner.testAsync('summarizePendingBookmarks (batch): 12 件は 10+2 の 2 バッチで処理', async () => {
+        const db = new XBookmarksDb(':memory:');
+        for (let i = 0; i < 12; i++) {
+          db.upsertBookmark({
+            tweetId: `b${i}`,
+            url: `https://x.com/u/status/${i}`,
+            tweetText: `本文 ${i}`,
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+        }
+        let calls = 0;
+        const sizes: number[] = [];
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'batch',
+          batchSize: 10,
+          silent: true,
+          callAi: async (prompt) => {
+            calls++;
+            // 区切りの `---` を数えて期待件数を逆算 (n-1 個の区切り)
+            const n = prompt.split('\n---\n').length;
+            sizes.push(n);
+            const summaries = Array.from({ length: n }, (_, i) => `要約-${calls}-${i}`);
+            return JSON.stringify({ summaries });
+          },
+        });
+        assert.strictEqual(calls, 2, 'バッチ呼出は 2 回');
+        assert.deepStrictEqual(sizes.slice().sort((a, b) => a - b), [2, 10], '10 件 + 2 件のチャンク');
+        assert.strictEqual(stats.succeeded, 12);
+        assert.strictEqual(stats.failed, 0);
+        const rows = db.listBookmarksForExport();
+        for (const r of rows) {
+          assert.ok(r.ai_summary && r.ai_summary.startsWith('要約-'), `${r.tweet_id} 要約済み`);
+        }
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks (batch): 不正レスポンスのバッチは全件 NULL のまま (再挑戦可)', async () => {
+        const db = new XBookmarksDb(':memory:');
+        for (let i = 0; i < 5; i++) {
+          db.upsertBookmark({
+            tweetId: `r${i}`,
+            url: `https://x.com/u/status/${i}`,
+            tweetText: `本文 ${i}`,
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+        }
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'batch',
+          batchSize: 10,
+          silent: true,
+          callAi: async () => 'broken non-json',
+        });
+        assert.strictEqual(stats.succeeded, 0);
+        assert.strictEqual(stats.failed, 5);
+        const rows = db.listBookmarksForExport();
+        for (const r of rows) assert.strictEqual(r.ai_summary, null);
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks (batch): 1 つ目失敗・2 つ目成功は独立 (バッチ間は影響しない)', async () => {
+        const db = new XBookmarksDb(':memory:');
+        for (let i = 0; i < 6; i++) {
+          db.upsertBookmark({
+            tweetId: `m${i}`,
+            url: `https://x.com/u/status/${i}`,
+            tweetText: `本文 ${i}`,
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+        }
+        let batchIdx = 0;
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'batch',
+          batchSize: 3,
+          silent: true,
+          callAi: async (prompt) => {
+            batchIdx++;
+            const n = prompt.split('\n---\n').length;
+            if (batchIdx === 1) return 'broken'; // 1 バッチ目だけ壊す
+            const summaries = Array.from({ length: n }, (_, i) => `s${batchIdx}-${i}`);
+            return JSON.stringify({ summaries });
+          },
+        });
+        assert.strictEqual(stats.succeeded, 3, '2 バッチ目の 3 件は成功');
+        assert.strictEqual(stats.failed, 3, '1 バッチ目の 3 件は失敗 → NULL のまま');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks (batch): batchSize=0 でもクランプされ無限ループしない', async () => {
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'clamp1',
+          url: 'https://x.com/u/status/1',
+          tweetText: 'clamp',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        const result = await Promise.race([
+          summarizePendingBookmarks({
+            db,
+            mode: 'batch',
+            batchSize: 0,
+            silent: true,
+            callAi: async () => '{"summaries":["ok"]}',
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+        ]);
+        assert.strictEqual(result.succeeded, 1);
+        db.close();
+      });
+
+      // -----------------------------------------------------
+      // Provider / model 注入 (xSummary 経路)
+      // -----------------------------------------------------
+
+      runner.test('resolveMode: options.provider が env を上書き', () => {
+        const prev = process.env.AI_PROVIDER;
+        try {
+          process.env.AI_PROVIDER = 'local';
+          // options.provider='anthropic' を渡せば env=local でも inline 経路
+          assert.strictEqual(resolveMode(undefined, 'anthropic'), 'inline');
+          // options.provider='local' は env と一致 → batch
+          assert.strictEqual(resolveMode(undefined, 'local'), 'batch');
+        } finally {
+          if (prev === undefined) delete process.env.AI_PROVIDER;
+          else process.env.AI_PROVIDER = prev;
+        }
+      });
+
+      await runner.testAsync('Codex P1 fix: resummarizeAll は新規 upsert 0 件でも既存 ai_summary を再生成する', async () => {
+        // 旧実装は `if (xBookmarkCount > 0)` で囲っていたため、モデル変更後に
+        // `--x-bookmarks --x-resummarize-all` を打っても新規 0 件だと再要約が
+        // 一切走らない no-op になっていた (Codex 指摘 P1)。本テストは summarizer
+        // の中核機能が新規 upsert と独立して動くことを保証する。
+        const db = new XBookmarksDb(':memory:');
+        db.upsertBookmark({
+          tweetId: 'pre-existing',
+          url: 'https://x.com/a/status/1',
+          tweetText: '既存本文',
+          xFolderName: 'F',
+          vaultPath: 'X_Bookmarks/F',
+        });
+        db.setAiSummary('pre-existing', '旧モデルの要約');
+        // 新しい upsert は一切無し (= xBookmarkCount === 0 相当)
+        const stats = await summarizePendingBookmarks({
+          db,
+          mode: 'inline',
+          silent: true,
+          resummarizeAll: true,
+          callAi: async () => '新モデルの要約',
+        });
+        assert.strictEqual(stats.pending, 1, 'クリア後 pending=1');
+        assert.strictEqual(stats.succeeded, 1);
+        const rows = db.listBookmarksForExport();
+        assert.strictEqual(rows[0].ai_summary, '新モデルの要約',
+          '既存要約は上書きされる (wire-through を検証)');
+        db.close();
+      });
+
+      await runner.testAsync('summarizePendingBookmarks: options.provider=anthropic は env=local でも inline 経路', async () => {
+        // 旧挙動互換のために env=local だと batch だったが、xSummary 経由で
+        // anthropic を選んだ場合は env を見ずに inline (per-tweet) で走ることを保証。
+        const prev = process.env.AI_PROVIDER;
+        process.env.AI_PROVIDER = 'local';
+        try {
+          const db = new XBookmarksDb(':memory:');
+          db.upsertBookmark({
+            tweetId: 'p1',
+            url: 'https://x.com/u/status/1',
+            tweetText: '本文 1',
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+          db.upsertBookmark({
+            tweetId: 'p2',
+            url: 'https://x.com/u/status/2',
+            tweetText: '本文 2',
+            xFolderName: 'F',
+            vaultPath: 'X_Bookmarks/F',
+          });
+          // inline モードは 1 件 1 呼び出し / batch は複数件を 1 プロンプトに詰める
+          // → callAi の呼出回数で経路を判別できる。
+          let calls = 0;
+          await summarizePendingBookmarks({
+            db,
+            provider: 'anthropic',
+            silent: true,
+            callAi: async () => {
+              calls++;
+              return '要約 OK';
+            },
+          });
+          assert.strictEqual(calls, 2, 'inline 経路なら 2 件 = 2 回呼出 (batch なら 1 回)');
+          db.close();
+        } finally {
+          if (prev === undefined) delete process.env.AI_PROVIDER;
+          else process.env.AI_PROVIDER = prev;
+        }
+      });
+    }
+
+    // =====================================================
+    // X 要約ウィザード (runXSummaryWizard) + プリセット
+    // =====================================================
+    runner.section('runXSummaryWizard');
+
+    {
+      const { runXSummaryWizard, X_SUMMARY_PRESETS, DEFAULT_X_SUMMARY, getXSummaryConfig } =
+        await import('../config');
+
+      runner.test('X_SUMMARY_PRESETS: 先頭は cloud Anthropic Haiku 4.5 (default-default)', () => {
+        assert.strictEqual(X_SUMMARY_PRESETS[0].provider, 'anthropic');
+        assert.strictEqual(X_SUMMARY_PRESETS[0].model, 'claude-haiku-4-5-20251001');
+      });
+
+      runner.test('DEFAULT_X_SUMMARY: 先頭プリセットと一致', () => {
+        assert.strictEqual(DEFAULT_X_SUMMARY.provider, X_SUMMARY_PRESETS[0].provider);
+        assert.strictEqual(DEFAULT_X_SUMMARY.model, X_SUMMARY_PRESETS[0].model);
+      });
+
+      runner.test('getXSummaryConfig: 未設定 config は null', () => {
+        assert.strictEqual(getXSummaryConfig(null), null);
+        assert.strictEqual(
+          getXSummaryConfig({
+            vaultRoot: '/tmp/x',
+            provider: 'local',
+            fastModel: 'a',
+            smartModel: 'b',
+          }),
+          null
+        );
+      });
+
+      runner.test('getXSummaryConfig: 設定済みなら そのまま返す', () => {
+        const xs = { provider: 'openai' as const, model: 'gpt-4o-mini' };
+        const out = getXSummaryConfig({
+          vaultRoot: '/tmp/x',
+          provider: 'local',
+          fastModel: 'a',
+          smartModel: 'b',
+          xSummary: xs,
+        });
+        assert.deepStrictEqual(out, xs);
+      });
+
+      // 対話シミュレーション用のスクリプトを replay する ask 関数を作る。
+      // 各回の prompt 文字列は捨て、次の回答を返す (preset 順序依存テストを排除)。
+      const scriptAsker = (answers: string[]) => {
+        let i = 0;
+        return async (_q: string) => {
+          const a = answers[i] ?? '';
+          i++;
+          return a;
+        };
+      };
+
+      await runner.testAsync('runXSummaryWizard: 空 Enter で先頭プリセット (= anthropic + haiku4.5)', async () => {
+        const out = await runXSummaryWizard(scriptAsker(['', '']));
+        assert.strictEqual(out.provider, 'anthropic');
+        assert.strictEqual(out.model, 'claude-haiku-4-5-20251001');
+      });
+
+      await runner.testAsync('runXSummaryWizard: "4" で local プリセット選択', async () => {
+        // preset 配列の 4 番目が local (順序を変える場合は X_SUMMARY_PRESETS と同期)
+        const localIdx = X_SUMMARY_PRESETS.findIndex(p => p.provider === 'local');
+        assert.ok(localIdx >= 0, 'local プリセットが存在する');
+        const choice = String(localIdx + 1);
+        const out = await runXSummaryWizard(scriptAsker([choice, '']));
+        assert.strictEqual(out.provider, 'local');
+        assert.strictEqual(out.model, X_SUMMARY_PRESETS[localIdx].model);
+      });
+
+      await runner.testAsync('runXSummaryWizard: 不正入力 "x" は先頭プリセットにフォールバック', async () => {
+        const out = await runXSummaryWizard(scriptAsker(['x', '']));
+        assert.strictEqual(out.provider, 'anthropic');
+      });
+
+      await runner.testAsync('runXSummaryWizard: カスタムモデル ID 入力で model のみ上書き', async () => {
+        // "1" = anthropic preset, 続いて任意のモデル ID を渡す
+        const out = await runXSummaryWizard(scriptAsker(['1', 'claude-opus-4-7']));
+        assert.strictEqual(out.provider, 'anthropic');
+        assert.strictEqual(out.model, 'claude-opus-4-7');
+      });
+
+      await runner.testAsync('regenerateXBookmarkArtifacts: xSummary 未指定なら default (anthropic + haiku 4.5) で走る', async () => {
+        // helper を直接叩いて配線確認 (provider 上書きが summarizer 側まで届くこと)。
+        // 実 LLM は叩かないので callAi は使えないが、`summarizePendingBookmarks`
+        // のスタブ経由で provider 値を観測する代わりに、empty DB + DEFAULT_X_SUMMARY
+        // で例外を投げずに完走することを確認する。
+        const { regenerateXBookmarkArtifacts } = await import('../pipeline/interactive');
+        const v = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-regen-helper-'));
+        setVaultRoot(v);
+        try {
+          // 空 DB 状態でも例外無く完走 (summarize は pending 0、JSON / group も 0 件)
+          await regenerateXBookmarkArtifacts({ resummarizeAll: false });
+        } finally {
+          setVaultRoot(tmpDir);
+          fs.rmSync(v, { recursive: true, force: true });
+        }
+      });
+
+      await runner.testAsync('runXSummaryWizard: ターミナル二重入力 "44" は "4" として扱う', async () => {
+        // config wizard と同じ挙動 (一部端末でエコーが二重に乗る対策)
+        const localIdx = X_SUMMARY_PRESETS.findIndex(p => p.provider === 'local');
+        const doubled = String(localIdx + 1).repeat(2); // 例: "44"
+        const out = await runXSummaryWizard(scriptAsker([doubled, '']));
+        assert.strictEqual(out.provider, 'local');
+      });
+    }
+
+    // =====================================================
+    // x_migrate_legacy
+    // =====================================================
+    runner.section('x_migrate_legacy');
+
+    {
+      const { runMigrateLegacy } = await import('../x_migrate_legacy');
+
+      runner.test('runMigrateLegacy: 旧パス無しなら no-op', () => {
+        const v = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-mig-noop-'));
+        try {
+          const r = runMigrateLegacy({ vaultRoot: v });
+          assert.strictEqual(r.skipped, true);
+          assert.strictEqual(r.filesMoved, 0);
+        } finally {
+          fs.rmSync(v, { recursive: true, force: true });
+        }
+      });
+
+      runner.test('runMigrateLegacy: 旧パスを _Archived/ に移動 + .md count', () => {
+        const v = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-mig-move-'));
+        setVaultRoot(v); // db helper が vault root を見るため
+        try {
+          const legacy = path.join(v, 'Clippings', 'X-Bookmarks', 'Old');
+          fs.mkdirSync(legacy, { recursive: true });
+          fs.writeFileSync(path.join(legacy, 'x.md'), '# x', 'utf8');
+          fs.writeFileSync(path.join(legacy, 'y.md'), '# y', 'utf8');
+
+          const r = runMigrateLegacy({ vaultRoot: v });
+          assert.strictEqual(r.skipped, false);
+          assert.strictEqual(r.filesMoved, 2);
+          assert.ok(!fs.existsSync(path.join(v, 'Clippings', 'X-Bookmarks')),
+            '旧パスは消えている');
+          assert.ok(r.archivedPath && fs.existsSync(r.archivedPath),
+            'archive 先に存在');
+          assert.ok(fs.existsSync(path.join(r.archivedPath!, 'Old', 'x.md')),
+            '中身が移動されている');
+        } finally {
+          setVaultRoot(tmpDir); // 戻す
+          fs.rmSync(v, { recursive: true, force: true });
+        }
+      });
+    }
+
+    // =====================================================
+    // pipeline/interactive.ts: dry-run gating in saveApprovedResults
+    // =====================================================
+    runner.section('pipeline/interactive: dry-run gating');
+
+    await runner.testAsync('dry-run: X bookmark の upsertBookmark をスキップする', async () => {
+      const { __test: interactiveInternals } = await import('../pipeline/interactive');
+      const { setDryRun, isDryRun } = await import('../config');
+      const { getDb } = await import('../x_bookmarks_db');
+
+      // 事前: DB を空にする
+      (getDb() as any).db.exec('DELETE FROM bookmarks');
+      const before = getDb().count();
+
+      const prev = isDryRun();
+      setDryRun(true);
+      try {
+        await interactiveInternals.saveApprovedResults([
+          {
+            id: 1,
+            status: 'success',
+            url: 'https://x.com/foo/status/dry-1',
+            policy: 'x_bookmark',
+            classification: { proposedPath: 'Clippings/X-Bookmarks-claude/Test', confidence: 1, isNewFolder: false, reasoning: 'test' },
+            articleContext: {
+              url: 'https://x.com/foo/status/dry-1',
+              title: 't',
+              content: 'c',
+              textContent: 'c',
+              xTweetId: 'dry-1',
+              xFolderName: 'Test',
+            } as any,
+          },
+        ]);
+      } finally {
+        setDryRun(prev);
+      }
+
+      const after = getDb().count();
+      assert.strictEqual(after, before, 'dry-run でも upsertBookmark が走ると行数が増える (回帰)');
+    });
+
+    await runner.testAsync('dry-run: 非 X bookmark の saveMarkdown をスキップする (.md を書かない)', async () => {
+      const { __test: interactiveInternals } = await import('../pipeline/interactive');
+      const { setDryRun, isDryRun } = await import('../config');
+
+      const dryDir = path.join(tmpDir, 'Clippings/DryRunNonX');
+      const prev = isDryRun();
+      setDryRun(true);
+      try {
+        await interactiveInternals.saveApprovedResults([
+          {
+            id: 1,
+            status: 'success',
+            url: 'https://example.com/article',
+            policy: 'hatena',
+            classification: { proposedPath: 'Clippings/DryRunNonX', confidence: 1, isNewFolder: false, reasoning: 'test' },
+            articleContext: {
+              url: 'https://example.com/article',
+              title: 'DryRunArticle',
+              content: 'body',
+              textContent: 'body',
+            } as any,
+          },
+        ]);
+      } finally {
+        setDryRun(prev);
+      }
+      // フォルダ自体は (saveMarkdown が走らない以上) 作られていないはず。
+      // saveMarkdown は mkdir + writeFile を一気にやるので、フォルダの不在で
+      // 書き込みスキップを検出できる。
+      assert.ok(
+        !fs.existsSync(dryDir),
+        `dry-run でも Clippings 配下にフォルダが作られた: ${dryDir} (= saveMarkdown 抑止が破れている)`
+      );
     });
 
     return runner.report();

@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
-import { PipelineConfig } from './types';
+import { PipelineConfig, XSummaryConfig, AiProvider } from './types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,6 +39,21 @@ export function getVaultRoot(): string {
 }
 
 // ---------------------------------------------------------------------------
+// X ブックマーク Vault 内ベースフォルダ
+//
+// 旧パス `Clippings/X-Bookmarks` は 2026-05 のテーブルビュー化リファクタで
+// 廃止され、`X_Bookmarks` 直下に集約された (詳細は plan
+// `wobbly-percolating-yeti.md`)。レガシーから移行する場合は
+// `pnpm start -- --x-migrate-legacy` で `_Archived/` に退避する。
+// `X_BOOKMARKS_FOLDER` 環境変数で上書き可能 (テスト・特殊環境用)。
+// ---------------------------------------------------------------------------
+const X_BOOKMARKS_BASE_DEFAULT = 'X_Bookmarks';
+
+export function getXBookmarksBaseFolder(): string {
+  return process.env.X_BOOKMARKS_FOLDER || X_BOOKMARKS_BASE_DEFAULT;
+}
+
+// ---------------------------------------------------------------------------
 // Dry-Run モード（renameSync 一括移動を安全にプレビュー）
 // ---------------------------------------------------------------------------
 let _dryRun = false;
@@ -65,7 +80,7 @@ export function loadConfig(): PipelineConfig | null {
         setVaultRoot(config.vaultRoot);
       }
       return config;
-    } catch (e) {
+    } catch {
       return null;
     }
   }
@@ -88,10 +103,10 @@ export async function runConfigWizard(ask?: (q: string) => Promise<string>): Pro
   // --- Vault Root ---
   console.log('\n=== 📂 Obsidian Vault Root Configuration ===');
   const currentVault = _vaultRoot || process.env.VAULT_ROOT || '';
-  let vaultRootInput = await askFunc(
+  const vaultRootInput = await askFunc(
     `Obsidian Vault のルートパス${currentVault ? ` (default: ${currentVault})` : ''}: `
   );
-  let vaultRoot = vaultRootInput.trim() || currentVault;
+  const vaultRoot = vaultRootInput.trim() || currentVault;
   if (!vaultRoot) {
     console.error('Vault Root は必須です。');
     process.exit(1);
@@ -114,8 +129,8 @@ export async function runConfigWizard(ask?: (q: string) => Promise<string>): Pro
   console.log('3. openai (ChatGPT)');
   console.log('4. gemini');
 
-  let providerInput = await askFunc('Select AI Provider [1-4] (default 1): ');
-  let providerChoice = providerInput.trim()[0]; // 環境によってターミナルのエコーで '44' のように二重入力される問題への対策
+  const providerInput = await askFunc('Select AI Provider [1-4] (default 1): ');
+  const providerChoice = providerInput.trim()[0]; // 環境によってターミナルのエコーで '44' のように二重入力される問題への対策
 
   let provider: PipelineConfig['provider'] = 'local';
   if (providerChoice === '2') provider = 'anthropic';
@@ -141,6 +156,129 @@ export async function runConfigWizard(ask?: (q: string) => Promise<string>): Pro
   saveConfig(config);
   if (localRl) localRl.close();
   console.log('✅ Configuration successfully saved to pipeline_config.json\n');
+  return config;
+}
+
+// ---------------------------------------------------------------------------
+// X ブックマーク AI 要約 専用の provider / model 選択
+//
+// classifier (分類フェーズ) とは独立した設定。理由:
+//   - 分類は long context / smart 推論が要るがローカルでも回せる
+//   - X 要約は 1 行 200 字の軽量タスクで、cloud 廉価 fast モデルが品質/速度バランス◎
+// よってデフォルトのデフォルトは **cloud / Anthropic Haiku 4.5** とし、
+// 初回 `--x-bookmarks` 実行時にウィザードで他選択肢へ切り替え可能にする。
+// 永続化先は pipeline_config.json (`xSummary` キー)。
+// ---------------------------------------------------------------------------
+
+export interface XSummaryPreset {
+  /** 1 行表示用ラベル ("cloud / Anthropic Haiku 4.5 (推奨)" 等) */
+  label: string;
+  provider: AiProvider;
+  model: string;
+}
+
+/**
+ * 表示順がそのまま CLI の番号選択肢になる。**先頭がデフォルトのデフォルト**
+ * (Enter 即時確定 = anthropic + haiku 4.5)。
+ *
+ * モデル ID は `DEFAULTS` (分類用の fast / smart プリセット) と意味的に揃えるが、
+ * 「X 要約はあくまで fast 軽量タスク」という設計のため fast 系のみを採用 (Sonnet
+ * 等の smart は除外)。将来モデルを増やすときはここに 1 行追加すれば CLI に反映される。
+ */
+export const X_SUMMARY_PRESETS: XSummaryPreset[] = [
+  {
+    label: 'cloud / Anthropic Haiku 4.5  (推奨・デフォルト)',
+    provider: 'anthropic',
+    model: 'claude-haiku-4-5-20251001',
+  },
+  {
+    label: 'cloud / OpenAI gpt-4o-mini',
+    provider: 'openai',
+    model: 'gpt-4o-mini',
+  },
+  {
+    label: 'cloud / Gemini 2.5 Flash',
+    provider: 'gemini',
+    model: 'gemini-2.5-flash',
+  },
+  {
+    label: 'local / LM Studio (LOCAL_AI_URL)',
+    provider: 'local',
+    model: 'local-model',
+  },
+];
+
+/** ウィザード未実行時に使う最終フォールバック (= 先頭プリセット)。 */
+export const DEFAULT_X_SUMMARY: XSummaryConfig = {
+  provider: X_SUMMARY_PRESETS[0].provider,
+  model: X_SUMMARY_PRESETS[0].model,
+};
+
+/**
+ * 保存済み xSummary を返す。未設定なら null (= ウィザード未実行)。
+ * 呼出側は null を見たらウィザード起動 → 結果を `saveConfig` で永続化する。
+ */
+export function getXSummaryConfig(config: PipelineConfig | null): XSummaryConfig | null {
+  return config?.xSummary ?? null;
+}
+
+/**
+ * 初回 `--x-bookmarks` 実行時に呼ばれる対話ウィザード。
+ * 番号 1〜N でプリセット選択、空 Enter は先頭 (= 推奨デフォルト) を採用。
+ *
+ * 永続化は呼出側責務 (返り値を `saveConfig({ ...config, xSummary })` する想定)。
+ * テストでは `ask` を注入して入力をシミュレートする。
+ *
+ * カスタムモデル ID 指定モード:
+ *   選択後に "Use custom model id? (y/N)" を出して、yes なら provider はそのまま
+ *   model だけ自由入力させる (preset に無い checkpoint 等を指したいケース用)。
+ *   空入力なら preset の model を使う。
+ */
+export async function runXSummaryWizard(
+  ask?: (q: string) => Promise<string>
+): Promise<XSummaryConfig> {
+  let localRl: readline.Interface | null = null;
+  let askFunc = ask;
+  if (!askFunc) {
+    localRl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    askFunc = (q: string) => new Promise<string>(resolve => localRl!.question(q, resolve));
+  }
+
+  console.log('\n=== 🤖 X ブックマーク AI 要約のモデル選択 ===');
+  console.log('cloud と local を自由に選択できます (1 件 = 1 行 200 字の軽量タスク)。\n');
+  X_SUMMARY_PRESETS.forEach((p, i) => {
+    console.log(`  ${i + 1}. ${p.label}`);
+  });
+  console.log('');
+
+  const raw = await askFunc(
+    `番号で選択してください [1-${X_SUMMARY_PRESETS.length}] (Enter=1 デフォルト): `
+  );
+  // 環境によって stdin が二重入力されることがあるため先頭 1 文字だけ採用 (config wizard と同様)
+  const choice = raw.trim()[0] ?? '';
+  let idx = 0; // デフォルト: 先頭プリセット
+  if (choice) {
+    const parsed = parseInt(choice, 10);
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= X_SUMMARY_PRESETS.length) {
+      idx = parsed - 1;
+    } else {
+      console.warn(`⚠️  不正な入力 "${raw.trim()}" — デフォルト (${X_SUMMARY_PRESETS[0].label}) を使用します。`);
+    }
+  }
+  const preset = X_SUMMARY_PRESETS[idx];
+
+  // カスタム model ID を任意で許可 (preset の provider は保持)
+  const customRaw = await askFunc(
+    `\n${preset.label} を選択しました。\nモデル ID を上書きしますか? (Enter=${preset.model} をそのまま使用): `
+  );
+  const customModel = customRaw.trim();
+  const config: XSummaryConfig = {
+    provider: preset.provider,
+    model: customModel || preset.model,
+  };
+
+  if (localRl) localRl.close();
+  console.log(`✅ X 要約の設定を保存します: provider=${config.provider} / model=${config.model}\n`);
   return config;
 }
 

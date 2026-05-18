@@ -20,6 +20,7 @@
 import {
   detectCommonKeywords,
   hasWordBoundaryMatch,
+  prioritizeForcedParents,
   stripKeyword,
 } from './x_folder_mapper';
 
@@ -73,10 +74,12 @@ export function buildFolderTree(
   const groups: FolderTreeGroup[] = [];
 
   // ---- Tier 1: forced parents ----
-  // mapper と同じく長一致優先で「最長キーワード」が勝つ
-  const sortedForced = [...forcedParents]
-    .filter(k => k.trim().length > 0)
-    .sort((a, b) => b.length - a.length);
+  // 出現頻度優先 (より多くのフォルダにマッチするキーワードが親として優先される)。
+  // 同点は長さ desc → 設定ファイルの記述順で tiebreak。
+  const sortedForced = prioritizeForcedParents(
+    forcedParents,
+    folders.map(f => f.name)
+  );
 
   for (const keyword of sortedForced) {
     const matched = folders.filter(f =>

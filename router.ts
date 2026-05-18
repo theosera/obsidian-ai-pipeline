@@ -21,7 +21,7 @@ export function loadFolderRules(): RulesMap {
   if (fs.existsSync(rulesPath)) {
     try {
       return JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
-    } catch (e) {
+    } catch {
       console.error('Failed to parse folder_rules.json, starting fresh.');
       return {};
     }
@@ -96,7 +96,7 @@ export function updateThresholds(results: ProcessingResult[], currentRules: Rule
 
   // Vault全体のスキャンと閾値評価
   for (const [baseCat, batchCount] of Object.entries(batchCounts)) {
-    let currentRule = currentRules[baseCat] || 'none';
+    const currentRule = currentRules[baseCat] || 'none';
 
     // Vault内の対象ジャンルの既存ファイル数をカウント
     const catPath = path.join(vaultRoot, baseCat);
@@ -210,7 +210,7 @@ function cleanupEmptyDirectories(dir: string): void {
          }
       }
     }
-  } catch (err) {}
+  } catch {}
 }
 
 /**
@@ -228,7 +228,7 @@ function collectMarkdownFiles(dir: string): string[] {
         results.push(fullPath);
       }
     }
-  } catch(err) { }
+  } catch {}
   return results;
 }
 
@@ -248,7 +248,7 @@ function countMarkdownFiles(dir: string): number {
         count++;
       }
     }
-  } catch (err) {
+  } catch {
     // ignore
   }
   return count;

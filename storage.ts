@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
 import { ArticleData } from './types';
 import { getVaultRoot, isDryRun } from './config';
 
@@ -123,7 +122,7 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
   const date = new Date();
 
   // パストラバーサル防止: AI出力パスを検証
-  let finalPath = ensureSafePath(folderPath);
+  const finalPath = ensureSafePath(folderPath);
 
   const fullDirPath = path.join(vaultRoot, finalPath);
 
@@ -132,7 +131,6 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
   }
 
   const today = date.toISOString().split('T')[0];
-  const saveDate = articleData.date || today; // Fallback to today if no date
 
   let mm_dd = today.substring(5); // Default to today's MM-DD
   // Use frontmatter date logic if it matches YYYY-MM-DD
@@ -152,6 +150,21 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
   const pubDate = articleData.date || '';
   const siteLink = articleData.siteName ? `\n  - "[[${escapeFrontmatter(articleData.siteName)}]]"` : '';
 
+  // X bookmark の場合だけ session_id 等の X 専用 frontmatter フィールドを書き出す。
+  // ファイル単位移動の追跡 (sync phase の reassignMisplacedFiles) で必要。
+  const ax = articleData as Partial<{
+    xSessionId: string;
+    xFolderId: string;
+    xTweetId: string;
+    xFolderName: string;
+  }>;
+  const xExtras: string[] = [];
+  if (ax.xSessionId) xExtras.push(`session_id: "${escapeFrontmatter(ax.xSessionId)}"`);
+  if (ax.xFolderId) xExtras.push(`x_folder_id: "${escapeFrontmatter(ax.xFolderId)}"`);
+  if (ax.xTweetId) xExtras.push(`x_tweet_id: "${escapeFrontmatter(ax.xTweetId)}"`);
+  if (ax.xFolderName) xExtras.push(`x_folder_name: "${escapeFrontmatter(ax.xFolderName)}"`);
+  const xExtrasBlock = xExtras.length > 0 ? '\n' + xExtras.join('\n') : '';
+
   const frontmatter = `---
 title: "${escapeFrontmatter(articleData.title || '')}"
 source: "${articleData.url || ''}"
@@ -160,7 +173,7 @@ published: ${pubDate}
 created: ${today}
 description: "${escapeFrontmatter(articleData.excerpt || '')}"
 tags:
-  - "clippings"
+  - "clippings"${xExtrasBlock}
 ---
 
 `;
@@ -236,31 +249,95 @@ export function updateVaultTreeSnapshot(): void {
 
 let cachedKnownUrls: Set<string> | null = null;
 
+/**
+ * Vault 配下に保存済みの全 `.md` を走査して、YAML frontmatter の `source:`
+ * URL を集める。重複検出 (再投入の skip) に使用。
+ *
+ * 旧実装は `execSync('grep -rhI ...')` を使っていたが grep バイナリ依存だったため、
+ * Node 純粋実装に置き換え。Windows / minimal container / grep が PATH に無い
+ * 環境で silent に空 Set を返して重複保存事故を起こす回帰を防止する。
+ *
+ * パフォーマンス配慮:
+ *   - 各 `.md` の先頭 4KB だけ読む (YAML frontmatter は通常 < 1KB)
+ *   - シンボリックリンクは追わない (ループ防止)
+ *   - 結果は module-level でキャッシュ (テスト用 `resetKnownUrlsCache` で破棄可)
+ */
 export function getKnownUrls(): Set<string> {
   if (cachedKnownUrls) return cachedKnownUrls;
   const vaultRoot = getVaultRoot();
   const known = new Set<string>();
 
   try {
-    const output = execSync('grep -rhI "^source: \\"" . || true', {
-      cwd: vaultRoot,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore']
-    });
-
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const match = line.match(/^source:\s*"?(https?:\/\/[^"]+)"?/);
+    walkMdFiles(vaultRoot, (filePath) => {
+      const head = readFileHead(filePath, FRONTMATTER_READ_BYTES);
+      if (head === null) return;
+      // `/m` で行頭 `^` を行単位にマッチ。URL は frontmatter の `source: "url"`。
+      // 互換のため未クォート版も拾う (旧 .md 手動編集ケース)。
+      const match = head.match(/^source:\s*"?(https?:\/\/[^"\s]+?)"?\s*$/m);
       if (match && match[1]) {
         let url = match[1].trim();
         url = url.endsWith('/') ? url.slice(0, -1) : url;
         known.add(url);
       }
-    }
+    });
   } catch (err: any) {
-    console.warn("[Storage] Failed to grep existing URLs:", err.message);
+    console.warn('[Storage] Failed to scan existing URLs:', err.message);
   }
 
   cachedKnownUrls = known;
   return cachedKnownUrls;
+}
+
+/** テスト用: モジュールキャッシュを破棄して次回 `getKnownUrls` を再走査させる */
+export function resetKnownUrlsCache(): void {
+  cachedKnownUrls = null;
+}
+
+const FRONTMATTER_READ_BYTES = 4096;
+
+function readFileHead(filePath: string, bytes: number): string | null {
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, 'r');
+  } catch {
+    return null;
+  }
+  try {
+    const buf = Buffer.alloc(bytes);
+    const bytesRead = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    try { fs.closeSync(fd); } catch { /* noop */ }
+  }
+}
+
+/**
+ * `rootDir` 配下の `.md` ファイルだけを再帰的に列挙して visitor を呼ぶ。
+ * - シンボリックリンクは追わない
+ * - 読めないディレクトリは静かにスキップ
+ */
+function walkMdFiles(rootDir: string, visit: (filePath: string) => void): void {
+  const stack: string[] = [rootDir];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      // symlink 経由のディレクトリ走査はループの危険があるので追わない。
+      // readdirSync は通常 lstat ベースの結果を返すので isSymbolicLink で判定可。
+      if (e.isSymbolicLink()) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        stack.push(full);
+      } else if (e.isFile() && e.name.endsWith('.md')) {
+        visit(full);
+      }
+    }
+  }
 }

@@ -37,6 +37,31 @@ AIプロバイダー（Local, Anthropic, OpenAI, Gemini 等）や、Step1(軽量
 pnpm start ../context/_分析コンテキスト/OneTab_20260414.txt --config
 ```
 
+### X 要約モデルの選択（`--x-summary-reconfig`）
+X ブックマーク AI 要約 (`x_bookmarks_summarizer`) は分類フェーズ (`--config` で設定する AI Provider) **とは独立** した設定を持ちます。`pipeline_config.json::xSummary` に保存され、CLI 番号選択で切り替え可能:
+
+| # | Preset | Provider | Model |
+|---|---|---|---|
+| 1 | cloud / Anthropic Haiku 4.5  (推奨デフォルト) | `anthropic` | `claude-haiku-4-5-20251001` |
+| 2 | cloud / OpenAI gpt-4o-mini | `openai` | `gpt-4o-mini` |
+| 3 | cloud / Gemini 2.5 Flash | `gemini` | `gemini-2.5-flash` |
+| 4 | local / LM Studio | `local` | `local-model` |
+
+初回 `--x-bookmarks` 実行時に自動でウィザードが起動 (空 Enter で 1 = 推奨デフォルトを即時確定)。保存済みの選択を変更したい場合:
+
+```bash
+# 別 provider / model に切替（次回以降の --x-bookmarks に永続反映）
+pnpm start -- --x-bookmarks --x-summary-reconfig
+
+# モデル変更 / プロンプト改善後に既存要約も全件再生成
+pnpm start -- --x-bookmarks --x-resummarize-all
+
+# 新規 0 件 + 全件再生成 (= 純粋に既存要約のリフレッシュだけ)
+pnpm start -- --x-bookmarks --x-resummarize-all
+```
+
+選択後にカスタムモデル ID を入力すれば `model` だけ上書き可能 (provider はプリセットのまま)。例: preset 1 を選んだ後 `claude-opus-4-7` を入力すれば `anthropic` + `claude-opus-4-7` で動作します。
+
 ### プロセス中断時の一括復旧・取得スクリプト (Rescue Command)
 `pnpm start` が中断したりタイムアウトで終わってしまった場合でも、既に生成された「分類結果レポート（マークダウン）」さえあれば、AI推論をスキップ（API課金ゼロ）して高速に記事取得と保存を再開できます。
 ```bash

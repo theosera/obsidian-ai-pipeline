@@ -4,28 +4,31 @@ import { closeBrowser } from '../fetcher';
 import { getKnownUrls, updateVaultTreeSnapshot } from '../storage';
 import { tokenUsageMetrics } from '../classifier';
 import { loadFolderRules, updateThresholds, getRoutedPath } from '../router';
-import { getVaultRoot } from '../config';
-import { ProcessingResult } from '../types';
+import { getVaultRoot, getXBookmarksBaseFolder } from '../config';
+import { ProcessingResult, PipelineConfig } from '../types';
 import { ParsedCliArgs } from '../cli';
 import { ParsedEntry, FailureRecord } from './types';
 import { readOneTabFile } from './input_onetab';
 import { prepareXBookmarks } from './input_x_bookmarks';
 import { processEntries } from './processor';
 import { generateReport } from './report';
-import { interactiveReviewLoop } from './interactive';
+import { interactiveReviewLoop, regenerateXBookmarkArtifacts } from './interactive';
+import { closeDb } from '../x_bookmarks_db';
 import { askQuestion } from './prompt';
 import { listFolders } from '../x_bookmarks_api';
 import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
 import { pickFolders } from '../x_interactive_picker';
 import { loadForcedParents, loadApprovedMappings } from '../x_folder_mapper';
+import { runSyncPhase } from '../x_session_sync';
+import { createInteractiveOrphanResolver } from '../x_session_ai';
+import { checkFolderCountInvariant, logInvariantCheck } from '../x_folder_invariant';
 
 /**
  * X API ブックマーク専用のベースフォルダ。
- * 通常記事の Classifier によるフォルダ分類とは別系統で、すべての X ブックマークを
- * ここに集約する（混入防止・監査容易化）。環境変数 X_BOOKMARKS_FOLDER で上書き可能。
- * Router の閾値 (QUARTERLY=10 / MONTHLY=20) を超えると、自動で日付サブフォルダへ昇格する。
+ * config.ts::getXBookmarksBaseFolder() に集中管理 (デフォルト `X_Bookmarks`)。
+ * 環境変数 X_BOOKMARKS_FOLDER で上書き可能。
  */
-const X_BOOKMARKS_BASE_FOLDER = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-Bookmarks';
+const X_BOOKMARKS_BASE_FOLDER = getXBookmarksBaseFolder();
 
 /**
  * 通常パイプライン (OneTab / X ブックマーク) のフロー制御。
@@ -40,7 +43,7 @@ const X_BOOKMARKS_BASE_FOLDER = process.env.X_BOOKMARKS_FOLDER || 'Clippings/X-B
  *
  * 上位 (index.ts) は CLI 引数に応じて当関数を呼ぶだけで、パイプライン全体が完結する。
  */
-export async function runPipeline(args: ParsedCliArgs): Promise<void> {
+export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig): Promise<void> {
   const { REPORTS_DIR, INTERNAL_LOGS_DIR } = setupOutputDirs();
   updateVaultTreeSnapshot();
 
@@ -48,6 +51,42 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
     console.error('Usage: tsx index.ts <path-to-onetab.txt>');
     console.error('   or: tsx index.ts --x-bookmarks [--x-limit=N]');
     process.exit(1);
+  }
+
+  // `--x-resummarize-all` のクリア処理はここでは行わない。
+  // ユーザーが confirmation で中止 / 処理 0 件の場合に「summary だけ消えて
+  // 再生成されない」事故を防ぐため、x_bookmarks_summarizer.ts の中で
+  // クリアと再生成をアトミックに実行する (interactive.ts から呼ばれる)。
+
+  // === 0. Sync Phase (X bookmarks モードの先頭で必ず走る・--no-sync で抑止) ===
+  if (args.xBookmarks && !args.noSync) {
+    try {
+      const result = await runSyncPhase({
+        baseFolder: X_BOOKMARKS_BASE_FOLDER,
+        resolver: createInteractiveOrphanResolver(askQuestion),
+      });
+      const summary = [
+        `new=${result.newSessions}`,
+        `updated=${result.updatedSessions}`,
+        `vault_moves=${result.vaultMoves}`,
+        `file_reassign=${result.fileReassignments}`,
+        `orphan_x=${result.orphansOnX}`,
+        `orphan_vault=${result.orphansOnVault}`,
+      ].join(', ');
+      console.log(`🔖 Sync Phase: ${summary}`);
+
+      // 不変条件: X distinct folder 数 == <base>/ リーフ数 (集約解除時)
+      try {
+        const inv = checkFolderCountInvariant();
+        logInvariantCheck(inv);
+      } catch (invErr: any) {
+        console.warn(`⚠️  Folder-count invariant チェック失敗 (続行): ${invErr.message}`);
+      }
+    } catch (e: any) {
+      console.warn(`⚠️  Sync Phase 失敗 (続行): ${e.message}`);
+    }
+  } else if (args.xBookmarks && args.noSync) {
+    console.log('🔖 --no-sync 指定: Sync Phase をスキップします (前回 sync 状態を再利用)');
   }
 
   // === 1. 入力構築 ===
@@ -97,6 +136,30 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   writeFailureLog(failures, INTERNAL_LOGS_DIR, sourceTag, dateStr);
 
   if (results.length === 0) {
+    // `--x-resummarize-all` の本来の用途 (モデル / プロンプト変更後の既存要約の
+    // 全件再生成) では「新規 0 件 + 全件再要約」が常態のため、ここで早期 return
+    // すると flag が完全 no-op になる。X ブックマークモード + resummarizeAll の
+    // 場合だけ regen パスを直接呼んで JSON / group ページまで一気通貫で更新する。
+    if (args.xBookmarks && args.xResummarizeAll) {
+      // dry-run 時は SQLite ai_summary クリア + JSON / group MD 書き換えという
+      // 副作用を全て止める (CodeRabbit 指摘: confirmBeforeRun が「--dry-run は
+      // Vault 書き込み無し」と明示しているため、ここも整合させる)。
+      if (args.dryRun) {
+        console.log('\n🧪 --dry-run: --x-resummarize-all の再生成はスキップしました。');
+        closeDb();
+        return;
+      }
+      console.log('\n🔄 新規ブックマーク 0 件 — --x-resummarize-all で既存要約を再生成します。');
+      try {
+        await regenerateXBookmarkArtifacts({
+          xSummary: config?.xSummary,
+          resummarizeAll: true,
+        });
+      } finally {
+        closeDb();
+      }
+      return;
+    }
     console.log('\nNo items were successfully processed. Exiting.');
     return;
   }
@@ -108,7 +171,10 @@ export async function runPipeline(args: ParsedCliArgs): Promise<void> {
   const reportLabel = args.xBookmarks ? 'X-Bookmarks' : 'OneTab';
   const reportPath = path.join(REPORTS_DIR, `${reportLabel}分類結果レポート-${dateStr}.md`);
   fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
-  await interactiveReviewLoop(results, reportPath);
+  await interactiveReviewLoop(results, reportPath, {
+    resummarizeAll: args.xResummarizeAll,
+    xSummary: config?.xSummary,
+  });
 }
 
 /**

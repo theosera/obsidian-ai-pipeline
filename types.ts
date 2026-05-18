@@ -40,9 +40,26 @@ export interface FolderRules {
   [key: string]: any;
 }
 
+export type AiProvider = 'local' | 'openai' | 'anthropic' | 'gemini';
+
+/**
+ * X ブックマーク AI 要約 (`x_bookmarks_summarizer`) 専用の provider / model 選択。
+ *
+ * 分類フェーズの classifier とは独立した設定。デフォルトのデフォルトは
+ * cloud=Anthropic + Haiku 4.5 で、初回 `--x-bookmarks` 実行時に対話ウィザード
+ * (`runXSummaryWizard`) が presets から選ばせて pipeline_config.json に永続化する。
+ * 再選択は `--x-summary-reconfig` を付けて起動する。
+ */
+export interface XSummaryConfig {
+  provider: AiProvider;
+  model: string;
+}
+
 export interface PipelineConfig {
   vaultRoot: string;
-  provider: 'local' | 'openai' | 'anthropic' | 'gemini';
+  provider: AiProvider;
   fastModel: string;
   smartModel: string;
+  /** 未設定なら初回 `--x-bookmarks` 実行時にウィザードで埋める。 */
+  xSummary?: XSummaryConfig;
 }

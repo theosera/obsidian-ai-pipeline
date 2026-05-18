@@ -67,7 +67,7 @@ export async function fetchRenderedHtml(url: string): Promise<string> {
     // Explicit wait for network idle if needed (fallback)
     try {
       await page.waitForLoadState('networkidle', { timeout: 10000 });
-    } catch (e) {
+    } catch {
       console.warn(`[Fetcher] Networkidle timeout for ${url}, proceeding with extra wait...`);
       needsExtraWait = true;
     }

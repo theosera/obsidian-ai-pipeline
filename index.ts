@@ -16,7 +16,16 @@
  *   3. ここの main() に dispatch 分岐を追加
  */
 import { parseArgs, printUsage } from './cli';
-import { loadConfig, runConfigWizard, applyConfigToEnv, setDryRun } from './config';
+import {
+  loadConfig,
+  runConfigWizard,
+  applyConfigToEnv,
+  setDryRun,
+  getXBookmarksBaseFolder,
+  runXSummaryWizard,
+  saveConfig,
+  getXSummaryConfig,
+} from './config';
 import { syncRulesFromSnippets } from './sync-rules';
 import { runAuthServer } from './x_auth_server';
 import { generateHandsOn } from './hands_on_generator';
@@ -58,6 +67,79 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // --x-migrate-legacy: 旧 Clippings/X-Bookmarks/ を _Archived/ に退避するワンショット移行
+  if (args.xMigrateLegacy) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { runMigrateLegacy } = await import('./x_migrate_legacy');
+      const result = runMigrateLegacy();
+      if (result.skipped) {
+        console.log(`ℹ️  移行スキップ: ${result.reason}`);
+      } else {
+        console.log('\n📦 旧 X ブックマークパスを退避しました:');
+        console.log(`   ${result.legacyPath}`);
+        console.log(`   → ${result.archivedPath}`);
+        console.log(`   .md ファイル: ${result.filesMoved} 件`);
+        console.log(`   folder_sessions 書き換え: ${result.sessionsUpdated} 件`);
+        console.log(`   bookmarks 書き換え:       ${result.bookmarksUpdated} 件`);
+      }
+    } catch (e: any) {
+      console.error(`❌ 移行失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
+  // --x-derive-rules: vault 構造を解析して x_forced_parents.json を自動推定 (.bak 残し)
+  if (args.xDeriveRules) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { runDeriveRulesCli } = await import('./x_rule_deriver');
+      await runDeriveRulesCli({ ask: askQuestion });
+    } catch (e: any) {
+      console.error(`❌ ルール推定失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
+  // --x-sync-folders: Sync Phase 単独実行 (Vault 再編後 / orphan AI 判定だけ走らせたいとき)
+  if (args.xSyncFolders) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { runSyncPhase } = await import('./x_session_sync');
+      const { createInteractiveOrphanResolver } = await import('./x_session_ai');
+      const baseFolder = getXBookmarksBaseFolder();
+      const result = await runSyncPhase({
+        baseFolder,
+        resolver: createInteractiveOrphanResolver(askQuestion),
+      });
+      console.log('\n🔖 Sync 完了:');
+      console.log(`  新規 sessions: ${result.newSessions}`);
+      console.log(`  更新 sessions: ${result.updatedSessions}`);
+      console.log(`  Vault 移動検知: ${result.vaultMoves}`);
+      console.log(`  ファイル再 bind: ${result.fileReassignments}`);
+      console.log(`  orphan_on_x:    ${result.orphansOnX}`);
+      console.log(`  orphan_on_vault: ${result.orphansOnVault}`);
+      try {
+        const { checkFolderCountInvariant, logInvariantCheck } = await import('./x_folder_invariant');
+        logInvariantCheck(checkFolderCountInvariant());
+      } catch (invErr: any) {
+        console.warn(`⚠️  Folder-count invariant チェック失敗: ${invErr.message}`);
+      }
+    } catch (e: any) {
+      console.error(`❌ Sync 失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
   // ------------------------------------------------------------------
   // Config wizard の必要性判定
   // ------------------------------------------------------------------
@@ -81,19 +163,39 @@ async function main(): Promise<void> {
   }
 
   // ------------------------------------------------------------------
+  // X 要約 dedicated provider / model の初回セットアップ
+  //
+  // 分類フェーズの AI_PROVIDER とは独立した設定 (X 要約はあくまで 1 行 200 字の
+  // 軽量タスクで cloud Haiku 4.5 が推奨)。
+  //   - `--x-bookmarks` 系で xSummary 未保存 → 初回ウィザード
+  //   - `--x-summary-reconfig` 明示時 → 強制再選択
+  // ------------------------------------------------------------------
+  if (args.xBookmarks && (getXSummaryConfig(config) === null || args.xSummaryReconfig)) {
+    const xSummary = await runXSummaryWizard(askQuestion);
+    config = { ...config, xSummary };
+    saveConfig(config);
+  }
+
+  // ------------------------------------------------------------------
   // 通常パイプライン (OneTab / X ブックマーク)
   // ------------------------------------------------------------------
   console.log('\n======================================================');
   console.log(`🤖 AI Provider: ${config.provider}`);
   console.log(`🔹 Step 1 Model (Fast): ${config.fastModel}`);
   console.log(`🔸 Step 2 Model (Smart): ${config.smartModel}`);
+  if (config.xSummary) {
+    console.log(`🧵 X 要約: ${config.xSummary.provider} / ${config.xSummary.model}  (--x-summary-reconfig で変更)`);
+  }
   console.log('💡 Run with `--config` anytime to change these settings.');
   console.log('======================================================\n');
 
-  await runPipeline(args);
+  await runPipeline(args, config);
 
   closePrompt();
   process.exit(0);
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -27,9 +27,22 @@ export interface BookmarkRow {
   x_folder_name: string | null;
   vault_path: string | null;
   saved_at: string;
+  /**
+   * 「追加日」= この tweet が初めて DB に取り込まれた時刻 (ISO 文字列)。
+   * `saved_at` (毎 sync で更新される last-touched) と区別する。
+   * INSERT 時のみ書かれ、ON CONFLICT DO UPDATE では維持される (Dataview の
+   * 「追加日」列のソート基準にする)。
+   */
+  added_at: string | null;
   engagement_likes: number | null;
   engagement_retweets: number | null;
   engagement_replies: number | null;
+  /**
+   * 将来 AI 要約プロデューサーが書き込む列 (現状は常に NULL)。
+   * 2026-05 のリファクタでスキーマは確保するが、書き込みパスは未実装。
+   * JSON エクスポート + Dataview テーブルは `summary` 列を常に確保する。
+   */
+  ai_summary: string | null;
 }
 
 export interface BookmarkUpsertInput {
@@ -42,9 +55,33 @@ export interface BookmarkUpsertInput {
   createdAt?: string;
   xFolderName?: string;
   vaultPath?: string;
+  /** 当ブックマークが属する X folder の session_id (Vault 移動追跡用) */
+  sessionId?: string;
   engagementLikes?: number;
   engagementRetweets?: number;
   engagementReplies?: number;
+}
+
+export type SessionStatus = 'active' | 'orphaned_on_x' | 'orphaned_on_vault' | 'archived';
+
+export interface FolderSessionRow {
+  session_id: string;
+  x_folder_id: string | null;
+  x_folder_name: string | null;
+  vault_path: string | null;
+  parent_keyword: string | null;
+  status: SessionStatus;
+  created_at: string;
+  last_synced_at: string;
+}
+
+export interface FolderSessionUpsert {
+  sessionId: string;
+  xFolderId?: string | null;
+  xFolderName?: string | null;
+  vaultPath?: string | null;
+  parentKeyword?: string | null;
+  status?: SessionStatus;
 }
 
 const SCHEMA = `
@@ -57,13 +94,34 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   created_at TEXT,
   x_folder_name TEXT,
   vault_path TEXT,
+  session_id TEXT,
   saved_at TEXT NOT NULL,
+  added_at TEXT,
   engagement_likes INTEGER,
   engagement_retweets INTEGER,
-  engagement_replies INTEGER
+  engagement_replies INTEGER,
+  ai_summary TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_folder ON bookmarks(x_folder_name);
 CREATE INDEX IF NOT EXISTS idx_saved_at ON bookmarks(saved_at);
+-- NOTE: idx_session は migrateAddSessionId() 内で作成する。SCHEMA に書くと
+-- 旧 DB (session_id 列なし) を開いた瞬間 "no such column" で throw → getDb() の
+-- catch が DB を corrupted 退避 → ユーザーのキャッシュ消失 という致命バグになる。
+-- column 追加が確実に終わってから index を張ること。
+
+CREATE TABLE IF NOT EXISTS folder_sessions (
+  session_id TEXT PRIMARY KEY,
+  x_folder_id TEXT UNIQUE,
+  x_folder_name TEXT,
+  vault_path TEXT,
+  parent_keyword TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  last_synced_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_xfolder ON folder_sessions(x_folder_id);
+CREATE INDEX IF NOT EXISTS idx_session_vault ON folder_sessions(vault_path);
+CREATE INDEX IF NOT EXISTS idx_session_status ON folder_sessions(status);
 `;
 
 export class XBookmarksDb {
@@ -74,6 +132,9 @@ export class XBookmarksDb {
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
     this.migrateAddNoteTweetText();
+    this.migrateAddSessionId();
+    this.migrateAddAiSummary();
+    this.migrateAddAddedAt();
   }
 
   /**
@@ -87,20 +148,63 @@ export class XBookmarksDb {
     }
   }
 
+  /**
+   * bookmarks テーブルに session_id 列を idempotent に追加 (folder_sessions 連携用)。
+   * index は **column 追加後**に必ず作る (旧 DB を壊さないため SCHEMA からは外してある)。
+   */
+  private migrateAddSessionId(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'session_id')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN session_id TEXT");
+    }
+    // column が確実に存在する状態で index を作成 (idempotent)
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_session ON bookmarks(session_id)");
+  }
+
+  /**
+   * bookmarks テーブルに ai_summary 列を idempotent に追加。
+   * 現状この列に書き込むパスは無く (常に NULL)、テーブルビューの "summary" 列を
+   * 確保する目的でスキーマだけ用意する。将来の AI 要約プロデューサーがこの列に
+   * 書き込む想定。
+   */
+  private migrateAddAiSummary(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'ai_summary')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN ai_summary TEXT");
+    }
+  }
+
+  /**
+   * bookmarks テーブルに added_at 列を idempotent に追加。
+   * 「DB 取り込み初回時刻」を保持し、以降の upsert (`ON CONFLICT DO UPDATE`)
+   * では維持される。既存行 (列追加前のデータ) は saved_at で backfill する
+   * — 過去の saved_at は最後の upsert 時刻だが、追加日の近似として最良。
+   */
+  private migrateAddAddedAt(): void {
+    const cols = this.db.prepare("PRAGMA table_info(bookmarks)").all() as { name: string }[];
+    if (!cols.some(c => c.name === 'added_at')) {
+      this.db.exec("ALTER TABLE bookmarks ADD COLUMN added_at TEXT");
+      this.db.exec("UPDATE bookmarks SET added_at = saved_at WHERE added_at IS NULL");
+    }
+  }
+
   getKnownTweetIds(): Set<string> {
     const rows = this.db.prepare('SELECT tweet_id FROM bookmarks').all() as { tweet_id: string }[];
     return new Set(rows.map(r => r.tweet_id));
   }
 
   upsertBookmark(input: BookmarkUpsertInput): void {
+    // `added_at` は INSERT 時にだけ書く (DO UPDATE の SET 句に入れない =
+    // SQLite は当該列を変更しない)。これで「DB 取り込み初回時刻」が保持される。
+    // `saved_at` は毎 upsert で更新される (last-touched)。
     const stmt = this.db.prepare(`
       INSERT INTO bookmarks (
         tweet_id, url, author, tweet_text, note_tweet_text, created_at,
-        x_folder_name, vault_path, saved_at,
+        x_folder_name, vault_path, session_id, saved_at, added_at,
         engagement_likes, engagement_retweets, engagement_replies
       ) VALUES (
         @tweet_id, @url, @author, @tweet_text, @note_tweet_text, @created_at,
-        @x_folder_name, @vault_path, @saved_at,
+        @x_folder_name, @vault_path, @session_id, @saved_at, @added_at,
         @engagement_likes, @engagement_retweets, @engagement_replies
       )
       ON CONFLICT(tweet_id) DO UPDATE SET
@@ -111,11 +215,13 @@ export class XBookmarksDb {
         created_at = excluded.created_at,
         x_folder_name = excluded.x_folder_name,
         vault_path = excluded.vault_path,
+        session_id = excluded.session_id,
         saved_at = excluded.saved_at,
         engagement_likes = excluded.engagement_likes,
         engagement_retweets = excluded.engagement_retweets,
         engagement_replies = excluded.engagement_replies
     `);
+    const now = new Date().toISOString();
     stmt.run({
       tweet_id: input.tweetId,
       url: input.url,
@@ -125,11 +231,175 @@ export class XBookmarksDb {
       created_at: input.createdAt ?? null,
       x_folder_name: input.xFolderName ?? null,
       vault_path: input.vaultPath ?? null,
-      saved_at: new Date().toISOString(),
+      session_id: input.sessionId ?? null,
+      saved_at: now,
+      added_at: now,
       engagement_likes: input.engagementLikes ?? null,
       engagement_retweets: input.engagementRetweets ?? null,
       engagement_replies: input.engagementReplies ?? null,
     });
+  }
+
+  // -----------------------------------------------------------------------
+  // folder_sessions CRUD
+  // -----------------------------------------------------------------------
+
+  upsertFolderSession(input: FolderSessionUpsert): void {
+    const now = new Date().toISOString();
+    const existing = this.db
+      .prepare('SELECT created_at FROM folder_sessions WHERE session_id = ?')
+      .get(input.sessionId) as { created_at: string } | undefined;
+    const stmt = this.db.prepare(`
+      INSERT INTO folder_sessions (
+        session_id, x_folder_id, x_folder_name, vault_path, parent_keyword,
+        status, created_at, last_synced_at
+      ) VALUES (
+        @session_id, @x_folder_id, @x_folder_name, @vault_path, @parent_keyword,
+        @status, @created_at, @last_synced_at
+      )
+      ON CONFLICT(session_id) DO UPDATE SET
+        x_folder_id = excluded.x_folder_id,
+        x_folder_name = excluded.x_folder_name,
+        vault_path = excluded.vault_path,
+        parent_keyword = excluded.parent_keyword,
+        status = excluded.status,
+        last_synced_at = excluded.last_synced_at
+    `);
+    stmt.run({
+      session_id: input.sessionId,
+      x_folder_id: input.xFolderId ?? null,
+      x_folder_name: input.xFolderName ?? null,
+      vault_path: input.vaultPath ?? null,
+      parent_keyword: input.parentKeyword ?? null,
+      status: input.status ?? 'active',
+      created_at: existing?.created_at ?? now,
+      last_synced_at: now,
+    });
+  }
+
+  getFolderSessionByXFolderId(xFolderId: string): FolderSessionRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM folder_sessions WHERE x_folder_id = ?')
+      .get(xFolderId) as FolderSessionRow | undefined;
+  }
+
+  getFolderSession(sessionId: string): FolderSessionRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM folder_sessions WHERE session_id = ?')
+      .get(sessionId) as FolderSessionRow | undefined;
+  }
+
+  listFolderSessions(): FolderSessionRow[] {
+    return this.db
+      .prepare('SELECT * FROM folder_sessions ORDER BY created_at ASC')
+      .all() as FolderSessionRow[];
+  }
+
+  setSessionStatus(sessionId: string, status: SessionStatus): void {
+    this.db
+      .prepare('UPDATE folder_sessions SET status = ?, last_synced_at = ? WHERE session_id = ?')
+      .run(status, new Date().toISOString(), sessionId);
+  }
+
+  deleteFolderSession(sessionId: string): void {
+    this.db.prepare('DELETE FROM folder_sessions WHERE session_id = ?').run(sessionId);
+  }
+
+  /**
+   * .md ファイル移動検知時の再 bind 用 (sync phase から呼ばれる)。
+   * SQL を DB モジュール内に閉じ込めるための typed wrapper。
+   * `xFolderName` を渡すと `x_folder_name` も同時に更新する (stale 名前回避)。
+   */
+  reassignBookmarkSession(input: {
+    tweetId: string;
+    sessionId: string;
+    vaultPath: string;
+    xFolderName?: string | null;
+  }): void {
+    this.db
+      .prepare(
+        'UPDATE bookmarks SET session_id = ?, vault_path = ?, ' +
+          'x_folder_name = COALESCE(?, x_folder_name) WHERE tweet_id = ?'
+      )
+      .run(input.sessionId, input.vaultPath, input.xFolderName ?? null, input.tweetId);
+  }
+
+  /**
+   * `session_id` を変えずに `vault_path` のみを書き換える。
+   * legacy migration で旧パス → `_Archived/` に bookmarks 行を rewrite する用途。
+   * `xFolderName` を渡すと同時に refresh する (現在の値を保ちたければ undefined を渡す)。
+   */
+  updateBookmarkVaultPath(input: {
+    tweetId: string;
+    vaultPath: string;
+    xFolderName?: string | null;
+  }): void {
+    this.db
+      .prepare(
+        'UPDATE bookmarks SET vault_path = ?, ' +
+          'x_folder_name = COALESCE(?, x_folder_name) WHERE tweet_id = ?'
+      )
+      .run(input.vaultPath, input.xFolderName ?? null, input.tweetId);
+  }
+
+  /**
+   * JSON エクスポート用に bookmarks 全行を読み出す。
+   * `x_bookmarks_json_export.ts` が `<vault>/<base>/.x_bookmarks.json` に書き出すための
+   * read-only スナップショット。`session_id` は Dataview 表示に不要なので返さない。
+   */
+  /**
+   * AI 要約待ち (ai_summary IS NULL かつ tweet_text が空でない) の行を返す。
+   * x_bookmarks_summarizer.ts が sync 末尾でこれをループして埋める。
+   */
+  listPendingAiSummaries(): Pick<BookmarkRow, 'tweet_id' | 'tweet_text' | 'note_tweet_text'>[] {
+    // `IS NOT NULL` だけだと `''` や空白だけの行を毎 sync で取り直して LLM を
+    // 無駄に叩いてしまう (LLM は空文字に対して NULL を返し、その行は再度 pending
+    // のループに戻る = 無限リトライ)。TRIM 後に長さ > 0 を要求して弾く。
+    //
+    // 注意: SQLite の `TRIM(x)` (第二引数省略) は **半角スペース (0x20) しか
+    // 剥がさない**。`\t \n \r` を含む whitespace-only な本文は素通りしてしまうので、
+    // 第二引数で除去対象を明示する。 ` \t\n\r` (32, 9, 10, 13) をカバー。
+    const WS = " \t\n\r";
+    return this.db
+      .prepare(
+        `SELECT tweet_id, tweet_text, note_tweet_text
+           FROM bookmarks
+          WHERE ai_summary IS NULL
+            AND (
+              LENGTH(TRIM(COALESCE(note_tweet_text, ''), ?)) > 0
+              OR LENGTH(TRIM(COALESCE(tweet_text, ''), ?)) > 0
+            )
+          ORDER BY COALESCE(created_at, saved_at) DESC`
+      )
+      .all(WS, WS) as Pick<BookmarkRow, 'tweet_id' | 'tweet_text' | 'note_tweet_text'>[];
+  }
+
+  /** 単一 tweet の ai_summary を更新 (NULL で消去も可能)。 */
+  setAiSummary(tweetId: string, summary: string | null): void {
+    this.db
+      .prepare('UPDATE bookmarks SET ai_summary = ? WHERE tweet_id = ?')
+      .run(summary, tweetId);
+  }
+
+  /**
+   * 全行の ai_summary を NULL に戻す。`--x-resummarize-all` 用。
+   * 戻り値は影響行数。
+   */
+  clearAllAiSummaries(): number {
+    const info = this.db.prepare('UPDATE bookmarks SET ai_summary = NULL').run();
+    return info.changes;
+  }
+
+  listBookmarksForExport(): BookmarkRow[] {
+    return this.db
+      .prepare(
+        `SELECT tweet_id, url, author, tweet_text, note_tweet_text, created_at,
+                x_folder_name, vault_path, saved_at, added_at, ai_summary,
+                engagement_likes, engagement_retweets, engagement_replies
+           FROM bookmarks
+          ORDER BY COALESCE(created_at, saved_at) DESC`
+      )
+      .all() as BookmarkRow[];
   }
 
   getFolderCounts(): { folder: string; count: number }[] {

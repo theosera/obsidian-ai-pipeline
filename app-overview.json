@@ -1,0 +1,242 @@
+{
+  "version": 1,
+  "generatedAt": "2026-05-15",
+  "schemaNote": "Hand-maintained metadata. Keep in sync with README + CLAUDE.md when adding modules / CLI flags / data stores.",
+
+  "pipelineStages": [
+    {
+      "order": 0,
+      "name": "Sync Phase (X bookmarks only)",
+      "module": "x_session_sync.ts",
+      "summary": "X 側 folder と Vault 側 _session.json を突き合わせ、drift (新規 / 削除 / 移動 / .md 再 bind) を解消。`--no-sync` で抑止可"
+    },
+    {
+      "order": 1,
+      "name": "入力構築 (Input)",
+      "module": "pipeline/input_onetab.ts / pipeline/input_x_bookmarks.ts",
+      "summary": "OneTab .txt パース or X API フェッチ → ParsedEntry[]"
+    },
+    {
+      "order": 2,
+      "name": "実行前確認",
+      "module": "pipeline/runner.ts::confirmBeforeRun",
+      "summary": "件数・レポート出力先を表示 → ユーザー [y/n]"
+    },
+    {
+      "order": 3,
+      "name": "並行 fetch/extract/classify",
+      "module": "pipeline/processor.ts",
+      "summary": "fetcher (Playwright) → extractor (Readability + Turndown) → classifier (Fast + Smart Pass)"
+    },
+    {
+      "order": 4,
+      "name": "Router phase",
+      "module": "router.ts",
+      "summary": "閾値判定 (QUARTERLY=10 / MONTHLY=20) で /YYYY-Qn または /YYYY-MM サブフォルダを付与"
+    },
+    {
+      "order": 5,
+      "name": "レポート生成 + 対話レビュー",
+      "module": "pipeline/report.ts + pipeline/interactive.ts",
+      "summary": "分類結果 .md を生成 → ユーザー [y/e/q] で承認 / 個別修正 / 中止。X bookmark は SQLite + group MD、非 X は per-tweet .md で永続化"
+    }
+  ],
+
+  "cliCommands": [
+    { "flag": "--config", "category": "setup", "description": "設定ウィザード (provider / model / Vault root)" },
+    { "flag": "--dry-run", "category": "modifier", "description": "Vault 書き込み・DB upsert・group MD 再生成を全てスキップ" },
+    { "flag": "--sync-rules", "category": "maintenance", "description": "snippets/_分析コンテキスト/*.xml → folder_rules.json 同期のみ実行" },
+    { "flag": "--x-auth", "category": "x-bookmarks", "description": "X OAuth 2.0 PKCE 認可サーバを起動して x_tokens.json を取得" },
+    { "flag": "--x-bookmarks", "category": "x-bookmarks", "description": "X API v2 で全フォルダのブックマークを自動取込" },
+    { "flag": "--x-pick", "category": "x-bookmarks", "description": "Stage 1 (フォルダ一覧表示) → 対話選択 → Stage 2 (本文取得)。--x-bookmarks を含意" },
+    { "flag": "--x-sync-folders", "category": "x-bookmarks", "description": "Sync Phase だけ実行 (Vault 再編後 / orphan AI 判定のみ走らせたい場合)" },
+    { "flag": "--no-sync", "category": "x-bookmarks", "description": "X bookmarks コマンドの Sync Phase を抑止 (cron 等で速度優先)" },
+    { "flag": "--x-limit=N", "category": "x-bookmarks", "description": "X 取得件数上限" },
+    { "flag": "--x-migrate-legacy", "category": "x-bookmarks", "description": "旧 Clippings/X-Bookmarks/ → _Archived/ への一度きり移行" },
+    { "flag": "--x-derive-rules", "category": "x-bookmarks", "description": "vault 構造から x_forced_parents.json を自動推定 (.bak 残し)" },
+    { "flag": "--x-resummarize-all", "category": "x-bookmarks", "description": "AI 要約を全件再生成 (--x-bookmarks と併用、モデル/プロンプト変更後の opt-in)" },
+    { "flag": "--x-summary-reconfig", "category": "x-bookmarks", "description": "X 要約 provider / model を再選択するウィザード (--x-bookmarks と併用)" },
+    { "flag": "--hands-on=<folder>", "category": "x-bookmarks", "description": "X ブックマーク DB を素材に Claude Code CLI でハンズオン .md を生成" },
+    { "flag": "--since=YYYY-MM-DD", "category": "modifier", "description": "--hands-on の対象期間起点" },
+    { "flag": "--rescue <report>", "category": "recovery", "description": "中断したレポートから API コスト $0 で処理を再開" }
+  ],
+
+  "modules": [
+    { "path": "index.ts", "group": "entry", "role": "エントリポイント / モード dispatch / ライフサイクル管理", "key": true },
+    { "path": "cli.ts", "group": "entry", "role": "CLI 引数パース (ParsedCliArgs)", "key": true },
+    { "path": "config.ts", "group": "entry", "role": "pipeline_config.json 永続化 + 設定ウィザード + Vault root 解決" },
+    { "path": "types.ts", "group": "entry", "role": "共通型定義 (ArticleData / ProcessingResult / ClassificationResult / XSummaryConfig 等)" },
+
+    { "path": "pipeline/runner.ts", "group": "pipeline", "role": "6 ステージのフロー制御 (Sync → Input → Confirm → Process → Router → Review)", "key": true },
+    { "path": "pipeline/processor.ts", "group": "pipeline", "role": "並行 fetch/extract/classify の orchestrator" },
+    { "path": "pipeline/interactive.ts", "group": "pipeline", "role": "[y/e/q] レビューループ + saveApprovedResults (dry-run 整合性)" },
+    { "path": "pipeline/input_onetab.ts", "group": "pipeline", "role": "OneTab .txt のパース → ParsedEntry[]" },
+    { "path": "pipeline/input_x_bookmarks.ts", "group": "pipeline", "role": "X API → ApiBookmark[] → ParsedEntry[] へのアダプタ (session_id 注入 + folder mapping)" },
+    { "path": "pipeline/policy.ts", "group": "pipeline", "role": "evaluatePolicy: サイト単位の skip / review / auto 判定" },
+    { "path": "pipeline/prompt.ts", "group": "pipeline", "role": "readline ラッパ (askQuestion / closePrompt / EOF 検知)" },
+    { "path": "pipeline/report.ts", "group": "pipeline", "role": "分類結果レポート .md の生成" },
+    { "path": "pipeline/types.ts", "group": "pipeline", "role": "pipeline 内部型 (ParsedEntry / FailureRecord 等)" },
+
+    { "path": "fetcher.ts", "group": "fetch-extract", "role": "Playwright によるヘッドレスフェッチ (SPA / 動的ページ対応)" },
+    { "path": "extractor.ts", "group": "fetch-extract", "role": "Readability + Turndown による本文抽出 → Markdown" },
+
+    { "path": "classifier.ts", "group": "ai", "role": "2 段階 AI 分類 (Fast Pass + Smart Pass エスカレーション) / askAIText" },
+    { "path": "router.ts", "group": "ai", "role": "公開日 + 記事数閾値による動的フォルダルーティング" },
+    { "path": "sync-rules.ts", "group": "ai", "role": "snippets → folder_rules 自動同期" },
+    { "path": "storage.ts", "group": "io", "role": "Vault 保存 (7 段階パストラバーサル防御 + dry-run 対応 + getKnownUrls)", "key": true },
+
+    { "path": "x_bookmarks_api.ts", "group": "x-bookmarks", "role": "X API v2 ラッパ (OAuth + folders index → tweets hydrate 2 段)", "key": true },
+    { "path": "x_auth_server.ts", "group": "x-bookmarks", "role": "OAuth 2.0 PKCE 認可サーバ (--x-auth)" },
+    { "path": "x_bookmarks_db.ts", "group": "x-bookmarks", "role": "SQLite キャッシュ (bookmarks / folder_sessions テーブル + migration)" },
+    { "path": "x_bookmarks_json_export.ts", "group": "x-bookmarks", "role": ".x_bookmarks.json への Dataview 互換エクスポート" },
+    { "path": "x_bookmarks_summarizer.ts", "group": "x-bookmarks", "role": "AI 要約 (200 字日本語、cloud / local 切替)" },
+    { "path": "x_folder_invariant.ts", "group": "x-bookmarks", "role": "Folder-count invariant チェック (X distinct folder 数 == Vault リーフ数)" },
+    { "path": "x_folder_mapper.ts", "group": "x-bookmarks", "role": "X フォルダ名 → Vault 階層パス (Tier 1: forced / Tier 2: approved / Tier 3: dynamic)" },
+    { "path": "x_folder_tree.ts", "group": "x-bookmarks", "role": "--x-pick 用 2 階層 Tree ビルダ + ASCII レンダラ" },
+    { "path": "x_group_page_template.ts", "group": "x-bookmarks", "role": "dataviewjs テーブル付き group MD テンプレ" },
+    { "path": "x_group_page_writer.ts", "group": "x-bookmarks", "role": "group MD の sentinel-bounded 書き換え (idempotent)" },
+    { "path": "x_interactive_picker.ts", "group": "x-bookmarks", "role": "--x-pick 用 番号パーサ + 対話ループ" },
+    { "path": "x_migrate_legacy.ts", "group": "x-bookmarks", "role": "旧パス Clippings/X-Bookmarks/ → _Archived/ ワンショット移行" },
+    { "path": "x_rule_deriver.ts", "group": "x-bookmarks", "role": "vault 構造から x_forced_parents.json を自動推定" },
+    { "path": "x_session_ai.ts", "group": "x-bookmarks", "role": "orphan_on_x の AI 判定ループ (Claude / local LLM)" },
+    { "path": "x_session_registry.ts", "group": "x-bookmarks", "role": "UUID session_id レジストリ (DB + _session.json marker)" },
+    { "path": "x_session_sync.ts", "group": "x-bookmarks", "role": "Sync Phase 本体 (4 軸 drift 検出)", "key": true },
+    { "path": "x_video_frames.ts", "group": "x-bookmarks", "role": "動画キーフレーム抽出 (ffmpeg + X_VIDEO_FRAMES=true opt-in)" },
+
+    { "path": "hands_on_generator.ts", "group": "post-process", "role": "X ブックマーク DB → Claude CLI でハンズオン .md 生成" },
+    { "path": "merge-articles.ts", "group": "post-process", "role": "記事マージユーティリティ" },
+    { "path": "rescue-from-report.ts", "group": "post-process", "role": "中断したレポートから処理を再開 (API コスト $0)" },
+    { "path": "fix_agentic_move.ts", "group": "maintenance", "role": "AI 移動ミスのリカバリ" },
+    { "path": "reorganize_agents.ts", "group": "maintenance", "role": "Agent フォルダの再編成" },
+
+    { "path": "test_runner.ts", "group": "test", "role": "テスト集約ランナー (security / classifier / router / storage / x_bookmarks)" }
+  ],
+
+  "moduleGroups": [
+    { "id": "entry", "label": "Entry / CLI", "description": "起動と引数パース" },
+    { "id": "pipeline", "label": "Pipeline core", "description": "6 ステージのオーケストレーション" },
+    { "id": "fetch-extract", "label": "Fetch + Extract", "description": "Web ページ取得と本文抽出" },
+    { "id": "ai", "label": "AI 分類 + ルーティング", "description": "2 段階分類 + 動的フォルダ昇格" },
+    { "id": "io", "label": "I/O 層", "description": "Vault 保存とパス防御" },
+    { "id": "x-bookmarks", "label": "X bookmarks", "description": "X API 連携・session 追跡・group ページ生成" },
+    { "id": "post-process", "label": "ポストプロセス", "description": "ハンズオン生成 / 中断再開 / マージ" },
+    { "id": "maintenance", "label": "メンテナンス", "description": "リカバリ / 移行ユーティリティ" },
+    { "id": "test", "label": "テスト", "description": "テストランナーとスイート" }
+  ],
+
+  "dataStores": [
+    {
+      "name": "x_bookmarks.db",
+      "location": "<vault>/__skills/pipeline/",
+      "type": "sqlite",
+      "tables": [
+        { "name": "bookmarks", "purpose": "tweet メタキャッシュ (tweet_id PK, url, session_id, ai_summary, added_at, saved_at, engagement_*)" },
+        { "name": "folder_sessions", "purpose": "X folder ↔ Vault folder の永続セッション (session_id PK, x_folder_id UNIQUE, vault_path, status)" }
+      ],
+      "gitignored": true
+    },
+    {
+      "name": "x_tokens.json",
+      "location": "<vault>/__skills/pipeline/",
+      "type": "json",
+      "purpose": "X OAuth access_token + refresh_token",
+      "gitignored": true,
+      "sensitive": true
+    },
+    {
+      "name": "pipeline_config.json",
+      "location": "<repo root>",
+      "type": "json",
+      "purpose": "AI provider / model / Vault root / xSummary 設定",
+      "gitignored": true,
+      "sensitive": true
+    },
+    {
+      "name": "folder_rules.json",
+      "location": "<repo root>",
+      "type": "json",
+      "purpose": "フォルダ昇格ルール (quarterly / monthly thresholds)"
+    },
+    {
+      "name": "x_forced_parents.json",
+      "location": "<vault>/__skills/pipeline/",
+      "type": "json",
+      "purpose": "X フォルダ名 → 親フォルダ強制マッピングのキーワードリスト"
+    },
+    {
+      "name": "x_folder_mapping.json",
+      "location": "<vault>/__skills/pipeline/",
+      "type": "json",
+      "purpose": "承認済みの個別フォルダ名 → Vault 階層パスマッピング"
+    },
+    {
+      "name": ".x_bookmarks.json",
+      "location": "<vault>/X_Bookmarks/",
+      "type": "json",
+      "purpose": "Dataview 互換のテーブル view 用エクスポート (re-generated every sync)"
+    },
+    {
+      "name": "_session.json",
+      "location": "<vault>/X_Bookmarks/<folder>/",
+      "type": "json",
+      "purpose": "Vault フォルダ単位の session_id マーカー (移動追跡)"
+    },
+    {
+      "name": ".md (X bookmark group page)",
+      "location": "<vault>/X_Bookmarks/<group>/<group>.md",
+      "type": "markdown",
+      "purpose": "dataviewjs テーブル + sentinel-bounded 自動生成領域 + ユーザー prose"
+    },
+    {
+      "name": ".md (clipping)",
+      "location": "<vault>/Clippings/...",
+      "type": "markdown",
+      "purpose": "OneTab / Hatena / RSS 由来の non-X 記事 (1 記事 = 1 ファイル)"
+    }
+  ],
+
+  "envVars": [
+    { "name": "VAULT_ROOT", "scope": "global", "description": "Obsidian Vault 絶対パス (pipeline_config.json で代替可)" },
+    { "name": "X_CLIENT_ID", "scope": "x-bookmarks", "description": "X Developer App の Client ID", "required": true },
+    { "name": "X_CLIENT_SECRET", "scope": "x-bookmarks", "description": "X Developer App の Client Secret (Confidential Client のみ)" },
+    { "name": "X_REDIRECT_URI", "scope": "x-bookmarks", "description": "OAuth redirect URI (デフォルト http://localhost:3737/auth/callback)" },
+    { "name": "X_AUTH_PORT", "scope": "x-bookmarks", "description": "OAuth 認可サーバのポート (デフォルト 3737)" },
+    { "name": "X_BOOKMARKS_FOLDER", "scope": "x-bookmarks", "description": "X bookmark の出力ベースフォルダ (デフォルト X_Bookmarks)" },
+    { "name": "X_VIDEO_FRAMES", "scope": "x-bookmarks", "description": "true で動画キーフレーム抽出を有効化 (要 ffmpeg)" },
+    { "name": "X_SESSION_AI_BIN", "scope": "x-bookmarks", "description": "orphan 判定 AI のバイナリ (デフォルト claude)" },
+    { "name": "X_SESSION_AI_DISABLE", "scope": "x-bookmarks", "description": "true で AI 判定を無効化し常に keep 推奨" },
+    { "name": "X_SESSION_AI_TIMEOUT_MS", "scope": "x-bookmarks", "description": "AI 応答待ち上限 (デフォルト 60000)" }
+  ],
+
+  "keyConcepts": [
+    {
+      "name": "session_id (UUID)",
+      "description": "X folder ↔ Vault folder の永続的な紐付け。X 側 rename / 削除や Vault 側再編で folder ID / パスが変わっても同一 session を維持。3 層保持 (DB / _session.json / .md frontmatter)"
+    },
+    {
+      "name": "5-tier フォルダグルーピング",
+      "description": "Tier 1=forced (頻度優先) / Tier 2=approved mapping / Tier 3=dynamic 共通キーワード検出 / Tier 4=orphan / Tier 5=unfiled"
+    },
+    {
+      "name": "2 段階 AI 分類",
+      "description": "Fast Pass (Haiku / local LLM) で既存フォルダへ高速分類 → confidence < 0.7 で Smart Pass (Sonnet / GPT-4o) にエスカレーション"
+    },
+    {
+      "name": "Dataview group page",
+      "description": "1 フォルダ = 1 .md (dataviewjs テーブル) で SQLite から動的にツイートを表示。1 ツイート 1 .md は廃止 (2026-05 アーキ変更)"
+    },
+    {
+      "name": "Sync Phase の 4 軸 drift",
+      "description": "(1) X 側新規 folder / (2) X 側削除 folder (AI 判定) / (3) Vault folder 移動 / (4) .md ファイル単位の移動 (frontmatter session_id ベースで再 bind)"
+    },
+    {
+      "name": "7 段階パストラバーサル防御",
+      "description": "URL デコード迂回 / 絶対パス拒否 / Unicode NFC 正規化 / .. 即時拒否 / symlink 解決検証 等。AI 出力パスは ensureSafePath で必ず通る"
+    }
+  ],
+
+  "experimentNote": {
+    "title": "X bookmarks 対照実験 (Claude vs Codex)",
+    "description": "Claude 側 (root flat) と Codex 側 (apps/* + packages/core workspace) の 2 つの独立実装が共存。import graph は交わらず、出力先 / OAuth port / レポート名で衝突回避。共通設定は x_forced_parents.json と x_folder_mapping.json のみ"
+  }
+}
