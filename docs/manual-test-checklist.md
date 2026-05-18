@@ -5,6 +5,9 @@
 実 X 認可・実 Obsidian vault・各種プラグイン・API キー・`ffmpeg`・Claude Code CLI・
 対話プロンプトなどが必要な項目が対象です。
 
+掲載しているのは現行 `cli.ts` で**実装済みのコマンド・フラグのみ**です
+（`--config` / `--dry-run` / `--sync-rules` / `--x-auth` / `--x-bookmarks` /
+`--x-pick` / `--x-limit=N` / `--hands-on=<folder>` / `--since=YYYY-MM-DD`）。
 基本は `--dry-run` / `--x-limit` で小さく確認してから本番、を推奨します。
 
 ---
@@ -19,89 +22,56 @@
 - [ ] access_token 失効後、他コマンドが refresh_token で自動更新される
 - [ ] refresh_token も失効した場合は `--x-auth` で再認証できる
 
-## 2. X ブックマーク差分同期（`--x-bookmarks`）
+## 2. X ブックマーク取込（`--x-bookmarks`）
 
-- [ ] **前提**: 認証済み、Obsidian vault に Dataview プラグイン導入済み
-- [ ] `pnpm start -- --x-bookmarks --x-limit=20 --dry-run` で書き込みなし確認
-- [ ] `--dry-run` を外し `<vault>/X_Bookmarks/<フォルダ名>/<group>.md` が
-      1 グループ 1 枚で生成される
-- [ ] `.x_bookmarks.json` と SQLite `x_bookmarks.db` が生成される
-- [ ] 2 回目実行で既知ツイートがスキップされ差分のみ取得
-      （既知 3 連続でページング打ち切り）
-- [ ] フォルダ数保存則の警告が出ない
+- [ ] **前提**: 認証済み（手順 1 完了）
+- [ ] `pnpm start -- --x-bookmarks --x-limit=20 --dry-run` で書き込みが
+      発生しないことを確認
+- [ ] `--dry-run` を外すと X ブックマークフォルダ配下に `.md` が生成される
+- [ ] SQLite `<vault>/__skills/pipeline/x_bookmarks.db` が生成・更新される
+- [ ] 2 回目実行で既知ツイートがスキップされ差分のみ取得される
 
 ## 3. 対話選択モード（`--x-pick`）
 
-- [ ] `pnpm start -- --x-pick --x-limit=10 --dry-run` で Stage 1 の 2 階層 Tree
-      表示（強制親 / 動的検出 / その他 / `_Unfiled`）
+- [ ] `pnpm start -- --x-pick --x-limit=10 --dry-run` で Stage 1 のフォルダ
+      Tree 表示（強制親 / 動的検出 / その他 / `_Unfiled`）
 - [ ] Stage 2 の選択構文 `1` / `1.2` / `1,3.1` / `1-3` / `all` が
       想定どおり対象を絞る
-- [ ] `--no-sync` で Sync Phase が抑止される
+- [ ] `q` で中止できる
 
-## 4. Sync Phase / Folder Session 追跡
+## 4. 強制親・フォルダマッピング設定
 
-- [ ] `pnpm start -- --x-sync-folders` で手動 Sync が走る
-- [ ] Obsidian でフォルダを移動 → 次回 sync で `_session.json` 経由で追従
-- [ ] `.md` を別フォルダへドラッグ → frontmatter `session_id` で移動検知・再 bind
-- [ ] X 側でフォルダ削除 → `orphan_on_x` の AI 判定プロンプト（`k`/`a`/`s`）が表示
-- [ ] `k`=保持 / `a`=`_archived/` 退避 / `s`=スキップの各挙動を確認
-- [ ] `X_SESSION_AI_DISABLE=true` で AI 非呼び出し・常に keep 推奨になる
+- [ ] `<vault>/__skills/pipeline/x_forced_parents.json` にキーワードを追加
+- [ ] `--x-pick` の Stage 1 Tree でそのキーワードが親フォルダとして
+      階層化される（単語境界マッチ・部分一致は不可）
+- [ ] `<vault>/__skills/pipeline/x_folder_mapping.json` に明示マップを追記
+      → 該当フォルダが指定の親パス配下に配置される
 
-## 5. AI 要約（provider ウィザード）
-
-- [ ] **前提**: 選んだ provider の API キー（cloud）または LM Studio 起動（local）
-- [ ] 初回 `--x-bookmarks` で要約ウィザードが起動し、選択が
-      `pipeline_config.json::xSummary` に永続化される
-- [ ] `--x-summary-reconfig` で再選択できる
-- [ ] `--x-resummarize-all` で全要約クリア＆再生成（0 件でも実行、
-      `--dry-run` 併用時はスキップ）
-- [ ] 出力が日本語・200 グラフェム以内・改行なし
-- [ ] local=batch / cloud=inline にモード自動切替
-
-## 6. 強制親・マッピング（`--x-derive-rules`）
-
-- [ ] `pnpm start -- --x-derive-rules` で現 vault 構造から
-      `x_forced_parents.json` の提案 diff が出力される
-- [ ] `.bak` が残り、y/N 確認が効く
-- [ ] `x_folder_mapping.json` 追記後に階層化が反映される
-
-## 7. レガシー移行（`--x-migrate-legacy`）
-
-- [ ] 旧 `Clippings/X-Bookmarks/` がある環境で
-      `pnpm start -- --x-migrate-legacy` を実行
-- [ ] 一度きりで `_Archived/` へ退避される
-- [ ] 再実行で二重移動しない
-
-## 8. 動画キーフレーム抽出（opt-in）
+## 5. 動画キーフレーム抽出（opt-in）
 
 - [ ] **前提**: `ffmpeg -version` が通る
 - [ ] `X_VIDEO_FRAMES=true pnpm start -- --x-bookmarks --x-limit=5` を実行
 - [ ] 動画付きツイートで `_attachments/x-bookmarks/<post_id>/frame-NN.webp` が
-      4 枚生成され `## キーフレーム` セクションが埋め込まれる
-- [ ] 60 秒超 / 30MB 超の動画は skip される
+      抽出され `## キーフレーム` セクションが埋め込まれる
+- [ ] 長尺 / 大容量の動画は skip される
 - [ ] ffmpeg 不在時は警告のみで本文保存は継続する
+- [ ] `X_VIDEO_FRAMES` 未設定時は本セクションが生成されない
 
-## 9. Dataview テーブルビュー（Obsidian 上）
-
-- [ ] グループ `<group>.md` を Obsidian で開き HTML `<table>` が描画される
-- [ ] 列ヘッダクリックで昇順 / 降順ソートが切り替わる
-- [ ] デフォルトソートが `added_at` desc
-- [ ] sentinel 外のユーザー文章が再生成で保持される
-
-## 10. ハンズオン生成（`--hands-on`）
+## 6. ハンズオン生成（`--hands-on`）
 
 - [ ] **前提**: Claude Code CLI が OAuth 認証済み（`claude --version`）、
-      対象フォルダが取り込み済み
-- [ ] `pnpm start -- --hands-on="X_Bookmarks/Claude Code" --dry-run` で
-      `.prompt.txt` を確認
-- [ ] `--dry-run` を外し `Permanent Note/09_X_Bookmarks/<folder>-YYYYMMDD.md`
+      対象フォルダが `--x-bookmarks` 実行で `x_bookmarks.db` に投入済み
+- [ ] `pnpm start -- --hands-on="Clippings/X-Bookmarks/Claude Code" --dry-run`
+      で `<出力先>.prompt.txt` のみが出力される（`claude` は呼ばれない）
+- [ ] `--dry-run` を外すと
+      `<vault>/__skills/context/ハンズオン/<folder-slug>-YYYYMMDD.md`
       が生成される
-- [ ] `--since` で期間絞り込みが効く
+- [ ] `--since=YYYY-MM-DD` で `created_at` 前方一致の期間絞り込みが効く
 
-## 11. その他の対話 / 補助コマンド
+## 7. その他の補助コマンド
 
-- [ ] `pnpm run sync-rules` で `folder_rules.json` に昇格マージ（降格なし）
-- [ ] `pnpm start -- --rescue "<レポート>"` で API コスト 0 で再開できる
-- [ ] 分析後の `Command [y/e/q]:` で `y`（全承認）/ `e`（パス修正）/
-      `q`（書込なし）の各挙動
-- [ ] `pnpm exec tsx merge-articles.ts "<dir>"` でナレッジ統合が走る
+- [ ] `pnpm run sync-rules` で最新 `snippets_YYYYMMDD.xml` から
+      `folder_rules.json` に昇格マージされる（昇格のみ・降格なし）
+- [ ] 通常パイプライン（OneTab 取込）の分析後 `Command [y/e/q]:` で
+      `y`（全承認）/ `e`（パス修正）/ `q`（書込なし）の各挙動
+- [ ] `pnpm exec tsx merge-articles.ts "<dir>"` で複数記事のナレッジ統合が走る
