@@ -134,7 +134,7 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
 
   let mm_dd = today.substring(5); // Default to today's MM-DD
   // Use frontmatter date logic if it matches YYYY-MM-DD
-  const createdMatch = today.match(/^\d{4}-(\d{2}-\d{2})$/);
+  const createdMatch = articleData.date?.match(/^\d{4}-(\d{2}-\d{2})$/);
   if (createdMatch) {
       mm_dd = createdMatch[1];
   }
@@ -144,8 +144,26 @@ export function saveMarkdown(articleData: ArticleData, folderPath: string): stri
     .replace(/[\/\\*?:""<>|／＼]/g, '')      // パス区切り文字（半角・全角）を除去
     .trim()
     .slice(0, 100);
-  const fileName = `${safeTitle}_${mm_dd}.md`;
+  const baseName = `${safeTitle}_${mm_dd}`;
+  let fileName = `${baseName}.md`;
+  // ファイル名衝突時は連番サフィックス (_2, _3, …) を付与し、別記事の上書きを避ける。
+  for (let seq = 2; seq < 1000 && fs.existsSync(path.join(fullDirPath, fileName)); seq++) {
+    fileName = `${baseName}_${seq}.md`;
+  }
+  // 連番が上限に達した場合、最後の候補が空きとは限らないため再検証する。
+  if (fs.existsSync(path.join(fullDirPath, fileName))) {
+    throw new Error(`[Storage] ファイル名の空きが見つかりません: "${baseName}"`);
+  }
   const filePath = path.join(fullDirPath, fileName);
+
+  // 保存直前の最終防御: ensureSafePath / safeTitle で前段防御済みだが、
+  // 書き込み座標で resolve + プレフィックス検証をもう一段噛ませる
+  // (defense-in-depth)。ここで Vault 外を指していたら上流防御の破綻なので
+  // フォールバックせず即座に throw する。
+  const resolvedFilePath = path.resolve(filePath);
+  if (!resolvedFilePath.startsWith(path.resolve(vaultRoot) + path.sep)) {
+    throw new Error(`[Security] 保存先が Vault 外を指しています: "${resolvedFilePath}"`);
+  }
 
   const pubDate = articleData.date || '';
   const siteLink = articleData.siteName ? `\n  - "[[${escapeFrontmatter(articleData.siteName)}]]"` : '';
@@ -179,8 +197,8 @@ tags:
 `;
 
   const body = frontmatter + (articleData.content || '');
-  fs.writeFileSync(filePath, body, 'utf8');
-  return filePath;
+  fs.writeFileSync(resolvedFilePath, body, 'utf8');
+  return resolvedFilePath;
 }
 
 export function escapeFrontmatter(str: string): string {
