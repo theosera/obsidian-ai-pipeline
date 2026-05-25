@@ -95,9 +95,12 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
     reportType: parsed.frontmatter.report_type,
   });
 
-  // 3. 各 vulnerability を upsert
-  for (const vuln of parsed.vulnerabilities) {
-    db.upsertVulnerability({
+  // 3. vulnerability セットを「最新パース結果」と完全同期 (upsert + 削除).
+  //    同レポートの再 ingest で名前が消えた / 訂正された vuln が stale で
+  //    残らないよう、1 トランザクションで delete-not-in + upsert する。
+  db.syncReportVulnerabilities(
+    reportId,
+    parsed.vulnerabilities.map((vuln) => ({
       reportId,
       name: vuln.name,
       category: vuln.category,
@@ -109,8 +112,8 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
       technicalSummary: vuln.technical_summary,
       businessImpact: vuln.business_impact,
       mitigations: vuln.mitigations,
-    });
-  }
+    }))
+  );
 
   // 4. JSON エクスポート + index ページ再生成
   const jsonPath = exportThreatReportsJson({ db, vaultRoot });

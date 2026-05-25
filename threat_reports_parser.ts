@@ -371,7 +371,8 @@ function parseDetailBlocks(body: string): Map<string, { technical: string | null
 
 /**
  * Markdown レポートをパースする。
- * frontmatter 契約違反は ContractError を throw (caller で catch して ingest 中止)。
+ * frontmatter 契約違反 / 比較表の format drift で 0 件しか抽出できなかった場合は
+ * ContractError を throw (caller で catch して ingest 中止)。
  */
 export function parseReport(markdown: string): ParsedReport {
   const { yamlText, body } = splitFrontmatter(markdown);
@@ -389,6 +390,17 @@ export function parseReport(markdown: string): ParsedReport {
       business_impact: detail?.business ?? null,
       mitigations: detail?.mitigations ?? null,
     });
+  }
+
+  // 比較表 (## 1. ニュース・脆弱性リスト) のフォーマットが崩れて 0 件抽出になった
+  // ケースを silently 成功させてしまうと、ingest は走るが DB / index に何も
+  // 残らない false-positive ingest になる。週次のフォーマット変動は contract
+  // 違反として明示拒否し、人手レビューを促す。
+  if (vulnerabilities.length === 0) {
+    throw new ContractError(
+      '比較表から脆弱性を 1 件も抽出できませんでした (parser drift / 0-row report の疑い)。' +
+      '本文の "## 1. ニュース・脆弱性リスト" 表形式を確認してください。'
+    );
   }
 
   return { frontmatter, body, vulnerabilities };

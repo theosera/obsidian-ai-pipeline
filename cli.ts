@@ -95,6 +95,13 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     xLimit = parsed;
   }
 
+  const ingestThreatReportValue = extractValue(ingestThreatReportArg);
+  if (ingestThreatReportValue !== undefined && ingestThreatReportValue === '') {
+    console.error('Invalid --ingest-threat-report value: "" (expected non-empty path)');
+    printUsage();
+    process.exit(1);
+  }
+
   const xPick = argv.includes('--x-pick');
   const xSyncFolders = argv.includes('--x-sync-folders');
 
@@ -113,7 +120,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     xResummarizeAll: argv.includes('--x-resummarize-all'),
     xSummaryReconfig: argv.includes('--x-summary-reconfig'),
     xLimit,
-    ingestThreatReport: extractValue(ingestThreatReportArg),
+    ingestThreatReport: ingestThreatReportValue,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
     // 位置引数 (非 flag): 先頭のみ採用

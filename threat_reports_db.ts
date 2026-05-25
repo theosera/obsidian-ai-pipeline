@@ -214,6 +214,75 @@ export class ThreatReportsDb {
     });
   }
 
+  /**
+   * 同一 report の vulnerability セットを「最新パース結果」と完全同期する。
+   *
+   * 動作:
+   *   1. `inputs` 各行を `upsertVulnerability` と同じ ON CONFLICT 規則で UPSERT
+   *      (= 内容更新 / `ai_relevance_note` 保護)
+   *   2. **同じ report_id で `inputs` に存在しない name の行を DELETE**
+   *      → parser 改良で名前が変わった / 元レポートが訂正された場合に古い行が
+   *      stale で残るのを防ぐ
+   *   3. 1-2 を 1 トランザクションで実行 (途中失敗時は元の状態にロールバック)
+   *
+   * `inputs` が空配列なら report 内の vulnerability を全削除する (ただし parser
+   * 側で 0 件は ContractError として弾くので通常パスでは起きない)。
+   */
+  syncReportVulnerabilities(reportId: string, inputs: VulnerabilityUpsertInput[]): void {
+    const now = new Date().toISOString();
+    const upsertStmt = this.db.prepare(`
+      INSERT INTO vulnerabilities (
+        report_id, name, category, affected, impact, exploitability, risk_score,
+        status, technical_summary, business_impact, mitigations, ingested_at
+      ) VALUES (
+        @report_id, @name, @category, @affected, @impact, @exploitability, @risk_score,
+        @status, @technical_summary, @business_impact, @mitigations, @ingested_at
+      )
+      ON CONFLICT(report_id, name) DO UPDATE SET
+        category = excluded.category,
+        affected = excluded.affected,
+        impact = excluded.impact,
+        exploitability = excluded.exploitability,
+        risk_score = excluded.risk_score,
+        status = excluded.status,
+        technical_summary = excluded.technical_summary,
+        business_impact = excluded.business_impact,
+        mitigations = excluded.mitigations
+        -- ai_relevance_note は触らない (人手コメント保護)
+    `);
+
+    const tx = this.db.transaction((rows: VulnerabilityUpsertInput[]) => {
+      for (const input of rows) {
+        upsertStmt.run({
+          report_id: input.reportId,
+          name: input.name,
+          category: input.category ?? null,
+          affected: input.affected ?? null,
+          impact: input.impact ?? null,
+          exploitability: input.exploitability ?? null,
+          risk_score: input.riskScore ?? null,
+          status: input.status ?? null,
+          technical_summary: input.technicalSummary ?? null,
+          business_impact: input.businessImpact ?? null,
+          mitigations: input.mitigations ?? null,
+          ingested_at: now,
+        });
+      }
+      // DELETE は NOT IN で。空配列のときは「全削除」になるよう placeholder を
+      // 1 つだけ NULL にして必ず外す。
+      if (rows.length === 0) {
+        this.db.prepare('DELETE FROM vulnerabilities WHERE report_id = ?').run(reportId);
+      } else {
+        const placeholders = rows.map(() => '?').join(', ');
+        const params: (string | null)[] = [reportId, ...rows.map((r) => r.name)];
+        this.db
+          .prepare(`DELETE FROM vulnerabilities WHERE report_id = ? AND name NOT IN (${placeholders})`)
+          .run(...params);
+      }
+    });
+    tx(inputs);
+  }
+
   setRelevanceNote(reportId: string, name: string, note: string | null): void {
     this.db.prepare(
       'UPDATE vulnerabilities SET ai_relevance_note = ? WHERE report_id = ? AND name = ?'

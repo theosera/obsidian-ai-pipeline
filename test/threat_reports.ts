@@ -25,6 +25,7 @@ import { ThreatReportsDb } from '../threat_reports_db';
 import { ingestThreatReport } from '../threat_reports_ingest';
 import { buildExportPayload } from '../threat_reports_json_export';
 import { renderAutoBlock, replaceAutoBlock } from '../threat_reports_index_writer';
+import { getThreatReportsBaseFolder } from '../threat_reports_config';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 const SAMPLE_FRONTMATTER = [
@@ -159,6 +160,21 @@ export async function run(): Promise<TestSuiteResult> {
     assert.ok(v.mitigations?.includes('Cross-Agent ACL'));
   });
 
+  runner.test('parseReport: 比較表が 0 行なら ContractError (format drift 防御)', () => {
+    // 週次メール本文の format が壊れて表行が読めなくなったケース。silently
+    // 0 件 ingest 成功してしまうと DB / index に何も残らず気づきにくいため、
+    // 明示的に contract 違反として弾く。
+    const driftReport = SAMPLE_FRONTMATTER + `
+
+## 1. ニュース・脆弱性リスト
+
+(本文 format が崩れて表として認識できないテキストだけ)
+
+## 2. 個別詳細
+`;
+    assert.throws(() => parseReport(driftReport), ContractError);
+  });
+
   runner.test('parseReport: 詳細が無い vuln も基本情報のみで含める', () => {
     // Section 1 に名前があるが Section 2 に詳細が無い vuln を作る
     const partial = SAMPLE_FRONTMATTER + `
@@ -232,6 +248,62 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     const vulns = db.listVulnerabilities('r1');
     assert.strictEqual(vulns.length, 1, '再 upsert で行は増えない');
     assert.strictEqual(vulns[0].risk_score, 9.0, '内容は最新で上書き');
+    db.close();
+  });
+
+  runner.test('syncReportVulnerabilities: 最新セットに無い旧 vuln を DELETE する', () => {
+    // parser 改良 or レポート訂正で前回あった名前が消えるケース。古い行が
+    // stale で残ると JSON / index に「もう無い vuln」が出続けるため、同期で
+    // 落とす。
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({
+      id: 'r1', source: 'test', receivedAt: '2026-05-25T00:00:00Z',
+      weekOf: '2026-05-25', rawMarkdown: '',
+    });
+    // 初回 ingest: 3 件
+    db.syncReportVulnerabilities('r1', [
+      { reportId: 'r1', name: 'A', riskScore: 1.0 },
+      { reportId: 'r1', name: 'B', riskScore: 2.0 },
+      { reportId: 'r1', name: 'C', riskScore: 3.0 },
+    ]);
+    assert.strictEqual(db.listVulnerabilities('r1').length, 3);
+    // 再 ingest: B が消え、A と C のみ
+    db.syncReportVulnerabilities('r1', [
+      { reportId: 'r1', name: 'A', riskScore: 1.5 },
+      { reportId: 'r1', name: 'C', riskScore: 3.5 },
+    ]);
+    const names = db.listVulnerabilities('r1').map(v => v.name).sort();
+    assert.deepStrictEqual(names, ['A', 'C'], 'B は最新セットに無いので DELETE される');
+    db.close();
+  });
+
+  runner.test('syncReportVulnerabilities: ai_relevance_note は同期でも保護される', () => {
+    // 同名 vuln の再 ingest では人手コメントが残る。
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({
+      id: 'r1', source: 'test', receivedAt: '2026-05-25T00:00:00Z',
+      weekOf: '2026-05-25', rawMarkdown: '',
+    });
+    db.syncReportVulnerabilities('r1', [{ reportId: 'r1', name: 'V', riskScore: 5.0 }]);
+    db.setRelevanceNote('r1', 'V', 'note kept');
+    db.syncReportVulnerabilities('r1', [{ reportId: 'r1', name: 'V', riskScore: 9.0 }]);
+    const v = db.listVulnerabilities('r1')[0];
+    assert.strictEqual(v.ai_relevance_note, 'note kept', 'sync 経由でも note は触らない');
+    assert.strictEqual(v.risk_score, 9.0, 'risk_score は更新される');
+    db.close();
+  });
+
+  runner.test('syncReportVulnerabilities: 別 report_id の vuln は同期対象外', () => {
+    // 同期は report_id でスコープされている。別レポートの行を巻き込まないこと。
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-05-18', rawMarkdown: '' });
+    db.upsertVulnerability({ reportId: 'r1', name: 'X', riskScore: 1.0 });
+    db.upsertVulnerability({ reportId: 'r2', name: 'X', riskScore: 2.0 });
+    // r1 を空セットで同期 (= r1 の X を消す) しても r2 の X は残る
+    db.syncReportVulnerabilities('r1', []);
+    assert.strictEqual(db.listVulnerabilities('r1').length, 0);
+    assert.strictEqual(db.listVulnerabilities('r2').length, 1, '別 report は影響を受けない');
     db.close();
   });
 
@@ -363,6 +435,60 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
       else { delete process.env.VAULT_ROOT; }
       fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  runner.section('threat_reports_config: path-traversal 防御');
+
+  runner.test('getThreatReportsBaseFolder: env 未設定なら DEFAULT を返す', () => {
+    const prev = process.env.THREAT_REPORTS_FOLDER;
+    delete process.env.THREAT_REPORTS_FOLDER;
+    try {
+      assert.strictEqual(getThreatReportsBaseFolder(), 'Permanent Note/10_Threat_Reports');
+    } finally {
+      if (prev !== undefined) process.env.THREAT_REPORTS_FOLDER = prev;
+    }
+  });
+
+  runner.test('getThreatReportsBaseFolder: 正常な相対パスは正規化して返す', () => {
+    const prev = process.env.THREAT_REPORTS_FOLDER;
+    process.env.THREAT_REPORTS_FOLDER = 'Foo/Bar/Baz';
+    try {
+      assert.strictEqual(getThreatReportsBaseFolder(), 'Foo/Bar/Baz');
+    } finally {
+      if (prev !== undefined) process.env.THREAT_REPORTS_FOLDER = prev;
+      else delete process.env.THREAT_REPORTS_FOLDER;
+    }
+  });
+
+  runner.test('getThreatReportsBaseFolder: 絶対パスは拒否して DEFAULT へフォールバック', () => {
+    // path.join(vaultRoot, '/etc/passwd') = '/etc/passwd' になり Vault 外に
+    // 書き出してしまう。絶対パスは弾く。
+    const prev = process.env.THREAT_REPORTS_FOLDER;
+    const prevWarn = console.warn;
+    console.warn = () => {};
+    try {
+      process.env.THREAT_REPORTS_FOLDER = '/etc/passwd';
+      assert.strictEqual(getThreatReportsBaseFolder(), 'Permanent Note/10_Threat_Reports');
+    } finally {
+      console.warn = prevWarn;
+      if (prev !== undefined) process.env.THREAT_REPORTS_FOLDER = prev;
+      else delete process.env.THREAT_REPORTS_FOLDER;
+    }
+  });
+
+  runner.test('getThreatReportsBaseFolder: traversal (..) は拒否', () => {
+    // '../../../etc' を許すと vault の外に書き出せてしまう。
+    const prev = process.env.THREAT_REPORTS_FOLDER;
+    const prevWarn = console.warn;
+    console.warn = () => {};
+    try {
+      process.env.THREAT_REPORTS_FOLDER = 'Foo/../../../etc';
+      assert.strictEqual(getThreatReportsBaseFolder(), 'Permanent Note/10_Threat_Reports');
+    } finally {
+      console.warn = prevWarn;
+      if (prev !== undefined) process.env.THREAT_REPORTS_FOLDER = prev;
+      else delete process.env.THREAT_REPORTS_FOLDER;
     }
   });
 
