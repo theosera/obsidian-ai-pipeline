@@ -120,14 +120,21 @@ export function sanitizeForLLM(text: string): string {
  * バッチプロンプト全体で偽の区切り行とアイテムヘッダーが追加されたように見え、
  * LLM が件数を取り違える / 攻撃者制御の文面を別アイテムの要約として返す。
  *
- * 対策: 各本文から「区切り行 `\n---+\n`」と「行頭の `[数字]` ヘッダー」を
+ * 対策: 各本文から「区切り行 (3+ dash)」と「行頭の `[数字]` ヘッダー」を
  * 全角相当に置換し、構造的に boundary injection を不可能にする。
  * 全角への置換は人間が読む `tweet_text` 列には影響しない (本関数の出力は
  * LLM プロンプトにのみ使う一時値)。
+ *
+ * dash 行のマッチには lookbehind/lookahead で **text 先頭 / 末尾も含む**
+ * boundary を判定する: 元実装の `/\n-{3,}\n/g` は本文先頭の "---\n..."
+ * (改行が前置しないパターン) を取り逃がし、後段で prefix される `[N]\n`
+ * の `\n` と結合して偽の `\n---\n` 区切りを再構築できてしまう
+ * (Codex P1 指摘)。lookaround は文字を consume しないので、隣接する
+ * dash 行も 1 pass で全て中和できる。
  */
 export function escapeBatchItemBoundary(text: string): string {
   return text
-    .replace(/\n-{3,}\n/g, '\n— \n')
+    .replace(/(?<=^|\n)-{3,}(?=\n|$)/g, '— ')
     .replace(/^\[(\d+)\]/gm, '［$1］');
 }
 
