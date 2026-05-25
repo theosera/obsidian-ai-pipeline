@@ -113,3 +113,84 @@ mcp__github__disable_pr_auto_merge(pullNumber=XX)
 ## 一人開発で review approval が要件になる場合
 
 `required_pull_request_reviews.required_approving_review_count=0` にしてあるので、approve 不要で自分で merge できる。もし approve 必須にしたい場合は `1` に上げる（ただしその場合 1 人開発だと別アカウントが必要になる）。
+
+## CI/CD サプライチェーン防御 (Megalodon 2026-05 を受けて)
+
+StepSecurity が 2026-05-22 に公開した Megalodon キャンペーンは、約 5,500 の
+公開リポジトリに対し `.github/workflows/` を直接書き換え、CI 実行時に
+Secrets / OIDC トークン / クラウド資格情報を窃取する d-PPE (Direct Poisoned
+Pipeline Execution) 攻撃だった。本リポは現状 IoC 該当なしだが、再発防止と
+してリポジトリ側で以下を**手動で**有効化する。
+
+### 必須: CODEOWNERS レビュー強制
+
+リポジトリ直下 `.github/CODEOWNERS` で `.github/` 配下の owner を `@theosera`
+に固定済み (本コミットで追加)。これを **branch protection rules で強制** する。
+
+`Settings` → `Branches` → `main` rule → 以下を有効化:
+
+| 項目 | 値 |
+|---|---|
+| **Require review from Code Owners** | ✅ |
+
+これで `.github/` 配下を変更した PR は必ず `@theosera` の approve が必要に
+なり、worker bot / 自動化からの workflow 改ざんを機械的に弾ける。
+
+`gh api` で一括設定する場合 (既存の protection に重ねがけ):
+
+```bash
+gh api \
+  --method PUT \
+  -H "Accept: application/vnd.github+json" \
+  /repos/theosera/obsidian-ai-pipeline/branches/main/protection \
+  -F 'required_status_checks[strict]=true' \
+  -f 'required_status_checks[contexts][]=Pipeline (root) - test & typecheck' \
+  -f 'required_status_checks[contexts][]=Chrome extension - build & typecheck' \
+  -F 'enforce_admins=false' \
+  -F 'required_pull_request_reviews[required_approving_review_count]=1' \
+  -F 'required_pull_request_reviews[require_code_owner_reviews]=true' \
+  -F 'required_pull_request_reviews[require_last_push_approval]=false' \
+  -F 'required_conversation_resolution=true' \
+  -F 'allow_force_pushes=false' \
+  -F 'allow_deletions=false' \
+  -F 'restrictions=null'
+```
+
+`required_approving_review_count` を `0 → 1` にすると一人開発でも CODEOWNERS
+を強制できるが、自分の PR を自分では approve できない点に注意 (Claude が
+代わりに approve する運用にするか、CODEOWNERS だけ強制して
+`required_approving_review_count=0` に保つかは選択肢)。
+
+### 第三者 Action は SHA pin (本コミットで対応済)
+
+`ci.yml` 内の third-party Action (`pnpm/action-setup`) を major タグ
+(`@v5`) から SHA に固定済み。`@v5` タグが書き換わっても追従しない。
+`actions/*` (GitHub 公式) は major タグのまま — 相対リスクが低く、
+GitHub 公式の改ざんは Megalodon とは別次元の事案になるため。
+
+更新時は Dependabot が SHA 差し替え PR を出すので、その PR では
+`@theosera` がレビューして merge する (CODEOWNERS 経由)。
+
+### `id-token: write` は引き続き付与しない
+
+本リポは OIDC で外部クラウドに認証する必要がないため `id-token: write` を
+**1 つの job にも付けない**。仮に workflow を改ざんされても、攻撃者が
+クラウド資格情報を発行する経路がない。今後 OIDC 連携が必要になった場合は、
+**該当 1 job だけに付与** し、必ず `permissions:` を job スコープで
+明示する。
+
+### audit コマンド (定期実行推奨)
+
+```bash
+# Megalodon IoC
+grep -RInE 'name:\s*(SysDiag|Optimize-Build)' .github/workflows
+git log --all --format='%H %ae %s' \
+  | grep -E 'build-bot@github-ci\.com|ci-pipeline@actions-bot\.com'
+grep -RInE '216\.126\.225\.129' . --exclude-dir=node_modules --exclude-dir=.git
+
+# Workflow 内の suspicious payload
+grep -RInE 'base64\s+-d|base64\s+--decode|curl .* \| (sh|bash)' .github/workflows
+
+# id-token 付与の確認 (本リポは付与しない方針)
+grep -RInE 'id-token' .github/
+```

@@ -25,7 +25,10 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        # Third-party action — Megalodon 級の supply-chain 防御として SHA pin。
+        # `@v5` タグが書き換わっても追従しない。バージョン更新は明示的に SHA を
+        # 差し替える運用 (Dependabot が PR で提案する)。
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288  # v5.0.0
         # packageManager フィールド (pnpm@10.33.0) から自動検出
 
       - name: Setup Node.js
@@ -72,7 +75,8 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        # Third-party action — SHA pin (理由は pipeline job 側のコメント参照)。
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288  # v5.0.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
