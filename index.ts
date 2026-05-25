@@ -92,6 +92,39 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // --ingest-threat-report: 週次 LLM 脅威レポート (.md) を取り込み DB + JSON + index 更新
+  // Gmail からの取得は Claude Code (MCP) 側の責務。本 CLI はファイル入力に専念。
+  if (args.ingestThreatReport) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { ingestThreatReport, ContractError } = await import('./threat_reports_ingest');
+      try {
+        const result = await ingestThreatReport({ filePath: args.ingestThreatReport });
+        console.log('\n🛡️  脅威レポート取込完了:');
+        console.log(`   report_id:        ${result.reportId}`);
+        console.log(`   week_of:          ${result.weekOf}`);
+        console.log(`   vulnerabilities:  ${result.vulnerabilities}`);
+        console.log(`   raw archive:      ${result.archivedPath ?? '(skip)'}`);
+        console.log(`   JSON:             ${result.jsonPath}`);
+        console.log(`   index:            ${result.indexPath}`);
+      } catch (inner: unknown) {
+        // 契約違反 (frontmatter 不正) は I/O エラーと区別して明示する
+        if (inner instanceof ContractError) {
+          console.error(`❌ 脅威レポート契約違反: ${inner.message}`);
+          console.error('   想定外スキーマのメールを誤取込しないよう ingest を中止しました。');
+          process.exit(2);
+        }
+        throw inner;
+      }
+    } catch (e: any) {
+      console.error(`❌ 脅威レポート取込失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
   // --x-derive-rules: vault 構造を解析して x_forced_parents.json を自動推定 (.bak 残し)
   if (args.xDeriveRules) {
     if (!config) config = await runConfigWizard(askQuestion);

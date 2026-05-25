@@ -10,6 +10,7 @@ import { run as runClassifier } from './test/classifier';
 import { run as runRouter } from './test/router';
 import { run as runStorage } from './test/storage';
 import { run as runXBookmarks } from './test/x_bookmarks';
+import { run as runThreatReports } from './test/threat_reports';
 
 interface Suite {
   name: string;
@@ -23,6 +24,7 @@ const suites: Suite[] = [
   { name: 'Router', run: runRouter },
   { name: 'Storage', run: runStorage },
   { name: 'XBookmarks', run: runXBookmarks },
+  { name: 'ThreatReports', run: runThreatReports },
 ];
 
 let totalPassed = 0;
