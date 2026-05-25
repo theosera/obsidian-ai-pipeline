@@ -293,6 +293,25 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     db.close();
   });
 
+  runner.test('syncReportVulnerabilities: input.reportId の不一致は throw (cross-report write 防御)', () => {
+    // 呼び出し側が誤って別 report の input を混ぜたとき、UPSERT が一方の
+    // report に書き DELETE が別の report から行う cross-report write を
+    // transaction 内で必ず検出する。
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-05-18', rawMarkdown: '' });
+    assert.throws(() => {
+      db.syncReportVulnerabilities('r1', [
+        { reportId: 'r1', name: 'A', riskScore: 1.0 },
+        { reportId: 'r2', name: 'B', riskScore: 2.0 }, // r1 への sync 呼び出しに r2 の input
+      ]);
+    }, /reportId mismatch/);
+    // transaction は throw でロールバック → r1 にも r2 にも何も書き込まれない
+    assert.strictEqual(db.listVulnerabilities('r1').length, 0);
+    assert.strictEqual(db.listVulnerabilities('r2').length, 0);
+    db.close();
+  });
+
   runner.test('syncReportVulnerabilities: 別 report_id の vuln は同期対象外', () => {
     // 同期は report_id でスコープされている。別レポートの行を巻き込まないこと。
     const db = new ThreatReportsDb(':memory:');

@@ -253,8 +253,16 @@ export class ThreatReportsDb {
 
     const tx = this.db.transaction((rows: VulnerabilityUpsertInput[]) => {
       for (const input of rows) {
+        // Guard: caller が誤って別 report の input を混ぜた場合に「UPSERT は
+        // input.reportId へ、DELETE は scope の reportId からのみ」という
+        // cross-report write が起きる。整合性を transaction 内で強制する。
+        if (input.reportId !== reportId) {
+          throw new Error(
+            `syncReportVulnerabilities reportId mismatch: expected "${reportId}", got "${input.reportId}" (name="${input.name}")`
+          );
+        }
         upsertStmt.run({
-          report_id: input.reportId,
+          report_id: reportId,
           name: input.name,
           category: input.category ?? null,
           affected: input.affected ?? null,
