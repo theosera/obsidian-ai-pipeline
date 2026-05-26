@@ -55,6 +55,12 @@ export interface ParsedCliArgs {
    * 走るので、このフラグは「保存済みの設定を変えたい」とき専用。
    */
   xSummaryReconfig: boolean;
+  /**
+   * 脅威レポート (.md) を取り込む。
+   * `--ingest-threat-report=<path>` 形式。Claude Code が Gmail MCP で取得した
+   * frontmatter 付き md を Vault 配下に書き出してからこの CLI を呼ぶ責務分担。
+   */
+  ingestThreatReport?: string;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -65,6 +71,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
   const handsOnArg = argv.find((a) => a.startsWith('--hands-on='));
   const sinceArg = argv.find((a) => a.startsWith('--since='));
   const xLimitArg = argv.find((a) => a.startsWith('--x-limit='));
+  const ingestThreatReportArg = argv.find((a) => a.startsWith('--ingest-threat-report='));
 
   // --key=value 形式の値抽出。= 以降を再結合するのは、--hands-on=Foo=Bar のように
   // 値側に = が含まれる可能性を考慮している (Windows パス等)。
@@ -88,6 +95,13 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     xLimit = parsed;
   }
 
+  const ingestThreatReportValue = extractValue(ingestThreatReportArg);
+  if (ingestThreatReportValue !== undefined && ingestThreatReportValue === '') {
+    console.error('Invalid --ingest-threat-report value: "" (expected non-empty path)');
+    printUsage();
+    process.exit(1);
+  }
+
   const xPick = argv.includes('--x-pick');
   const xSyncFolders = argv.includes('--x-sync-folders');
 
@@ -106,6 +120,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     xResummarizeAll: argv.includes('--x-resummarize-all'),
     xSummaryReconfig: argv.includes('--x-summary-reconfig'),
     xLimit,
+    ingestThreatReport: ingestThreatReportValue,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
     // 位置引数 (非 flag): 先頭のみ採用
@@ -126,4 +141,5 @@ export function printUsage(): void {
   console.error('  tsx index.ts --x-auth                (X OAuth 初回認証)');
   console.error('  tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
   console.error('  tsx index.ts --sync-rules            (snippets→folder_rules 同期のみ)');
+  console.error('  tsx index.ts --ingest-threat-report=<path>.md  (週次 LLM 脅威レポート取込)');
 }
