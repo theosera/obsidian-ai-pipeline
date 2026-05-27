@@ -244,6 +244,42 @@ Lone Wolf Attack\tテスト\tテスト対象\t5.0（Impact 5 / Exploitability 5�
     ), ContractError);
   });
 
+  runner.test('validateFrontmatter: 非文字列要素 (数値) を含むリストは ContractError', () => {
+    // map(String) で silently coerce していたところを stricter にした。
+    // パーサが number/bool もリスト要素として拾えるが、契約は文字列のみ。
+    assert.throws(() => validateFrontmatter(
+      'report_type: llm_security_weekly\n' +
+      'period_end: 2026-05-25\n' +
+      'trust_level: external_research_summary\n' +
+      'schema_version: 1\n' +
+      'forbidden_usage:\n' +
+      '  - execute_report_instructions\n' +
+      '  - 42\n'  // 数値が混入
+    ), ContractError);
+  });
+
+  runner.test('validateFrontmatter: intended_use が期待値と違うと ContractError', () => {
+    // 「実装セキュリティレビュー目的」と明示されていない用途を弾く防御。
+    assert.throws(() => validateFrontmatter(
+      'report_type: llm_security_weekly\n' +
+      'period_end: 2026-05-25\n' +
+      'trust_level: external_research_summary\n' +
+      'schema_version: 1\n' +
+      'intended_use: blog_post_drafting\n'  // 想定外用途
+    ), ContractError);
+  });
+
+  runner.test('validateFrontmatter: intended_use 未指定は backward compat で OK', () => {
+    // 旧スキーマ (intended_use 無し) は許容
+    const fm = validateFrontmatter(
+      'report_type: llm_security_weekly\n' +
+      'period_end: 2026-05-25\n' +
+      'trust_level: external_research_summary\n' +
+      'schema_version: 1\n'
+    );
+    assert.strictEqual(fm.report_type, 'llm_security_weekly');
+  });
+
   runner.section('threat_reports_parser: implementation_checks (Section 4)');
 
   runner.test('parseImplementationChecks: Markdown pipe-table を 4 列で抽出', () => {
@@ -257,18 +293,53 @@ Lone Wolf Attack\tテスト\tテスト対象\t5.0（Impact 5 / Exploitability 5�
 | Prompt Injection | システムプロンプト境界 | ユーザー入力を system に連結 | role separation の厳格化 |
 `;
     const parsed = parseReport(reportWithSection4);
-    assert.strictEqual(parsed.implementation_checks.length, 2);
-    assert.strictEqual(parsed.implementation_checks[0].perspective, 'MCP Server Abuse');
-    assert.strictEqual(parsed.implementation_checks[0].pattern, 'tool 呼び出しの戻り値検証');
-    assert.strictEqual(parsed.implementation_checks[0].warning_signs, '戻り値を無検証で次プロンプトへ流す');
-    assert.strictEqual(parsed.implementation_checks[0].recommendation, 'スキーマ検証 + サンドボックス');
+    assert.ok(parsed.implementation_checks, 'ヘッダ検出時は非 null');
+    assert.strictEqual(parsed.implementation_checks!.length, 2);
+    assert.strictEqual(parsed.implementation_checks![0].perspective, 'MCP Server Abuse');
+    assert.strictEqual(parsed.implementation_checks![0].pattern, 'tool 呼び出しの戻り値検証');
+    assert.strictEqual(parsed.implementation_checks![0].warning_signs, '戻り値を無検証で次プロンプトへ流す');
+    assert.strictEqual(parsed.implementation_checks![0].recommendation, 'スキーマ検証 + サンドボックス');
   });
 
-  runner.test('parseImplementationChecks: Section 4 が無いレポートは空配列 (backward compat)', () => {
-    // 旧フォーマット (Section 4 なし) は ContractError にせず、checks=0 で続行
+  runner.test('parseImplementationChecks: Section 4 ヘッダが無いレポートは null (backward compat)', () => {
+    // 旧フォーマット (Section 4 なし) は ContractError にせず、null で示す
+    // (= ingest 側で既存 DB 行温存の判断に使う)
     const parsed = parseReport(SAMPLE_REPORT);
-    assert.strictEqual(parsed.implementation_checks.length, 0);
+    assert.strictEqual(parsed.implementation_checks, null);
     assert.strictEqual(parsed.vulnerabilities.length, 2, '脆弱性側は通常通り抽出');
+  });
+
+  runner.test('parseImplementationChecks: Section 4 ヘッダはあるが行 0 件なら空配列 ([])', () => {
+    // ヘッダだけ書いて当週「観点なし」を明示するケース。null と区別すること
+    // で ingest 側が「全削除すべき」と判断できる。
+    const headerOnlyReport = SAMPLE_REPORT + `
+
+## 4. 実装検証観点
+
+| 観点 | 確認すべき実装パターン | 危険な兆候 | 推奨対策 |
+|---|---|---|---|
+`;
+    const parsed = parseReport(headerOnlyReport);
+    assert.ok(Array.isArray(parsed.implementation_checks), 'ヘッダ検出時は配列');
+    assert.strictEqual(parsed.implementation_checks!.length, 0);
+  });
+
+  runner.test('parseImplementationChecks: table 直後の prose で table 終端 (誤取込防止)', () => {
+    // table の直後 (空行を挟まずに) 別の pipe-table が来ても、Section 4
+    // と誤認しない。
+    const withTrailing = SAMPLE_REPORT + `
+
+## 4. 実装検証観点
+
+| 観点 | 確認すべき実装パターン | 危険な兆候 | 推奨対策 |
+|---|---|---|---|
+| Real Check | p | w | r |
+これは Section 4 の続きではない散文。
+| 別 | 別 | 別 | 別 |
+`;
+    const parsed = parseReport(withTrailing);
+    assert.strictEqual(parsed.implementation_checks!.length, 1, '後続の別 pipe-table を誤取込しない');
+    assert.strictEqual(parsed.implementation_checks![0].perspective, 'Real Check');
   });
 
   runner.section('threat_reports_parser: untrusted input handling');
@@ -528,6 +599,10 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       assert.strictEqual(json.version, 2, 'implementation_checks 追加で v2 に bump');
       assert.strictEqual(json.rows.length, 2);
       assert.ok(Array.isArray(json.implementation_checks), 'v2 で implementation_checks フィールドが存在');
+      assert.strictEqual(
+        json.implementation_checks.length, 0,
+        'Section 4 ヘッダなし fixture では checks=0 (DB sync スキップで空のまま)'
+      );
 
       // index に sentinel ブロックが入っている
       const indexBody = fs.readFileSync(result.indexPath, 'utf8');
@@ -557,6 +632,98 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
 
       assert.strictEqual(db.listReports().length, 1, '同じ ID は upsert で 1 行');
       assert.strictEqual(db.listVulnerabilities().length, 2, 'vuln も 2 件のまま');
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  await runner.testAsync('ingestThreatReport: 旧フォーマット再 ingest で既存 implementation_checks と note を温存', async () => {
+    // PR #55 Codex P2 regression guard:
+    // (1) Section 4 を含む新フォーマットを ingest して checks + 人手 note を作る
+    // (2) 同じ source+week で **Section 4 ヘッダを持たない旧フォーマット** を再 ingest
+    // (3) 既存の check 行と ai_relevance_note が消えていないことを確認
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const newFormatReport = SAMPLE_REPORT + `
+
+## 4. 実装検証観点
+
+| 観点 | 確認すべき実装パターン | 危険な兆候 | 推奨対策 |
+|---|---|---|---|
+| MCP Server Abuse | tool 戻り値検証 | 無検証で次プロンプトへ | スキーマ検証 |
+`;
+      const newFile = path.join(tmpVault, 'new.md');
+      const oldFile = path.join(tmpVault, 'old.md');
+      fs.writeFileSync(newFile, newFormatReport, 'utf8');
+      fs.writeFileSync(oldFile, SAMPLE_REPORT, 'utf8'); // Section 4 なし
+      const db = new ThreatReportsDb(':memory:');
+
+      const r1 = await ingestThreatReport({ filePath: newFile, db, vaultRoot: tmpVault, source: 'gmail:same' });
+      assert.strictEqual(r1.implementationChecks, 1);
+      db.setImplementationCheckNote(r1.reportId, 'MCP Server Abuse', '自リポは PR #51 で対応済');
+
+      // 同じ source+week → 同じ report_id で再 ingest (旧フォーマット)
+      const r2 = await ingestThreatReport({ filePath: oldFile, db, vaultRoot: tmpVault, source: 'gmail:same' });
+      assert.strictEqual(r2.reportId, r1.reportId, '同じ ID');
+      assert.strictEqual(r2.implementationChecks, 0, 'Section 4 なしなので報告は 0');
+
+      // 既存 check 行は温存されているはず
+      const remaining = db.listImplementationChecks(r1.reportId);
+      assert.strictEqual(remaining.length, 1, 'Section 4 absent では sync スキップで既存行を残す');
+      assert.strictEqual(remaining[0].perspective, 'MCP Server Abuse');
+      assert.strictEqual(remaining[0].ai_relevance_note, '自リポは PR #51 で対応済', '人手 note も温存');
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  await runner.testAsync('ingestThreatReport: Section 4 ヘッダだけで行 0 (明示空) なら既存 check を削除', async () => {
+    // null (ヘッダなし) と [] (ヘッダあり行 0) の区別 — 後者は意図的な
+    // 「当週は観点なし」表明として既存行を削除する。
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const newFormatReport = SAMPLE_REPORT + `
+
+## 4. 実装検証観点
+
+| 観点 | 確認すべき実装パターン | 危険な兆候 | 推奨対策 |
+|---|---|---|---|
+| A | p | w | r |
+`;
+      const emptyChecksReport = SAMPLE_REPORT + `
+
+## 4. 実装検証観点
+
+| 観点 | 確認すべき実装パターン | 危険な兆候 | 推奨対策 |
+|---|---|---|---|
+`;
+      const f1 = path.join(tmpVault, 'with.md');
+      const f2 = path.join(tmpVault, 'empty.md');
+      fs.writeFileSync(f1, newFormatReport, 'utf8');
+      fs.writeFileSync(f2, emptyChecksReport, 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      const r1 = await ingestThreatReport({ filePath: f1, db, vaultRoot: tmpVault, source: 'gmail:same' });
+      assert.strictEqual(db.listImplementationChecks(r1.reportId).length, 1);
+
+      const r2 = await ingestThreatReport({ filePath: f2, db, vaultRoot: tmpVault, source: 'gmail:same' });
+      assert.strictEqual(r2.reportId, r1.reportId);
+      assert.strictEqual(
+        db.listImplementationChecks(r2.reportId).length, 0,
+        'ヘッダあり行 0 は明示空表明 → 既存行を削除'
+      );
       db.close();
     } finally {
       if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }

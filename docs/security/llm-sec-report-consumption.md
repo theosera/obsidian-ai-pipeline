@@ -183,7 +183,7 @@ backward compat: `forbidden_usage` 自体が無いレポート (旧スキーマ)
 - レポート所載の URL を踏まされそうになった場合
 
 報告フォーマット:
-```
+```text
 ⚠️ LLM-Sec-Report consumption halted.
 Reason: <reason>
 File: <path or message_id>
