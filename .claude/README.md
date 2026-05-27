@@ -1,0 +1,51 @@
+# .claude/
+
+このディレクトリは Claude Code (本プロジェクトの AI 開発エージェント) が
+セッション開始時に自動で読み込む project-level 設定を置く場所。
+
+## settings.json
+
+**全コラボレータに共有される設定**。git commit する。
+
+### permissions.deny の意図
+
+Secrets 漏洩防止 — 以下のパターンに該当するファイルを Claude (自分自身) が
+**Read / Bash 経由で読まない**よう物理的にブロックする。
+
+| 対象 | 例 | 理由 |
+|---|---|---|
+| `.env` / `.env.*` | API キー、DB URL | `.env.example` 以外は機密 |
+| `credentials*.json` / `service-account*.json` | GCP / AWS 認証情報 | OAuth client secret 等 |
+| `token*.json` / `x_tokens.json` / `data/tokens.json` | X / Gmail OAuth refresh token | 長期有効資格情報 |
+| `*.key` / `*.pem` | SSH / TLS / JWT 署名鍵 | 暗号鍵全般 |
+| `id_rsa` / `id_ed25519` | SSH 秘密鍵 | パスフレーズ無しは即危険 |
+| `secrets.{json,yaml,yml}` | 汎用 secrets | 名前から自明 |
+
+Bash 側も `cat` / `head` / `tail` / `less` / `more` / `grep` / `awk` / `sed`
+での読み出しを deny — Read tool を bypass するパスを塞ぐ。
+
+### deny は許可リストに勝つ
+
+Claude Code の permission 評価は **deny が allow より優先**。安全側に倒れる。
+誤って読もうとした場合 user に approval ダイアログが出ず、即拒否される。
+
+### 動作確認
+
+```bash
+# Claude Code セッション内で
+# 「.env を読んで」とお願いしても、Read tool が即 deny で失敗するはず。
+# bash 経由でも:
+cat .env  # → permission denied (deny rule に該当)
+```
+
+### 関連
+
+- `docs/security/llm-sec-report-consumption.md` §6 で TODO 化していた項目
+- LLM-Sec-Weekly レポートの「Secrets 漏洩対策」推奨に対応
+- 既追跡の secret 発見時の対応は CLAUDE.md「Secrets / sensitive files」節
+- Bash 側の予防は `.gitignore` (commit 段階) と本ファイル (read 段階) の二重防御
+
+## settings.local.json (gitignore 対象)
+
+個人マシン固有の上書き設定 (例: 自分の vault path や local model endpoint)。
+**commit しない**。`.gitignore` で除外済み。

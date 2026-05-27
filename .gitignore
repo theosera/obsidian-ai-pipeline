@@ -47,6 +47,11 @@ packages/*/node_modules/
 # Allow GitHub Actions workflows (CI)
 !.github/
 !.github/**
+# Allow Claude Code project settings (Secrets deny rules etc.) but keep
+# settings.local.json (per-user overrides) untracked.
+!.claude/
+!.claude/**
+.claude/settings.local.json
 
 # X bookmark workspace artifacts
 !.env.example

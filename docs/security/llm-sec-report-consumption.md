@@ -165,7 +165,7 @@ backward compat: `forbidden_usage` 自体が無いレポート (旧スキーマ)
 | `.github/workflows/*` を CODEOWNERS 管理 | ✅ **完了** (PR #54) | Megalodon 型偽 CI 対策 |
 | third-party Action SHA pin | ✅ **完了** (`pnpm/action-setup@SHA`) | tag 改ざん追従防止 |
 | `id-token: write` を job に付けない | ✅ **完了** (現状 0 付与) | OIDC 経由クラウド資格情報盗難経路を塞ぐ |
-| `.env` / `credentials.json` / `token.json` を Claude に読ませない | ⚠️ **未完了** | Read tool の deny 設定 (`.claude/settings.json`) で対応予定 |
+| `.env` / `credentials.json` / `token.json` を Claude に読ませない | ✅ **完了** (`.claude/settings.json` で Read + Bash 経由読み出しを deny) | Secrets 漏洩対策 — 詳細は `.claude/README.md` |
 | Gmail MCP の対象ラベル固定 | ⚠️ **MCP 側設定** | Gmail 全体を読ませない (本ドキュメントが上位仕様) |
 | レポート取得件数上限 | ⚠️ **runbook 化** | 直近 10 件まで (本ドキュメント §1) |
 
