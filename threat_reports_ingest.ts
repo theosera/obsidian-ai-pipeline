@@ -50,6 +50,7 @@ export interface IngestResult {
   reportId: string;
   weekOf: string;
   vulnerabilities: number;
+  implementationChecks: number;
   archivedPath: string | null;
   jsonPath: string;
   indexPath: string;
@@ -115,7 +116,21 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
     }))
   );
 
-  // 4. JSON エクスポート + index ページ再生成
+  // 4. implementation_checks (Section 4 新形式) も同様に完全同期。
+  //    旧フォーマットのレポートでは parsed.implementation_checks が空配列で
+  //    渡され、結果として何も書かれない (= 副作用なし)。
+  db.syncReportImplementationChecks(
+    reportId,
+    parsed.implementation_checks.map((c) => ({
+      reportId,
+      perspective: c.perspective,
+      pattern: c.pattern,
+      warningSigns: c.warning_signs,
+      recommendation: c.recommendation,
+    }))
+  );
+
+  // 5. JSON エクスポート + index ページ再生成
   const jsonPath = exportThreatReportsJson({ db, vaultRoot });
   const indexPath = regenerateIndexPage({ vaultRoot });
 
@@ -123,6 +138,7 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
     reportId,
     weekOf: parsed.frontmatter.period_end,
     vulnerabilities: parsed.vulnerabilities.length,
+    implementationChecks: parsed.implementation_checks.length,
     archivedPath,
     jsonPath,
     indexPath,

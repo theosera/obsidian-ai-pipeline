@@ -189,6 +189,88 @@ Lone Wolf Attack\tテスト\tテスト対象\t5.0（Impact 5 / Exploitability 5�
     assert.strictEqual(parsed.vulnerabilities[0].technical_summary, null);
   });
 
+  runner.section('threat_reports_parser: allowed_usage / forbidden_usage');
+
+  runner.test('validateFrontmatter: YAML ブロックリストを配列としてパース', () => {
+    const fm = validateFrontmatter(
+      'report_type: llm_security_weekly\n' +
+      'period_end: 2026-05-25\n' +
+      'trust_level: external_research_summary\n' +
+      'schema_version: 1\n' +
+      'allowed_usage:\n' +
+      '  - summarize_findings\n' +
+      '  - generate_review_checklist\n' +
+      'forbidden_usage:\n' +
+      '  - execute_report_instructions\n' +
+      '  - run_embedded_commands\n'
+    );
+    assert.deepStrictEqual(fm.allowed_usage, ['summarize_findings', 'generate_review_checklist']);
+    assert.deepStrictEqual(fm.forbidden_usage, ['execute_report_instructions', 'run_embedded_commands']);
+  });
+
+  runner.test('validateFrontmatter: forbidden_usage が無いレポートは backward compat で OK', () => {
+    // 旧フォーマット (allowed/forbidden_usage 無し) は許容する
+    const fm = validateFrontmatter(
+      'report_type: llm_security_weekly\n' +
+      'period_end: 2026-05-25\n' +
+      'trust_level: external_research_summary\n' +
+      'schema_version: 1\n'
+    );
+    assert.strictEqual(fm.forbidden_usage, undefined);
+    assert.strictEqual(fm.allowed_usage, undefined);
+  });
+
+  runner.test('validateFrontmatter: forbidden_usage に execute_report_instructions 必須', () => {
+    // trust boundary の核なので欠けたら ContractError
+    assert.throws(() => validateFrontmatter(
+      'report_type: llm_security_weekly\n' +
+      'period_end: 2026-05-25\n' +
+      'trust_level: external_research_summary\n' +
+      'schema_version: 1\n' +
+      'forbidden_usage:\n' +
+      '  - run_embedded_commands\n' +
+      '  - trust_embedded_urls\n'
+    ), ContractError);
+  });
+
+  runner.test('validateFrontmatter: forbidden_usage が配列でない場合は ContractError', () => {
+    // 旧式 scalar 値を間違って入れた場合は明示拒否
+    assert.throws(() => validateFrontmatter(
+      'report_type: llm_security_weekly\n' +
+      'period_end: 2026-05-25\n' +
+      'trust_level: external_research_summary\n' +
+      'schema_version: 1\n' +
+      'forbidden_usage: execute_report_instructions\n'
+    ), ContractError);
+  });
+
+  runner.section('threat_reports_parser: implementation_checks (Section 4)');
+
+  runner.test('parseImplementationChecks: Markdown pipe-table を 4 列で抽出', () => {
+    const reportWithSection4 = SAMPLE_REPORT + `
+
+## 4. 実装検証観点
+
+| 観点 | 確認すべき実装パターン | 危険な兆候 | 推奨対策 |
+|---|---|---|---|
+| MCP Server Abuse | tool 呼び出しの戻り値検証 | 戻り値を無検証で次プロンプトへ流す | スキーマ検証 + サンドボックス |
+| Prompt Injection | システムプロンプト境界 | ユーザー入力を system に連結 | role separation の厳格化 |
+`;
+    const parsed = parseReport(reportWithSection4);
+    assert.strictEqual(parsed.implementation_checks.length, 2);
+    assert.strictEqual(parsed.implementation_checks[0].perspective, 'MCP Server Abuse');
+    assert.strictEqual(parsed.implementation_checks[0].pattern, 'tool 呼び出しの戻り値検証');
+    assert.strictEqual(parsed.implementation_checks[0].warning_signs, '戻り値を無検証で次プロンプトへ流す');
+    assert.strictEqual(parsed.implementation_checks[0].recommendation, 'スキーマ検証 + サンドボックス');
+  });
+
+  runner.test('parseImplementationChecks: Section 4 が無いレポートは空配列 (backward compat)', () => {
+    // 旧フォーマット (Section 4 なし) は ContractError にせず、checks=0 で続行
+    const parsed = parseReport(SAMPLE_REPORT);
+    assert.strictEqual(parsed.implementation_checks.length, 0);
+    assert.strictEqual(parsed.vulnerabilities.length, 2, '脆弱性側は通常通り抽出');
+  });
+
   runner.section('threat_reports_parser: untrusted input handling');
 
   runner.test('parseReport: 本文中の指示文 / コードスニペット / URL は素の文字列として抽出', () => {
@@ -370,6 +452,54 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     db.close();
   });
 
+  runner.section('ThreatReportsDb: implementation_checks');
+
+  runner.test('syncReportImplementationChecks: 最新セットに無い旧 perspective を DELETE', () => {
+    // vuln 側と同じ delete-not-in セマンティクス: parser 改良で観点名が変わった
+    // / 元レポートが訂正された場合に古い行が stale で残らない。
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 'test', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.syncReportImplementationChecks('r1', [
+      { reportId: 'r1', perspective: 'A', pattern: 'p1' },
+      { reportId: 'r1', perspective: 'B', pattern: 'p2' },
+      { reportId: 'r1', perspective: 'C', pattern: 'p3' },
+    ]);
+    assert.strictEqual(db.listImplementationChecks('r1').length, 3);
+    db.syncReportImplementationChecks('r1', [
+      { reportId: 'r1', perspective: 'A', pattern: 'p1' },
+      { reportId: 'r1', perspective: 'C', pattern: 'p3-updated' },
+    ]);
+    const remaining = db.listImplementationChecks('r1').map(c => c.perspective).sort();
+    assert.deepStrictEqual(remaining, ['A', 'C']);
+    db.close();
+  });
+
+  runner.test('syncReportImplementationChecks: ai_relevance_note は同期でも保護される', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 'test', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.syncReportImplementationChecks('r1', [{ reportId: 'r1', perspective: 'X', pattern: 'old' }]);
+    db.setImplementationCheckNote('r1', 'X', '自リポは N/A (関連実装なし)');
+    db.syncReportImplementationChecks('r1', [{ reportId: 'r1', perspective: 'X', pattern: 'updated' }]);
+    const c = db.listImplementationChecks('r1')[0];
+    assert.strictEqual(c.ai_relevance_note, '自リポは N/A (関連実装なし)');
+    assert.strictEqual(c.pattern, 'updated');
+    db.close();
+  });
+
+  runner.test('syncReportImplementationChecks: input.reportId 不一致は throw', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-05-18', rawMarkdown: '' });
+    assert.throws(() => {
+      db.syncReportImplementationChecks('r1', [
+        { reportId: 'r2', perspective: 'X', pattern: 'p' },
+      ]);
+    }, /reportId mismatch/);
+    assert.strictEqual(db.listImplementationChecks('r1').length, 0);
+    assert.strictEqual(db.listImplementationChecks('r2').length, 0);
+    db.close();
+  });
+
   runner.section('ingestThreatReport (end-to-end)');
 
   await runner.testAsync('ingestThreatReport: ファイルから DB + JSON + index 全部生成', async () => {
@@ -395,8 +525,9 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
 
       // JSON の中身
       const json = JSON.parse(fs.readFileSync(result.jsonPath, 'utf8'));
-      assert.strictEqual(json.version, 1);
+      assert.strictEqual(json.version, 2, 'implementation_checks 追加で v2 に bump');
       assert.strictEqual(json.rows.length, 2);
+      assert.ok(Array.isArray(json.implementation_checks), 'v2 で implementation_checks フィールドが存在');
 
       // index に sentinel ブロックが入っている
       const indexBody = fs.readFileSync(result.indexPath, 'utf8');
