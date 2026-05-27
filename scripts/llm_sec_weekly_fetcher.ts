@@ -140,13 +140,24 @@ interface ValidatedEnv {
   maxResults: number;
 }
 
+/**
+ * GitHub Actions の `env:` ブロックは未設定 secret も **空文字** として
+ * 注入してくる。`??` は undefined しか捕えないので、`""` がそのまま通って
+ * 「ラベル名が空」「MAX_RESULTS が正整数 regex に失敗」で workflow が
+ * 落ちる罠を避けるため、ここで空文字を undefined に正規化する。
+ */
+export function envOrUndefined(name: string): string | undefined {
+  const v = process.env[name];
+  return v === undefined || v === '' ? undefined : v;
+}
+
 function validateEnv(): ValidatedEnv {
   const required = ['GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'VAULT_ROOT'] as const;
-  const missing = required.filter(k => !process.env[k]);
+  const missing = required.filter(k => !envOrUndefined(k));
   if (missing.length > 0) {
     throw new Error(`必須環境変数が未設定です: ${missing.join(', ')}`);
   }
-  const maxResultsRaw = process.env.LLM_SEC_MAX_RESULTS;
+  const maxResultsRaw = envOrUndefined('LLM_SEC_MAX_RESULTS');
   let maxResults = DEFAULT_MAX_RESULTS;
   if (maxResultsRaw !== undefined) {
     if (!/^[1-9]\d*$/.test(maxResultsRaw)) {
@@ -158,12 +169,12 @@ function validateEnv(): ValidatedEnv {
     }
   }
   return {
-    clientId: process.env.GMAIL_CLIENT_ID!,
-    clientSecret: process.env.GMAIL_CLIENT_SECRET!,
-    refreshToken: process.env.GMAIL_REFRESH_TOKEN!,
-    vaultRoot: process.env.VAULT_ROOT!,
-    labelName: process.env.LLM_SEC_LABEL_NAME ?? DEFAULT_LABEL,
-    processedLabelName: process.env.LLM_SEC_PROCESSED_LABEL_NAME ?? DEFAULT_PROCESSED_LABEL,
+    clientId: envOrUndefined('GMAIL_CLIENT_ID')!,
+    clientSecret: envOrUndefined('GMAIL_CLIENT_SECRET')!,
+    refreshToken: envOrUndefined('GMAIL_REFRESH_TOKEN')!,
+    vaultRoot: envOrUndefined('VAULT_ROOT')!,
+    labelName: envOrUndefined('LLM_SEC_LABEL_NAME') ?? DEFAULT_LABEL,
+    processedLabelName: envOrUndefined('LLM_SEC_PROCESSED_LABEL_NAME') ?? DEFAULT_PROCESSED_LABEL,
     maxResults,
   };
 }

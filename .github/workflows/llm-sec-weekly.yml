@@ -59,6 +59,10 @@ jobs:
       - name: Setup pnpm
         # Third-party action — SHA pin (CI workflow と同 SHA で揃える)。
         uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288  # v5.0.0
+        with:
+          # path: pipeline で checkout しているので workspace root に package.json が
+          # 無く、デフォルトの `./package.json` 自動検出が失敗する。pipeline 側を明示。
+          package_json_file: pipeline/package.json
 
       - name: Setup Node.js
         uses: actions/setup-node@v5

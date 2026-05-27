@@ -16,6 +16,7 @@ import {
   isSafePeriodEnd,
   isSafeRawPath,
   extractPlainTextBody,
+  envOrUndefined,
   PERIOD_END_RE,
 } from '../scripts/llm_sec_weekly_fetcher';
 import type { gmail_v1 } from '@googleapis/gmail';
@@ -186,6 +187,25 @@ export function run(): TestSuiteResult {
       },
     };
     assert.strictEqual(extractPlainTextBody(msg), 'deep plain');
+  });
+
+  t.section('envOrUndefined (空文字 secret injection 防御)');
+
+  t.test('未設定環境変数は undefined', () => {
+    delete process.env.__TEST_LLM_SEC_VAR;
+    assert.strictEqual(envOrUndefined('__TEST_LLM_SEC_VAR'), undefined);
+  });
+
+  t.test('空文字は undefined に正規化 (Actions の未設定 secret injection)', () => {
+    process.env.__TEST_LLM_SEC_VAR = '';
+    assert.strictEqual(envOrUndefined('__TEST_LLM_SEC_VAR'), undefined);
+    delete process.env.__TEST_LLM_SEC_VAR;
+  });
+
+  t.test('非空文字はそのまま返る', () => {
+    process.env.__TEST_LLM_SEC_VAR = 'hello';
+    assert.strictEqual(envOrUndefined('__TEST_LLM_SEC_VAR'), 'hello');
+    delete process.env.__TEST_LLM_SEC_VAR;
   });
 
   t.section('PERIOD_END_RE 形式');
