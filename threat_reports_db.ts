@@ -62,6 +62,24 @@ export interface VulnerabilityRow {
   ingested_at: string;
 }
 
+/**
+ * Section 4 「実装検証観点」(週次レポートの新形式) を表す行。
+ * 1 レポート内で `perspective` (観点) が UNIQUE。
+ *
+ * `ai_relevance_note` は vuln 側と同じ運用 — 人手で「自リポでの対応状況」を
+ * 書き、再 ingest しても上書きされない。
+ */
+export interface ImplementationCheckRow {
+  id: number;
+  report_id: string;
+  perspective: string;
+  pattern: string | null;
+  warning_signs: string | null;
+  recommendation: string | null;
+  ai_relevance_note: string | null;
+  ingested_at: string;
+}
+
 export interface ReportUpsertInput {
   id: string;
   source: string;
@@ -86,6 +104,14 @@ export interface VulnerabilityUpsertInput {
   technicalSummary?: string | null;
   businessImpact?: string | null;
   mitigations?: string | null;
+}
+
+export interface ImplementationCheckUpsertInput {
+  reportId: string;
+  perspective: string;
+  pattern?: string | null;
+  warningSigns?: string | null;
+  recommendation?: string | null;
 }
 
 const SCHEMA = `
@@ -125,6 +151,19 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
 CREATE INDEX IF NOT EXISTS idx_vuln_score ON vulnerabilities(risk_score DESC);
 CREATE INDEX IF NOT EXISTS idx_vuln_category ON vulnerabilities(category);
 CREATE INDEX IF NOT EXISTS idx_vuln_report ON vulnerabilities(report_id);
+
+CREATE TABLE IF NOT EXISTS implementation_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  perspective TEXT NOT NULL,
+  pattern TEXT,
+  warning_signs TEXT,
+  recommendation TEXT,
+  ai_relevance_note TEXT,
+  ingested_at TEXT NOT NULL,
+  UNIQUE(report_id, perspective)
+);
+CREATE INDEX IF NOT EXISTS idx_impl_report ON implementation_checks(report_id);
 `;
 
 export class ThreatReportsDb {
@@ -289,6 +328,82 @@ export class ThreatReportsDb {
       }
     });
     tx(inputs);
+  }
+
+  /**
+   * Section 4 「実装検証観点」を report 単位で完全同期。
+   * vulnerabilities 側の syncReportVulnerabilities と同じ delete-not-in +
+   * upsert + ai_relevance_note 保護のパターン。
+   */
+  syncReportImplementationChecks(reportId: string, inputs: ImplementationCheckUpsertInput[]): void {
+    const now = new Date().toISOString();
+    const upsertStmt = this.db.prepare(`
+      INSERT INTO implementation_checks (
+        report_id, perspective, pattern, warning_signs, recommendation, ingested_at
+      ) VALUES (
+        @report_id, @perspective, @pattern, @warning_signs, @recommendation, @ingested_at
+      )
+      ON CONFLICT(report_id, perspective) DO UPDATE SET
+        pattern = excluded.pattern,
+        warning_signs = excluded.warning_signs,
+        recommendation = excluded.recommendation
+        -- ai_relevance_note は触らない (人手コメント保護)
+    `);
+
+    const tx = this.db.transaction((rows: ImplementationCheckUpsertInput[]) => {
+      for (const input of rows) {
+        if (input.reportId !== reportId) {
+          throw new Error(
+            `syncReportImplementationChecks reportId mismatch: expected "${reportId}", got "${input.reportId}" (perspective="${input.perspective}")`
+          );
+        }
+        upsertStmt.run({
+          report_id: reportId,
+          perspective: input.perspective,
+          pattern: input.pattern ?? null,
+          warning_signs: input.warningSigns ?? null,
+          recommendation: input.recommendation ?? null,
+          ingested_at: now,
+        });
+      }
+      if (rows.length === 0) {
+        this.db.prepare('DELETE FROM implementation_checks WHERE report_id = ?').run(reportId);
+      } else {
+        const placeholders = rows.map(() => '?').join(', ');
+        const params: (string | null)[] = [reportId, ...rows.map((r) => r.perspective)];
+        this.db
+          .prepare(`DELETE FROM implementation_checks WHERE report_id = ? AND perspective NOT IN (${placeholders})`)
+          .run(...params);
+      }
+    });
+    tx(inputs);
+  }
+
+  listImplementationChecks(reportId?: string): ImplementationCheckRow[] {
+    if (reportId) {
+      return this.db.prepare(
+        'SELECT * FROM implementation_checks WHERE report_id = ? ORDER BY perspective ASC'
+      ).all(reportId) as ImplementationCheckRow[];
+    }
+    return this.db.prepare(
+      'SELECT * FROM implementation_checks ORDER BY ingested_at DESC'
+    ).all() as ImplementationCheckRow[];
+  }
+
+  /** Dataview 用にレポート JOIN 済みの全 implementation_check 行を返す。 */
+  listImplementationChecksWithReport(): Array<ImplementationCheckRow & { week_of: string; vault_path: string | null }> {
+    return this.db.prepare(`
+      SELECT c.*, r.week_of, r.vault_path
+      FROM implementation_checks c
+      INNER JOIN reports r ON c.report_id = r.id
+      ORDER BY r.week_of DESC, c.perspective ASC
+    `).all() as Array<ImplementationCheckRow & { week_of: string; vault_path: string | null }>;
+  }
+
+  setImplementationCheckNote(reportId: string, perspective: string, note: string | null): void {
+    this.db.prepare(
+      'UPDATE implementation_checks SET ai_relevance_note = ? WHERE report_id = ? AND perspective = ?'
+    ).run(note, reportId, perspective);
   }
 
   setRelevanceNote(reportId: string, name: string, note: string | null): void {

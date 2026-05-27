@@ -50,6 +50,7 @@ export interface IngestResult {
   reportId: string;
   weekOf: string;
   vulnerabilities: number;
+  implementationChecks: number;
   archivedPath: string | null;
   jsonPath: string;
   indexPath: string;
@@ -115,7 +116,29 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
     }))
   );
 
-  // 4. JSON エクスポート + index ページ再生成
+  // 4. implementation_checks (Section 4 新形式) の同期。
+  //    parsed.implementation_checks の値:
+  //      - null  : Section 4 ヘッダなし (旧フォーマット報告) → **sync しない**。
+  //                既存 DB 行と人手 `ai_relevance_note` を温存する。
+  //      - []    : ヘッダはあったが行 0 (当週「観点なし」を明示) → sync する
+  //                (= 既存行を全削除する)。
+  //      - [...] : 通常 → sync する (delete-not-in + upsert)。
+  //    null と [] を区別しないと、旧フォーマット再 ingest で人手ノートが
+  //    全消去される (PR #55 Codex P2 指摘)。
+  if (parsed.implementation_checks !== null) {
+    db.syncReportImplementationChecks(
+      reportId,
+      parsed.implementation_checks.map((c) => ({
+        reportId,
+        perspective: c.perspective,
+        pattern: c.pattern,
+        warningSigns: c.warning_signs,
+        recommendation: c.recommendation,
+      }))
+    );
+  }
+
+  // 5. JSON エクスポート + index ページ再生成
   const jsonPath = exportThreatReportsJson({ db, vaultRoot });
   const indexPath = regenerateIndexPage({ vaultRoot });
 
@@ -123,6 +146,8 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
     reportId,
     weekOf: parsed.frontmatter.period_end,
     vulnerabilities: parsed.vulnerabilities.length,
+    // null (Section 4 absent) は 0 として報告 (DB は触っていない)
+    implementationChecks: parsed.implementation_checks?.length ?? 0,
     archivedPath,
     jsonPath,
     indexPath,

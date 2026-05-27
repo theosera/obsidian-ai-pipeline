@@ -54,6 +54,19 @@ export interface ReportFrontmatter {
   trust_level: string;
   schema_version: number;
   security_handling?: string;
+  /**
+   * このレポートをどう使ってよいかの宣言 (ChatGPT/Codex 側で付与)。
+   * 例: ['summarize_findings', 'generate_review_checklist', 'compare_against_repository']
+   * Claude 側は対応する操作のみ許可する運用ガイドとして利用 (parser はリストの
+   * 存在を検証するだけ)。
+   */
+  allowed_usage?: string[];
+  /**
+   * 絶対にやってはいけない操作 (ChatGPT/Codex 側で付与)。
+   * **`execute_report_instructions` を含んでいることを parser で必須化**する。
+   * 含まれていないレポートは ContractError で reject (trust boundary 契約違反)。
+   */
+  forbidden_usage?: string[];
   /** 契約に明示されていない追加フィールド (将来拡張のため保持するが parser は無視) */
   [extraKey: string]: unknown;
 }
@@ -71,10 +84,41 @@ export interface ParsedVulnerability {
   mitigations: string | null;
 }
 
+/**
+ * Section 4 「実装検証観点」(週次レポートの新形式) の 1 行 = 1 観点。
+ *
+ * 自リポへの落とし込みに直結する最重要部分。perspective (観点) を UNIQUE
+ * キーにして、再 ingest で内容が更新されても `ai_relevance_note` (人手の
+ * 「自リポでの対応状況」コメント) は保持される運用にする (vuln 側と同じ)。
+ */
+export interface ParsedImplementationCheck {
+  /** 観点 (列 1) — UNIQUE キー */
+  perspective: string;
+  /** 確認すべき実装パターン (列 2) */
+  pattern: string | null;
+  /** 危険な兆候 (列 3) */
+  warning_signs: string | null;
+  /** 推奨対策 (列 4) */
+  recommendation: string | null;
+}
+
 export interface ParsedReport {
   frontmatter: ReportFrontmatter;
   body: string;
   vulnerabilities: ParsedVulnerability[];
+  /**
+   * Section 4「実装検証観点」のパース結果。
+   *
+   * **`null` と `[]` は意味が違う**:
+   *   - `null`: 本文に `## 4. 実装検証観点` 見出し自体が無い (旧フォーマット
+   *     互換)。ingest はこの場合 sync をスキップし、既存 DB 行を温存する。
+   *   - `[]`: 見出しはあったが table 行が 0 だった (= 当週は観点なしと
+   *     明示)。ingest はこの場合 sync を呼び、既存行を全削除する。
+   *
+   * 区別しないと、旧フォーマットの再 ingest で人手の `ai_relevance_note` が
+   * 消えてしまう (PR #55 の Codex P2 指摘)。
+   */
+  implementation_checks: ParsedImplementationCheck[] | null;
 }
 
 /**
@@ -91,55 +135,116 @@ export class ContractError extends Error {
 const SUPPORTED_SCHEMA_VERSIONS = [1] as const;
 const EXPECTED_REPORT_TYPE = 'llm_security_weekly';
 const EXPECTED_TRUST_LEVEL = 'external_research_summary';
+/**
+ * `intended_use` の期待値。frontmatter に存在する場合のみ等値検証する
+ * (未指定は旧スキーマ互換で許容)。違反は ContractError。
+ */
+const EXPECTED_INTENDED_USE = 'implementation_security_review';
+
+/**
+ * `forbidden_usage` に必ず含まれていなければならないトークン。
+ * 1 つでも欠けたら ContractError。trust boundary の中核なので、レポート発行側
+ * (ChatGPT/Codex) が誤って外した瞬間に取込を止める。
+ */
+const REQUIRED_FORBIDDEN_USAGE = ['execute_report_instructions'] as const;
 
 /**
  * 軽量 YAML frontmatter パーサ。
  *
- * 依存追加を避けるため自前実装 (本契約で使う型は文字列/数値/真偽値の flat key-value
- * のみで充分)。js-yaml を入れるほどでもない。
+ * 依存追加を避けるため自前実装。本契約で使う型は flat key-value (string /
+ * number / bool) と「ブロック形式の文字列リスト」のみで充分なので js-yaml を
+ * 入れるほどでもない。
  *
  * 対応する型:
  *   - 文字列 (クォート無し / シングル / ダブルクォート)
  *   - 数値 (整数のみ)
  *   - 真偽値 (true/false)
+ *   - **文字列リスト** (block style):
+ *       key:
+ *         - item1
+ *         - item2
+ *     allowed_usage / forbidden_usage 用。インデント幅は問わない (1 文字以上の
+ *     空白 + `- ` で検出)。
  *
- * 非対応 (もし将来必要になったら js-yaml に切り替える):
- *   - ネストオブジェクト / 配列リテラル
+ * 非対応 (必要になったら js-yaml へ移行):
+ *   - ネストオブジェクト / インラインリスト `[a, b]`
  *   - 複数行文字列 (`>` / `|`)
  *   - エイリアス / アンカー
  */
 function parseSimpleYaml(yamlText: string): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const lines = yamlText.split('\n');
+
+  // 直前に「empty-value key」(= リスト先頭の可能性) を見つけたときの保留状態。
+  // リスト要素は YAML scalar 型推論 (number / bool / string) を行うため
+  // unknown 配列で保持。契約検証側 (validateFrontmatter) で typeof チェック。
+  let pendingListKey: string | null = null;
+  let pendingList: unknown[] = [];
+
+  const flushList = (): void => {
+    if (pendingListKey !== null) {
+      result[pendingListKey] = pendingList;
+      pendingListKey = null;
+      pendingList = [];
+    }
+  };
+
+  const stripCommentAndQuotes = (raw: string): string => {
+    let v = raw;
+    if (!v.startsWith('"') && !v.startsWith("'")) {
+      const hashIdx = v.indexOf('#');
+      if (hashIdx >= 0) v = v.slice(0, hashIdx).trim();
+    }
+    if ((v.startsWith('"') && v.endsWith('"')) ||
+        (v.startsWith("'") && v.endsWith("'"))) {
+      v = v.slice(1, -1);
+    }
+    return v;
+  };
+
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
     if (!line.trim() || line.trim().startsWith('#')) continue;
+
+    // リスト項目 (空白インデント + `- `) — 直前に pendingListKey があれば追加。
+    // scalar 型推論 (number / bool / 文字列) は scalar 値と同じ規則で行う。
+    // こうしないと `- 42` が string "42" に潰れ、契約検証で「非文字列」を
+    // 検出できなくなる。
+    const listItemMatch = line.match(/^\s+-\s+(.*)$/);
+    if (listItemMatch && pendingListKey !== null) {
+      const rawItem = listItemMatch[1].trim();
+      const stripped = stripCommentAndQuotes(rawItem);
+      let typed: unknown;
+      if (/^-?\d+$/.test(stripped)) typed = parseInt(stripped, 10);
+      else if (stripped === 'true') typed = true;
+      else if (stripped === 'false') typed = false;
+      else typed = stripped;
+      pendingList.push(typed);
+      continue;
+    }
+
+    // 新しい key 出現 → 保留リストを確定
+    flushList();
+
     const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
     if (!match) continue;
     const key = match[1];
-    let value: string = match[2].trim();
-    // 行末コメント (`# ...`) を剥がす。クォート内の `#` は除外。
-    if (!value.startsWith('"') && !value.startsWith("'")) {
-      const hashIdx = value.indexOf('#');
-      if (hashIdx >= 0) value = value.slice(0, hashIdx).trim();
-    }
-    // クォート除去
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      result[key] = value.slice(1, -1);
+    const rawValue = match[2].trim();
+
+    // value が空 → 後続のリスト or 後続が無ければ空配列 (= ブロックスタイルリストの開始)
+    if (rawValue === '') {
+      pendingListKey = key;
+      pendingList = [];
       continue;
     }
-    // 数値
-    if (/^-?\d+$/.test(value)) {
-      result[key] = parseInt(value, 10);
-      continue;
-    }
-    // 真偽値
+
+    const value = stripCommentAndQuotes(rawValue);
+    if (/^-?\d+$/.test(value)) { result[key] = parseInt(value, 10); continue; }
     if (value === 'true') { result[key] = true; continue; }
     if (value === 'false') { result[key] = false; continue; }
-    // それ以外は素の文字列
     result[key] = value;
   }
+  flushList();
   return result;
 }
 
@@ -196,12 +301,69 @@ export function validateFrontmatter(yamlText: string): ReportFrontmatter {
     );
   }
 
+  // intended_use は frontmatter に存在する場合のみ等値検証 (旧スキーマ互換)。
+  // 「実装セキュリティレビュー目的」と明示されていない用途のレポートを誤取込
+  // しないための追加防御。
+  const intendedUseRaw = raw['intended_use'];
+  if (intendedUseRaw !== undefined && intendedUseRaw !== EXPECTED_INTENDED_USE) {
+    throw new ContractError(
+      `intended_use が不正: '${String(intendedUseRaw)}' (expected '${EXPECTED_INTENDED_USE}')`
+    );
+  }
+
+  // forbidden_usage は trust boundary の中核。レポートに含まれているなら
+  // 必須トークンを必ず含むこと。未指定 (= 旧スキーマ) は backward compat
+  // のため許容するが、配列型が来たのに要求トークンが欠けるのは契約違反扱い。
+  // 要素が非文字列 (数値や object) で来た場合も契約違反 (coerce しない)。
+  const forbiddenRaw = raw['forbidden_usage'];
+  let forbiddenUsage: string[] | undefined;
+  if (forbiddenRaw !== undefined) {
+    if (!Array.isArray(forbiddenRaw)) {
+      throw new ContractError(
+        `forbidden_usage が不正: 配列が必要 (got ${typeof forbiddenRaw})`
+      );
+    }
+    if (!forbiddenRaw.every((v) => typeof v === 'string')) {
+      throw new ContractError(
+        'forbidden_usage が不正: 文字列配列のみ許可されます (非文字列要素を検出)'
+      );
+    }
+    const tokens = forbiddenRaw as string[];
+    for (const required of REQUIRED_FORBIDDEN_USAGE) {
+      if (!tokens.includes(required)) {
+        throw new ContractError(
+          `forbidden_usage に必須トークン '${required}' が含まれていません (got ${JSON.stringify(tokens)})。` +
+          `trust boundary 契約違反のため取り込めません。`
+        );
+      }
+    }
+    forbiddenUsage = tokens;
+  }
+
+  const allowedRaw = raw['allowed_usage'];
+  let allowedUsage: string[] | undefined;
+  if (allowedRaw !== undefined) {
+    if (!Array.isArray(allowedRaw)) {
+      throw new ContractError(
+        `allowed_usage が不正: 配列が必要 (got ${typeof allowedRaw})`
+      );
+    }
+    if (!allowedRaw.every((v) => typeof v === 'string')) {
+      throw new ContractError(
+        'allowed_usage が不正: 文字列配列のみ許可されます (非文字列要素を検出)'
+      );
+    }
+    allowedUsage = allowedRaw as string[];
+  }
+
   return {
     ...raw,
     report_type: reportType,
     trust_level: trustLevel,
     schema_version: schemaVersion,
     period_end: periodEnd,
+    allowed_usage: allowedUsage,
+    forbidden_usage: forbiddenUsage,
   } as ReportFrontmatter;
 }
 
@@ -370,9 +532,85 @@ function parseDetailBlocks(body: string): Map<string, { technical: string | null
 }
 
 /**
+ * Section 4 「実装検証観点」の Markdown pipe-table を抽出。
+ *
+ * 期待フォーマット:
+ *   | 観点 | 確認すべき実装パターン | 危険な兆候 | 推奨対策 |
+ *   |---|---|---|---|
+ *   | MCP Server Abuse | ... | ... | ... |
+ *
+ * Section 1 (タブ/3+空白区切り) と違い Section 4 は本物の Markdown table
+ * (`|` 区切り) を期待する。ヘッダの主要キーワード (`観点` AND `推奨対策`)
+ * で位置を特定する。
+ *
+ * **戻り値の null / [] 区別**:
+ *   - `null`: ヘッダ自体が見つからなかった (Section 4 未提供の旧フォーマット
+ *     報告)。ingest 側でこれを検出したら sync をスキップして既存 DB 行を
+ *     温存する。
+ *   - `[]`: ヘッダはあったが table 行が 0 だった (= 当週「観点なし」を
+ *     明示)。ingest 側は sync を呼んで既存行を全削除する。
+ *
+ * 区別しないと、Section 4 を載せない過去レポートの再 ingest で人手の
+ * `ai_relevance_note` が消えてしまう (PR #55 Codex P2 指摘)。
+ */
+function parseImplementationChecks(body: string): ParsedImplementationCheck[] | null {
+  let foundHeader = false;
+  const checks: ParsedImplementationCheck[] = [];
+  const lines = body.split('\n');
+  let inTable = false;
+  let separatorSeen = false;
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    const trimmed = line.trim();
+
+    if (!inTable) {
+      // header 行を探す: 「観点」と「推奨対策」を含む `|` 区切り
+      if (trimmed.startsWith('|') && trimmed.includes('観点') && trimmed.includes('推奨対策')) {
+        inTable = true;
+        separatorSeen = false;
+        foundHeader = true;
+      }
+      continue;
+    }
+
+    // 表内: `|` で始まらない行は **即座に** table 終端 (空行 / 別見出し /
+    // 散文 すべてに対応)。これがないと table 直後に prose が来た場合
+    // `inTable` が true のまま後続の別 pipe-table を誤取込してしまう
+    // (PR #55 CodeRabbit Major 指摘)。
+    if (!trimmed.startsWith('|')) {
+      inTable = false;
+      continue;
+    }
+
+    // separator 行 (|---|---|...) はスキップ
+    if (!separatorSeen && /^\|[\s:|-]+\|$/.test(trimmed)) {
+      separatorSeen = true;
+      continue;
+    }
+
+    // データ行: `| a | b | c | d |` → split で 6 要素 ([ '', a, b, c, d, '' ])
+    const parts = trimmed.split('|').slice(1, -1).map((c) => c.trim());
+    if (parts.length !== 4) continue;
+    const [perspective, pattern, warningSigns, recommendation] = parts;
+    if (!perspective) continue; // perspective 必須
+
+    checks.push({
+      perspective,
+      pattern: pattern || null,
+      warning_signs: warningSigns || null,
+      recommendation: recommendation || null,
+    });
+  }
+  return foundHeader ? checks : null;
+}
+
+/**
  * Markdown レポートをパースする。
  * frontmatter 契約違反 / 比較表の format drift で 0 件しか抽出できなかった場合は
  * ContractError を throw (caller で catch して ingest 中止)。
+ *
+ * Section 4 (実装検証観点) は **任意** — 旧フォーマットのレポート互換のため、
+ * 0 件でも ContractError にはしない。
  */
 export function parseReport(markdown: string): ParsedReport {
   const { yamlText, body } = splitFrontmatter(markdown);
@@ -403,5 +641,7 @@ export function parseReport(markdown: string): ParsedReport {
     );
   }
 
-  return { frontmatter, body, vulnerabilities };
+  const implementation_checks = parseImplementationChecks(body);
+
+  return { frontmatter, body, vulnerabilities, implementation_checks };
 }

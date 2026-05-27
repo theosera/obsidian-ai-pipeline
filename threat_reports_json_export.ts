@@ -12,7 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import { getVaultRoot } from './config';
 import { getThreatReportsBaseFolder } from './threat_reports_config';
-import { ThreatReportsDb, getDb, VulnerabilityRow } from './threat_reports_db';
+import { ThreatReportsDb, getDb, VulnerabilityRow, ImplementationCheckRow } from './threat_reports_db';
 
 export const THREAT_REPORTS_JSON_FILENAME = '.threat_reports.json';
 
@@ -34,11 +34,35 @@ export interface ExportedVulnerabilityRow {
   raw_md_path: string | null;
 }
 
+/**
+ * Section 4 「実装検証観点」エクスポート行 (Dataview 用)。
+ */
+export interface ExportedImplementationCheckRow {
+  report_id: string;
+  week_of: string;
+  perspective: string;
+  pattern: string | null;
+  warning_signs: string | null;
+  recommendation: string | null;
+  ai_relevance_note: string | null;
+  raw_md_path: string | null;
+}
+
+/**
+ * JSON エクスポート全体。`version` は **JSON スキーマ自体のバージョン**で、
+ * レポートの `schema_version` とは別物 (Dataview script との互換管理用)。
+ *
+ * version 2 で `implementation_checks` フィールドを追加。version 1 を読む
+ * 古い Dataview script は `rows` のみ参照する想定で、新フィールドは無視され
+ * ても破綻しない。新 script は `version >= 2` のみで `implementation_checks`
+ * テーブルを描画する。
+ */
 export interface ExportedJson {
-  version: 1;
+  version: 2;
   generated_at: string;
   base_folder: string;
   rows: ExportedVulnerabilityRow[];
+  implementation_checks: ExportedImplementationCheckRow[];
 }
 
 interface ExportOptions {
@@ -69,11 +93,25 @@ export function buildExportPayload(options: ExportOptions = {}): ExportedJson {
     ai_relevance_note: r.ai_relevance_note,
     raw_md_path: r.vault_path,
   }));
+  const checkRows = db.listImplementationChecksWithReport() as Array<
+    ImplementationCheckRow & { week_of: string; vault_path: string | null }
+  >;
+  const exportedChecks: ExportedImplementationCheckRow[] = checkRows.map(c => ({
+    report_id: c.report_id,
+    week_of: c.week_of,
+    perspective: c.perspective,
+    pattern: c.pattern,
+    warning_signs: c.warning_signs,
+    recommendation: c.recommendation,
+    ai_relevance_note: c.ai_relevance_note,
+    raw_md_path: c.vault_path,
+  }));
   return {
-    version: 1,
+    version: 2,
     generated_at: new Date().toISOString(),
     base_folder: baseFolder,
     rows: exported,
+    implementation_checks: exportedChecks,
   };
 }
 
