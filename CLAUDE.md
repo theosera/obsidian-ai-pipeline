@@ -276,12 +276,28 @@ security_handling: untrusted_input      # 任意 (推奨)
 
 ### 出力構造
 
-- `<vault>/__skills/pipeline/threat_reports.db` (SQLite 中核 / .gitignore)
+- `<vault>/__skills/pipeline/threat_reports.db` (SQLite 中核)
+  - **本リポ (obsidian-ai-pipeline)** では `__skills/` を一切持たないため .gitignore
+    対象とすら関係なし
+  - **Vault repo** (Obsidian Vault を git 化したもの) では運用形態により扱いが分岐:
+    - 完全ローカル運用なら .gitignore で除外可
+    - **Actions 自動取込 (Level 1) を使う場合は gitignore せず commit する**
+      (`ai_relevance_note` を run 間で保持するため。詳細は
+      `docs/security/llm-sec-weekly-automation.md` §2.1)
 - `<vault>/Permanent Note/10_Threat_Reports/.threat_reports.json` (Dataview source)
 - `<vault>/Permanent Note/10_Threat_Reports/_index.md` (sortable index)
 - `<vault>/Permanent Note/10_Threat_Reports/raw/YYYY-MM-DD.md` (生レポート)
 
 詳細: `docs/threat_reports.md`
+
+### 自動取込 (Level 1)
+
+`/sec-mode` (人手) と同じフローを `.github/workflows/llm-sec-weekly.yml` で
+毎週月曜 09:00 JST に cron 実行する Level 1 自動化を導入済。Trust Boundary /
+契約検証は consumption policy がそのまま適用される (parser ContractError 経由)。
+セットアップは `docs/security/llm-sec-weekly-automation.md` を参照。
+
+Level 2 (LLM による自リポ該当チェック → `ai_relevance_note` 自動書込) は別 PR。
 
 ## Shared dev-tool versions
 

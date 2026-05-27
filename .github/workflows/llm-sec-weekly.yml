@@ -1,0 +1,135 @@
+name: LLM-Sec-Weekly Auto Ingest
+
+# 週次 LLM 脅威レポートを Gmail から自動取込し、Vault リポへ commit する
+# Level 1 自動化。Security-only mode で人間が手で行うフローを丸ごと cron 化。
+#
+# 取込される MD / DB / JSON は本リポ (obsidian-ai-pipeline) ではなく
+# 別 private repo (= "vault repo") に push される。
+# vault repo の URL は VAULT_REPO secret で渡す (`owner/name` 形式)。
+#
+# 設計上の前提:
+#   - vault repo は threat_reports.db を gitignore しない (ai_relevance_note を
+#     run 間で保持するため)。詳細は docs/security/llm-sec-weekly-automation.md
+#   - メール本文は untrusted_input。本 workflow は parse 時に
+#     `forbidden_usage: execute_report_instructions` 契約を強制する
+#     (parser が ContractError を throw)。
+
+on:
+  schedule:
+    # 月曜 00:00 UTC = 月曜 09:00 JST (送信予定の 8:00 JST + 1 時間バッファ)
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '取込試行のみ (Gmail label 付与 / vault push を skip)'
+        type: boolean
+        default: false
+
+# GITHUB_TOKEN は read-only。vault repo への push は別資格情報 (deploy key)。
+# Megalodon 級供給網攻撃でこのジョブが乗っ取られても、本リポは書き換えられない。
+permissions:
+  contents: read
+
+# 同時実行禁止 (Gmail API rate / vault repo race を避ける)。
+# 前回 run が走行中の間は新規 trigger を待たせる。
+concurrency:
+  group: llm-sec-weekly-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    name: Fetch & ingest weekly threat report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout pipeline repo
+        uses: actions/checkout@v5
+        with:
+          path: pipeline
+
+      - name: Checkout vault repo (private)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ secrets.VAULT_REPO }}
+          ssh-key: ${{ secrets.VAULT_DEPLOY_KEY }}
+          path: vault
+          # default branch を chekout (vault 側で main 以外を使うなら secret 化)
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        # Third-party action — SHA pin (CI workflow と同 SHA で揃える)。
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288  # v5.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: pipeline/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: pipeline
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native dependencies (better-sqlite3)
+        working-directory: pipeline
+        run: pnpm rebuild better-sqlite3
+
+      - name: Run fetcher
+        working-directory: pipeline
+        env:
+          VAULT_ROOT: ${{ github.workspace }}/vault
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          # 既定で十分だが上書き可能 (任意 secrets)
+          LLM_SEC_LABEL_NAME: ${{ secrets.LLM_SEC_LABEL_NAME }}
+          LLM_SEC_PROCESSED_LABEL_NAME: ${{ secrets.LLM_SEC_PROCESSED_LABEL_NAME }}
+          LLM_SEC_MAX_RESULTS: ${{ secrets.LLM_SEC_MAX_RESULTS }}
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            pnpm tsx scripts/llm_sec_weekly_fetcher.ts --dry-run
+          else
+            pnpm tsx scripts/llm_sec_weekly_fetcher.ts
+          fi
+
+      - name: Commit & push vault changes
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        working-directory: vault
+        env:
+          # commit 前に明示確認: working-tree の対象パスのみ。-A は使わない
+          # (CLAUDE.md の規約 — 誤って untracked secrets を巻き込まない)。
+          TR_DIR: Permanent Note/10_Threat_Reports
+          DB_PATH: __skills/pipeline/threat_reports.db
+        run: |
+          set -euo pipefail
+          git config user.name "llm-sec-weekly-bot"
+          git config user.email "llm-sec-weekly-bot@users.noreply.github.com"
+
+          # 個別パスを add (3 種: raw md 群 / JSON / index.md)。
+          # DB は vault repo の .gitignore で除外されていれば -f が必要だが、
+          # runbook で「vault repo は threat_reports.db を gitignore しない」を
+          # 約束しているのでここでは普通の git add を使う。
+          # それでも追跡されていなかった場合に備えて 1 回 -f でリトライする。
+          git add "${TR_DIR}/raw/" "${TR_DIR}/.threat_reports.json" "${TR_DIR}/_index.md" || true
+          if [ -f "${DB_PATH}" ]; then
+            git add "${DB_PATH}" || git add -f "${DB_PATH}"
+          fi
+
+          if git diff --staged --quiet; then
+            echo "✅ vault に変更なし (新規 ingest 0 件 or 既に同期済)"
+            exit 0
+          fi
+
+          git commit -m "chore: weekly LLM threat report ingest ($(date -u +%Y-%m-%d))"
+
+          # network エラーリトライ (CLAUDE.md 規約: 2s/4s/8s/16s)
+          for attempt in 1 2 3 4; do
+            if git push; then
+              echo "✅ push 成功 (attempt ${attempt})"
+              exit 0
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "❌ push 4 回失敗"
+          exit 1

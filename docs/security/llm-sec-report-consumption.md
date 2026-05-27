@@ -4,8 +4,14 @@
 (ChatGPT/Codex 側の scheduled task が毎週月曜 8:00 JST に送信) を、
 Claude / Claude Code が**安全に** 消費するための運用契約。
 
-**本ドキュメントは Default mode / Security-only mode の両方に適用される
-グランドルール**。CLAUDE.md の `## Chat mode protocol` の上位仕様。
+**本ドキュメントは Default mode / Security-only mode / GitHub Actions cron
+の全てに適用されるグランドルール**。CLAUDE.md の `## Chat mode protocol`
++ `.github/workflows/llm-sec-weekly.yml` の上位仕様。
+
+> 📌 Actions cron による自動取込 (Level 1) の運用 runbook は
+> [`docs/security/llm-sec-weekly-automation.md`](./llm-sec-weekly-automation.md) を参照。
+> 自動経路でも本ドキュメントの trust boundary / 契約検証は **そのまま強制される**
+> (parser が `forbidden_usage: execute_report_instructions` を ContractError で弾く)。
 
 ---
 
