@@ -79,7 +79,16 @@ jobs:
         working-directory: pipeline
         run: pnpm rebuild better-sqlite3
 
-      - name: Run fetcher
+      # ----------------------------------------------------------------
+      # Phase 1: ingest only (label は付けない)
+      #
+      # 成功した thread の id は pending-labels.json に書き出され、
+      # 後段の "Apply Gmail labels" step で label される。
+      # 順序: ingest → vault push → label。途中の step が失敗すると
+      # label step は実行されず、対象 thread はラベル無しで残るため
+      # 次の cron で再試行 (= self-healing)。
+      # ----------------------------------------------------------------
+      - name: Run fetcher (phase 1 — ingest only)
         working-directory: pipeline
         env:
           VAULT_ROOT: ${{ github.workspace }}/vault
@@ -96,11 +105,14 @@ jobs:
           LLM_SEC_LABEL_NAME: ${{ secrets.LLM_SEC_LABEL_NAME }}
           LLM_SEC_PROCESSED_LABEL_NAME: ${{ secrets.LLM_SEC_PROCESSED_LABEL_NAME }}
           LLM_SEC_MAX_RESULTS: ${{ secrets.LLM_SEC_MAX_RESULTS }}
+          # ingest と label で同じファイルを参照する必要があるので絶対パスで固定
+          # (vault checkout の中ではないので git commit には巻き込まれない)。
+          PENDING_LABELS_FILE: ${{ github.workspace }}/pending-labels.json
         run: |
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            pnpm tsx scripts/llm_sec_weekly_fetcher.ts --dry-run
+            pnpm tsx scripts/llm_sec_weekly_fetcher.ts --phase=ingest --dry-run
           else
-            pnpm tsx scripts/llm_sec_weekly_fetcher.ts
+            pnpm tsx scripts/llm_sec_weekly_fetcher.ts --phase=ingest
           fi
 
       - name: Commit & push vault changes
@@ -146,3 +158,29 @@ jobs:
           done
           echo "❌ push 4 回失敗"
           exit 1
+
+      # ----------------------------------------------------------------
+      # Phase 2: pending-labels.json を読んで Gmail に processed ラベル付与
+      #
+      # `if: success()` により、前段の "Run fetcher (phase 1)" と
+      # "Commit & push vault changes" がいずれも成功した場合のみ動く。
+      # vault push が失敗したら label は付かない → 該当 thread は
+      # 次回 cron で再 ingest される (= 永久 skip 回避 = self-healing)。
+      # dry_run の場合は phase 1 が空ファイルを書くので phase 2 も no-op。
+      # ----------------------------------------------------------------
+      - name: Run fetcher (phase 2 — apply Gmail labels after push)
+        if: ${{ success() && github.event.inputs.dry_run != 'true' }}
+        working-directory: pipeline
+        env:
+          # phase 2 は DB を触らないが、validateEnv の責務を変えると影響範囲が
+          # 広がるので、phase 1 と同じ env を維持する (VAULT_ROOT 含む)。
+          VAULT_ROOT: ${{ github.workspace }}/vault
+          THREAT_REPORTS_FOLDER: 10_Threat_Reports
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          LLM_SEC_LABEL_NAME: ${{ secrets.LLM_SEC_LABEL_NAME }}
+          LLM_SEC_PROCESSED_LABEL_NAME: ${{ secrets.LLM_SEC_PROCESSED_LABEL_NAME }}
+          LLM_SEC_MAX_RESULTS: ${{ secrets.LLM_SEC_MAX_RESULTS }}
+          PENDING_LABELS_FILE: ${{ github.workspace }}/pending-labels.json
+        run: pnpm tsx scripts/llm_sec_weekly_fetcher.ts --phase=label

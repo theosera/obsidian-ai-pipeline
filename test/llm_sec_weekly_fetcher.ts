@@ -10,6 +10,9 @@
  */
 
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { TestRunner, type TestSuiteResult } from './helpers';
 import {
   extractPeriodEnd,
@@ -17,7 +20,12 @@ import {
   isSafeRawPath,
   extractPlainTextBody,
   envOrUndefined,
+  buildPendingLabels,
+  writePendingLabels,
+  readPendingLabels,
   PERIOD_END_RE,
+  type FetcherOutcome,
+  type PendingLabel,
 } from '../scripts/llm_sec_weekly_fetcher';
 import type { gmail_v1 } from '@googleapis/gmail';
 
@@ -214,6 +222,102 @@ export function run(): TestSuiteResult {
     assert.ok(PERIOD_END_RE instanceof RegExp);
     assert.ok(PERIOD_END_RE.test('2026-05-25'));
     assert.ok(!PERIOD_END_RE.test('not a date'));
+  });
+
+  // -------------------------------------------------------------------
+  // pending-labels.json (フェーズ 1 ⇄ フェーズ 2 の橋渡し)
+  //
+  // ここが label-before-push race の解消経路。
+  // フェーズ 1 が成功 thread を JSON に書き、push 後にフェーズ 2 が読み出して
+  // label する。push 失敗時は label しない (= 永久 skip 回避)。
+  // -------------------------------------------------------------------
+  t.section('buildPendingLabels (ingested + periodEnd 有り だけ抽出)');
+
+  t.test('ingested だけ、periodEnd 必須', () => {
+    const outcomes: FetcherOutcome[] = [
+      { threadId: 't1', messageId: 'm1', periodEnd: '2026-05-25', status: 'ingested' },
+      { threadId: 't2', messageId: 'm2', periodEnd: '2026-05-18', status: 'error', reason: 'x' },
+      { threadId: 't3', messageId: 'm3', periodEnd: null, status: 'skipped', reason: 'y' },
+      // 防御的: ingested なのに periodEnd null (理論的には起きないが) は除外
+      { threadId: 't4', messageId: 'm4', periodEnd: null, status: 'ingested' },
+      { threadId: 't5', messageId: 'm5', periodEnd: '2026-05-11', status: 'ingested' },
+    ];
+    const pending = buildPendingLabels(outcomes);
+    assert.deepStrictEqual(pending, [
+      { threadId: 't1', periodEnd: '2026-05-25', messageId: 'm1' },
+      { threadId: 't5', periodEnd: '2026-05-11', messageId: 'm5' },
+    ]);
+  });
+
+  t.test('全件 error/skipped なら空配列', () => {
+    const outcomes: FetcherOutcome[] = [
+      { threadId: 't1', messageId: 'm1', periodEnd: '2026-05-25', status: 'error', reason: 'x' },
+      { threadId: 't2', messageId: 'm2', periodEnd: null, status: 'skipped', reason: 'y' },
+    ];
+    assert.deepStrictEqual(buildPendingLabels(outcomes), []);
+  });
+
+  t.section('writePendingLabels / readPendingLabels (atomic 書込 + 空時は削除)');
+
+  function tmpFile(): string {
+    return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sec-weekly-')), 'pending.json');
+  }
+
+  t.test('threads >= 1 件: ファイル書き出し、読み戻しで等価', () => {
+    const fp = tmpFile();
+    const threads: PendingLabel[] = [
+      { threadId: 't1', periodEnd: '2026-05-25', messageId: 'm1' },
+      { threadId: 't2', periodEnd: '2026-05-18', messageId: 'm2' },
+    ];
+    writePendingLabels(fp, threads);
+    assert.ok(fs.existsSync(fp), 'ファイルが作られる');
+    const back = readPendingLabels(fp);
+    assert.deepStrictEqual(back, threads);
+  });
+
+  t.test('空配列: 既存ファイルがあれば削除される (= phase 2 は no-op)', () => {
+    const fp = tmpFile();
+    writePendingLabels(fp, [{ threadId: 't1', periodEnd: '2026-05-25', messageId: 'm1' }]);
+    assert.ok(fs.existsSync(fp));
+    writePendingLabels(fp, []);
+    assert.strictEqual(fs.existsSync(fp), false);
+  });
+
+  t.test('空配列 + ファイル不在: 何もしない (エラーも起きない)', () => {
+    const fp = tmpFile();
+    assert.strictEqual(fs.existsSync(fp), false);
+    writePendingLabels(fp, []);
+    assert.strictEqual(fs.existsSync(fp), false);
+  });
+
+  t.test('readPendingLabels: ファイル不在は空配列', () => {
+    const fp = tmpFile();
+    assert.deepStrictEqual(readPendingLabels(fp), []);
+  });
+
+  t.test('readPendingLabels: 不正な JSON (threads が無い) は throw', () => {
+    const fp = tmpFile();
+    fs.writeFileSync(fp, JSON.stringify({ written_at: 'now' }), 'utf8');
+    assert.throws(() => readPendingLabels(fp), /threads.*配列がない/);
+  });
+
+  t.test('readPendingLabels: 一部 entry が壊れていたら有効分だけ返す', () => {
+    const fp = tmpFile();
+    fs.writeFileSync(
+      fp,
+      JSON.stringify({
+        written_at: 'now',
+        threads: [
+          { threadId: 't1', periodEnd: '2026-05-25', messageId: 'm1' },
+          { threadId: 't2', periodEnd: 123, messageId: 'm2' }, // periodEnd 型違い
+          { threadId: null, periodEnd: '2026-05-18', messageId: 'm3' }, // threadId 型違い
+          'not-an-object',
+        ],
+      }),
+      'utf8'
+    );
+    const back = readPendingLabels(fp);
+    assert.deepStrictEqual(back, [{ threadId: 't1', periodEnd: '2026-05-25', messageId: 'm1' }]);
   });
 
   return t.report();

@@ -13,21 +13,32 @@
 
 ## 1. アーキテクチャ概要
 
-```
+```text
 ┌─────────────────┐    weekly Mon 08:00 JST
 │ ChatGPT/Codex   │ ───────────────────────▶ [Gmail]
 │ task automation │                              │
 └─────────────────┘                              │
                                                  │ Mon 09:00 JST
                                                  ▼
-                                  ┌─────────────────────────────┐
-                                  │ GitHub Actions (this workflow)│
-                                  │   1. OAuth refresh           │
-                                  │   2. Gmail API search        │
-                                  │   3. sanitize + raw md 保存  │
-                                  │   4. ingestThreatReport()    │
-                                  │   5. processed ラベル付与    │
-                                  └─────────────────────────────┘
+                          ┌──────────────────────────────────────────┐
+                          │ GitHub Actions (this workflow)           │
+                          │                                          │
+                          │ Phase 1: ingest (no label yet)           │
+                          │   1. OAuth refresh                       │
+                          │   2. Gmail API search                    │
+                          │   3. sanitize + raw md 保存              │
+                          │   4. ingestThreatReport()                │
+                          │   5. 成功 thread を                      │
+                          │      pending-labels.json に書く          │
+                          │                                          │
+                          │ Vault push:                              │
+                          │   6. git add / commit / push (4 retry)   │
+                          │                                          │
+                          │ Phase 2: label (push 成功時のみ)         │
+                          │   7. pending-labels.json を読む          │
+                          │   8. Gmail に processed ラベル付与       │
+                          │   9. 全件成功なら pending ファイル削除   │
+                          └──────────────────────────────────────────┘
                                                  │
                                                  ▼
                                   ┌─────────────────────────────┐
@@ -48,6 +59,18 @@
                                   │   ai_relevance_note を curate│
                                   └─────────────────────────────┘
 ```
+
+> 🛡️ **2-phase 設計の意義 (self-healing)**: Gmail の `processed` ラベルは
+> **vault push が成功した後にしか付かない**。push が失敗 (deploy key 障害 /
+> network / conflict 等) すると Phase 2 step は GitHub Actions の
+> `if: success()` で skip され、該当 thread はラベル無しで残る。次の cron で
+> 同じ thread を再 ingest → 同じく push を試す。`ingestThreatReport()` は
+> `(source + period_end)` の UPSERT で冪等、`ai_relevance_note` も保護されるので
+> 再 ingest は安全。
+>
+> もし label 段階で個別 thread の付与だけ失敗 (Gmail API 一時障害等) した場合、
+> `pending-labels.json` はそのまま残り、次回 phase 2 で再試行できる。
+> 全件成功時のみファイルが削除される。
 
 ## 2. 必要な前提
 
