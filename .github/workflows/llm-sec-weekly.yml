@@ -83,6 +83,12 @@ jobs:
         working-directory: pipeline
         env:
           VAULT_ROOT: ${{ github.workspace }}/vault
+          # vault repo (= theosera/obsidian-permanent-note) は "Permanent Note"
+          # フォルダの中身そのものが repo ルートにある構造なので、デフォルトの
+          # 'Permanent Note/10_Threat_Reports' ではなく '10_Threat_Reports' を
+          # 直接ベースに指定する。別構造の vault に切り替える場合はこの値だけ
+          # 変えれば良い (絶対パス / `..` traversal は parser 側で拒否)。
+          THREAT_REPORTS_FOLDER: 10_Threat_Reports
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
@@ -103,7 +109,10 @@ jobs:
         env:
           # commit 前に明示確認: working-tree の対象パスのみ。-A は使わない
           # (CLAUDE.md の規約 — 誤って untracked secrets を巻き込まない)。
-          TR_DIR: Permanent Note/10_Threat_Reports
+          # ここの TR_DIR は fetcher step の THREAT_REPORTS_FOLDER と同じ値を
+          # 持たせる必要がある (デフォルトの 'Permanent Note/10_Threat_Reports'
+          # ではなく vault repo 構造に合わせた '10_Threat_Reports')。
+          TR_DIR: 10_Threat_Reports
           DB_PATH: __skills/pipeline/threat_reports.db
         run: |
           set -euo pipefail

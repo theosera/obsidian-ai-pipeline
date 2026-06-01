@@ -53,7 +53,8 @@
 
 ### 2.1 Vault repo 側 (= 別 private repo)
 
-- Obsidian Vault 一式を private repo として GitHub に置く
+- Obsidian Vault 一式 **または** 「Permanent Note」フォルダだけを private repo
+  として GitHub に置く
 - **`.gitignore` で `threat_reports.db` を除外しない**
   - `ai_relevance_note` (人が curate するコメント) を run 間で保持するため
   - 本リポ (obsidian-ai-pipeline) の `CLAUDE.md`「Secrets / sensitive files」
@@ -61,6 +62,29 @@
     gitignore 方針は独立に決められる
 - deploy key (read+write) を 1 個生成して vault repo の **Settings → Deploy keys** に追加
   - 秘密鍵側は obsidian-ai-pipeline の secrets に `VAULT_DEPLOY_KEY` として登録
+
+#### Vault repo のレイアウト想定
+
+fetcher のデフォルトは「Vault ルートに `Permanent Note/` がある」前提で、
+レポート保存先を `<vault>/Permanent Note/10_Threat_Reports/` に組み立てる。
+だが vault repo の切り方は人それぞれ:
+
+| パターン | 例 | workflow 側の対応 |
+|---|---|---|
+| 完全な Obsidian Vault | `<repo>/Permanent Note/10_Threat_Reports/` | デフォルトのまま (`THREAT_REPORTS_FOLDER` 不要) |
+| **Permanent Note フォルダだけを切り出した repo** | `<repo>/10_Threat_Reports/` (= 本リポの参考実装) | workflow の `THREAT_REPORTS_FOLDER` env と commit step の `TR_DIR` を `10_Threat_Reports` に変更 |
+| 任意の階層 | `<repo>/foo/bar/10_Threat_Reports/` | `THREAT_REPORTS_FOLDER=foo/bar/10_Threat_Reports` (絶対パス / `..` traversal は parser が拒否) |
+
+参考実装 (`theosera/obsidian-permanent-note`) は 2 番目のパターンで、
+`.github/workflows/llm-sec-weekly.yml` には既に `THREAT_REPORTS_FOLDER:
+10_Threat_Reports` をハードコードしてある。別構造の vault に切り替える場合は
+この 1 行と commit step の `TR_DIR` を揃って書き換えれば良い。
+
+なお `__skills/pipeline/threat_reports.db` は env override できず、必ず
+**vault repo のルート直下**に作られる。Permanent Note だけ切り出した repo の
+場合、`__skills/` ディレクトリが Permanent Note フォルダの隣に出現することに
+なるので、Obsidian 側で `.obsidian/app.json` の "Excluded files" にこのパスを
+追加するなどして UI からは隠すと良い。
 
 ### 2.2 Gmail 側
 
