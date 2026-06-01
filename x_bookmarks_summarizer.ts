@@ -87,7 +87,10 @@ const BATCH_TOKENS_PER_ITEM = 350;
  *
  * 改行・タブは LLM に意味があるので残す (`truncateSummary` 側で別途圧縮)。
  */
-const BIDI_OVERRIDE_RE = /[‪-‮﻿]/g;
+// U+202A–U+202E (BiDi embedding/override) + U+FEFF (BOM / ZWNBSP)。
+// リテラル不可視文字だと目視検証もエディタ正規化耐性も無いので、必ず
+// Unicode エスケープで書く (TAG_CHARS_RE と表記を揃える)。
+const BIDI_OVERRIDE_RE = /[\u202A-\u202E\uFEFF]/g;
 const TAG_CHARS_RE = /[\u{E0000}-\u{E007F}]/gu;
 /** Markdown / HTML コメントは人間 UI に出ないが LLM のパーサには見える隠蔽命令の温床。 */
 const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
