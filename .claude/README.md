@@ -3,6 +3,16 @@
 このディレクトリは Claude Code (本プロジェクトの AI 開発エージェント) が
 セッション開始時に自動で読み込む project-level 設定を置く場所。
 
+## commands/
+
+project-level スラッシュコマンド (`.md` ファイル) を置く。ファイル名が
+コマンド名になる (`sec-mode.md` → `/sec-mode`)。frontmatter で
+`description` / `allowed-tools` を宣言し、本文がプロンプトとして実行される。
+
+| コマンド | 用途 |
+|---|---|
+| `/sec-mode` | Security-only mode を起動し、週次 LLM 脅威レポート取込メニューを提示する。セッション途中でも呼べる (CLAUDE.md `## Chat mode protocol` の救済経路)。上位仕様は `docs/security/llm-sec-report-consumption.md`。 |
+
 ## settings.json
 
 **全コラボレータに共有される設定**。git commit する。
