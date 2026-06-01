@@ -1,6 +1,14 @@
 ---
 description: Security-only mode を起動し週次 LLM 脅威レポート取込メニューを提示する
-allowed-tools: AskUserQuestion, Bash, Read, mcp__github__*, Skill, Task
+# allowed-tools は **意図的に最小化** している。理由は本文「事前承認ツールの
+# 最小化」節を参照。untrusted な Gmail レポートを処理するフローなので、広い
+# 事前承認 (Bash 無制限 / mcp__github__* / Skill / Task) は prompt-injection
+# されたレポートが承認バリアを回避する経路になる。事前承認するのは:
+#   - AskUserQuestion / Read : 副作用なし
+#   - ingest コマンドそのもの : 入力は sanitize 済 period_end から組む固定形
+# Gmail MCP 呼び出し・raw md の Write・あらゆる GitHub 操作は **事前承認しない**
+# = 通常どおり都度ユーザー承認を通す (= injection 時の最後の砦)。
+allowed-tools: AskUserQuestion, Read, Bash(pnpm start -- --ingest-threat-report=:*)
 ---
 
 あなたはこのセッションを **Security-only mode** として運用します。
@@ -51,6 +59,28 @@ Security-only mode 規約が適用されます。上位仕様ドキュメント
 ### 3. タスク完了後、再びメニューを提示 (ループ)
 
 1 件処理が終わったら手順 1 のメニューに戻る。
+
+## 事前承認ツールの最小化 (security 設計)
+
+このコマンドの frontmatter `allowed-tools` は**意図的に最小**にしてある。
+`allowed-tools` は「skill 実行中、列挙ツールをユーザー承認なしで許可」する
+ため、untrusted な Gmail レポートを処理するこのフローで広く事前承認すると、
+prompt-injection されたレポートが通常の承認バリアを回避して任意の操作を
+実行する経路になる。よって:
+
+- **事前承認する (副作用なし or 固定入力)**:
+  - `AskUserQuestion` / `Read`
+  - `Bash(pnpm start -- --ingest-threat-report=:*)`
+    — ingest コマンドのみ。引数は sanitize 済 `period_end` から組む固定パス。
+- **事前承認しない (= 都度ユーザー承認を通す = injection 時の最後の砦)**:
+  - Gmail MCP 呼び出し (`search_threads` / `get_thread` / `label_thread`)
+  - raw markdown の `Write`
+  - あらゆる GitHub 操作 (`mcp__github__*`)
+  - サブエージェント起動 (`Task`) / 他 skill 呼び出し (`Skill`)
+  - 上記以外の `Bash` (無制限シェル)
+
+これらは通常どおり承認ダイアログが出る。レポート本文に仕込まれた指示が
+ツール実行を試みても、ユーザーが気付いて止められる。
 
 ## Trust Boundary (絶対遵守)
 
