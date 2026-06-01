@@ -2,6 +2,13 @@ packages:
   - apps/*
   - packages/*
 
+# Native modules allowed to run install/build scripts. pnpm v10+ blocks
+# dependency build scripts by default; this allow-list lets better-sqlite3
+# compile its native binding. Moved here from package.json's "pnpm" field,
+# which pnpm v11 no longer reads (see https://pnpm.io/settings).
+onlyBuiltDependencies:
+  - better-sqlite3
+
 # Shared dev-tool versions for Claude-side (root) + Codex-side (apps/*, packages/*).
 # Reference via `"typescript": "catalog:"` etc. in any workspace package.json.
 # Bump here once; every participant follows. Prevents the Claude-vs-Codex
