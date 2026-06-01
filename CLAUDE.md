@@ -11,9 +11,14 @@ without re-deriving them.
 | モード | 起動条件 | 用途 |
 |---|---|---|
 | Default mode | (通常) | **MCP 設計・実装・通常開発**。playbook 全体が適用される。 |
-| Security-only mode | セッションの最初のユーザーメッセージが `/sec-mode` で始まる | 週次 LLM 脅威レポート取込専用。メニュー駆動の固定タスクのみ実行。 |
+| Security-only mode | セッションの最初のユーザーメッセージが `/sec-mode` で始まる、**または** `/sec-mode` スラッシュコマンドが呼ばれた | 週次 LLM 脅威レポート取込専用。メニュー駆動の固定タスクのみ実行。 |
 
 専用チャット名 (人間用ラベル): `🛡️ LLM-Sec-Review`
+
+> `/sec-mode` は `.claude/commands/sec-mode.md` で実装された実コマンド。
+> セッション途中で呼んでも Security-only mode に入れる (CLI が「最初の
+> メッセージ」要件を満たせない経路の救済)。呼ばれたら同セッション内では
+> 解除しない。
 
 ### Security-only mode の挙動
 
