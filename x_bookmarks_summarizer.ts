@@ -87,7 +87,7 @@ const BATCH_TOKENS_PER_ITEM = 350;
  *
  * 改行・タブは LLM に意味があるので残す (`truncateSummary` 側で別途圧縮)。
  */
-const BIDI_OVERRIDE_RE = /[‪-‮﻿]/g;
+const BIDI_OVERRIDE_RE = /[\u202A-\u202E\uFEFF]/g;
 const TAG_CHARS_RE = /[\u{E0000}-\u{E007F}]/gu;
 /** Markdown / HTML コメントは人間 UI に出ないが LLM のパーサには見える隠蔽命令の温床。 */
 const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
