@@ -27,8 +27,9 @@
     "typescript/no-floating-promises": "error",
     // `if (asyncFn())` 等の Promise 誤用を検出 (type-aware)
     "typescript/no-misused-promises": "error",
-    // 未使用変数。`_` プレフィックスは意図的な未使用として許容
-    "typescript/no-unused-vars": [
+    // 未使用変数 (oxlint では eslint プラグインの no-unused-vars が TS も解析)。
+    // `_` プレフィックスは意図的な未使用として許容
+    "no-unused-vars": [
       "error",
       { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_" }
     ],
