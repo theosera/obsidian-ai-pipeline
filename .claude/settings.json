@@ -49,12 +49,12 @@
 
       "Bash(more .env*)",
 
-      "Bash(grep:* .env*)",
-      "Bash(grep:* **/credentials*)",
-      "Bash(grep:* **/token*)",
+      "Bash(grep * .env*)",
+      "Bash(grep * **/credentials*)",
+      "Bash(grep * **/token*)",
 
-      "Bash(awk:* .env*)",
-      "Bash(sed:* .env*)"
+      "Bash(awk * .env*)",
+      "Bash(sed * .env*)"
     ]
   }
 }
