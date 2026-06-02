@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
+    "@googleapis/gmail": "^14.0.0",
     "@mozilla/readability": "^0.5.0",
     "better-sqlite3": "^11.7.0",
     "fast-xml-parser": "^5.5.9",
