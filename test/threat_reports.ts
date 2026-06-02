@@ -78,6 +78,22 @@ Retrieval Cache Poisoning（検索キャッシュ汚染）\tRAG汚染 / キャ�
 
 const SAMPLE_REPORT = SAMPLE_FRONTMATTER + '\n' + SAMPLE_BODY;
 
+// 新形式 (実運用): Section 1 が Markdown パイプ 7 列・英語 `RiskScore` ヘッダ・
+// `Impact / Exploitability` 独立列。旧形式 (タブ 5 列) と両対応であることを検証する。
+const NEW_FORMAT_BODY = `
+
+## 1. ニュース・脆弱性リスト
+
+| 事案/脆弱性名 | 攻撃カテゴリ | 影響対象 | RiskScore | Impact / Exploitability | ステータス | 出典URL |
+|---|---|---|---:|---:|---|---|
+| Megalodon CI Backdoor | CI/CDサプライチェーン汚染 | GitHub Actions利用リポジトリ | 9.2 | 10 / 8 | 悪用確認済 | https://example.com/a |
+| npm Infostealer | npmパッケージ汚染 | npm利用者 | 7.6 | 8 / 7 | 削除済 | https://example.com/b |
+
+## 2. 個別詳細
+`;
+
+const NEW_FORMAT_REPORT = SAMPLE_FRONTMATTER + '\n' + NEW_FORMAT_BODY;
+
 export async function run(): Promise<TestSuiteResult> {
   const runner = new TestRunner();
   runner.section('threat_reports_parser: frontmatter');
@@ -150,6 +166,20 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(v.exploitability, 7);
     assert.strictEqual(v.status, '悪用確認済');
     assert.strictEqual(v.category, '間接インジェクション / 権限横断');
+  });
+
+  runner.test('parseReport: 新形式 (Markdown パイプ7列・英語 RiskScore) を抽出', () => {
+    const parsed = parseReport(NEW_FORMAT_REPORT);
+    assert.strictEqual(parsed.vulnerabilities.length, 2, 'パイプ table 2 行を抽出');
+    const names = parsed.vulnerabilities.map(v => v.name);
+    assert.deepStrictEqual(names, ['Megalodon CI Backdoor', 'npm Infostealer']);
+    const v = parsed.vulnerabilities[0];
+    assert.strictEqual(v.risk_score, 9.2, 'RiskScore 列');
+    assert.strictEqual(v.impact, 10, 'Impact / Exploitability 独立列の左');
+    assert.strictEqual(v.exploitability, 8, 'Impact / Exploitability 独立列の右');
+    assert.strictEqual(v.category, 'CI/CDサプライチェーン汚染');
+    assert.strictEqual(v.affected, 'GitHub Actions利用リポジトリ');
+    assert.strictEqual(v.status, '悪用確認済');
   });
 
   runner.test('parseReport: 詳細セクション (技術/影響/回避策) を抽出', () => {
