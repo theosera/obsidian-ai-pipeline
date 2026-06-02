@@ -58,8 +58,11 @@ without re-deriving them.
      `raw/` に書かず
      `<vault>/Permanent Note/10_Threat_Reports/_quarantine/<period_end>.md`
      へ退避(vault 側 `.gitignore` に `_quarantine/`)。根拠を redact して報告。
-   - **clean 判定は L1 の `live` 数では行わない**。signal/契約違反が1つでもあれば
-     必ず L2 が本文全体を精査する(行分割・接頭辞降格の素通り防止)。
+   - **L2 は必須ゲート**: L0 契約違反は即 `blocked`(L2 不要)。**契約違反が無い
+     レポートは、L1 signal が 0 でも、L2(no-tool subagent)が本文全体を
+     1 回レビューしてからでないと `clean` にできない**(L1 の line-based recall
+     では言い換え・新規・行分割 injection を取りこぼすため、`live`/signal 数で
+     clean を即決しない)。
    - L2(no-tool subagent)/ L1 スキャナ実行は **都度承認**(injection の最後の砦)。
 4. (clean のみ) 各メールの本文を
    `<vault>/Permanent Note/10_Threat_Reports/raw/<sanitized-period_end>.md`

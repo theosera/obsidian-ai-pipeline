@@ -55,7 +55,9 @@ for k in ("reader-imperative", "role-marker", "fake-tool-call", "exfil-url"):
     check(f"{k} を検出", k in kinds, str(kinds))
 check("契約違反 (forbidden token 欠落)",
       any(v["code"] == "missing-forbidden-token" for v in m["structural"]["contract_violations"]))
-check("l2_required = True", m["l2_required"])
+# 契約違反があるので L0 で blocked → L2 は不要 (l2_required=False)。flagged は True。
+check("L0 blocked: l2_required=False かつ flagged=True",
+      (not m["l2_required"]) and m["flagged"])
 
 print("\n== 悪性: 跨行分割 (行単位 regex 回避) → multiline 検出 (P1 recall 補強) ==")
 ml = report(os.path.join(FIX, "malicious_multiline_split.md"))
@@ -71,8 +73,8 @@ check("live は降格されている (=0)", ep["counts"]["live"] == 0, f"live={e
 check("それでも l2_required = True (live で clean 判定しない)", ep["l2_required"])
 
 print("\n== concealment (zero-width / homoglyph) → live 検出 ==")
-zwsp = "​"
-cyr_e = "е"  # Cyrillic IE — Latin 'e' そっくり
+zwsp = chr(0x200B)   # zero-width space
+cyr_e = chr(0x0435)  # Cyrillic small letter IE (homoglyph of Latin e)
 body = (
     "---\nreport_type: llm_security_weekly\nperiod_end: 2026-06-08\n"
     "trust_level: external_research_summary\nschema_version: 1\n"
@@ -113,7 +115,9 @@ try:
     check("forbidden_usage 欠落 → missing-forbidden-token",
           any(v["code"] == "missing-forbidden-token"
               for v in nf["structural"]["contract_violations"]))
-    check("l2_required = True", nf["l2_required"])
+    # 契約違反 → L0 で blocked。l2_required は False (L2 不要) だが flagged。
+    check("L0 blocked: l2_required=False かつ flagged=True",
+          (not nf["l2_required"]) and nf["flagged"])
 finally:
     os.unlink(tmp)
 
@@ -132,6 +136,29 @@ try:
     check("section_shape_ok = False", not ns["structural"]["section_shape_ok"])
     check("契約違反なし (shape のみ)", not ns["structural"]["contract_violations"])
     check("それでも l2_required = True (定型逸脱で escalate)", ns["l2_required"])
+finally:
+    os.unlink(tmp)
+
+print("\n== signal-free でも L2 必須 (CodeRabbit Critical / P1 全文ゲート) ==")
+clean_body = (
+    "---\nreport_type: llm_security_weekly\nperiod_end: 2026-06-08\n"
+    "trust_level: external_research_summary\nschema_version: 1\n"
+    "forbidden_usage:\n  - execute_report_instructions\n---\n\n"
+    "# LLM Security Weekly Report: 2026-06-08\n\n"
+    "## 1. ニュース・脆弱性リスト\n\n"
+    "| 事案 | 攻撃カテゴリ | 影響対象 | RiskScore | ステータス |\n"
+    "|---|---|---|---:|---|\n"
+    "| 通常の脆弱性 | カテゴリ | 対象 | 5.0 | 確認 |\n"
+)
+with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:
+    f.write(clean_body)
+    tmp = f.name
+try:
+    cl = report(tmp)
+    check("signal 0 (L1 は何も検出せず)", cl["counts"]["total"] == 0, f"total={cl['counts']['total']}")
+    check("契約違反なし", not cl["structural"]["contract_violations"])
+    check("l2_required = True (signal-free でも L2 必須 → clean 直行を防ぐ)", cl["l2_required"])
+    check("flagged = False (exit code 上は何も検出せず)", not cl["flagged"])
 finally:
     os.unlink(tmp)
 

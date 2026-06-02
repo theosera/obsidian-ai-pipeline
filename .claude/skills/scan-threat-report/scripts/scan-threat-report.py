@@ -12,9 +12,9 @@ ingest が **何も書き込む前に** 走査し、直接/間接プロンプト
     として正当に含む (例: `## 4. 実装検証観点` 表の "ignore previous
     instructions")。そこで各 signal に **context_class** と **live** 推定を付け、
     「データ/例示」か「読み手宛てのライブ命令」かを区別できるようにする。
-  - `live` は **advisory**。clean 判定には使わない (P2)。clean は
-    「signal が 0 かつ契約違反なし」のときのみ。それ以外は L2 が全 signal を
-    精査する (SKILL §L2/§L3)。
+  - `live`/signal 数は **advisory**。clean 判定に使わない (P2)。clean は L1 単独
+    では決めない: 契約違反が無いレポートは signal=0 でも L2 (本文全体) を経て
+    からでないと clean にできない (`l2_required = not contract`。SKILL §L2/§L3)。
   - L1 は line-based regex なので recall に限界がある (行分割・新規表現は
     取りこぼす)。そこで (a) 連続 prose 行を結合した **collapsed パス** で
     跨行 injection を補足し、(b) ゲート本体は SKILL §L1 ではなく
@@ -116,6 +116,7 @@ CROSS_LINE_PATS = ROLE_MARKERS + READER_IMPERATIVES + FAKE_TOOLCALL
 
 # ── homoglyph 判定用 (混在で偽装) ──────────────────────────────────────
 def char_script(ch):
+    """ch の用字系 'LATIN'/'CYRILLIC'/'GREEK' を返す (それ以外/不明は None)。homoglyph 判定用。"""
     try:
         name = unicodedata.name(ch)
     except ValueError:
@@ -127,6 +128,7 @@ def char_script(ch):
 
 
 def is_invisible(ch):
+    """zero-width / bidi / 制御 / steganography 文字なら True (改行・タブは除く)。"""
     cp = ord(ch)
     for lo, hi in INVISIBLE_RANGES:
         if lo <= cp <= hi:
@@ -137,6 +139,7 @@ def is_invisible(ch):
 
 
 def sha1(s):
+    """span 照合用の短縮 SHA1。生 payload を出さずに参照するため (Log Leakage 対策)。"""
     return hashlib.sha1(s.encode("utf-8", "replace")).hexdigest()[:10]
 
 
@@ -157,6 +160,7 @@ EXAMPLE_LEAD = re.compile(
 
 
 def classify_context(line, in_code_block, prev_line):
+    """行の文脈クラス (code-fence/table-cell/blockquote/example-lead/prose) を返す。"""
     stripped = line.lstrip()
     if in_code_block:
         return "code-fence"
@@ -188,6 +192,7 @@ QUOTE_CHARS = "「」『』“”\"'＂｢｣"
 
 
 def scan_text(text):
+    """L1 ヒューリスティック: 行単位 + collapsed(跨行) + 不可視文字を走査し signal[] を返す。"""
     lines = text.splitlines()
     signals = []
     sid = 0
@@ -316,6 +321,7 @@ def scan_text(text):
 
 
 def parse_frontmatter(text):
+    """frontmatter (--- ブロック) を dict にパースする。無い/不正なら None。"""
     if not text.startswith("---"):
         return None
     end = text.find("\n---", 3)
@@ -341,6 +347,7 @@ def parse_frontmatter(text):
 
 
 def check_contract(text):
+    """L0 契約検証: 固定値 / period_end 形式 / forbidden_usage トークンを検査し violation list を返す。"""
     out = []
     fm = parse_frontmatter(text)
     if fm is None:
@@ -383,6 +390,7 @@ def suggested_level(contract, signals, shape_ok=True):
 
 
 def scan_file(path):
+    """1 ファイルを走査し L0+L1 の結果 (structural/signals/counts/l2_required/flagged) を返す。"""
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
     signals = scan_text(text)
@@ -393,6 +401,9 @@ def scan_file(path):
     # 対象。frontmatter 欠落は contract 側 (no-frontmatter) でも捕捉されるが、
     # 「frontmatter OK だが ## 1. が無い」ケースは shape でしか拾えない。
     structural_deviation = (not fm_present) or (not shape_ok)
+    # L1 が何か見つけたか (= exit code / 人手注意の advisory)。signal / 契約違反 /
+    # 定型逸脱のいずれか。
+    flagged = bool(signals) or bool(contract) or structural_deviation
     return {
         "schema": "scan-threat-report/l1@2",
         "file": path,
@@ -407,14 +418,20 @@ def scan_file(path):
             "example": sum(1 for s in signals if not s["live"]),
             "total": len(signals),
         },
-        # gate 用: L2 を起動すべきか (= clean 即決できないか)。
-        # P2: live ではなく『signal の有無 ∨ 契約違反 ∨ 定型逸脱』で決める。
-        "l2_required": bool(signals) or bool(contract) or structural_deviation,
+        # gate 用: L2 を起動すべきか。**契約違反が無い限り常に True** —
+        # contract-clean なレポートは signal=0 でも L2 が本文全体を必ず精査して
+        # から clean になる (SKILL.md L2/L3 と一致。L1 の recall 限界で
+        # 言い換え/新規 injection を取りこぼしても clean に直行させない)。
+        # 契約違反があるものは L0 で既に blocked なので L2 は不要 (= False)。
+        "l2_required": not bool(contract),
+        # L1/L0 が何か検出したか (exit code 用の advisory)。
+        "flagged": flagged,
         "suggested_signal_level": suggested_level(contract, signals, shape_ok),
     }
 
 
 def collect_targets(arg):
+    """arg がディレクトリなら配下の *.md を、ファイルならそれ自身を対象として返す。"""
     if os.path.isdir(arg):
         return sorted(os.path.join(r, fn)
                       for r, _, fs in os.walk(arg) for fn in fs if fn.endswith(".md"))
@@ -422,6 +439,7 @@ def collect_targets(arg):
 
 
 def print_human(rep):
+    """scan_file の結果を人間向けサマリとして stdout に出力する。"""
     print(f"\n================ {rep['file']} ================")
     st = rep["structural"]
     cv = st["contract_violations"]
@@ -448,6 +466,7 @@ def print_human(rep):
 
 
 def main():
+    """CLI エントリ。--json で機械可読 / 無指定で人間向け。exit code = signal/契約/定型の検出有無。"""
     args = [a for a in sys.argv[1:] if a != "--json"]
     as_json = "--json" in sys.argv
     if len(args) != 1:
@@ -466,8 +485,14 @@ def main():
             print(f"🚫 ファイルが無い: {p}", file=sys.stderr)
             continue
         reports.append(rep)
-        if rep["l2_required"]:
+        if rep["flagged"]:
             any_signal = True
+
+    # fail-closed: 1 件も読めなかったら非ゼロで返す (reports[0] クラッシュ /
+    # exit 0 の偽成功を防ぐ)。injection ゲートが沈黙して素通りするのを避ける。
+    if not reports:
+        print("🚫 有効な入力を 1 件も読めなかった (fail-closed)", file=sys.stderr)
+        return 2
 
     if as_json:
         print(json.dumps(reports if len(reports) > 1 else reports[0],
@@ -476,7 +501,7 @@ def main():
         for rep in reports:
             print_human(rep)
         print(f"\n[exit code = {1 if any_signal else 0}]  "
-              f"# signal/契約違反の有無のみ。block 判断は L3 (SKILL.md 参照)")
+              f"# signal/契約違反/定型逸脱の有無のみ。clean 判断は L2+L3 (SKILL.md)")
     return 1 if any_signal else 0
 
 

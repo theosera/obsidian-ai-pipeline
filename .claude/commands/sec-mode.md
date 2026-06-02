@@ -62,8 +62,10 @@ Security-only mode 規約が適用されます。上位仕様ドキュメント
    本文を ingest が**何も書き込む前に**検査 (L0 契約 + L1 + **L2 本文全体の隔離
    判定** + L3)。**`clean` のみ次へ**。`blocked`/`suspicious` は ingest せず・
    `processed` 付けず、`raw/` でなく `_quarantine/<period_end>.md` へ退避し報告。
-   clean は L1 の `live` 数では決めず、signal/契約違反が1つでもあれば L2 が本文
-   全体を精査する (行分割・接頭辞降格の素通り防止)。L2 (no-tool Task)/L1 実行は都度承認。
+   **L2 は必須**: L0 契約違反は即 blocked。契約違反が無いレポートは **signal=0 でも
+   L2 が本文全体をレビューしてからでないと clean にしない** (`live`/signal 数で
+   clean を即決せず、行分割・接頭辞降格・新規表現の素通りを防ぐ)。
+   L2 (no-tool Task)/L1 実行は都度承認。
 4. (clean のみ) 本文を
    `<vault>/Permanent Note/10_Threat_Reports/raw/<sanitized-period_end>.md`
    に保存 (sanitize 済 `YYYY-MM-DD` のみをファイル名に使用)。
