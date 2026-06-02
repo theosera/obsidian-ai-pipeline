@@ -342,3 +342,6 @@ outside the catalog (isolated workspace).
 - `docs/branch-protection.md` — main branch protection + auto-merge setup
 - `.github/workflows/ci.yml` — CI definitions
 - `.github/scripts/check-package-json-duplicates.py` — JSON lint
+- `docs/security/gmail-mcp-local-setup.md` — Gmail MCP ローカルセットアップ注意点
+  (Google Cloud Console: プロジェクト統一 / OAuth クライアント種別 / テストユーザー /
+  最小権限フラグ / パッケージ実在確認)
