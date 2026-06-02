@@ -124,6 +124,11 @@ Pull Requests. See `docs/branch-protection.md` for the full setup.
 - `pnpm test` — unit tests (currently ~173+ cases)
 - `pnpm typecheck` — root `tsc --noEmit` + workspace-wide `pnpm -r typecheck`
   (depends on core being built first, handled by the root script)
+- `pnpm lint` — **oxlint** (`oxlint --type-aware`), root Claude-side only,
+  bug-detection-only 4 rules (type-aware `no-floating-promises` /
+  `no-misused-promises` via `oxlint-tsgolint`). Style → CodeRabbit.
+  Config: `.oxlintrc.json` (`apps/**` / `packages/**` / `chrome-extension/**`
+  ignored, matching the prior ESLint scope / 対照実験の独立性).
 - `.github/scripts/check-package-json-duplicates.py` — rejects duplicate
   JSON keys across all package.json files
 - Chrome-extension job — isolated workspace (`--ignore-workspace`),

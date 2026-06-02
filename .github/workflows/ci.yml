@@ -60,9 +60,10 @@ jobs:
         # や apps/* の型崩れを検知できない。workspace 全体を走らせる。
         run: pnpm typecheck
 
-      - name: ESLint (root Claude-side only)
-        # 最小 ESLint: バグ検出ルールのみ (no-floating-promises 等)。
-        # apps/* / packages/* (Codex 側) は eslint.config.js の ignores で対象外。
+      - name: oxlint (root Claude-side only, type-aware)
+        # 最小 oxlint: バグ検出ルールのみ (no-floating-promises 等)。
+        # 型情報ルールは oxlint-tsgolint (--type-aware) が担当。
+        # apps/* / packages/* (Codex 側) は .oxlintrc.json の ignorePatterns で対象外。
         run: pnpm lint
 
   chrome-extension:

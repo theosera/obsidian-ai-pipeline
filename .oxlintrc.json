@@ -1,0 +1,57 @@
+{
+  // $schema を指定すると IDE 補完が効く。
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+
+  // 方針 (旧 eslint.config.js を全置換。範囲・ルールは同一に保つ):
+  //   - 対象は **ルート Claude 側のみ** (`*.ts` + `pipeline/**` + `test/**`)。
+  //     apps/* / packages/* (Codex 側) は Claude-vs-Codex 対照実験の独立性を
+  //     尊重し対象外。chrome-extension も独立 workspace のため対象外。
+  //   - ルールは **バグ検出のみ**。スタイル統一は CodeRabbit に委譲する。
+  //     recommended / correctness カテゴリーは使わず、価値が確実な 4 ルールだけを
+  //     明示有効化する (ESLint 時代と同一の最小主義)。
+  //   - 最重要は type-aware な `typescript/no-floating-promises` (await 忘れ検出)。
+  //     async が多い本コードベース (X API / spawn / fetch) で実バグ予防になる。
+  //     型情報ルールは oxlint-tsgolint が担当し、`oxlint --type-aware` で有効化する。
+  "plugins": ["eslint", "typescript"],
+
+  // oxlint は既定で correctness カテゴリーを "warn" で全件有効化する。
+  // 本リポは「4 ルールだけ」主義なので既定カテゴリーを明示的に切り、
+  // 下の rules で挙げたものだけを走らせる。
+  "categories": { "correctness": "off" },
+
+  // type-aware linting (oxlint-tsgolint)。CLI の --type-aware と併せて有効。
+  "options": { "typeAware": true },
+
+  "rules": {
+    // await 忘れの Promise を検出 (最重要・type-aware)
+    "typescript/no-floating-promises": "error",
+    // `if (asyncFn())` 等の Promise 誤用を検出 (type-aware)
+    "typescript/no-misused-promises": "error",
+    // 未使用変数 (oxlint では eslint プラグインの no-unused-vars が TS も解析)。
+    // `_` プレフィックスは意図的な未使用として許容
+    "no-unused-vars": [
+      "error",
+      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_" }
+    ],
+    // 再代入されない let を const に
+    "prefer-const": "error"
+  },
+
+  // 旧 eslint.config.js の ignores を踏襲 (Codex 側 workspace / アーカイブ /
+  // ビルド成果物 / 非 TS / ユーティリティスクリプトを一切対象にしない)。
+  "ignorePatterns": [
+    "apps/**",
+    "packages/**",
+    "chrome-extension/**",
+    "scripts/**",
+    "utils/**",
+    "dist/**",
+    "**/dist/**",
+    "**/*.d.ts",
+    "node_modules/**",
+    "_Archived/**",
+    "**/*.js",
+    "**/*.cjs",
+    "**/*.mjs"
+  ]
+}
