@@ -94,6 +94,22 @@ const NEW_FORMAT_BODY = `
 
 const NEW_FORMAT_REPORT = SAMPLE_FRONTMATTER + '\n' + NEW_FORMAT_BODY;
 
+// 外側パイプ無しの Markdown table (`a | b` 形式 + `---|---` separator)。
+// detectComparisonColumns が列を正しく分割でき、separator 行を偽行として
+// 取り込まないことを検証する (Codex #64 P2)。
+const NO_OUTER_PIPE_BODY = `
+
+## 1. ニュース・脆弱性リスト
+
+事案/脆弱性名 | 攻撃カテゴリ | 影響対象 | RiskScore | Impact / Exploitability | ステータス
+---|---|---|---|---|---
+Bare Pipe Vuln | カテゴリA | 対象A | 6.4 | 7 / 5 | 未確認
+
+## 2. 個別詳細
+`;
+
+const NO_OUTER_PIPE_REPORT = SAMPLE_FRONTMATTER + '\n' + NO_OUTER_PIPE_BODY;
+
 export async function run(): Promise<TestSuiteResult> {
   const runner = new TestRunner();
   runner.section('threat_reports_parser: frontmatter');
@@ -180,6 +196,18 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(v.category, 'CI/CDサプライチェーン汚染');
     assert.strictEqual(v.affected, 'GitHub Actions利用リポジトリ');
     assert.strictEqual(v.status, '悪用確認済');
+  });
+
+  runner.test('parseReport: 外側パイプ無し table を抽出し separator を偽行にしない', () => {
+    const parsed = parseReport(NO_OUTER_PIPE_REPORT);
+    assert.strictEqual(parsed.vulnerabilities.length, 1, 'データ 1 行のみ (separator は除外)');
+    const v = parsed.vulnerabilities[0];
+    assert.strictEqual(v.name, 'Bare Pipe Vuln');
+    assert.strictEqual(v.risk_score, 6.4);
+    assert.strictEqual(v.impact, 7);
+    assert.strictEqual(v.exploitability, 5);
+    // separator (---) が脆弱性名として混入していないこと
+    assert.ok(!parsed.vulnerabilities.some(x => /^-+$/.test(x.name)), 'separator 行は取り込まない');
   });
 
   runner.test('parseReport: 詳細セクション (技術/影響/回避策) を抽出', () => {

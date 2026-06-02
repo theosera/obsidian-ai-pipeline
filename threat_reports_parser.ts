@@ -381,10 +381,12 @@ export function validateFrontmatter(yamlText: string): ReportFrontmatter {
  */
 function splitTableRow(line: string): string[] | null {
   const trimmed = line.trim();
-  // Markdown パイプ table 行
-  if (trimmed.startsWith('|')) {
-    if (/^\|[\s:|-]+\|$/.test(trimmed)) return null; // separator 行
-    const cells = trimmed.split('|').slice(1, -1).map(c => c.trim());
+  // Markdown パイプ table 行 (外側パイプの有無どちらも対応)
+  if (trimmed.includes('|')) {
+    // 先頭/末尾の 1 本だけ除去。`a | b`(外側パイプ無し) は端のセルを残す
+    const cells = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+    // separator 行 (全セルが `---` / `:--:` 等のみ) は null
+    if (cells.every(c => /^:?-+:?$/.test(c))) return null;
     return cells.length > 0 ? cells : null;
   }
   // 旧形式: タブ優先
@@ -410,7 +412,10 @@ function detectComparisonColumns(cells: string[]): {
   const idx = (re: RegExp): number => cells.findIndex(c => re.test(c));
   const name = idx(/事案|脆弱性/);
   const riskScore = idx(/リスクスコア|riskscore/i);
-  if (name < 0 || riskScore < 0) return null;
+  // name と riskScore が同一 index = ヘッダが列に分割できていない (単一セルに
+  // 全キーワードが同居)。表として扱うと separator/データ行を偽行として誤取込
+  // しうるので拒否する。
+  if (name < 0 || riskScore < 0 || name === riskScore) return null;
   return {
     name,
     category: idx(/攻撃カテゴリ/),
