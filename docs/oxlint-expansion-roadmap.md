@@ -1,6 +1,12 @@
 # oxlint カバレッジ拡大ロードマップ
 
-> 前提: PR #65 で root の Linter を ESLint → **oxlint + oxlint-tsgolint** に全置換した。
+> ⚠️ **マージ順序の依存**: 本ロードマップは **PR #65（ESLint → oxlint 全置換）の
+> マージを前提**とする。#65 が未マージの間、main 単体では `package.json` の
+> `lint` はまだ `eslint .` であり `.oxlintrc.json` も存在しない。本文中の
+> 「現状」記述はすべて **#65 適用後の状態**を指す。**本 PR は #65 のマージ後に
+> マージすること**（先にマージすると存在しない設定の編集を指示する内容になる）。
+
+> 前提: PR #65 で root の Linter を ESLint → **oxlint + oxlint-tsgolint** に全置換する。
 > その時点では **ESLint 時代と同一スコープ**（root Claude 側 `*.ts` + `pipeline/**` +
 > `test/**`、4 ルールのみ、`correctness` カテゴリー off）に留めている。
 >
@@ -10,7 +16,7 @@
 > **実装方針**: 下記タスクは**それぞれ独立した PR** で行う（まとめて 1 PR にしない）。
 > 各タスクは「条件をすべて満たしたら着手 → 検証 → 単独 PR」。
 
-## 現状の oxlint スコープ（PR #65 時点）
+## 現状の oxlint スコープ（PR #65 適用後の状態）
 
 | 領域 | lint 状態 | 除外理由 |
 |---|---|---|
