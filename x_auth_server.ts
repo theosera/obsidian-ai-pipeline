@@ -123,7 +123,7 @@ export async function runAuthServer(): Promise<void> {
   const pkce = new Map<string, { verifier: string }>();
 
   // 非同期ハンドラを名前付き関数に切り出し、createServer には void 返却の
-  // 同期ラッパを渡す (typescript-eslint/no-misused-promises 対応)。
+  // 同期ラッパを渡す (typescript/no-misused-promises 対応)。
   // ハンドラ rejection はラッパの .catch で 500 応答 + ログに集約する。
   const handleRequest = async (
     req: http.IncomingMessage,

@@ -14,7 +14,7 @@
     "start": "tsx index.ts",
     "sync-rules": "tsx sync-rules.ts",
     "test": "tsx test_runner.ts",
-    "lint": "eslint .",
+    "lint": "oxlint --type-aware",
     "dev:auth": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter auth dev",
     "sync": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter sync sync",
     "propose:grouping": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter sync propose:grouping",
@@ -40,9 +40,9 @@
     "@types/node": "catalog:",
     "@types/string-similarity": "^4.0.2",
     "@types/turndown": "^5.0.6",
-    "eslint": "^10.4.0",
+    "oxlint": "^1.68.0",
+    "oxlint-tsgolint": "^0.23.0",
     "tsx": "catalog:",
-    "typescript": "catalog:",
-    "typescript-eslint": "^8.59.3"
+    "typescript": "catalog:"
   }
 }
