@@ -35,8 +35,11 @@
  * ## 本文パース
  *
  * Section 1: 比較表 (1 行 = 1 脆弱性)
- *   `事案 / 脆弱性名\t攻撃カテゴリ\t影響対象\tリスクスコア\tステータス` ヘッダの下に
- *   タブ or 3 個以上の空白で区切られた行が並ぶ。
+ *   ヘッダ行から列位置を `detectComparisonColumns()` でヘッダ駆動に特定する。
+ *   対応フォーマット:
+ *     - Markdown パイプ table: `| 事案/脆弱性名 | … | RiskScore | Impact / Exploitability | … |` (実運用)
+ *     - タブ区切り (旧形式): `事案\t攻撃カテゴリ\t…\tリスクスコア\t…`
+ *     - 3+ 空白区切り (テキスト table)
  *
  * Section 2: 個別詳細
  *   `①②③④⑤...` で始まる名前付きブロック。
@@ -368,21 +371,62 @@ export function validateFrontmatter(yamlText: string): ReportFrontmatter {
 }
 
 /**
- * 比較表 (Section 1) 行を 5 列に split する。
+ * 比較表 (Section 1) 行をセル配列へ split する。
  *
- * 区切りはタブ優先、無ければ 3+ 空白へフォールバック。
- * 5 列ちょうどに分かれない行は null を返す (= 表の罫線行や noise を弾く)。
+ * 対応フォーマット (週次レポート送信側のフォーマット変動に追従):
+ *   - Markdown パイプ table : `| a | b | c |`  (新形式・実運用)
+ *   - タブ区切り            : `a\tb\tc`        (旧形式・既存テスト)
+ *   - 3+ 空白区切り         : `a   b   c`      (テキスト table)
+ *
+ * 列数は固定しない (旧 5 列 / 新 7 列の両対応)。実際の列位置は
+ * `detectComparisonColumns()` がヘッダから特定する。
+ * Markdown separator 行 (`|---|---|`) や空セルのみの行は null を返す。
  */
 function splitTableRow(line: string): string[] | null {
-  // タブ区切り
+  const trimmed = line.trim();
+  // Markdown パイプ table 行 (外側パイプの有無どちらも対応)
+  if (trimmed.includes('|')) {
+    // 先頭/末尾の 1 本だけ除去。`a | b`(外側パイプ無し) は端のセルを残す
+    const cells = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+    // separator / 空行 (全セルが空 or `---` / `:--:` 等のみ) は null
+    if (cells.every(c => c === '' || /^:?-+:?$/.test(c))) return null;
+    return cells.length > 0 ? cells : null;
+  }
+  // 旧形式: タブ優先
   if (line.includes('\t')) {
     const cols = line.split('\t').map(c => c.trim()).filter(c => c.length > 0);
-    if (cols.length === 5) return cols;
+    return cols.length > 0 ? cols : null;
   }
-  // 3+ space 区切り (Markdown table を「テキスト」として手で書いた場合)
+  // 旧形式: 3+ 空白 (Markdown table を「テキスト」として手で書いた場合)
   const cols = line.split(/ {3,}/).map(c => c.trim()).filter(c => c.length > 0);
-  if (cols.length === 5) return cols;
-  return null;
+  return cols.length > 0 ? cols : null;
+}
+
+/**
+ * 比較表ヘッダのセル配列から各論理列の index を特定する。
+ * 日本語 (`リスクスコア`) / 英語 (`RiskScore`)、5 列 / 7 列いずれにも追従する。
+ * `impactExploit` は新形式の独立列 "Impact / Exploitability"。無ければ -1 で、
+ * 旧形式のように risk_score 列内の "Impact 10 / Exploitability 7" を使う。
+ */
+function detectComparisonColumns(cells: string[]): {
+  name: number; category: number; affected: number;
+  riskScore: number; impactExploit: number; status: number;
+} | null {
+  const idx = (re: RegExp): number => cells.findIndex(c => re.test(c));
+  const name = idx(/事案|脆弱性/);
+  const riskScore = idx(/リスクスコア|riskscore/i);
+  // name と riskScore が同一 index = ヘッダが列に分割できていない (単一セルに
+  // 全キーワードが同居)。表として扱うと separator/データ行を偽行として誤取込
+  // しうるので拒否する。
+  if (name < 0 || riskScore < 0 || name === riskScore) return null;
+  return {
+    name,
+    category: idx(/攻撃カテゴリ/),
+    affected: idx(/影響対象/),
+    riskScore,
+    impactExploit: idx(/impact|exploitability/i),
+    status: idx(/ステータス/),
+  };
 }
 
 /**
@@ -418,40 +462,60 @@ function extractPrimaryName(rawName: string): string {
 
 /**
  * Section 1 (比較表) を解析して name → row のマップを返す。
+ * 区切り (パイプ / タブ / 空白) と列順・列数のゆらぎに、ヘッダ駆動で追従する。
  */
 function parseComparisonTable(body: string): Map<string, ParsedVulnerability> {
   const map = new Map<string, ParsedVulnerability>();
   const lines = body.split('\n');
-  let inTable = false;
-  for (const line of lines) {
-    // ヘッダ行で table 開始
-    if (line.includes('事案') && line.includes('攻撃カテゴリ') && line.includes('リスクスコア')) {
-      inTable = true;
+  let columns: ReturnType<typeof detectComparisonColumns> = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    const trimmed = line.trim();
+
+    if (!columns) {
+      // ヘッダ行: 事案/脆弱性 AND 攻撃カテゴリ AND (リスクスコア|RiskScore)
+      if (/事案|脆弱性/.test(trimmed) && /攻撃カテゴリ/.test(trimmed) && /リスクスコア|riskscore/i.test(trimmed)) {
+        const cells = splitTableRow(line);
+        if (cells) columns = detectComparisonColumns(cells);
+      }
       continue;
     }
-    if (!inTable) continue;
-    // Section 2 開始 / 別の見出しが来たら表終わり
-    if (/^#{1,3}\s/.test(line) || /^2[\.\s]/.test(line.trim()) || /^⸻/.test(line.trim())) {
-      inTable = false;
-      continue;
-    }
-    if (!line.trim()) continue;
 
-    const cols = splitTableRow(line);
-    if (!cols) continue;
+    // Section 2 開始 / 別の見出し / 区切り線が来たら表終わり
+    if (/^#{1,3}\s/.test(trimmed) || /^2[\.\s]/.test(trimmed) || /^⸻/.test(trimmed)) break;
+    if (!trimmed) continue;
 
-    const [rawName, category, affected, scoreText, status] = cols;
+    const cells = splitTableRow(line); // separator 行 (|---|) は null
+    if (!cells) continue;
+    // risk_score 列に届かない行 (見出し・noise) は弾く
+    if (cells.length <= columns.riskScore) continue;
+
+    const get = (i: number): string => (i >= 0 && i < cells.length ? cells[i] : '');
+    const rawName = get(columns.name);
+    if (!rawName) continue;
     const primaryName = extractPrimaryName(rawName);
-    const { score, impact, exploit } = parseRiskScore(scoreText);
+
+    const risk = parseRiskScore(get(columns.riskScore));
+    // 数値スコアの無い行 (prose / 3+空白で誤分割された散文 / noise) は弾く。
+    // 3-space フォールバックが列数を固定しなくなったことの安全網。
+    if (risk.score === null) continue;
+    let impact = risk.impact;
+    let exploit = risk.exploit;
+    // 新形式: 独立列 "10 / 8" があればそちらを優先
+    if (columns.impactExploit >= 0) {
+      const ie = get(columns.impactExploit).match(/(\d+)\s*\/\s*(\d+)/);
+      if (ie) { impact = parseInt(ie[1], 10); exploit = parseInt(ie[2], 10); }
+    }
 
     map.set(primaryName, {
       name: primaryName,
-      category: category || null,
-      affected: affected || null,
+      category: get(columns.category) || null,
+      affected: get(columns.affected) || null,
       impact,
       exploitability: exploit,
-      risk_score: score,
-      status: status || null,
+      risk_score: risk.score,
+      status: get(columns.status) || null,
       technical_summary: null,
       business_impact: null,
       mitigations: null,
