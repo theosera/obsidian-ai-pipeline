@@ -488,7 +488,9 @@ function parseComparisonTable(body: string): Map<string, ParsedVulnerability> {
     if (!rawName) continue;
     const primaryName = extractPrimaryName(rawName);
 
-    let { score, impact, exploit } = parseRiskScore(get(columns.riskScore));
+    const risk = parseRiskScore(get(columns.riskScore));
+    let impact = risk.impact;
+    let exploit = risk.exploit;
     // 新形式: 独立列 "10 / 8" があればそちらを優先
     if (columns.impactExploit >= 0) {
       const ie = get(columns.impactExploit).match(/(\d+)\s*\/\s*(\d+)/);
@@ -501,7 +503,7 @@ function parseComparisonTable(body: string): Map<string, ParsedVulnerability> {
       affected: get(columns.affected) || null,
       impact,
       exploitability: exploit,
-      risk_score: score,
+      risk_score: risk.score,
       status: get(columns.status) || null,
       technical_summary: null,
       business_impact: null,
