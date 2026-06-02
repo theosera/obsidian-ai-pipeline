@@ -356,11 +356,13 @@ def check_contract(text):
         out.append({"code": "missing-key", "message": "必須キー `period_end` が無い"})
     elif not re.match(r"^\d{4}-\d{2}-\d{2}$", str(pe).strip().strip("\"'")):
         out.append({"code": "bad-period_end", "message": f"`period_end` が YYYY-MM-DD でない: `{pe}`"})
+    # forbidden_usage に必須トークンが含まれることを要求する。キー欠落 / 空配列 /
+    # トークン不在のいずれも違反 (CLI parser の ContractError と同じ契約)。
     forb = fm.get("forbidden_usage")
-    if isinstance(forb, list) and forb and \
-       not any(REQUIRED_FORBIDDEN_TOKEN in str(x) for x in forb):
+    forb_items = forb if isinstance(forb, list) else ([forb] if forb else [])
+    if not any(REQUIRED_FORBIDDEN_TOKEN in str(x) for x in forb_items):
         out.append({"code": "missing-forbidden-token",
-                    "message": f"`forbidden_usage` に必須トークン `{REQUIRED_FORBIDDEN_TOKEN}` 欠落"})
+                    "message": f"`forbidden_usage` に必須トークン `{REQUIRED_FORBIDDEN_TOKEN}` が無い (キー欠落/空/不在)"})
     return out
 
 
@@ -369,13 +371,13 @@ def section_shape_ok(text):
     return bool(re.search(r"^##\s*1\.", text, re.MULTILINE))
 
 
-def suggested_level(contract, signals):
-    """advisory のみ。L3 が最終決定する。clean 判断は『signal 0 かつ契約 OK』."""
+def suggested_level(contract, signals, shape_ok=True):
+    """advisory のみ。L3 が最終決定する。clean 判断は『signal 0 ∧ 契約 OK ∧ 定型 OK』."""
     if contract:
         return "high"
     if any(s["live"] for s in signals):
         return "high"
-    if signals:
+    if signals or not shape_ok:
         return "low"
     return "none"
 
@@ -385,12 +387,18 @@ def scan_file(path):
         text = f.read()
     signals = scan_text(text)
     contract = check_contract(text)
+    fm_present = text.startswith("---")
+    shape_ok = section_shape_ok(text)
+    # 定型逸脱 (frontmatter 欠落 / 番号付きセクション無し) も pre-ingest ゲートの
+    # 対象。frontmatter 欠落は contract 側 (no-frontmatter) でも捕捉されるが、
+    # 「frontmatter OK だが ## 1. が無い」ケースは shape でしか拾えない。
+    structural_deviation = (not fm_present) or (not shape_ok)
     return {
         "schema": "scan-threat-report/l1@2",
         "file": path,
         "structural": {
-            "frontmatter_present": text.startswith("---"),
-            "section_shape_ok": section_shape_ok(text),
+            "frontmatter_present": fm_present,
+            "section_shape_ok": shape_ok,
             "contract_violations": contract,
         },
         "signals": signals,
@@ -400,9 +408,9 @@ def scan_file(path):
             "total": len(signals),
         },
         # gate 用: L2 を起動すべきか (= clean 即決できないか)。
-        # P2: live ではなく『signal の有無 ∨ 契約違反』で決める。
-        "l2_required": bool(signals) or bool(contract),
-        "suggested_signal_level": suggested_level(contract, signals),
+        # P2: live ではなく『signal の有無 ∨ 契約違反 ∨ 定型逸脱』で決める。
+        "l2_required": bool(signals) or bool(contract) or structural_deviation,
+        "suggested_signal_level": suggested_level(contract, signals, shape_ok),
     }
 
 

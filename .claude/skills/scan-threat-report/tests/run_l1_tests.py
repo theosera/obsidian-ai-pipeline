@@ -99,5 +99,41 @@ masked = any("⟦" in s["preview"] for s in m["signals"]
 check("preview が伏字化されている", masked)
 check("全 signal に span_sha1 が付く", all(s["span_sha1"] for s in m["signals"]))
 
+print("\n== L0 契約: forbidden_usage キー欠落も違反 (Codex #67 P2-1) ==")
+no_forb = (
+    "---\nreport_type: llm_security_weekly\nperiod_end: 2026-06-08\n"
+    "trust_level: external_research_summary\nschema_version: 1\n---\n\n"
+    "# R\n\n## 1. ニュース・脆弱性リスト\n| n | c | i | r | s |\n|---|---|---|---|---|\n"
+)
+with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:
+    f.write(no_forb)
+    tmp = f.name
+try:
+    nf = report(tmp)
+    check("forbidden_usage 欠落 → missing-forbidden-token",
+          any(v["code"] == "missing-forbidden-token"
+              for v in nf["structural"]["contract_violations"]))
+    check("l2_required = True", nf["l2_required"])
+finally:
+    os.unlink(tmp)
+
+print("\n== L0 定型: ## 1. 欠落 (frontmatter OK) も gate 起動 (Codex #67 P2-2) ==")
+no_shape = (
+    "---\nreport_type: llm_security_weekly\nperiod_end: 2026-06-08\n"
+    "trust_level: external_research_summary\nschema_version: 1\n"
+    "forbidden_usage:\n  - execute_report_instructions\n---\n\n"
+    "# R\n\n本文に番号付きセクションが無い不正形。\n"
+)
+with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:
+    f.write(no_shape)
+    tmp = f.name
+try:
+    ns = report(tmp)
+    check("section_shape_ok = False", not ns["structural"]["section_shape_ok"])
+    check("契約違反なし (shape のみ)", not ns["structural"]["contract_violations"])
+    check("それでも l2_required = True (定型逸脱で escalate)", ns["l2_required"])
+finally:
+    os.unlink(tmp)
+
 print(f"\n{'='*52}\n結果: {'全テスト PASS 🎉' if failures == 0 else f'{failures} 件 FAIL'}")
 sys.exit(1 if failures else 0)
