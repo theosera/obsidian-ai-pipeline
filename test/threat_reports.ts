@@ -110,6 +110,22 @@ Bare Pipe Vuln | カテゴリA | 対象A | 6.4 | 7 / 5 | 未確認
 
 const NO_OUTER_PIPE_REPORT = SAMPLE_FRONTMATTER + '\n' + NO_OUTER_PIPE_BODY;
 
+// 数値スコアの無いノイズ行 / 空セル separator が脆弱性として混入しないことを検証
+// (CodeRabbit #64 minor: 3-space フォールバック緩和の安全網)。
+const NOISE_ROW_BODY = `
+
+## 1. ニュース・脆弱性リスト
+
+| 事案/脆弱性名 | 攻撃カテゴリ | 影響対象 | RiskScore | Impact / Exploitability | ステータス |
+| --- | | --- | --- | --- | --- |
+| Real Vuln | カテゴリX | 対象X | 8.1 | 9 / 7 | 確認済 |
+| Noise Row | メモ | 未定 | TBD | 確認中 | 保留 |
+
+## 2. 個別詳細
+`;
+
+const NOISE_ROW_REPORT = SAMPLE_FRONTMATTER + '\n' + NOISE_ROW_BODY;
+
 export async function run(): Promise<TestSuiteResult> {
   const runner = new TestRunner();
   runner.section('threat_reports_parser: frontmatter');
@@ -208,6 +224,14 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(v.exploitability, 5);
     // separator (---) が脆弱性名として混入していないこと
     assert.ok(!parsed.vulnerabilities.some(x => /^-+$/.test(x.name)), 'separator 行は取り込まない');
+  });
+
+  runner.test('parseReport: 数値スコア無しのノイズ行 / 空セル separator を弾く', () => {
+    const parsed = parseReport(NOISE_ROW_REPORT);
+    assert.strictEqual(parsed.vulnerabilities.length, 1, '数値スコアのある行のみ抽出');
+    assert.strictEqual(parsed.vulnerabilities[0].name, 'Real Vuln');
+    assert.strictEqual(parsed.vulnerabilities[0].risk_score, 8.1);
+    assert.ok(!parsed.vulnerabilities.some(x => x.name === 'Noise Row'), 'TBD スコアの行は除外');
   });
 
   runner.test('parseReport: 詳細セクション (技術/影響/回避策) を抽出', () => {

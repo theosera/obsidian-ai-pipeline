@@ -35,8 +35,11 @@
  * ## 本文パース
  *
  * Section 1: 比較表 (1 行 = 1 脆弱性)
- *   `事案 / 脆弱性名\t攻撃カテゴリ\t影響対象\tリスクスコア\tステータス` ヘッダの下に
- *   タブ or 3 個以上の空白で区切られた行が並ぶ。
+ *   ヘッダ行から列位置を `detectComparisonColumns()` でヘッダ駆動に特定する。
+ *   対応フォーマット:
+ *     - Markdown パイプ table: `| 事案/脆弱性名 | … | RiskScore | Impact / Exploitability | … |` (実運用)
+ *     - タブ区切り (旧形式): `事案\t攻撃カテゴリ\t…\tリスクスコア\t…`
+ *     - 3+ 空白区切り (テキスト table)
  *
  * Section 2: 個別詳細
  *   `①②③④⑤...` で始まる名前付きブロック。
@@ -385,8 +388,8 @@ function splitTableRow(line: string): string[] | null {
   if (trimmed.includes('|')) {
     // 先頭/末尾の 1 本だけ除去。`a | b`(外側パイプ無し) は端のセルを残す
     const cells = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
-    // separator 行 (全セルが `---` / `:--:` 等のみ) は null
-    if (cells.every(c => /^:?-+:?$/.test(c))) return null;
+    // separator / 空行 (全セルが空 or `---` / `:--:` 等のみ) は null
+    if (cells.every(c => c === '' || /^:?-+:?$/.test(c))) return null;
     return cells.length > 0 ? cells : null;
   }
   // 旧形式: タブ優先
@@ -421,7 +424,7 @@ function detectComparisonColumns(cells: string[]): {
     category: idx(/攻撃カテゴリ/),
     affected: idx(/影響対象/),
     riskScore,
-    impactExploit: idx(/impact/i),
+    impactExploit: idx(/impact|exploitability/i),
     status: idx(/ステータス/),
   };
 }
@@ -494,6 +497,9 @@ function parseComparisonTable(body: string): Map<string, ParsedVulnerability> {
     const primaryName = extractPrimaryName(rawName);
 
     const risk = parseRiskScore(get(columns.riskScore));
+    // 数値スコアの無い行 (prose / 3+空白で誤分割された散文 / noise) は弾く。
+    // 3-space フォールバックが列数を固定しなくなったことの安全網。
+    if (risk.score === null) continue;
     let impact = risk.impact;
     let exploit = risk.exploit;
     // 新形式: 独立列 "10 / 8" があればそちらを優先
