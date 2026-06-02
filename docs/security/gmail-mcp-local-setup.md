@@ -57,8 +57,11 @@ Default mode どちらの運用でも参照可。
      でファイルを指すだけでよい。
    - **`.mcp.json`（project scope = git 追跡され得る）に secret やマシン固有絶対パスを書かない**。
      個人用は `--scope local`（`~/.claude.json`）に置く。必要なら `.mcp.json` を `.gitignore` する。
-   - OAuth 認可後のユーザートークンはサーバが `~/.google_workspace_mcp/credentials/`（暗号化）に
-     自動保存する。手動管理不要。
+   - OAuth 認可後のユーザートークン（`token` / `refresh_token` / `client_secret` を含む）は
+     `~/.google_workspace_mcp/credentials/` に **平文 JSON（ファイル権限のみ。アプリ層の暗号化は無い）**
+     として自動保存される。「暗号化されている」と誤認しないこと。`refresh_token` は長期有効な機密なので、
+     ディレクトリを `chmod 700` で保護し、**バックアップやファイルシステムアクセスも secret として扱う**。
+     より堅牢にするなら暗号化バックエンド（例: GCS backend）へ切り替える。
 
 7. **MCP パッケージは実在確認してから入れる**
    `npx -y <name>` の前に必ず `npm view <name>` で実在を確認する。
