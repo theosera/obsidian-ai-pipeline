@@ -65,7 +65,10 @@ Security-only mode 規約が適用されます。上位仕様ドキュメント
    **L2 は必須**: L0 契約違反は即 blocked。契約違反が無いレポートは **signal=0 でも
    L2 が本文全体をレビューしてからでないと clean にしない** (`live`/signal 数で
    clean を即決せず、行分割・接頭辞降格・新規表現の素通りを防ぐ)。
-   L2 (no-tool Task)/L1 実行は都度承認。
+   L2 (no-tool Task)/L1 実行は都度承認。**L2 には `general-purpose`/`claude`
+   (全ツール `*`) を使わず**、本文を prompt に inline で渡してツール不要にし、
+   判定器の返答に tool-use 痕跡が 1 つでもあれば内容に関わらず `suspicious`
+   に倒す (fail-closed)。詳細は `scan-threat-report` SKILL の L2 節。
 4. (clean のみ) 本文を
    `<vault>/Permanent Note/10_Threat_Reports/raw/<sanitized-period_end>.md`
    に保存 (sanitize 済 `YYYY-MM-DD` のみをファイル名に使用)。
