@@ -1,6 +1,6 @@
 ---
 name: pr-workflow
-description: obsidian-ai-pipeline の PR ワークフロー規約 (auto-merge Phase1 の有効化条件と guards / PR title・body 規約 / squash マージ / CI 期待値: pnpm test・typecheck・oxlint・package.json 重複チェック・chrome-extension job)。**PR を作成する / auto-merge を有効化するか判断する / PR の title・body を書く / CI で何が要求されるか確認する前に、必ずこの Skill をロードしてから**着手せよ。常時 CLAUDE.md に載せず発火条件付きで分離している。
+description: obsidian-ai-pipeline の PR ワークフロー規約 (auto-merge Phase1 の有効化条件と guards / PR title・body 規約 / squash マージ / CI 期待値=pnpm test・typecheck・oxlint・package.json 重複チェック・chrome-extension job)。**PR を作成する / auto-merge を有効化するか判断する / PR の title・body を書く / CI で何が要求されるか確認する前に、必ずこの Skill をロードしてから**着手せよ。常時 CLAUDE.md に載せず発火条件付きで分離している。
 # allowed-tools は最小化。本 Skill は規約の参照のみ。実際の PR 作成/ラベル付与/
 # auto-merge 操作 (mcp__github__*) は通常どおり都度承認フローで行う。
 allowed-tools: Read
