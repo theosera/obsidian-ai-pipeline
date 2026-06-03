@@ -36,7 +36,7 @@ Read すること。本 SKILL.md は重複を避けるため**圧縮した発火
 
 ## 品質ゲート3層 (守備範囲が別物。重ねる)
 
-```
+```text
 Layer3 Convention : oxlint --type-aware   規約・async誤用・複雑度 =「良く書けてるか」
 Layer2 Semantic   : LSP = tsserver         型整合・シンボル解決    =「動くか」
 Layer1 Syntax     : tsc                     構文の正当性

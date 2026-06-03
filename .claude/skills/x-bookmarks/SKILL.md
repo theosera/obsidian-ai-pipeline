@@ -104,6 +104,6 @@ with `index.ts` / `router.ts` / `storage.ts`.
 > (2026-06). Only the two settings files
 > `<vault>/__skills/pipeline/x_forced_parents.json` and
 > `<vault>/__skills/pipeline/x_folder_mapping.json` remain (user-maintained).
-
+>
 > 注: `x_folder_mapping.json` / `x_forced_parents.json` の**スキーマ**を変える
 > 変更は auto-merge せず `needs-human-review` (詳細は `pr-workflow` skill)。

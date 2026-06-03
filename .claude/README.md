@@ -24,7 +24,7 @@ project-level スキル (`<name>/SKILL.md`) を置く。ディレクトリ名が
 |---|---|---|
 | `pr-workflow` | PR 作成 / auto-merge 判断 / PR body / CI 期待値確認の前 | auto-merge Phase1 + guards / PR 規約 / CI 期待値 |
 | `x-bookmarks` | X bookmarks のコード・CLI・`X_Bookmarks/`・mapping json を触る前 | X bookmarks 機能の実装事実集 (SQLite / Dataview / 要約 / invariant) |
-| `ts-coding-conventions` | このリポの TypeScript を書く/直す前 | AI-native 規約の発火用サマリ (原本は `docs/ai-coding-conventions.md`) |
+| `ts-coding-conventions` | このリポの TypeScript を書く/直す/レビューする前 | AI-native 規約の発火用サマリ (原本は `docs/ai-coding-conventions.md`) |
 | `scan-threat-report` | sec-mode 取込で脅威レポート本文を扱う前 | injection ゲート L0〜L3 (検知+報告のみ) |
 
 ## settings.json
