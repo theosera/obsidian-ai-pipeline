@@ -84,7 +84,9 @@ gh api --method POST -H "Accept: application/vnd.github+json" \
   -f 'rules[][type]=non_fast_forward' \
   -f 'rules[][type]=pull_request' \
   -F 'rules[][parameters][required_approving_review_count]=0' \
+  -F 'rules[][parameters][dismiss_stale_reviews_on_push]=false' \
   -F 'rules[][parameters][require_code_owner_review]=true' \
+  -F 'rules[][parameters][require_last_push_approval]=false' \
   -F 'rules[][parameters][required_review_thread_resolution]=true' \
   -f 'rules[][type]=required_status_checks' \
   -F 'rules[][parameters][strict_required_status_checks_policy]=true' \
