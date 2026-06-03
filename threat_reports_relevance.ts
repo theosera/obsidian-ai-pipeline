@@ -105,10 +105,31 @@ export function buildRepoProfile(rootDir: string = process.cwd()): string {
   const workflowsText = workflows.join('\n');
   const gitignore = read('.gitignore');
 
-  const actionsAllPinned = workflows.length > 0 && !/uses:\s*\S+@v\d+\b/.test(workflowsText);
-  const hasIdToken = /id-token/.test(workflowsText);
+  // profile は **実際の値をパースして** 導出する。単なる存在/緩い正規表現だと
+  // false YES (偽の防御主張) になり、SYSTEM_PROMPT が profile を権威として扱うため
+  // workflow/OIDC 系の脅威を誤って「非該当」にしうる (CodeRabbit #77 Major)。
+  //
+  // actions: 全ての external `uses:` が 40-hex SHA か sha256 digest で pin 済みか。
+  //          `@v1` / `@main` / digest なし `docker://` は pin とみなさない。
+  //          local (`./`) は同リポなので評価対象外。
+  const usesRefs = (workflowsText.match(/uses:\s*\S+/g) ?? []).map(u => u.replace(/^uses:\s*/, '').trim());
+  const isShaPinned = (ref: string): boolean => {
+    const at = ref.lastIndexOf('@');
+    if (at < 0) return false;
+    const rev = ref.slice(at + 1);
+    return /^[0-9a-f]{40}$/i.test(rev) || /^sha256:[0-9a-f]{64}$/i.test(rev);
+  };
+  const externalUses = usesRefs.filter(r => !r.startsWith('./') && !r.startsWith('.\\'));
+  const actionsAllPinned = externalUses.length > 0 && externalUses.every(isShaPinned);
+  // id-token: 実際に `id-token: write` を要求しているかだけを true にする
+  //           (単なる "id-token" 出現や `id-token: none` を誤検知しない)。
+  const hasIdToken = /id-token:\s*write/.test(workflowsText);
   const secretsIgnored = /(^|\n)\s*\.env(\b|\*)/.test(gitignore) || /x_tokens\.json/.test(gitignore);
-  const codeowners = exists('.github/CODEOWNERS');
+  // CODEOWNERS: ファイル存在だけでなく、.github/ を所有する非コメント規則 (または
+  //             グローバル `*`) があるか。空ファイル / .github/ 非対象なら NO。
+  const codeownersRules = read('.github/CODEOWNERS').split('\n')
+    .map(l => l.trim()).filter(l => l !== '' && !l.startsWith('#'));
+  const codeowners = codeownersRules.some(l => /(^|\s)\/?\.github(\/|\s|$)/.test(l) || l.startsWith('*'));
   const pathTraversalDefense = /ensureSafePath/.test(read('storage.ts'));
   const trustBoundaryDocs = exists('docs/security/llm-sec-report-consumption.md');
   const onlyBuilt = /onlyBuiltDependencies/.test(read('pnpm-workspace.yaml'));
@@ -252,39 +273,39 @@ export async function runThreatRelevanceAnalysis(
     vulnAnalyzed: 0, implAnalyzed: 0, applies: 0, unclear: 0, skipped: 0, failed: 0,
   };
 
-  const tally = (v: RelevanceVerdict | null): void => {
-    if (!v) { stats.failed++; return; }
-    if (v.applies === 'yes') stats.applies++;
-    else if (v.applies === 'unclear') stats.unclear++;
+  const countVerdict = (applies: RelevanceApplies): void => {
+    if (applies === 'yes') stats.applies++;
+    else if (applies === 'unclear') stats.unclear++;
   };
 
+  // per-row try/catch は **分析 + DB 書込 + カウンタ** を丸ごと包む。書込
+  // (setRelevanceNote 等) が throw しても run 全体を中断せず、その行を NULL の
+  // まま残して次行へ進む (best-effort / never throw を実コードでも担保 — CodeRabbit #77)。
   for (const v of db.listVulnerabilities()) {
     if (!shouldProcess(v.ai_relevance_note, redoAll)) { stats.skipped++; continue; }
-    let verdict: RelevanceVerdict | null = null;
     try {
-      verdict = await analyzeItemRelevance(vulnText(v), profile, opts);
-    } catch (e) {
-      console.warn(`[relevance] vuln "${v.name}" 判定失敗: ${(e as Error)?.message ?? e}`);
-    }
-    tally(verdict);
-    if (verdict) {
+      const verdict = await analyzeItemRelevance(vulnText(v), profile, opts);
+      if (!verdict) { stats.failed++; continue; }
       db.setRelevanceNote(v.report_id, v.name, formatNote(verdict));
       stats.vulnAnalyzed++;
+      countVerdict(verdict.applies);
+    } catch (e) {
+      stats.failed++;
+      console.warn(`[relevance] vuln "${v.name}" 失敗: ${(e as Error)?.message ?? e}`);
     }
   }
 
   for (const c of db.listImplementationChecks()) {
     if (!shouldProcess(c.ai_relevance_note, redoAll)) { stats.skipped++; continue; }
-    let verdict: RelevanceVerdict | null = null;
     try {
-      verdict = await analyzeItemRelevance(implText(c), profile, opts);
-    } catch (e) {
-      console.warn(`[relevance] check "${c.perspective}" 判定失敗: ${(e as Error)?.message ?? e}`);
-    }
-    tally(verdict);
-    if (verdict) {
+      const verdict = await analyzeItemRelevance(implText(c), profile, opts);
+      if (!verdict) { stats.failed++; continue; }
       db.setImplementationCheckNote(c.report_id, c.perspective, formatNote(verdict));
       stats.implAnalyzed++;
+      countVerdict(verdict.applies);
+    } catch (e) {
+      stats.failed++;
+      console.warn(`[relevance] check "${c.perspective}" 失敗: ${(e as Error)?.message ?? e}`);
     }
   }
 

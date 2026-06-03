@@ -234,9 +234,17 @@ export function getXSummaryConfig(config: PipelineConfig | null): XSummaryConfig
  *   model だけ自由入力させる (preset に無い checkpoint 等を指したいケース用)。
  *   空入力なら preset の model を使う。
  */
-export async function runXSummaryWizard(
+/**
+ * provider/model プリセット選択ウィザードの共通実装。
+ * 番号選択 (Enter=先頭) + 任意の custom model ID 上書き。stdin 二重入力ガード付き。
+ * xSummary / threatRelevance の両ウィザードが薄いラッパとして共有し、
+ * 二者がドリフトしないようにする (DRY — CodeRabbit #77)。
+ */
+async function runPresetWizard<T extends { label: string; provider: AiProvider; model: string }>(
+  presets: T[],
+  ui: { title: string; intro: string; savingLabel: string },
   ask?: (q: string) => Promise<string>
-): Promise<XSummaryConfig> {
+): Promise<{ provider: AiProvider; model: string }> {
   let localRl: readline.Interface | null = null;
   let askFunc = ask;
   if (!askFunc) {
@@ -244,42 +252,52 @@ export async function runXSummaryWizard(
     askFunc = (q: string) => new Promise<string>(resolve => localRl!.question(q, resolve));
   }
 
-  console.log('\n=== 🤖 X ブックマーク AI 要約のモデル選択 ===');
-  console.log('cloud と local を自由に選択できます (1 件 = 1 行 200 字の軽量タスク)。\n');
-  X_SUMMARY_PRESETS.forEach((p, i) => {
+  console.log(`\n${ui.title}`);
+  console.log(`${ui.intro}\n`);
+  presets.forEach((p, i) => {
     console.log(`  ${i + 1}. ${p.label}`);
   });
   console.log('');
 
   const raw = await askFunc(
-    `番号で選択してください [1-${X_SUMMARY_PRESETS.length}] (Enter=1 デフォルト): `
+    `番号で選択してください [1-${presets.length}] (Enter=1 デフォルト): `
   );
   // 環境によって stdin が二重入力されることがあるため先頭 1 文字だけ採用 (config wizard と同様)
   const choice = raw.trim()[0] ?? '';
   let idx = 0; // デフォルト: 先頭プリセット
   if (choice) {
     const parsed = parseInt(choice, 10);
-    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= X_SUMMARY_PRESETS.length) {
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= presets.length) {
       idx = parsed - 1;
     } else {
-      console.warn(`⚠️  不正な入力 "${raw.trim()}" — デフォルト (${X_SUMMARY_PRESETS[0].label}) を使用します。`);
+      console.warn(`⚠️  不正な入力 "${raw.trim()}" — デフォルト (${presets[0].label}) を使用します。`);
     }
   }
-  const preset = X_SUMMARY_PRESETS[idx];
+  const preset = presets[idx];
 
   // カスタム model ID を任意で許可 (preset の provider は保持)
   const customRaw = await askFunc(
     `\n${preset.label} を選択しました。\nモデル ID を上書きしますか? (Enter=${preset.model} をそのまま使用): `
   );
   const customModel = customRaw.trim();
-  const config: XSummaryConfig = {
+  const config = {
     provider: preset.provider,
     model: customModel || preset.model,
   };
 
   if (localRl) localRl.close();
-  console.log(`✅ X 要約の設定を保存します: provider=${config.provider} / model=${config.model}\n`);
+  console.log(`✅ ${ui.savingLabel}: provider=${config.provider} / model=${config.model}\n`);
   return config;
+}
+
+export async function runXSummaryWizard(
+  ask?: (q: string) => Promise<string>
+): Promise<XSummaryConfig> {
+  return runPresetWizard(X_SUMMARY_PRESETS, {
+    title: '=== 🤖 X ブックマーク AI 要約のモデル選択 ===',
+    intro: 'cloud と local を自由に選択できます (1 件 = 1 行 200 字の軽量タスク)。',
+    savingLabel: 'X 要約の設定を保存します',
+  }, ask);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,47 +362,11 @@ export function getThreatRelevanceConfig(config: PipelineConfig | null): ThreatR
 export async function runThreatRelevanceWizard(
   ask?: (q: string) => Promise<string>
 ): Promise<ThreatRelevanceConfig> {
-  let localRl: readline.Interface | null = null;
-  let askFunc = ask;
-  if (!askFunc) {
-    localRl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    askFunc = (q: string) => new Promise<string>(resolve => localRl!.question(q, resolve));
-  }
-
-  console.log('\n=== 🛡️ 脅威レポート 該当性判定のモデル選択 (Level 2 検知) ===');
-  console.log('「reasoning 可能な smart 階層」を選んでください (cloud / ローカル OSS 推論モデル可)。\n');
-  THREAT_RELEVANCE_PRESETS.forEach((p, i) => {
-    console.log(`  ${i + 1}. ${p.label}`);
-  });
-  console.log('');
-
-  const raw = await askFunc(
-    `番号で選択してください [1-${THREAT_RELEVANCE_PRESETS.length}] (Enter=1 デフォルト): `
-  );
-  const choice = raw.trim()[0] ?? '';
-  let idx = 0;
-  if (choice) {
-    const parsed = parseInt(choice, 10);
-    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= THREAT_RELEVANCE_PRESETS.length) {
-      idx = parsed - 1;
-    } else {
-      console.warn(`⚠️  不正な入力 "${raw.trim()}" — デフォルト (${THREAT_RELEVANCE_PRESETS[0].label}) を使用します。`);
-    }
-  }
-  const preset = THREAT_RELEVANCE_PRESETS[idx];
-
-  const customRaw = await askFunc(
-    `\n${preset.label} を選択しました。\nモデル ID を上書きしますか? (Enter=${preset.model} をそのまま使用): `
-  );
-  const customModel = customRaw.trim();
-  const config: ThreatRelevanceConfig = {
-    provider: preset.provider,
-    model: customModel || preset.model,
-  };
-
-  if (localRl) localRl.close();
-  console.log(`✅ 該当性判定の設定を保存します: provider=${config.provider} / model=${config.model}\n`);
-  return config;
+  return runPresetWizard(THREAT_RELEVANCE_PRESETS, {
+    title: '=== 🛡️ 脅威レポート 該当性判定のモデル選択 (Level 2 検知) ===',
+    intro: '「reasoning 可能な smart 階層」を選んでください (cloud / ローカル OSS 推論モデル可)。',
+    savingLabel: '該当性判定の設定を保存します',
+  }, ask);
 }
 
 export function applyConfigToEnv(config: PipelineConfig | null): void {

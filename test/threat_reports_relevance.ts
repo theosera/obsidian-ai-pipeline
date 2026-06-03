@@ -149,6 +149,51 @@ export async function run(): Promise<TestSuiteResult> {
     assert.ok(!/GITHUB_TOKEN 最小権限/.test(p), '固定の偽 ground truth を出さない');
   });
 
+  runner.test('緩い presence でなく実値で導出する (@main / docker / id-token:none / 非.github CODEOWNERS は NO)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repoprofile-neg-'));
+    fs.mkdirSync(path.join(dir, '.github/workflows'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.github/workflows/x.yml'),
+      [
+        'jobs:',
+        '  a:',
+        '    permissions:',
+        '      id-token: none',
+        '    steps:',
+        '      - uses: actions/checkout@0123456789012345678901234567890123456789',
+        '      - uses: some/action@main',
+        '      - uses: docker://node:18',
+      ].join('\n'),
+    );
+    fs.writeFileSync(path.join(dir, '.github/CODEOWNERS'), '# header only\n/src/  @someone\n');
+    const p = buildRepoProfile(dir);
+    assert.ok(/SHA ピン: NO/.test(p), '@main / docker tag が混じれば pinned=NO');
+    assert.ok(/id-token: write を付与している: NO/.test(p), 'id-token: none は write 付与なし');
+    assert.ok(/\.github\/ を所有者固定: NO/.test(p), '.github/ 非対象 CODEOWNERS は NO');
+  });
+
+  runner.test('全 external が SHA pin + .github 所有 CODEOWNERS + id-token: write は YES (local ./ は対象外)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repoprofile-pos-'));
+    fs.mkdirSync(path.join(dir, '.github/workflows'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.github/workflows/y.yml'),
+      [
+        'permissions:',
+        '  id-token: write',
+        'jobs:',
+        '  a:',
+        '    steps:',
+        '      - uses: actions/checkout@0123456789012345678901234567890123456789',
+        '      - uses: ./local-composite',
+      ].join('\n'),
+    );
+    fs.writeFileSync(path.join(dir, '.github/CODEOWNERS'), '/.github/  @owner\n');
+    const p = buildRepoProfile(dir);
+    assert.ok(/SHA ピン: YES/.test(p), 'external が全て 40-hex SHA なら YES');
+    assert.ok(/id-token: write を付与している: YES/.test(p), 'id-token: write は YES');
+    assert.ok(/\.github\/ を所有者固定: YES/.test(p));
+  });
+
   // =====================================================
   runner.section('analyzeItemRelevance: untrusted を data として隔離');
 
