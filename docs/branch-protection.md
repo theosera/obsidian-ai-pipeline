@@ -2,6 +2,15 @@
 
 PR #23 の post-mortem で判明した「main が静かに破損したまま複数 PR を受け入れてしまう」事故を防ぐための GitHub 側設定メモ。コードでは表現できないため、リポジトリ管理者が Web UI または `gh api` で設定する。
 
+> **適用状況 (2026-06)**: 本リポジトリは下記の保護を **Repository ruleset**
+> (`Settings → Rules → Rulesets`、名前 **`Branch-protection`**) として
+> **Active で適用済み**。以下の「推奨設定」「`gh api`」節は *classic branch
+> protection* を前提に書かれたオリジナルだが、強制内容 (必須チェック /
+> CODEOWNERS / force-push 禁止 等) は ruleset でも同一。**新規・再設定時は
+> classic ではなく ruleset を推奨** (GitHub の推奨経路で、bypass actor を
+> ロール単位で細かく指定できる)。ruleset 版の具体手順は
+> 「[Repository ruleset で設定する (推奨)](#repository-ruleset-で設定する-推奨2026-06-適用済み)」を参照。
+
 ## 目的
 
 - 古い base から作られた PR が merge されて main に orphan state を残すのを防ぐ
@@ -10,7 +19,82 @@ PR #23 の post-mortem で判明した「main が静かに破損したまま複�
 
 ## 設定場所
 
-`Settings` → `Branches` → `Branch protection rules` → `main` (add rule / edit existing)
+- **Ruleset (推奨・本リポの現行方式)**: `Settings` → `Rules` → `Rulesets` → `New branch ruleset`
+- Classic (以下のオリジナル手順): `Settings` → `Branches` → `Branch protection rules` → `main` (add rule / edit existing)
+
+## Repository ruleset で設定する (推奨・2026-06 適用済み)
+
+本リポは classic ではなく **ruleset** で運用している。現在 Active な
+`Branch-protection` ruleset の設定値は以下。再作成・監査時はこれと突き合わせる。
+
+### 作成手順 (Web UI)
+
+`Settings` → `Rules` → `Rulesets` → `New branch ruleset`:
+
+1. **Ruleset Name**: `Branch-protection`
+2. **Enforcement status**: **Active** (← `Disabled`/`Evaluate` のままだと強制されない)
+3. **Target branches**: `Add target` → **Include default branch** (= `main`)。
+   *空のままだと「does not target any resources」警告が出て何も適用されない。*
+4. **Bypass list**: `Add bypass` → **Repository admin (Role)**。
+   *理由は下記「CODEOWNERS と自己承認」を参照。*
+5. **Branch rules** で以下を有効化:
+
+| ルール | 値 | 目的 |
+|---|---|---|
+| Restrict deletions | ✅ | main 削除防止 |
+| Require a pull request before merging | ✅ | 直 push 禁止 |
+| &nbsp;&nbsp;└ Required approvals | `0` | ソロ運用 (CODEOWNERS は下記で別途強制) |
+| &nbsp;&nbsp;└ Require review from Code Owners | ✅ | `.github/` 等 owned ファイルは owner approve 必須 |
+| &nbsp;&nbsp;└ Require conversation resolution before merging | ✅ | 未解決レビューを残さない |
+| Require status checks to pass | ✅ | CI 通過ゲート |
+| &nbsp;&nbsp;└ required checks | `Pipeline (root) - test & typecheck`<br>`Chrome extension - build & typecheck` | CI ジョブ名と完全一致 (GitHub Actions ソース) |
+| &nbsp;&nbsp;└ Require branches to be up to date before merging | ✅ | **最重要**: 古い base の PR は rebase 必須 (PR #23 再発防止) |
+| Block force pushes | ✅ | main への force push 禁止 |
+
+> `Allowed merge methods` は任意。履歴を平らに保つなら **Squash のみ**推奨
+> (playbook の merge method=squash と整合)。
+
+### CODEOWNERS と自己承認 (ソロ運用の注意)
+
+`Require review from Code Owners` ✅ + `Required approvals 0` の場合、
+`.github/` を変更する PR は `@theosera` の approve が必須になる。しかし GitHub は
+**自分の PR を自分で approve できない**ため、コードオーナーが 1 人だと自分の
+workflow 系 PR がマージ不能にロックされる。
+
+→ 回避策として **Bypass list に `Repository admin` ロールを追加** している。
+これで「無関係な collaborator / 自動化 (workflow 内 `GITHUB_TOKEN`) が
+workflow を勝手に書き換えてマージする」のは引き続きブロックしつつ、admin
+本人は目視後に自分の `.github/` PR をマージできる (Megalodon 系=外部/
+3rd-party action 経由の改ざん、という脅威モデルには十分)。
+より厳格にしたい場合は bypass を外し、第 2 の approver ID を用意する。
+
+### `gh api` で ruleset を作る場合
+
+```bash
+gh api --method POST -H "Accept: application/vnd.github+json" \
+  /repos/theosera/obsidian-ai-pipeline/rulesets \
+  -f name='Branch-protection' \
+  -f target='branch' \
+  -f enforcement='active' \
+  -f 'conditions[ref_name][include][]=~DEFAULT_BRANCH' \
+  -f 'bypass_actors[][actor_id]=5' \
+  -f 'bypass_actors[][actor_type]=RepositoryRole' \
+  -f 'bypass_actors[][bypass_mode]=always' \
+  -f 'rules[][type]=deletion' \
+  -f 'rules[][type]=non_fast_forward' \
+  -f 'rules[][type]=pull_request' \
+  -F 'rules[][parameters][required_approving_review_count]=0' \
+  -F 'rules[][parameters][require_code_owner_review]=true' \
+  -F 'rules[][parameters][required_review_thread_resolution]=true' \
+  -f 'rules[][type]=required_status_checks' \
+  -F 'rules[][parameters][strict_required_status_checks_policy]=true' \
+  -f 'rules[][parameters][required_status_checks][][context]=Pipeline (root) - test & typecheck' \
+  -f 'rules[][parameters][required_status_checks][][context]=Chrome extension - build & typecheck'
+```
+
+> `~DEFAULT_BRANCH` で default branch (`main`) を対象化。`actor_id=5` は
+> `Repository admin` ロール。GitHub の rulesets API は配列パラメータの組み立てが
+> 繊細なので、UI 作成のほうが確実。上記は監査・再現用の参考。
 
 ## 推奨設定
 
