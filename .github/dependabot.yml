@@ -1,0 +1,20 @@
+# Dependabot — keep SHA-pinned GitHub Actions current.
+#
+# Actions in .github/workflows/* are pinned to commit SHAs (supply-chain
+# hardening); floating tags are intentionally not followed. Without Dependabot
+# those pins silently go stale as upstream releases new versions. This opens a
+# weekly PR (grouped into a single PR to reduce noise) that bumps the action
+# SHAs + updates the inline `# vX.Y.Z` comment. The PR touches .github/ so it is
+# CODEOWNERS-gated → reviewed by @theosera before merge.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

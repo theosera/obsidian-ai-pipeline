@@ -43,12 +43,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout pipeline repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
         with:
           path: pipeline
 
       - name: Checkout vault repo (private)
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
         with:
           repository: ${{ secrets.VAULT_REPO }}
           ssh-key: ${{ secrets.VAULT_DEPLOY_KEY }}
@@ -65,7 +65,7 @@ jobs:
           package_json_file: pipeline/package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
         with:
           node-version: '22'
           cache: 'pnpm'
