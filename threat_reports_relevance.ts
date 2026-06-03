@@ -116,6 +116,14 @@ export function buildRepoProfile(rootDir: string = process.cwd()): string {
   const branchProtectionDoc = exists('docs/branch-protection.md');
   const dependabot = exists('.github/dependabot.yml');
 
+  // workflow が参照する secrets を **実際に列挙** する。固定文言で「GITHUB_TOKEN
+  // のみ / OIDC なし」と偽の ground truth を与えると、deploy-key 漏洩・workflow
+  // secret 流出系の脅威を誤って「非該当」にしてしまう (Codex #77 P2)。
+  const secretRefs = Array.from(
+    new Set((workflowsText.match(/secrets\.([A-Za-z0-9_]+)/g) ?? []).map(s => s.replace('secrets.', ''))),
+  ).filter(n => n !== 'GITHUB_TOKEN');
+  const usesDeployKey = /ssh-key:/.test(workflowsText) || secretRefs.some(n => /DEPLOY_KEY/.test(n));
+
   const yn = (b: boolean) => (b ? 'YES' : 'NO');
   return [
     'リポジトリ: obsidian-ai-pipeline (個人用 Obsidian 自動化パイプライン / TypeScript)',
@@ -130,7 +138,9 @@ export function buildRepoProfile(rootDir: string = process.cwd()): string {
     `- pnpm onlyBuiltDependencies で postinstall を allowlist 化: ${yn(onlyBuilt)}`,
     `- untrusted 入力の injection ゲート (scan-threat-report skill): ${yn(injectionGate)}`,
     `- Trust Boundary / レポート消費ポリシー文書: ${yn(trustBoundaryDocs)}`,
-    'アーキテクチャ事実: 単一ユーザー / Secrets は GITHUB_TOKEN 最小権限 / 外部クラウド OIDC 連携なし / フラット TypeScript (workspace なし)。',
+    `- workflow が参照する GITHUB_TOKEN 以外の secrets: ${secretRefs.length ? secretRefs.join(', ') : 'なし'}`,
+    `- workflow で deploy key / ssh-key を使用: ${yn(usesDeployKey)}`,
+    'アーキテクチャ事実: 単一ユーザー / フラット TypeScript (root flat / workspace なし)。',
   ].join('\n');
 }
 

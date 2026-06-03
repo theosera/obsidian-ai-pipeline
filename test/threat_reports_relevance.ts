@@ -6,12 +6,16 @@
  * AI 呼び出し (askText) と DB は注入してネットワーク・SQLite なしで回す。
  */
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { TestRunner, type TestSuiteResult } from './helpers';
 import type { VulnerabilityRow, ImplementationCheckRow } from '../threat_reports_db';
 import {
   parseVerdict,
   formatNote,
   analyzeItemRelevance,
+  buildRepoProfile,
   runThreatRelevanceAnalysis,
   AI_NOTE_SENTINEL,
   type RelevanceDb,
@@ -113,6 +117,36 @@ export async function run(): Promise<TestSuiteResult> {
     assert.ok(formatNote({ applies: 'yes', note: 'x' }).startsWith(`${AI_NOTE_SENTINEL}⚠ 該当`));
     assert.ok(formatNote({ applies: 'no', note: 'x' }).startsWith(`${AI_NOTE_SENTINEL}✓ 非該当`));
     assert.ok(formatNote({ applies: 'unclear', note: '' }).startsWith(`${AI_NOTE_SENTINEL}? 要確認`));
+  });
+
+  // =====================================================
+  runner.section('buildRepoProfile: secret 棚卸しは実 workflow から導出 (偽 ground truth 防止)');
+
+  runner.test('GITHUB_TOKEN 以外の secrets と deploy key を列挙し、固定の偽事実を出さない', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repoprofile-'));
+    fs.mkdirSync(path.join(dir, '.github/workflows'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.github/workflows/llm-sec.yml'),
+      [
+        'jobs:',
+        '  ingest:',
+        '    steps:',
+        '      - uses: actions/checkout@sha',
+        '        with:',
+        '          ssh-key: ${{ secrets.VAULT_DEPLOY_KEY }}',
+        '      - env:',
+        '          T: ${{ secrets.GITHUB_TOKEN }}',
+        '          G: ${{ secrets.GMAIL_CLIENT_ID }}',
+      ].join('\n'),
+    );
+    const p = buildRepoProfile(dir);
+    const line = p.split('\n').find(l => l.includes('GITHUB_TOKEN 以外の secrets')) ?? '';
+    const listPart = line.split(':').slice(1).join(':'); // ラベル後の列挙部分のみ
+    assert.ok(listPart.includes('VAULT_DEPLOY_KEY'), 'deploy key secret を列挙する');
+    assert.ok(listPart.includes('GMAIL_CLIENT_ID'), 'Gmail secret を列挙する');
+    assert.ok(!listPart.includes('GITHUB_TOKEN'), 'GITHUB_TOKEN は「以外」一覧に含めない');
+    assert.ok(/deploy key \/ ssh-key を使用: YES/.test(p), 'deploy key 使用が YES');
+    assert.ok(!/GITHUB_TOKEN 最小権限/.test(p), '固定の偽 ground truth を出さない');
   });
 
   // =====================================================
