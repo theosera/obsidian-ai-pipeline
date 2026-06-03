@@ -57,6 +57,7 @@ packages/*/node_modules/
 # Placed after the !.claude/** re-include so it also covers .claude/ subtrees.
 __pycache__/
 *.pyc
+*.pyo
 
 # Allow oxlint config (dotfile, but a tracked project config)
 !.oxlintrc.json
