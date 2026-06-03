@@ -55,15 +55,13 @@ jobs:
       - name: Run security tests (24 cases)
         run: pnpm test
 
-      - name: TypeScript type check (root + workspace)
-        # pnpm exec tsc --noEmit は root tsconfig しか見ず、packages/core
-        # や apps/* の型崩れを検知できない。workspace 全体を走らせる。
+      - name: TypeScript type check
         run: pnpm typecheck
 
-      - name: oxlint (root Claude-side only, type-aware)
+      - name: oxlint (root app code, type-aware)
         # 最小 oxlint: バグ検出ルールのみ (no-floating-promises 等)。
         # 型情報ルールは oxlint-tsgolint (--type-aware) が担当。
-        # apps/* / packages/* (Codex 側) は .oxlintrc.json の ignorePatterns で対象外。
+        # chrome-extension は .oxlintrc.json の ignorePatterns で対象外。
         run: pnpm lint
 
   chrome-extension:

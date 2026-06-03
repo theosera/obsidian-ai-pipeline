@@ -259,8 +259,9 @@ export function writeGroupingProposal(
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
-  // ファイル名に `claude_` prefix を入れ、Codex 側実装 (apps/sync/propose-grouping.ts)
-  // との対照実験で生成物が衝突しないようにする。README の「X ブックマーク対照実験」節を参照。
+  // ファイル名の `claude_` prefix は、かつて並走していた Codex 側実装との
+  // 対照実験で生成物が衝突しないよう導入したもの。Codex 側は削除済みだが、
+  // 既存生成物との一貫性のため prefix はそのまま維持する。
   const file = path.join(dir, `x_folder_grouping_proposal_claude_${dateStr}.md`);
 
   let md = `# X ブックマークフォルダ 共通キーワード提案レポート\n\n`;
