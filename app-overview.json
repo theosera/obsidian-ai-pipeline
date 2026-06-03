@@ -235,8 +235,8 @@
     }
   ],
 
-  "experimentNote": {
-    "title": "X bookmarks 対照実験 (Claude vs Codex)",
-    "description": "Claude 側 (root flat) と Codex 側 (apps/* + packages/core workspace) の 2 つの独立実装が共存。import graph は交わらず、出力先 / OAuth port / レポート名で衝突回避。共通設定は x_forced_parents.json と x_folder_mapping.json のみ"
+  "implementationNote": {
+    "title": "X bookmarks 実装 (flat)",
+    "description": "X ブックマーク取得は root のフラット TypeScript 実装 (x_bookmarks_*.ts / x_auth_server.ts / x_folder_mapper.ts / x_session_*.ts) 単体。かつて Codex の pnpm workspace 実装 (apps/* + packages/core) と並走させた Claude-vs-Codex 対照実験を行っていたが、比較目的を終えたため Codex 側は 2026-06 にリポジトリから削除した。ユーザー設定 x_forced_parents.json / x_folder_mapping.json のみ残存"
   }
 }

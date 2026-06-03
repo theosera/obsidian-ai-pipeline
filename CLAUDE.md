@@ -138,13 +138,12 @@ Pull Requests. See `docs/branch-protection.md` for the full setup.
 ## CI expectations (must pass before merge)
 
 - `pnpm test` — unit tests (currently ~173+ cases)
-- `pnpm typecheck` — root `tsc --noEmit` + workspace-wide `pnpm -r typecheck`
-  (depends on core being built first, handled by the root script)
-- `pnpm lint` — **oxlint** (`oxlint --type-aware`), root Claude-side only,
+- `pnpm typecheck` — `tsc --noEmit` (root flat TypeScript).
+- `pnpm lint` — **oxlint** (`oxlint --type-aware`), root app code only,
   bug-detection-only 4 rules (type-aware `no-floating-promises` /
   `no-misused-promises` via `oxlint-tsgolint`). Style → CodeRabbit.
-  Config: `.oxlintrc.json` (`apps/**` / `packages/**` / `chrome-extension/**`
-  ignored, matching the prior ESLint scope / 対照実験の独立性).
+  Config: `.oxlintrc.json` (`chrome-extension/**` ignored as an isolated
+  workspace).
 - `.github/scripts/check-package-json-duplicates.py` — rejects duplicate
   JSON keys across all package.json files
 - Chrome-extension job — isolated workspace (`--ignore-workspace`),
@@ -152,9 +151,10 @@ Pull Requests. See `docs/branch-protection.md` for the full setup.
 
 ## X bookmarks: group-page table view (2026-05)
 
-The Claude side moved from **1 MD per tweet under `Clippings/X-Bookmarks/`**
-to **1 MD per group folder under `X_Bookmarks/`**, with a sortable /
-filterable Dataview table backed by `<vault>/X_Bookmarks/.x_bookmarks.json`.
+The X bookmarks feature moved from **1 MD per tweet under
+`Clippings/X-Bookmarks/`** to **1 MD per group folder under `X_Bookmarks/`**,
+with a sortable / filterable Dataview table backed by
+`<vault>/X_Bookmarks/.x_bookmarks.json`.
 
 Key facts to remember:
 
@@ -229,27 +229,19 @@ Key facts to remember:
   `x_forced_parents.json` from current vault), `--x-migrate-legacy`
   (one-shot move of `Clippings/X-Bookmarks/` → `_Archived/`).
 
-## Claude-vs-Codex experiment
+## X bookmarks implementation (flat)
 
-Two independent X bookmarks implementations live side-by-side:
+The X bookmarks feature is a single flat TypeScript implementation at the
+repo root: `x_bookmarks_api.ts`, `x_auth_server.ts`, `x_folder_mapper.ts`,
+`x_bookmarks_db.ts`, `x_session_*.ts`, `hands_on_generator.ts`, integrated
+with `index.ts` / `router.ts` / `storage.ts`.
 
-- **Claude side (flat)**: `x_bookmarks_api.ts`, `x_auth_server.ts`,
-  `x_folder_mapper.ts`, `x_bookmarks_db.ts`, `hands_on_generator.ts`
-- **Codex side (workspace)**: `apps/auth/`, `apps/sync/`, `packages/core/`
-
-Rules:
-
-- **Import graphs do not cross** — Claude side never imports from
-  `packages/core`, Codex side never imports from root flat files.
-- Only **two shared settings files** by design:
-  `<vault>/__skills/pipeline/x_forced_parents.json` and
-  `<vault>/__skills/pipeline/x_folder_mapping.json`.
-- Output destinations / auth ports / proposal filenames are kept
-  distinct to allow concurrent operation.
-- When aligning behaviors, **prefer minimal Codex-side changes** per user
-  preference — only change Codex when logic/type consistency requires it.
-
-See README "🧪 X ブックマーク取得の対照実験" for full rules.
+> A parallel Codex implementation (`apps/*` + `packages/core`, pnpm
+> workspace) was run side-by-side as a Claude-vs-Codex control experiment.
+> That comparison is over and the Codex side was **removed from the repo**
+> (2026-06). Only the two settings files
+> `<vault>/__skills/pipeline/x_forced_parents.json` and
+> `<vault>/__skills/pipeline/x_folder_mapping.json` remain (user-maintained).
 
 ## LLM Security Weekly Report Consumption Spec
 
@@ -328,10 +320,9 @@ Level 2 (LLM による自リポ該当チェック → `ai_relevance_note` 自動
 ## Shared dev-tool versions
 
 TypeScript, `@types/node`, and `tsx` are declared in the `catalog:` block
-of `pnpm-workspace.yaml`. Bump versions there in a single edit; every
-workspace package (root + apps/* + packages/*) inherits via `catalog:`
-references in their own `package.json`. Chrome-extension is intentionally
-outside the catalog (isolated workspace).
+of `pnpm-workspace.yaml`. Bump versions there in a single edit; the root
+`package.json` references them via `catalog:`. Chrome-extension is
+intentionally outside the catalog (isolated workspace).
 
 ## Secrets / sensitive files — never commit
 
@@ -354,7 +345,7 @@ outside the catalog (isolated workspace).
 ## Branch naming
 
 - `claude/<short-kebab-description>` for Claude-authored branches
-- Branches targeted at resolving Codex-authored PR conflicts:
+- Branches targeted at resolving cross-branch / review-flagged conflicts:
   `claude/fix-<topic>-<suffix>` pattern (see PR #23's resolution history)
 
 ## Coding conventions (AI-native)

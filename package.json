@@ -7,7 +7,7 @@
     "node": ">=20.11.0",
     "pnpm": ">=9.5.0"
   },
-  "description": "Automated Obsidian Web Clipper pipeline (Claude flat impl.) + pnpm workspace X Bookmarks Sync (Codex impl.)",
+  "description": "Automated Obsidian Web Clipper pipeline + X Bookmarks Sync (flat TypeScript impl.)",
   "main": "index.ts",
   "type": "module",
   "scripts": {
@@ -15,12 +15,7 @@
     "sync-rules": "tsx sync-rules.ts",
     "test": "tsx test_runner.ts",
     "lint": "oxlint --type-aware",
-    "dev:auth": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter auth dev",
-    "sync": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter sync sync",
-    "propose:grouping": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter sync propose:grouping",
-    "approve:grouping": "pnpm --filter @obsidian-ai-pipeline/core build && pnpm --filter sync approve:grouping",
-    "build": "pnpm -r build",
-    "typecheck": "tsc --noEmit && pnpm --filter @obsidian-ai-pipeline/core build && pnpm -r typecheck"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
