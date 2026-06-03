@@ -13,6 +13,20 @@ project-level スラッシュコマンド (`.md` ファイル) を置く。フ�
 |---|---|
 | `/sec-mode` | Security-only mode を起動し、週次 LLM 脅威レポート取込メニューを提示する。セッション途中でも呼べる (CLAUDE.md `## Chat mode protocol` の救済経路)。上位仕様は `docs/security/llm-sec-report-consumption.md`。 |
 
+## skills/
+
+project-level スキル (`<name>/SKILL.md`) を置く。ディレクトリ名がスキル名になる。
+`description` のトリガ文 + 親 `CLAUDE.md` の**スキル発火表**で発火する。トークン削減の
+ため、特定タスクでしか要らない作業規約・機能知識を常時ロードの CLAUDE.md から外出しし、
+発火条件付きでオンデマンドにロードする (3層設計: グローバル / project CLAUDE.md / skills)。
+
+| スキル | 発火条件 | 用途 |
+|---|---|---|
+| `pr-workflow` | PR 作成 / auto-merge 判断 / PR body / CI 期待値確認の前 | auto-merge Phase1 + guards / PR 規約 / CI 期待値 |
+| `x-bookmarks` | X bookmarks のコード・CLI・`X_Bookmarks/`・mapping json を触る前 | X bookmarks 機能の実装事実集 (SQLite / Dataview / 要約 / invariant) |
+| `ts-coding-conventions` | このリポの TypeScript を書く/直す/レビューする前 | AI-native 規約の発火用サマリ (原本は `docs/ai-coding-conventions.md`) |
+| `scan-threat-report` | sec-mode 取込で脅威レポート本文を扱う前 | injection ゲート L0〜L3 (検知+報告のみ) |
+
 ## settings.json
 
 **全コラボレータに共有される設定**。git commit する。
