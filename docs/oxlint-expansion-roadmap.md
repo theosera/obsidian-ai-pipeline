@@ -20,8 +20,7 @@
 
 | 領域 | lint 状態 | 除外理由 |
 |---|---|---|
-| root Claude 側 (`*.ts` / `pipeline/**` / `test/**`) | ✅ oxlint 対象 | — |
-| `apps/**`・`packages/**`（Codex 側） | ❌ 対象外 | Claude-vs-Codex 対照実験の独立性 |
+| root app code (`*.ts` / `pipeline/**` / `test/**`) | ✅ oxlint 対象 | — |
 | `chrome-extension/**` | ❌ 対象外 | 独立 workspace（独自 lockfile / `--ignore-workspace`） |
 | `scripts/**`・`utils/**`・loose `*.js/.cjs/.mjs` | ❌ 対象外 | ユーティリティ/ビルドスクリプト（旧 ESLint も除外） |
 | `correctness` カテゴリー（oxlint 既定 ON のルール群） | ❌ off | 「4 ルールのみ / スタイルは CodeRabbit」最小主義 |
@@ -32,7 +31,7 @@
 
 ## 横断トリガー: type-aware が alpha → stable になること
 
-下記タスクの多く（特に Codex 側）は、型情報ルール基盤 `oxlint-tsgolint` の安定化が前提。
+下記タスクの多くは、型情報ルール基盤 `oxlint-tsgolint` の安定化が前提。
 
 - **条件**:
   - oxc が type-aware linting を **stable** と宣言（2025-12 の alpha を上回る公式アナウンス）。
@@ -46,24 +45,12 @@
 
 ---
 
-## Task 1 — Codex 側 (`apps/**` + `packages/**`) を oxlint 対象に含める
+## Task 1 — ~~Codex 側 (`apps/**` + `packages/**`) を oxlint 対象に含める~~ (廃止)
 
-**着手条件（すべて満たす）**:
-1. 横断トリガー（type-aware stable）を満たしている。
-2. **Claude-vs-Codex 対照実験の独立性要件が解除**されている、または Codex 側オーナーの合意がある
-   （`CLAUDE.md`「Claude-vs-Codex experiment」節の "import graphs do not cross" 方針との整合確認）。
-3. PR #65 検証時に検出済みの **`apps/auth/src/server.ts:49` の `typescript/no-misused-promises`**
-   の解決方針が合意済み。`http.createServer(async …)` パターン（全体が try/catch 済で実害なし）。
-   選択肢:
-   - (a) 最小リファクタ: async ハンドラを別関数に切り出し `(req,res) => { void handle(req,res); }`。
-   - (b) 1 行 `// oxlint-disable-next-line typescript/no-misused-promises` + 理由コメント。
-   - (c) `overrides` で当該ファイルのみ rule を緩める。
-   - ※対照実験ルール「Codex 側は最小変更」を尊重して選ぶ。
-
-**実装**: `.oxlintrc.json` の `ignorePatterns` から `apps/**` / `packages/**` を外す。
-`packages/core` は PR #65 の試走で 4 ルールでは追加エラー無し（型 redundant 等は correctness 側）。
-
-**検証**: `pnpm lint` が apps/* / packages/core まで走り 0 件で通る。`pnpm test` / `pnpm typecheck` 緑。
+**廃止 (2026-06)**: Claude-vs-Codex 対照実験の終了に伴い、Codex 側実装
+(`apps/*` + `packages/core`) はリポジトリから削除された。本タスクは対象が
+存在しなくなったため不要。`.oxlintrc.json` の `ignorePatterns` からも
+`apps/**` / `packages/**` は除去済み。
 
 ---
 
@@ -118,6 +105,6 @@
 
 ## 完了の定義（このロードマップ全体）
 
-上記 Task 1–4 が（条件成立分だけでも）それぞれ単独 PR で取り込まれ、oxlint が
-「ESLint 時代の理由で除外していた領域」を順次カバーした状態。type-aware が stable 化
-しない限り Codex 側 (Task 1) は保留して構わない（root Claude 側の価値は PR #65 で確保済み）。
+Task 2–4 が（条件成立分だけでも）それぞれ単独 PR で取り込まれ、oxlint が
+「ESLint 時代の理由で除外していた領域」を順次カバーした状態（Task 1 は対象削除に
+伴い廃止）。root のアプリコードの価値は PR #65 で確保済み。
