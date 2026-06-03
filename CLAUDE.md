@@ -357,9 +357,16 @@ outside the catalog (isolated workspace).
 - Branches targeted at resolving Codex-authored PR conflicts:
   `claude/fix-<topic>-<suffix>` pattern (see PR #23's resolution history)
 
+## Coding conventions (AI-native)
+
+このリポは以下のコーディング規約に従う（型優先・エラー全送・コンテキスト圧縮）:
+
+@./docs/ai-coding-conventions.md
+
 ## See also
 
 - `README.md` — high-level architecture + setup
+- `docs/ai-coding-conventions.md` — AI-native コーディング規約（型駆動 / 全送 / Context Rot 対策）
 - `docs/branch-protection.md` — main branch protection + auto-merge setup
 - `.github/workflows/ci.yml` — CI definitions
 - `.github/scripts/check-package-json-duplicates.py` — JSON lint
