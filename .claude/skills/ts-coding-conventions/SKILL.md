@@ -20,7 +20,7 @@ obsidian-ai-pipeline (TypeScript) の AI-native コーディング規約。CLAUD
 Read すること。本 SKILL.md は重複を避けるため**圧縮した発火用サマリ**のみを持つ
 (原本を二重化しない = DRY / トークン最小)。
 
-## 7原則 (圧縮サマリ — 詳細は原本 docs)
+## 原則 (圧縮サマリ — 詳細は原本 docs)
 
 1. **エラーは全送** — スタックトレースを省略しない。tsconfig は `noErrorTruncation` /
    `extendedDiagnostics` / `strict` ON。報告は4点 (再現コマンド / 全 trace / 関連ファイル / 環境)。
