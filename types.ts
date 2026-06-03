@@ -55,6 +55,22 @@ export interface XSummaryConfig {
   model: string;
 }
 
+/**
+ * 週次 LLM 脅威レポートの「自リポ該当性」判定 (`threat_reports_relevance`) 専用の
+ * provider / model 選択 (Level 2 検知)。
+ *
+ * classifier / xSummary とは独立。選定基準は **ベンダではなく「reasoning 可能な
+ * smart 階層」** (`taskType: 'smart'`)。クラウドでもローカル OSS 推論モデルでも
+ * 基準を満たせば可。`runThreatRelevanceWizard` が presets から選ばせ
+ * pipeline_config.json (`threatRelevance` キー) に永続化する。再選択は
+ * `--threat-relevance-reconfig`。判定の精度は**モデルではなく構造**
+ * (trusted repo profile + 厳格スキーマ + unclear fallback + 人手レビュー) で担保する。
+ */
+export interface ThreatRelevanceConfig {
+  provider: AiProvider;
+  model: string;
+}
+
 export interface PipelineConfig {
   vaultRoot: string;
   provider: AiProvider;
@@ -62,4 +78,6 @@ export interface PipelineConfig {
   smartModel: string;
   /** 未設定なら初回 `--x-bookmarks` 実行時にウィザードで埋める。 */
   xSummary?: XSummaryConfig;
+  /** 未設定なら初回 `--analyze-threat-relevance` 実行時にウィザードで埋める。 */
+  threatRelevance?: ThreatRelevanceConfig;
 }

@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
-import { PipelineConfig, XSummaryConfig, AiProvider } from './types';
+import { PipelineConfig, XSummaryConfig, ThreatRelevanceConfig, AiProvider } from './types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -279,6 +279,111 @@ export async function runXSummaryWizard(
 
   if (localRl) localRl.close();
   console.log(`✅ X 要約の設定を保存します: provider=${config.provider} / model=${config.model}\n`);
+  return config;
+}
+
+// ---------------------------------------------------------------------------
+// 脅威レポート「自リポ該当性」判定 専用の provider / model 選択 (Level 2 検知)
+//
+// 選定基準は **ベンダではなく「reasoning 可能な smart 階層」**。判定の精度は
+// モデルに依存せず構造 (trusted repo profile + 厳格スキーマ + unclear fallback +
+// 人手レビュー) で担保するため、ここはあくまで「差し替え可能なノブ」。
+// 永続化先は pipeline_config.json (`threatRelevance` キー)。
+// ---------------------------------------------------------------------------
+
+export interface ThreatRelevancePreset {
+  label: string;
+  provider: AiProvider;
+  model: string;
+}
+
+/**
+ * 表示順 = CLI 番号選択肢。**先頭がデフォルトのデフォルト**。
+ * xSummary (fast 軽量タスク) と違い、こちらは「該当性推論」= smart 階層を採用する。
+ * 各ベンダの smart モデルと、ローカル OSS 推論モデルを並べる (ベンダ固定にしない)。
+ */
+export const THREAT_RELEVANCE_PRESETS: ThreatRelevancePreset[] = [
+  {
+    label: 'cloud / Anthropic Sonnet 4.6  (推奨・デフォルト)',
+    provider: 'anthropic',
+    model: DEFAULTS.anthropic.smart,
+  },
+  {
+    label: 'cloud / OpenAI gpt-4o',
+    provider: 'openai',
+    model: DEFAULTS.openai.smart,
+  },
+  {
+    label: 'cloud / Gemini 2.5 Pro',
+    provider: 'gemini',
+    model: DEFAULTS.gemini.smart,
+  },
+  {
+    label: 'local / OSS 推論モデル (LOCAL_AI_URL — model ID は上書き入力)',
+    provider: 'local',
+    model: 'local-model',
+  },
+];
+
+/** ウィザード未実行時の最終フォールバック (= 先頭プリセット)。 */
+export const DEFAULT_THREAT_RELEVANCE: ThreatRelevanceConfig = {
+  provider: THREAT_RELEVANCE_PRESETS[0].provider,
+  model: THREAT_RELEVANCE_PRESETS[0].model,
+};
+
+/** 保存済み threatRelevance を返す。未設定なら null (= ウィザード未実行)。 */
+export function getThreatRelevanceConfig(config: PipelineConfig | null): ThreatRelevanceConfig | null {
+  return config?.threatRelevance ?? null;
+}
+
+/**
+ * 初回 `--analyze-threat-relevance` 実行時に呼ばれる対話ウィザード。
+ * `runXSummaryWizard` と同形 (番号選択 + 任意の custom model ID)。
+ * ローカル OSS 推論モデルを使う場合は custom model ID 入力でチェックポイントを指す。
+ */
+export async function runThreatRelevanceWizard(
+  ask?: (q: string) => Promise<string>
+): Promise<ThreatRelevanceConfig> {
+  let localRl: readline.Interface | null = null;
+  let askFunc = ask;
+  if (!askFunc) {
+    localRl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    askFunc = (q: string) => new Promise<string>(resolve => localRl!.question(q, resolve));
+  }
+
+  console.log('\n=== 🛡️ 脅威レポート 該当性判定のモデル選択 (Level 2 検知) ===');
+  console.log('「reasoning 可能な smart 階層」を選んでください (cloud / ローカル OSS 推論モデル可)。\n');
+  THREAT_RELEVANCE_PRESETS.forEach((p, i) => {
+    console.log(`  ${i + 1}. ${p.label}`);
+  });
+  console.log('');
+
+  const raw = await askFunc(
+    `番号で選択してください [1-${THREAT_RELEVANCE_PRESETS.length}] (Enter=1 デフォルト): `
+  );
+  const choice = raw.trim()[0] ?? '';
+  let idx = 0;
+  if (choice) {
+    const parsed = parseInt(choice, 10);
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= THREAT_RELEVANCE_PRESETS.length) {
+      idx = parsed - 1;
+    } else {
+      console.warn(`⚠️  不正な入力 "${raw.trim()}" — デフォルト (${THREAT_RELEVANCE_PRESETS[0].label}) を使用します。`);
+    }
+  }
+  const preset = THREAT_RELEVANCE_PRESETS[idx];
+
+  const customRaw = await askFunc(
+    `\n${preset.label} を選択しました。\nモデル ID を上書きしますか? (Enter=${preset.model} をそのまま使用): `
+  );
+  const customModel = customRaw.trim();
+  const config: ThreatRelevanceConfig = {
+    provider: preset.provider,
+    model: customModel || preset.model,
+  };
+
+  if (localRl) localRl.close();
+  console.log(`✅ 該当性判定の設定を保存します: provider=${config.provider} / model=${config.model}\n`);
   return config;
 }
 

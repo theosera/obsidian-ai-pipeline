@@ -11,6 +11,7 @@ import { run as runRouter } from './test/router';
 import { run as runStorage } from './test/storage';
 import { run as runXBookmarks } from './test/x_bookmarks';
 import { run as runThreatReports } from './test/threat_reports';
+import { run as runThreatRelevance } from './test/threat_reports_relevance';
 import { run as runLlmSecWeeklyFetcher } from './test/llm_sec_weekly_fetcher';
 
 interface Suite {
@@ -26,6 +27,7 @@ const suites: Suite[] = [
   { name: 'Storage', run: runStorage },
   { name: 'XBookmarks', run: runXBookmarks },
   { name: 'ThreatReports', run: runThreatReports },
+  { name: 'ThreatRelevance', run: runThreatRelevance },
   { name: 'LlmSecWeeklyFetcher', run: runLlmSecWeeklyFetcher },
 ];
 
