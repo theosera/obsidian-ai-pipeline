@@ -61,6 +61,19 @@ export interface ParsedCliArgs {
    * frontmatter 付き md を Vault 配下に書き出してからこの CLI を呼ぶ責務分担。
    */
   ingestThreatReport?: string;
+  /**
+   * 取込済み脅威レポートの各脅威 (vulnerabilities / implementation_checks) について
+   * 「自リポ該当性」を判定し `ai_relevance_note` を自動記入する (Level 2 検知)。
+   * `--analyze-threat-relevance`。検知のみ — コード変更・提案・実行はしない。
+   */
+  analyzeThreatRelevance: boolean;
+  /**
+   * 該当性判定を AI 記入済み行も含めて再生成する。人手 note (センチネル無しの
+   * 非 NULL) は redo でも**絶対に上書きしない**。`--threat-relevance-all`。
+   */
+  threatRelevanceAll: boolean;
+  /** 該当性判定の provider / model を再選択するウィザードを起動。`--threat-relevance-reconfig`。 */
+  threatRelevanceReconfig: boolean;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -121,6 +134,9 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     xSummaryReconfig: argv.includes('--x-summary-reconfig'),
     xLimit,
     ingestThreatReport: ingestThreatReportValue,
+    analyzeThreatRelevance: argv.includes('--analyze-threat-relevance'),
+    threatRelevanceAll: argv.includes('--threat-relevance-all'),
+    threatRelevanceReconfig: argv.includes('--threat-relevance-reconfig'),
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
     // 位置引数 (非 flag): 先頭のみ採用
@@ -142,4 +158,7 @@ export function printUsage(): void {
   console.error('  tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
   console.error('  tsx index.ts --sync-rules            (snippets→folder_rules 同期のみ)');
   console.error('  tsx index.ts --ingest-threat-report=<path>.md  (週次 LLM 脅威レポート取込)');
+  console.error('  tsx index.ts --analyze-threat-relevance        (取込済み脅威の自リポ該当性を判定→ai_relevance_note 記入 / Level 2 検知)');
+  console.error('  tsx index.ts --analyze-threat-relevance --threat-relevance-all       (AI 記入済みも再判定 / 人手 note は保護)');
+  console.error('  tsx index.ts --analyze-threat-relevance --threat-relevance-reconfig  (判定 provider / model を再選択)');
 }

@@ -21,10 +21,13 @@ import {
   runConfigWizard,
   applyConfigToEnv,
   setDryRun,
+  getVaultRoot,
   getXBookmarksBaseFolder,
   runXSummaryWizard,
   saveConfig,
   getXSummaryConfig,
+  getThreatRelevanceConfig,
+  runThreatRelevanceWizard,
 } from './config';
 import { syncRulesFromSnippets } from './sync-rules';
 import { runAuthServer } from './x_auth_server';
@@ -119,6 +122,47 @@ async function main(): Promise<void> {
       }
     } catch (e: any) {
       console.error(`❌ 脅威レポート取込失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
+  // --analyze-threat-relevance: 取込済み脅威の「自リポ該当性」を判定し
+  // ai_relevance_note を自動記入する (Level 2 検知)。検知のみ — コード変更はしない。
+  if (args.analyzeThreatRelevance) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    // 判定モデルの dedicated provider/model (初回 or --threat-relevance-reconfig)
+    if (getThreatRelevanceConfig(config) === null || args.threatRelevanceReconfig) {
+      const threatRelevance = await runThreatRelevanceWizard(askQuestion);
+      config = { ...config, threatRelevance };
+      saveConfig(config);
+    }
+    try {
+      const { getDb } = await import('./threat_reports_db');
+      const { runThreatRelevanceAnalysis } = await import('./threat_reports_relevance');
+      const { exportThreatReportsJson } = await import('./threat_reports_json_export');
+      const { regenerateIndexPage } = await import('./threat_reports_index_writer');
+      const db = getDb();
+      const rel = config.threatRelevance ?? { provider: config.provider, model: config.smartModel };
+      const stats = await runThreatRelevanceAnalysis(db, {
+        provider: rel.provider,
+        model: rel.model,
+        redoAll: args.threatRelevanceAll,
+      });
+      const vaultRoot = getVaultRoot();
+      const jsonPath = exportThreatReportsJson({ db, vaultRoot });
+      const indexPath = regenerateIndexPage({ vaultRoot });
+      console.log('\n🛡️  脅威レポート 該当性判定 (Level 2 検知) 完了:');
+      console.log(`   モデル:        ${rel.provider} / ${rel.model}`);
+      console.log(`   vuln 判定:     ${stats.vulnAnalyzed} 件 / check 判定: ${stats.implAnalyzed} 件`);
+      console.log(`   ⚠ 該当: ${stats.applies} / ? 要確認: ${stats.unclear} / skip(既存): ${stats.skipped} / 失敗: ${stats.failed}`);
+      console.log(`   JSON:          ${jsonPath}`);
+      console.log(`   index:         ${indexPath}`);
+      console.log('   ※ 検知のみ。修正は人手レビュー後に通常 PR フローで行ってください。');
+    } catch (e: any) {
+      console.error(`❌ 該当性判定失敗: ${e.message}`);
       process.exit(1);
     }
     closePrompt();
