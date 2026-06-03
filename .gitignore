@@ -53,6 +53,11 @@ packages/*/node_modules/
 !.claude/**
 .claude/settings.local.json
 
+# Python bytecode caches (e.g. scan-threat-report skill scripts/tests).
+# Placed after the !.claude/** re-include so it also covers .claude/ subtrees.
+__pycache__/
+*.pyc
+
 # Allow oxlint config (dotfile, but a tracked project config)
 !.oxlintrc.json
 
