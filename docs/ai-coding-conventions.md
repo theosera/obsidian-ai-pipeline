@@ -74,7 +74,7 @@ Layer1 Syntax     : tsc                     構文の正当性
 - 本リポは Layer3 に oxlint(Rust製・ESLint比50-100倍速)を採用済み（バグ検出4ルール主義）。
 - Claude Code: `/plugin` → Discover → "LSP" → TypeScript → user scope。
 
-## 6. 7原則（要約）
+## 6. 原則（要約）
 
 1 エラーは全送  2 型で構造を表現  3 メタデータ削減  4 言語選定にAI相性度
 5 コードの形が説明書  6 テストより先に型チェック  7 コンテキスト圧縮を習慣化
