@@ -23,6 +23,23 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 | このリポの TypeScript を書く / 直す / レビューする | `ts-coding-conventions` |
 | sec-mode 取込で脅威レポート本文を扱う (injection ゲート) | `scan-threat-report` |
 
+## Skills / Commands 構成規約 (フラット固定)
+
+> **1 skill = 1 フラットディレクトリ + 1 `SKILL.md`** (`.claude/skills/<name>/SKILL.md`)。
+> 中間カテゴリディレクトリで**機能グループ化しない** — Claude Code の nested 検出は
+> docs と実装が乖離した既知の不具合 (#28266 / #40640 / #39138) で信頼できず、発火表の
+> 決定論性を損なうため。グループ化は**ドキュメント** (下の索引 + 発火表) で表現し、真の
+> namespace が要るときだけ**プラグイン化** (`plugin:skill`) を検討する。
+
+| カテゴリ | 名前 (種別) |
+|---|---|
+| Security / 脅威レポート | `scan-threat-report` (skill) / `sec-mode`・`sec-audit` (command) |
+| Dev workflow | `pr-workflow`・`ts-coding-conventions` (skill) |
+| Feature 知識 | `x-bookmarks` (skill) |
+
+> 命名規約 (kebab-case / `name`=ディレクトリ名) と追加手順・根拠は
+> `docs/skills-design.md` に集約 (新規 skill を足すときは発火表 + 同 doc 索引も更新)。
+
 ## Chat mode protocol (session routing)
 
 このリポは 2 つのチャットモードを使い分ける。**他のどの節より先に**判定する。
@@ -103,6 +120,7 @@ outside the catalog (isolated workspace).
 - `CLAUDE.global.md` — 全リポ共通のグローバル層 (行動原則 / セキュリティ境界 / 発火規律)
 - `.claude/skills/` — `pr-workflow` / `x-bookmarks` / `ts-coding-conventions` /
   `scan-threat-report` (発火条件付きの作業規約・機能知識)
+- `docs/skills-design.md` — Skills/Commands 構成規約 (フラット固定の根拠 / 命名 / カテゴリ索引)
 - `README.md` — high-level architecture + setup
 - `docs/ai-coding-conventions.md` — AI-native コーディング規約 (原本。`ts-coding-conventions` skill が参照)
 - `docs/branch-protection.md` — main branch protection + auto-merge setup
