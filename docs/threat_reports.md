@@ -111,7 +111,7 @@ pnpm start -- --ingest-threat-report=<path-to-md>
 「本リポに該当するか」の取捨選択はしない。取込**後**に、本リポへの該当性を
 レビューして実装するかを判断する段階を `/sec-review` (Default mode コマンド) が担う。
 
-```
+```text
 ingest 済み DB (全件)
   ↓ /sec-review  (= Default mode コマンド)
 1. pnpm start -- --analyze-threat-relevance
