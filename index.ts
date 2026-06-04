@@ -169,6 +169,38 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // --mark-threat-reviewed=<report_id>: 該当性レビュー (/sec-review) 完了印を立て、
+  // JSON / index を再生成する。これにより次回 /sec-review はこのレポートをスキップ。
+  if (args.markThreatReviewed) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { getDb } = await import('./threat_reports_db');
+      const { exportThreatReportsJson } = await import('./threat_reports_json_export');
+      const { regenerateIndexPage } = await import('./threat_reports_index_writer');
+      const db = getDb();
+      const reportId = args.markThreatReviewed;
+      const changed = db.markReportReviewed(reportId);
+      if (changed === 0) {
+        console.error(`❌ 該当 report_id が見つかりません: ${reportId}`);
+        console.error('   --analyze-threat-relevance の出力 / .threat_reports.json の reports[] で report_id を確認してください。');
+        process.exit(1);
+      }
+      const vaultRoot = getVaultRoot();
+      const jsonPath = exportThreatReportsJson({ db, vaultRoot });
+      const indexPath = regenerateIndexPage({ vaultRoot });
+      console.log('\n🛡️  該当性レビュー済みフラグを立てました:');
+      console.log(`   report_id: ${reportId}`);
+      console.log(`   JSON:      ${jsonPath}`);
+      console.log(`   index:     ${indexPath}`);
+    } catch (e: any) {
+      console.error(`❌ レビュー済みフラグ更新失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
   // --x-derive-rules: vault 構造を解析して x_forced_parents.json を自動推定 (.bak 残し)
   if (args.xDeriveRules) {
     if (!config) config = await runConfigWizard(askQuestion);

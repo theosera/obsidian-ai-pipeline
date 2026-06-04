@@ -49,20 +49,32 @@ export interface ExportedImplementationCheckRow {
 }
 
 /**
+ * レポート単位のメタ行 (Dataview / `/sec-review` 用)。`relevance_reviewed_at` が
+ * 非 null なら該当性レビュー済み = `/sec-review` は次回以降スキップする。
+ */
+export interface ExportedReportRow {
+  report_id: string;
+  week_of: string;
+  ingested_at: string;
+  /** ISO 8601 / null=未レビュー。`/sec-review` が立てる「処理済みフラグ」。 */
+  relevance_reviewed_at: string | null;
+}
+
+/**
  * JSON エクスポート全体。`version` は **JSON スキーマ自体のバージョン**で、
  * レポートの `schema_version` とは別物 (Dataview script との互換管理用)。
  *
- * version 2 で `implementation_checks` フィールドを追加。version 1 を読む
- * 古い Dataview script は `rows` のみ参照する想定で、新フィールドは無視され
- * ても破綻しない。新 script は `version >= 2` のみで `implementation_checks`
- * テーブルを描画する。
+ * version 2 で `implementation_checks` を、version 3 で `reports` (レポート単位の
+ * レビュー済みフラグ) を追加。いずれも **追加のみ** なので、古い Dataview script
+ * (`rows` のみ参照) は新フィールドを無視しても破綻しない。
  */
 export interface ExportedJson {
-  version: 2;
+  version: 3;
   generated_at: string;
   base_folder: string;
   rows: ExportedVulnerabilityRow[];
   implementation_checks: ExportedImplementationCheckRow[];
+  reports: ExportedReportRow[];
 }
 
 interface ExportOptions {
@@ -106,12 +118,19 @@ export function buildExportPayload(options: ExportOptions = {}): ExportedJson {
     ai_relevance_note: c.ai_relevance_note,
     raw_md_path: c.vault_path,
   }));
+  const reports: ExportedReportRow[] = db.listReports().map(r => ({
+    report_id: r.id,
+    week_of: r.week_of,
+    ingested_at: r.ingested_at,
+    relevance_reviewed_at: r.relevance_reviewed_at,
+  }));
   return {
-    version: 2,
+    version: 3,
     generated_at: new Date().toISOString(),
     base_folder: baseFolder,
     rows: exported,
     implementation_checks: exportedChecks,
+    reports,
   };
 }
 
