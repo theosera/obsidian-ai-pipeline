@@ -33,7 +33,7 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 
 | カテゴリ | 名前 (種別) |
 |---|---|
-| Security / 脅威レポート | `scan-threat-report` (skill) / `sec-mode`・`sec-audit` (command) |
+| Security / 脅威レポート | `scan-threat-report` (skill) / `sec-mode`・`sec-audit`・`sec-review` (command) |
 | Dev workflow | `pr-workflow`・`ts-coding-conventions` (skill) |
 | Feature 知識 | `x-bookmarks` (skill) |
 
@@ -67,6 +67,13 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 > (Gmail クエリ / MCP 権限 / 証拠要件 / 判断順序 / 違反対応)。
 > Default mode では Security-only タスク (Gmail フェッチ / `--ingest-threat-report`)
 > を**勝手に走らせない**。必要なら別チャット `🛡️ LLM-Sec-Review` へ誘導する。
+>
+> 取込**後**の「自リポ該当性レビュー (取り込んだ全件のうち本リポに該当する実装推奨
+> だけを理由付きで提示し、実装するかをユーザー判断に委ねる)」は **Default mode の
+> `/sec-review` コマンド** (`.claude/commands/sec-review.md`) が担う。Gmail には触れず
+> ローカル DB (`--analyze-threat-relevance` / `--mark-threat-reviewed`) のみ扱い、
+> レビュー済みレポートは JSON 上のフラグ (`reports[].relevance_reviewed_at`) で次回以降
+> スキップする。コード変更提案は consumption policy §4 の証拠 5 点を満たすときのみ。
 
 ## Trust Boundary (脅威レポート — 絶対遵守 / ハードルール)
 

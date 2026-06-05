@@ -39,6 +39,15 @@ export interface ReportRow {
   trust_level: string | null;
   report_type: string | null;
   ingested_at: string;
+  /**
+   * 「自リポ該当性レビュー (`/sec-review`) を実施済みか」の印。ISO 8601 timestamp
+   * (null = 未レビュー)。`/sec-review` は **null のレポートだけ**を逐次レビュー対象に
+   * し、レビュー完了後に `markReportReviewed` で立てる → 次回以降スキップされる。
+   * 取込済みフラグ (= 分析済み) は Gmail `processed` ラベル (フェッチ層) とは別物で、
+   * こちらは「ローカル DB 上での該当性レビュー完了印」。再 ingest では保持される
+   * (ai_relevance_note と同じく人手の判断結果を上書き消去しない)。
+   */
+  relevance_reviewed_at: string | null;
 }
 
 export interface VulnerabilityRow {
@@ -125,7 +134,8 @@ CREATE TABLE IF NOT EXISTS reports (
   schema_version INTEGER NOT NULL DEFAULT 1,
   trust_level TEXT,
   report_type TEXT,
-  ingested_at TEXT NOT NULL
+  ingested_at TEXT NOT NULL,
+  relevance_reviewed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reports_week ON reports(week_of);
 CREATE INDEX IF NOT EXISTS idx_reports_source ON reports(source);
@@ -174,6 +184,19 @@ export class ThreatReportsDb {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /**
+   * SCHEMA は `CREATE TABLE IF NOT EXISTS` なので、列追加は既存 DB に反映されない。
+   * 後方互換のため、不足列を冪等に `ALTER TABLE ... ADD COLUMN` で補う
+   * (PRAGMA table_info で存在確認してから = 二重追加 throw を避ける)。
+   */
+  private migrate(): void {
+    const cols = this.db.prepare('PRAGMA table_info(reports)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'relevance_reviewed_at')) {
+      this.db.exec('ALTER TABLE reports ADD COLUMN relevance_reviewed_at TEXT');
+    }
   }
 
   upsertReport(input: ReportUpsertInput): void {
@@ -197,6 +220,8 @@ export class ThreatReportsDb {
         trust_level = excluded.trust_level,
         report_type = excluded.report_type
         -- ingested_at は INSERT 時のみ保持 (初回取り込み時刻)
+        -- relevance_reviewed_at は触らない (人手レビュー結果を再 ingest で消さない /
+        --   ai_relevance_note と同じ保護方針)
     `).run({
       id: input.id,
       source: input.source,
@@ -418,6 +443,23 @@ export class ThreatReportsDb {
 
   listReports(): ReportRow[] {
     return this.db.prepare('SELECT * FROM reports ORDER BY week_of DESC, received_at DESC').all() as ReportRow[];
+  }
+
+  /** 該当性レビュー (`/sec-review`) 未実施 (relevance_reviewed_at IS NULL) のレポートのみ。古い週順。 */
+  listUnreviewedReports(): ReportRow[] {
+    return this.db.prepare(
+      'SELECT * FROM reports WHERE relevance_reviewed_at IS NULL ORDER BY week_of ASC, received_at ASC'
+    ).all() as ReportRow[];
+  }
+
+  /**
+   * レポートを「該当性レビュー済み」に印付けする。`/sec-review` がレポート単位の
+   * 逐次レビューを終えた後に呼ぶ → 次回以降 `listUnreviewedReports` から外れる。
+   * 戻り値は更新行数 (0 = 該当 id が無い → caller で警告できる)。
+   */
+  markReportReviewed(id: string, reviewedAt?: string): number {
+    const at = reviewedAt ?? new Date().toISOString();
+    return this.db.prepare('UPDATE reports SET relevance_reviewed_at = ? WHERE id = ?').run(at, id).changes;
   }
 
   listVulnerabilities(reportId?: string): VulnerabilityRow[] {
