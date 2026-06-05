@@ -45,6 +45,7 @@ export interface HandsOnOptions {
 
 const PROMPT_TEMPLATE_PATH = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
+  '..',
   'prompts',
   'hands_on.md'
 );
