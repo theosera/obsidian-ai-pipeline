@@ -23,8 +23,8 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { getVaultRoot } from './config';
-import type { XMediaResponse, XMediaVariant } from './x_bookmarks_api';
+import { getVaultRoot } from '../config';
+import type { XMediaResponse, XMediaVariant } from './types';
 
 // API 型を再 export (呼び出し側の便宜)
 export type XMedia = XMediaResponse;

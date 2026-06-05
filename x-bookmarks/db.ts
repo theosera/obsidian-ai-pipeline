@@ -22,7 +22,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot } from './config';
+import { getVaultRoot } from '../config';
 
 export interface BookmarkRow {
   tweet_id: string;
@@ -351,12 +351,12 @@ export class XBookmarksDb {
 
   /**
    * JSON エクスポート用に bookmarks 全行を読み出す。
-   * `x_bookmarks_json_export.ts` が `<vault>/<base>/.x_bookmarks.json` に書き出すための
+   * `json_export.ts` が `<vault>/<base>/.x_bookmarks.json` に書き出すための
    * read-only スナップショット。`session_id` は Dataview 表示に不要なので返さない。
    */
   /**
    * AI 要約待ち (ai_summary IS NULL かつ tweet_text が空でない) の行を返す。
-   * x_bookmarks_summarizer.ts が sync 末尾でこれをループして埋める。
+   * summarizer.ts が sync 末尾でこれをループして埋める。
    */
   listPendingAiSummaries(): Pick<BookmarkRow, 'tweet_id' | 'tweet_text' | 'note_tweet_text'>[] {
     // `IS NOT NULL` だけだと `''` や空白だけの行を毎 sync で取り直して LLM を

@@ -2,7 +2,7 @@ import { fetchRenderedHtml } from '../fetcher';
 import { extractAndConvert } from '../extractor';
 import { classifyArticle } from '../classifier';
 import { ClassificationResult, ProcessingResult } from '../types';
-import { ApiBookmark } from '../x_bookmarks_api';
+import { ApiBookmark } from '../x-bookmarks/types';
 import { ParsedEntry, FailureRecord } from './types';
 
 /**

@@ -14,7 +14,7 @@
  */
 
 import { spawn, spawnSync } from 'child_process';
-import { OrphanOnX, OrphanResolver, OrphanResolution } from './x_session_sync';
+import { OrphanOnX, OrphanResolver, OrphanResolution } from './session_sync';
 
 export interface AskFn {
   (prompt: string): Promise<string>;

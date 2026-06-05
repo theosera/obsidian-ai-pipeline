@@ -38,7 +38,7 @@ pnpm start ../context/_分析コンテキスト/OneTab_20260414.txt --config
 ```
 
 ### X 要約モデルの選択（`--x-summary-reconfig`）
-X ブックマーク AI 要約 (`x_bookmarks_summarizer`) は分類フェーズ (`--config` で設定する AI Provider) **とは独立** した設定を持ちます。`pipeline_config.json::xSummary` に保存され、CLI 番号選択で切り替え可能:
+X ブックマーク AI 要約 (`x-bookmarks/summarizer`) は分類フェーズ (`--config` で設定する AI Provider) **とは独立** した設定を持ちます。`pipeline_config.json::xSummary` に保存され、CLI 番号選択で切り替え可能:
 
 | # | Preset | Provider | Model |
 |---|---|---|---|

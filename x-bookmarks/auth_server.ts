@@ -11,7 +11,8 @@ import http from 'http';
 import crypto from 'crypto';
 import { URL } from 'url';
 import { exec } from 'child_process';
-import { saveTokens, StoredTokens, getTokensPath } from './x_bookmarks_api';
+import { saveTokens, getTokensPath } from './tokens';
+import { StoredTokens } from './types';
 
 const AUTHORIZE_ENDPOINT = 'https://x.com/i/oauth2/authorize';
 const TOKEN_ENDPOINT = 'https://api.x.com/2/oauth2/token';
