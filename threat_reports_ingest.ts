@@ -213,7 +213,12 @@ export async function rebuildThreatReportsDbFromVault(options?: {
   let implementationChecks = 0;
   const skipped: Array<{ file: string; reason: string }> = [];
 
-  // 3. 各 raw を再 ingest。archive=false: raw 自身が既にアーカイブなので書き戻さない。
+  // 3. 各 raw を再 ingest。archive=true (既定) のまま再アーカイブする:
+  //    ingestThreatReport は archive 実行時のみ reports.vault_path を埋めるため、
+  //    archive=false にすると再構築行の vault_path が null になり JSON の
+  //    raw_md_path も null = 元レポートへのリンクが切れる (Codex #82 P2)。
+  //    raw/<week>.md への書き戻しは tmp→rename の冪等上書き (内容は ingest 冒頭で
+  //    メモリ読込済みなので同一パスでも安全) で、archive パスを正しく記録する。
   //    1 ファイルの契約違反 (ContractError) / I/O 失敗で全体を止めず、その 1 件だけ
   //    skip して残りを復元する (部分復旧 > 全失敗)。
   for (const file of files) {
@@ -222,7 +227,6 @@ export async function rebuildThreatReportsDbFromVault(options?: {
         filePath: path.join(rawDir, file),
         db,
         vaultRoot,
-        archive: false,
         source: `file:${file}`,
       });
       reportsRebuilt += 1;

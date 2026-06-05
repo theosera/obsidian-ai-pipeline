@@ -882,8 +882,16 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       assert.strictEqual(res.skipped.length, 0, 'skip なし');
 
       // 孤児は落ち、実レポートのみ残る
-      assert.strictEqual(db.listReports().length, 1, '孤児行は削除される');
+      const rebuilt = db.listReports();
+      assert.strictEqual(rebuilt.length, 1, '孤児行は削除される');
       assert.strictEqual(db.listVulnerabilities().length, 2);
+
+      // 再構築行は vault_path (raw アーカイブパス) を保持する
+      // — null だと JSON の raw_md_path が切れて元レポートへのリンクが壊れる (Codex #82 P2)
+      assert.ok(
+        rebuilt[0].vault_path && rebuilt[0].vault_path.endsWith('2026-05-25.md'),
+        `再構築でも vault_path を保持 (実際: ${rebuilt[0].vault_path})`
+      );
 
       // human note は raw に無いので復元されない (全行 null)
       assert.ok(
