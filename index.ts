@@ -128,6 +128,35 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // --rebuild-threat-reports-db: raw/<week>.md を真実として threat_reports DB を
+  // 作り直す (破損退避 / 手動削除後の明示的な復旧)。human 入力は raw に無いので復元不可。
+  if (args.rebuildThreatReportsDb) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { rebuildThreatReportsDbFromVault } = await import('./threat_reports_ingest');
+      const result = await rebuildThreatReportsDbFromVault();
+      console.log('\n🛡️  threat_reports DB 再構築完了 (raw/*.md → DB):');
+      console.log(`   raw dir:          ${result.rawDir}`);
+      console.log(`   .md 発見:         ${result.filesFound} 件`);
+      console.log(`   reports 復元:     ${result.reportsRebuilt} 件`);
+      console.log(`   vulnerabilities:  ${result.vulnerabilities} 件 / impl_checks: ${result.implementationChecks} 件`);
+      console.log(`   JSON:             ${result.jsonPath}`);
+      console.log(`   index:            ${result.indexPath}`);
+      if (result.skipped.length > 0) {
+        console.warn(`   ⚠ skip (取込失敗): ${result.skipped.length} 件`);
+        for (const s of result.skipped) console.warn(`      - ${s.file}: ${s.reason}`);
+      }
+      console.log('   ⚠ ai_relevance_note / relevance_reviewed_at は raw に無いため復元されません。');
+      console.log('     退避された <db>.corrupted_* が開ける場合はそちらから手動サルベージしてください。');
+    } catch (e: any) {
+      console.error(`❌ threat_reports DB 再構築失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
   // --analyze-threat-relevance: 取込済み脅威の「自リポ該当性」を判定し
   // ai_relevance_note を自動記入する (Level 2 検知)。検知のみ — コード変更はしない。
   if (args.analyzeThreatRelevance) {

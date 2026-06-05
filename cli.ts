@@ -74,6 +74,12 @@ export interface ParsedCliArgs {
   threatRelevanceAll: boolean;
   /** 該当性判定の provider / model を再選択するウィザードを起動。`--threat-relevance-reconfig`。 */
   threatRelevanceReconfig: boolean;
+  /**
+   * `raw/<week>.md` を真実として threat_reports DB を作り直す。`--rebuild-threat-reports-db`。
+   * 破損退避 / 手動削除後の明示的な復旧コマンド。human 入力 (ai_relevance_note /
+   * relevance_reviewed_at) は raw に無いため復元されない (実行時に警告)。
+   */
+  rebuildThreatReportsDb: boolean;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -137,6 +143,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     analyzeThreatRelevance: argv.includes('--analyze-threat-relevance'),
     threatRelevanceAll: argv.includes('--threat-relevance-all'),
     threatRelevanceReconfig: argv.includes('--threat-relevance-reconfig'),
+    rebuildThreatReportsDb: argv.includes('--rebuild-threat-reports-db'),
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
     // 位置引数 (非 flag): 先頭のみ採用
@@ -161,4 +168,5 @@ export function printUsage(): void {
   console.error('  tsx index.ts --analyze-threat-relevance        (取込済み脅威の自リポ該当性を判定→ai_relevance_note 記入 / Level 2 検知)');
   console.error('  tsx index.ts --analyze-threat-relevance --threat-relevance-all       (AI 記入済みも再判定 / 人手 note は保護)');
   console.error('  tsx index.ts --analyze-threat-relevance --threat-relevance-reconfig  (判定 provider / model を再選択)');
+  console.error('  tsx index.ts --rebuild-threat-reports-db       (raw/*.md から threat_reports DB を再構築 / 破損復旧。human note は復元不可)');
 }

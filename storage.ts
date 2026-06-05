@@ -198,6 +198,9 @@ tags:
 
   const body = frontmatter + (articleData.content || '');
   fs.writeFileSync(resolvedFilePath, body, 'utf8');
+  // A2: 保存できた URL を dedup 集合へ即反映 (本番経路の更新口)。
+  // 集合未初期化なら no-op (次回 getKnownUrls が全走査で構築する)。
+  addKnownUrl(articleData.url);
   return resolvedFilePath;
 }
 
@@ -278,7 +281,8 @@ let cachedKnownUrls: Set<string> | null = null;
  * パフォーマンス配慮:
  *   - 各 `.md` の先頭 4KB だけ読む (YAML frontmatter は通常 < 1KB)
  *   - シンボリックリンクは追わない (ループ防止)
- *   - 結果は module-level でキャッシュ (テスト用 `resetKnownUrlsCache` で破棄可)
+ *   - 結果は module-level でキャッシュ。**本番経路の更新口は `addKnownUrl`**
+ *     (保存直後に呼ぶ) / テスト用の全破棄は `resetKnownUrlsCache`。
  */
 export function getKnownUrls(): Set<string> {
   if (cachedKnownUrls) return cachedKnownUrls;
@@ -293,9 +297,7 @@ export function getKnownUrls(): Set<string> {
       // 互換のため未クォート版も拾う (旧 .md 手動編集ケース)。
       const match = head.match(/^source:\s*"?(https?:\/\/[^"\s]+?)"?\s*$/m);
       if (match && match[1]) {
-        let url = match[1].trim();
-        url = url.endsWith('/') ? url.slice(0, -1) : url;
-        known.add(url);
+        known.add(normalizeKnownUrl(match[1]));
       }
     });
   } catch (err: any) {
@@ -304,6 +306,33 @@ export function getKnownUrls(): Set<string> {
 
   cachedKnownUrls = known;
   return cachedKnownUrls;
+}
+
+/**
+ * dedup 集合のキー正規化。`getKnownUrls` (走査) と `addKnownUrl` (更新) が
+ * **同じ正規化**を使うことで、保存直後に追加した URL が次の重複判定にヒットする。
+ * 現状は末尾スラッシュ除去のみ (getKnownUrls の従来挙動を踏襲)。
+ */
+function normalizeKnownUrl(url: string): string {
+  const trimmed = url.trim();
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+}
+
+/**
+ * 新規保存した URL を in-memory dedup 集合へ反映する **本番経路の更新口**。
+ * `saveMarkdown` が `.md` を書き出した直後に呼ぶことで、同一プロセス内で
+ * 続けて処理する後続バッチが「直前に保存した URL」を既知として扱える
+ * (A2 欠陥の解消: 旧来は `resetKnownUrlsCache` のテスト専用口しか無く、本番では
+ *  保存後に再 dedup する経路で stale = 重複保存し得た)。
+ *
+ * キャッシュ未初期化 (= `getKnownUrls` 未呼出) の場合は **何もしない**:
+ * 次回 `getKnownUrls` が Vault 全走査で正しく構築するため、ここで先走って
+ * 部分集合を作らない (部分集合を作ると「走査前なのに小さい集合」が固定化する)。
+ */
+export function addKnownUrl(url: string | undefined | null): void {
+  if (!cachedKnownUrls) return;
+  if (!url || !/^https?:\/\//.test(url.trim())) return;
+  cachedKnownUrls.add(normalizeKnownUrl(url));
 }
 
 /** テスト用: モジュールキャッシュを破棄して次回 `getKnownUrls` を再走査させる */

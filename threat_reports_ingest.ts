@@ -154,6 +154,103 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
   };
 }
 
+export interface RebuildResult {
+  /** 走査した raw アーカイブディレクトリ (絶対パス) */
+  rawDir: string;
+  /** 見つかった `.md` 件数 */
+  filesFound: number;
+  /** 再構築できたレポート行数 */
+  reportsRebuilt: number;
+  /** 再構築した vulnerability 行の合計 */
+  vulnerabilities: number;
+  /** 再構築した implementation_check 行の合計 */
+  implementationChecks: number;
+  /** パース/契約違反等で取り込めなかったファイル */
+  skipped: Array<{ file: string; reason: string }>;
+  jsonPath: string;
+  indexPath: string;
+}
+
+/**
+ * `raw/<week>.md` を唯一の真実として threat_reports DB を作り直す。
+ *
+ * ヘッダコメントが長らく謳ってきた「壊れたら .md から再構築可能 (rebuildFromVault)」を
+ * 実装したもの。破損退避 (`<file>.corrupted_*`) や手動 DB 削除のあとに、Vault に
+ * 残る生 markdown から派生インデックスを復元する**明示的な復旧コマンド**。
+ *
+ * ⚠️ **復元されないフィールド** (= raw markdown に存在しない human 入力):
+ *   - `vulnerabilities.ai_relevance_note` / `implementation_checks.ai_relevance_note`
+ *   - `reports.relevance_reviewed_at`
+ *   これらは DB のみが持つため、再構築後は空に戻る。退避された
+ *   `<file>.corrupted_*` が開ければそちらから手動サルベージする必要がある。
+ *   この破壊性ゆえ、本処理は破損時に**自動起動しない** (CLI から明示実行)。
+ *
+ * source は raw ファイル名から決定論的に再導出する (元の `gmail:<id>` は失われるが、
+ * 再構築 ID の安定性 = 同じ raw を 2 度 rebuild しても同じ行、は保たれる)。
+ */
+export async function rebuildThreatReportsDbFromVault(options?: {
+  /** テスト注入用: 省略時は getDb() */
+  db?: ThreatReportsDb;
+  /** テスト注入用: 省略時は getVaultRoot() */
+  vaultRoot?: string;
+}): Promise<RebuildResult> {
+  const db = options?.db ?? getDb();
+  const vaultRoot = options?.vaultRoot ?? getVaultRoot();
+  const rawDir = path.join(vaultRoot, getThreatReportsArchiveFolder());
+
+  // 1. 既存行を全削除。reports を消すと vulnerabilities / implementation_checks は
+  //    ON DELETE CASCADE で連動削除される。raw/*.md だけを真実として作り直すため、
+  //    raw が消えた孤児レポートもここで落ちる。
+  for (const r of db.listReports()) db.deleteReport(r.id);
+
+  // 2. raw/*.md を列挙 (週順で安定させるためソート)。
+  const files = fs.existsSync(rawDir)
+    ? fs.readdirSync(rawDir).filter((f) => f.endsWith('.md')).sort()
+    : [];
+
+  let reportsRebuilt = 0;
+  let vulnerabilities = 0;
+  let implementationChecks = 0;
+  const skipped: Array<{ file: string; reason: string }> = [];
+
+  // 3. 各 raw を再 ingest。archive=false: raw 自身が既にアーカイブなので書き戻さない。
+  //    1 ファイルの契約違反 (ContractError) / I/O 失敗で全体を止めず、その 1 件だけ
+  //    skip して残りを復元する (部分復旧 > 全失敗)。
+  for (const file of files) {
+    try {
+      const res = await ingestThreatReport({
+        filePath: path.join(rawDir, file),
+        db,
+        vaultRoot,
+        archive: false,
+        source: `file:${file}`,
+      });
+      reportsRebuilt += 1;
+      vulnerabilities += res.vulnerabilities;
+      implementationChecks += res.implementationChecks;
+    } catch (err: unknown) {
+      skipped.push({ file, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  // 4. 0 ファイル / 全 skip でも JSON / index を最新 DB 状態 (= 空) に揃える。
+  //    ingestThreatReport は成功毎に再生成するが、ここで最後に必ず 1 回実行して
+  //    「古い JSON が残ったまま DB だけ空」というズレを防ぐ。
+  const jsonPath = exportThreatReportsJson({ db, vaultRoot });
+  const indexPath = regenerateIndexPage({ vaultRoot });
+
+  return {
+    rawDir,
+    filesFound: files.length,
+    reportsRebuilt,
+    vulnerabilities,
+    implementationChecks,
+    skipped,
+    jsonPath,
+    indexPath,
+  };
+}
+
 /**
  * report ID は source + week_of の安定ハッシュ。同じソース・同じ週の再 ingest は
  * 同 ID になり UPSERT で衝突 → DB 行が増えない (= 取り込み冪等性が保たれる)。

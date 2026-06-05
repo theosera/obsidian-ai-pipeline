@@ -2,9 +2,16 @@
  * X ブックマーク用 SQLite メタデータキャッシュ。
  *
  * 設計思想:
- *   - .md ファイル (Vault) が source of truth。本 DB は派生データ。
- *   - 用途: 重複検出 O(1)、差分スクレイプ、フォルダ件数モニタリング (Phase 2 用基盤)
- *   - 壊れたら .md から再構築可能 (rebuildFromVault は Phase 2 で実装)
+ *   - 用途: 重複検出 O(1)、差分スクレイプ、フォルダ件数モニタリング、ライフサイクル管理。
+ *   - ⚠️ 本 DB は**実質的な transactional core**であり純粋な派生キャッシュではない:
+ *     group-page 移行 (2026-05) で **per-tweet MD 書き出しは廃止**された
+ *     (`pipeline/interactive.ts` で gate off)。Vault 側に残るのは group ページ
+ *     (Dataview のレンダ済みビュー) のみで、個々のツイートの全データは持たない。
+ *     つまり **MD からの無損失再構築 (rebuildFromVault) は原理的に不可能**。
+ *   - 復旧経路: 破損退避後は (a) 再スクレイプ (差分でなく全件) で作り直すか、
+ *     (b) 直近の `.x_bookmarks.json` (全行エクスポート) からインポートする。
+ *     旧コメントの「.md が source of truth / rebuildFromVault は Phase 2」は
+ *     group-page 移行後の実態と乖離していたため撤回 (cache-inventory C1 参照)。
  *
  * ファイル配置:
  *   <vault>/__skills/pipeline/x_bookmarks.db   ← .gitignore 対象 (個人データ)
