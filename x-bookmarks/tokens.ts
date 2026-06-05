@@ -24,11 +24,25 @@ export function getTokensPath(): string {
   return path.join(dir, 'x_tokens.json');
 }
 
+/**
+ * パースした値が StoredTokens の必須フィールドを満たすか検証する型ガード。
+ * 破損 / 旧スキーマ / 手書きミスの x_tokens.json で空や非文字列の access_token を
+ * 掴んで後続の認証連鎖を壊さないよう、境界で弾く (ts-coding-conventions: API 境界検証)。
+ */
+function isStoredTokens(v: unknown): v is StoredTokens {
+  if (!v || typeof v !== 'object') return false;
+  const t = v as Partial<StoredTokens>;
+  return typeof t.access_token === 'string' && t.access_token.length > 0
+    && typeof t.obtained_at === 'string';
+}
+
 export function loadTokens(): StoredTokens | null {
   const p = getTokensPath();
   if (!fs.existsSync(p)) return null;
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf8')) as StoredTokens;
+    const parsed: unknown = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (!isStoredTokens(parsed)) return null;
+    return parsed;
   } catch {
     return null;
   }
@@ -89,6 +103,14 @@ export async function refreshAccessToken(
   const json: any = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(`Token refresh failed: ${res.status} ${JSON.stringify(json)}`);
+  }
+  // レスポンス本体を保存前に検証する。不正なら disk のトークンを上書きせず throw
+  // (空 access_token を保存して以降の getValidAccessToken を壊さない)。
+  if (typeof json.access_token !== 'string' || json.access_token.length === 0) {
+    throw new Error('Token refresh failed: missing access_token in response');
+  }
+  if (json.expires_in != null && typeof json.expires_in !== 'number') {
+    throw new Error('Token refresh failed: invalid expires_in in response');
   }
   return {
     access_token: json.access_token,
