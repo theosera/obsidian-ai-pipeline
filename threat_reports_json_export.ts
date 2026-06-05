@@ -1,7 +1,7 @@
 /**
  * 脅威レポート SQLite を Dataview 用 JSON にエクスポート。
  *
- * x_bookmarks_json_export.ts と同じパターン: SQLite は transactional な内部
+ * x-bookmarks/json_export.ts と同じパターン: SQLite は transactional な内部
  * キャッシュ、JSON は Obsidian 側で読まれる「読み取り専用ビュー」。
  *
  * 配置: `<vault>/<base>/.threat_reports.json`

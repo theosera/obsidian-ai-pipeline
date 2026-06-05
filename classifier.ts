@@ -398,7 +398,7 @@ async function askAI(prompt: string, systemContext: string = 'Respond exactly wi
 /**
  * `askAIText` の振る舞いを呼出側から上書きするオプション。
  *
- * 主用途は X ブックマーク要約 (`x_bookmarks_summarizer`) の per-call 制御:
+ * 主用途は X ブックマーク要約 (`x-bookmarks/summarizer`) の per-call 制御:
  *   - `provider` を上書きすることで AI_PROVIDER 環境変数 (= 分類フェーズの設定)
  *     から独立した経路にルーティングできる
  *   - `model` を上書きすることで preset 以外のモデル ID も叩ける

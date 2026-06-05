@@ -6,7 +6,7 @@
 
 ## X ブックマーク取得
 
-X (Twitter) ブックマークを取得し、Vault 内にグループページ + Dataview テーブルとして整理します。実装はリポジトリ直下のフラットな TypeScript 群 (`x_bookmarks_api.ts` / `x_auth_server.ts` / `x_folder_mapper.ts` / `x_bookmarks_db.ts` / `x_session_*.ts` / `hands_on_generator.ts`) で、既存の `index.ts` / `router.ts` / `storage.ts` と統合されています。
+X (Twitter) ブックマークを取得し、Vault 内にグループページ + Dataview テーブルとして整理します。実装は `x-bookmarks/` ディレクトリ (`api_client.ts` / `tokens.ts` / `types.ts` / `folder_*.ts` / `session_*.ts` / `summarizer.ts` / `hands_on_generator.ts` 等) にまとまっており、既存の `index.ts` / `pipeline/` / `router.ts` / `storage.ts` と統合されています。
 
 > 過去には Codex による pnpm workspace 実装 (`apps/*` + `packages/core`) を並走させた対照実験を行っていましたが、比較目的を終えたため Codex 側実装はリポジトリから削除しました。本仕様は現行のフラット実装のみを記述します。
 
@@ -39,17 +39,28 @@ pipeline/
 ├── config.ts             設定管理（Vault Root / dry-run / ウィザード）
 ├── fetcher.ts            Playwright Web フェッチ
 ├── extractor.ts          Readability + Turndown 抽出
-├── x_bookmarks_api.ts      X API v2 ラッパ (OAuth + folders/bookmarks 取得)
-├── x_auth_server.ts        OAuth 2.0 PKCE 認可サーバ (--x-auth)
-├── hands_on_generator.ts   X ブックマーク群 → Claude CLI でハンズオン生成
+├── x-bookmarks/            X ブックマーク機能 (pipeline/ と並ぶ feature ディレクトリ)
+│   ├── types.ts            X API v2 共有型 (ApiBookmark / XPost / XMedia*)
+│   ├── tokens.ts           OAuth トークン永続化 + 期限判定 + refresh
+│   ├── api_client.ts       X API v2 ラッパ (OAuth + folders/bookmarks 取得)
+│   ├── auth_server.ts      OAuth 2.0 PKCE 認可サーバ (--x-auth)
+│   ├── hands_on_generator.ts X ブックマーク群 → Claude CLI でハンズオン生成
+│   ├── folder_mapper.ts    X フォルダ名 → Vault 階層パスの 2 層マッピング
+│   ├── folder_tree.ts      --x-pick 用 Tree ビルダ + ASCII レンダラ
+│   ├── interactive_picker.ts --x-pick 用 番号パーサ + 対話ループ
+│   ├── session_registry.ts X folder ↔ Vault の session_id レジストリ (DB + marker file)
+│   ├── session_sync.ts     Sync Phase (X 側 / Vault 側 / .md 単位 の drift 検出と整合)
+│   ├── session_ai.ts       orphan_on_x の AI 判定ループ (Claude / local LLM)
+│   ├── folder_invariant.ts フォルダ数保存則チェック
+│   ├── rule_deriver.ts     vault 構造から x_forced_parents.json を自動推定
+│   ├── summarizer.ts       AI 要約 (200 字日本語 / cloud・local 切替)
+│   ├── json_export.ts      .x_bookmarks.json への Dataview 互換エクスポート
+│   ├── group_page_writer.ts group MD の sentinel-bounded 書き換え (idempotent)
+│   ├── group_page_template.ts dataviewjs テーブル付き group MD テンプレ
+│   ├── migrate_legacy.ts   旧パス Clippings/X-Bookmarks/ → _Archived/ 移行
+│   ├── video_frames.ts     動画キーフレーム抽出 (ffmpeg + opt-in)
+│   └── db.ts               SQLite メタデータキャッシュ（差分同期用）+ folder_sessions
 ├── prompts/hands_on.md     ハンズオン生成プロンプトテンプレート
-├── x_folder_mapper.ts      X フォルダ名 → Vault 階層パスの 2 層マッピング
-├── x_folder_tree.ts        --x-pick 用 Tree ビルダ + ASCII レンダラ
-├── x_interactive_picker.ts --x-pick 用 番号パーサ + 対話ループ
-├── x_session_registry.ts   X folder ↔ Vault の session_id レジストリ (DB + marker file)
-├── x_session_sync.ts       Sync Phase (X 側 / Vault 側 / .md 単位 の drift 検出と整合)
-├── x_session_ai.ts         orphan_on_x の AI 判定ループ (Claude / local LLM)
-├── x_bookmarks_db.ts       SQLite メタデータキャッシュ（差分同期用）+ folder_sessions
 ├── classifier.ts         AI 分類エンジン（Fast / Smart Pass）
 ├── router.ts             動的フォルダルーティング
 ├── sync-rules.ts         snippets→folder_rules 自動同期

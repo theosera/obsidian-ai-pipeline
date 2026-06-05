@@ -1,4 +1,5 @@
-import { fetchBookmarksViaApi, ApiBookmark } from '../x_bookmarks_api';
+import { fetchBookmarksViaApi } from '../x-bookmarks/api_client';
+import { ApiBookmark } from '../x-bookmarks/types';
 import {
   loadForcedParents,
   loadApprovedMappings,
@@ -6,9 +7,9 @@ import {
   detectCommonKeywords,
   writeGroupingProposal,
   prioritizeForcedParents,
-} from '../x_folder_mapper';
-import { getDb } from '../x_bookmarks_db';
-import { lookupVaultPath } from '../x_session_registry';
+} from '../x-bookmarks/folder_mapper';
+import { getDb } from '../x-bookmarks/db';
+import { lookupVaultPath } from '../x-bookmarks/session_registry';
 import { getXBookmarksBaseFolder } from '../config';
 import { ParsedEntry, FailureRecord } from './types';
 

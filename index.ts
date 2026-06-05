@@ -4,8 +4,8 @@
  * このファイルは **モード dispatch** と **ライフサイクル管理** のみに責任を持ち、
  * 実装ロジックは一切置かない。各モードの実装は対応モジュールに委譲する:
  *
- *   --x-auth              x_auth_server.ts        X OAuth 認可サーバ
- *   --hands-on=<folder>   hands_on_generator.ts   X ブックマーク DB → ハンズオン生成
+ *   --x-auth              x-bookmarks/auth_server.ts        X OAuth 認可サーバ
+ *   --hands-on=<folder>   x-bookmarks/hands_on_generator.ts X ブックマーク DB → ハンズオン生成
  *   --sync-rules          sync-rules.ts           snippets → folder_rules 同期
  *   --config              config.ts               対話ウィザード
  *   <file> | --x-bookmarks pipeline/runner.ts      通常パイプライン (OneTab / X API)
@@ -30,8 +30,8 @@ import {
   runThreatRelevanceWizard,
 } from './config';
 import { syncRulesFromSnippets } from './sync-rules';
-import { runAuthServer } from './x_auth_server';
-import { generateHandsOn } from './hands_on_generator';
+import { runAuthServer } from './x-bookmarks/auth_server';
+import { generateHandsOn } from './x-bookmarks/hands_on_generator';
 import { askQuestion, closePrompt } from './pipeline/prompt';
 import { runPipeline } from './pipeline/runner';
 
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
     if (!config) config = await runConfigWizard(askQuestion);
     applyConfigToEnv(config);
     try {
-      const { runMigrateLegacy } = await import('./x_migrate_legacy');
+      const { runMigrateLegacy } = await import('./x-bookmarks/migrate_legacy');
       const result = runMigrateLegacy();
       if (result.skipped) {
         console.log(`ℹ️  移行スキップ: ${result.reason}`);
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
     if (!config) config = await runConfigWizard(askQuestion);
     applyConfigToEnv(config);
     try {
-      const { runDeriveRulesCli } = await import('./x_rule_deriver');
+      const { runDeriveRulesCli } = await import('./x-bookmarks/rule_deriver');
       await runDeriveRulesCli({ ask: askQuestion });
     } catch (e: any) {
       console.error(`❌ ルール推定失敗: ${e.message}`);
@@ -189,8 +189,8 @@ async function main(): Promise<void> {
     if (!config) config = await runConfigWizard(askQuestion);
     applyConfigToEnv(config);
     try {
-      const { runSyncPhase } = await import('./x_session_sync');
-      const { createInteractiveOrphanResolver } = await import('./x_session_ai');
+      const { runSyncPhase } = await import('./x-bookmarks/session_sync');
+      const { createInteractiveOrphanResolver } = await import('./x-bookmarks/session_ai');
       const baseFolder = getXBookmarksBaseFolder();
       const result = await runSyncPhase({
         baseFolder,
@@ -204,7 +204,7 @@ async function main(): Promise<void> {
       console.log(`  orphan_on_x:    ${result.orphansOnX}`);
       console.log(`  orphan_on_vault: ${result.orphansOnVault}`);
       try {
-        const { checkFolderCountInvariant, logInvariantCheck } = await import('./x_folder_invariant');
+        const { checkFolderCountInvariant, logInvariantCheck } = await import('./x-bookmarks/folder_invariant');
         logInvariantCheck(checkFolderCountInvariant());
       } catch (invErr: any) {
         console.warn(`⚠️  Folder-count invariant チェック失敗: ${invErr.message}`);

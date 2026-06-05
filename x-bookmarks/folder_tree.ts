@@ -2,7 +2,7 @@
  * X ブックマークフォルダ群を 2 階層 Tree に集約するビルダ + レンダラ。
  *
  * `--x-pick` の Stage 1 で使う。X API 側は親子の概念を持たない (フラットな folder
- * リスト) なので、本モジュールが既存の x_folder_mapper.ts のロジックを流用して
+ * リスト) なので、本モジュールが既存の folder_mapper.ts のロジックを流用して
  * 親グループを合成する:
  *
  *   Tier 1 (forced):   x_forced_parents.json のキーワード単位でグルーピング
@@ -22,7 +22,7 @@ import {
   hasWordBoundaryMatch,
   prioritizeForcedParents,
   stripKeyword,
-} from './x_folder_mapper';
+} from './folder_mapper';
 
 export type FolderGroupKind = 'forced' | 'approved' | 'dynamic' | 'orphan' | 'unfiled';
 

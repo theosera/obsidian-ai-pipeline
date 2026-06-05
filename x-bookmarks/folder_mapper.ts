@@ -27,7 +27,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot } from './config';
+import { getVaultRoot } from '../config';
 
 const STOP_WORDS = new Set([
   'and', 'the', 'my', 'a', 'an', 'to', 'of', 'in', 'on', 'for',

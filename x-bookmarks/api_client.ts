@@ -1,5 +1,5 @@
 /**
- * X API v2 ブックマーク取得モジュール (Playwright スクレイパからの置換)。
+ * X API v2 ブックマーク取得クライアント (Playwright スクレイパからの置換)。
  *
  * 公式エンドポイント:
  *   GET /2/users/:id/bookmarks                        — 全ブックマーク (本文込み, ページング有)
@@ -11,10 +11,8 @@
  *   フォルダ別取り込みは「索引 (folders/:id) → 本文 (tweets?ids=)」の 2 段。
  *   詳細経緯は docs/x_bookmarks_api_research.md
  *
- * 認可: OAuth 2.0 Authorization Code Flow with PKCE
+ * 認可: OAuth 2.0 Authorization Code Flow with PKCE (token 永続化は `tokens.ts`)。
  *   scope: tweet.read users.read bookmark.read offline.access
- *   access_token は `<vault>/__skills/pipeline/x_tokens.json` に永続化。
- *   期限切れ時は refresh_token で自動更新。
  *
  * コスト配慮:
  *   - pay-per-use。skipKnownIds で DB 既知の ID は索引段階で除外し、
@@ -26,261 +24,32 @@
  *   /bookmarks/folders/{id}   — 50 req / 15分
  *   /tweets                   — 300 req / 15分 (user)
  */
-import fs from 'fs';
-import path from 'path';
-import { ArticleData } from './types';
-import { getVaultRoot } from './config';
+import {
+  ApiBookmark,
+  FetchOptions,
+  FolderListing,
+  XUser,
+  XPost,
+  XMediaResponse,
+  BookmarksResponse,
+  BookmarkFoldersResponse,
+} from './types';
+import {
+  loadTokens,
+  saveTokens,
+  refreshAccessToken,
+  getValidAccessToken,
+  isTokenExpired,
+} from './tokens';
 import {
   extractFramesFromTweetVideo,
   isVideoFramesEnabled,
   pickBestVariantUrl,
   pickVideoMedia,
   renderKeyFramesSection,
-} from './x_video_frames';
+} from './video_frames';
 
 const API_BASE = 'https://api.x.com/2';
-const TOKEN_ENDPOINT = `${API_BASE}/oauth2/token`;
-
-export interface ApiBookmark extends ArticleData {
-  xFolderName: string;
-  xTweetId: string;
-  /**
-   * X Premium 長文ツイートの全文 (note_tweet.text)。
-   * `text` が truncate されている場合のみセットされる。SQLite キャッシュに
-   * full text を保存するため interactive.ts で参照される。
-   */
-  xNoteTweetText?: string;
-  /**
-   * 主動画の最高 bitrate ストリーミング URL (video / animated_gif があれば)。
-   * 動画フレーム抽出 (X_VIDEO_FRAMES=true 時の opt-in パイプライン) で参照する。
-   */
-  xVideoUrl?: string;
-  /** 主動画の長さ (ミリ秒)。フレーム抽出時の等間隔サンプル計算に使う。 */
-  xVideoDurationMs?: number;
-  /**
-   * 当ブックマークが属する X folder の session_id。
-   * sync phase で folder→session を解決した後に input_x_bookmarks.ts が
-   * 各 ApiBookmark に注入する。.md frontmatter にも書き出される。
-   */
-  xSessionId?: string;
-  /** session_id 紐付けに使った X 側 folder ID (frontmatter デバッグ用) */
-  xFolderId?: string;
-  /** ツイート作者の @ハンドル (Dataview テーブルの author 列に表示) */
-  xAuthorHandle?: string;
-  /** public_metrics.like_count */
-  xLikes?: number;
-  /** public_metrics.retweet_count */
-  xRetweets?: number;
-  /** public_metrics.reply_count */
-  xReplies?: number;
-}
-
-export interface FetchOptions {
-  maxItems?: number;
-  skipKnownIds?: Set<string>;
-  /**
-   * 取得対象フォルダ ({id, name}) 配列。指定時はフォルダ列挙をスキップし
-   * この ID のフォルダのみ本文取得する (--x-pick 経由のセレクト用)。
-   * name は ApiBookmark.xFolderName に流れるので、Stage 1 で取得した
-   * 表示名 (X 側 raw) をそのまま渡すこと。
-   * 未指定 (undefined) は従来通り「全フォルダ」を取得。
-   */
-  selectedFolders?: { id: string; name: string }[];
-  /**
-   * `_Unfiled` (どのフォルダにも未割当のブックマーク) を取得対象に含めるか。
-   * `--x-pick` で明示選択したときだけ true を渡す想定。デフォルト true (従来挙動)。
-   */
-  includeUnfiled?: boolean;
-  /** テストから fetch をモックするための差し替え口 */
-  fetchFn?: typeof fetch;
-}
-
-/** Stage 1 (一覧表示) でだけ使う、軽量な folder list 取得結果 */
-export interface FolderListing {
-  userId: string;
-  username: string;
-  folders: { id: string; name: string }[];
-}
-
-export interface StoredTokens {
-  access_token: string;
-  refresh_token?: string;
-  token_type?: string;
-  expires_in?: number;
-  scope?: string;
-  obtained_at: string;
-}
-
-export interface XUser {
-  id: string;
-  name?: string;
-  username?: string;
-}
-
-export interface XPost {
-  id: string;
-  text: string;
-  author_id?: string;
-  created_at?: string;
-  public_metrics?: {
-    like_count?: number;
-    reply_count?: number;
-    retweet_count?: number;
-    quote_count?: number;
-  };
-  entities?: {
-    urls?: { url: string; expanded_url?: string; display_url?: string }[];
-  };
-  /**
-   * X Premium 長文ツイート (~25,000 字) の本文。
-   * これがあるツイートでは `text` は冒頭で `…` 付きで切れているため、
-   * `note_tweet.text` を優先して使う。
-   */
-  note_tweet?: { text: string };
-  /**
-   * 添付メディアの media_key 一覧。実体は `BookmarksResponse.includes.media[]`
-   * に展開されている (expansions=attachments.media_keys 指定時)。
-   */
-  attachments?: { media_keys?: string[] };
-}
-
-export interface XMediaVariant {
-  bit_rate?: number;
-  url: string;
-  content_type?: string;
-}
-
-export interface XMediaResponse {
-  media_key: string;
-  type: string;
-  duration_ms?: number;
-  preview_image_url?: string;
-  variants?: XMediaVariant[];
-  alt_text?: string;
-}
-
-export interface BookmarksResponse {
-  data?: XPost[];
-  includes?: { users?: XUser[]; media?: XMediaResponse[] };
-  meta?: { result_count?: number; next_token?: string };
-}
-
-export interface BookmarkFoldersResponse {
-  data?: { id: string; name: string }[];
-  meta?: { result_count?: number; next_token?: string };
-}
-
-// ---------------------------------------------------------------------------
-// Token storage
-// ---------------------------------------------------------------------------
-export function getTokensPath(): string {
-  const dir = path.join(getVaultRoot(), '__skills', 'pipeline');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, 'x_tokens.json');
-}
-
-export function loadTokens(): StoredTokens | null {
-  const p = getTokensPath();
-  if (!fs.existsSync(p)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(p, 'utf8')) as StoredTokens;
-  } catch {
-    return null;
-  }
-}
-
-export function saveTokens(tokens: StoredTokens): void {
-  const p = getTokensPath();
-  fs.writeFileSync(p, JSON.stringify(tokens, null, 2), 'utf8');
-  try {
-    fs.chmodSync(p, 0o600);
-  } catch {
-    // Windows や一部 FS では chmod が noop / 失敗する。無視して続行。
-  }
-}
-
-/**
- * アクセストークンが期限切れ間近か判定。
- * obtained_at + expires_in - 60s を閾値にする (時計ドリフト安全マージン)。
- */
-export function isTokenExpired(tokens: StoredTokens, nowMs = Date.now()): boolean {
-  if (!tokens.expires_in) return false;
-  const obtained = Date.parse(tokens.obtained_at);
-  if (Number.isNaN(obtained)) return true;
-  const expiresAt = obtained + tokens.expires_in * 1000 - 60_000;
-  return nowMs >= expiresAt;
-}
-
-// ---------------------------------------------------------------------------
-// OAuth token refresh
-// ---------------------------------------------------------------------------
-function buildTokenHeaders(clientId: string, clientSecret: string): HeadersInit {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/x-www-form-urlencoded',
-  };
-  if (clientSecret) {
-    const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-    headers.Authorization = `Basic ${basic}`;
-  }
-  return headers;
-}
-
-export async function refreshAccessToken(
-  refreshToken: string,
-  clientId: string,
-  clientSecret: string,
-  fetchFn: typeof fetch = fetch
-): Promise<StoredTokens> {
-  const body = new URLSearchParams();
-  body.set('refresh_token', refreshToken);
-  body.set('grant_type', 'refresh_token');
-  body.set('client_id', clientId);
-
-  const res = await fetchFn(TOKEN_ENDPOINT, {
-    method: 'POST',
-    headers: buildTokenHeaders(clientId, clientSecret),
-    body: body.toString(),
-  });
-  const json: any = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(`Token refresh failed: ${res.status} ${JSON.stringify(json)}`);
-  }
-  return {
-    access_token: json.access_token,
-    refresh_token: json.refresh_token ?? refreshToken,
-    token_type: json.token_type,
-    expires_in: json.expires_in,
-    scope: json.scope,
-    obtained_at: new Date().toISOString(),
-  };
-}
-
-/**
- * 有効な access_token を返す。期限切れなら refresh_token で更新して保存。
- */
-export async function getValidAccessToken(
-  clientId: string,
-  clientSecret: string,
-  fetchFn: typeof fetch = fetch
-): Promise<string> {
-  const tokens = loadTokens();
-  if (!tokens) {
-    throw new Error(
-      'x_tokens.json が見つかりません。先に `pnpm start -- --x-auth` で OAuth 認証を完了してください。'
-    );
-  }
-  if (!isTokenExpired(tokens)) {
-    return tokens.access_token;
-  }
-  if (!tokens.refresh_token) {
-    throw new Error(
-      'access_token が期限切れですが refresh_token がありません。`pnpm start -- --x-auth` で再認証してください。'
-    );
-  }
-  const refreshed = await refreshAccessToken(tokens.refresh_token, clientId, clientSecret, fetchFn);
-  saveTokens(refreshed);
-  return refreshed.access_token;
-}
 
 // ---------------------------------------------------------------------------
 // HTTP helper with 401 refresh + 429 backoff
@@ -806,7 +575,8 @@ async function enrichBookmarksWithFrames(bookmarks: ApiBookmark[]): Promise<void
   );
 }
 
-// テスト用 export
+// テスト用 export。isTokenExpired は tokens.ts に移ったが、既存テスト
+// (apiInternals.isTokenExpired) との互換のためここから再エクスポートする。
 export const __test = {
   tweetToApiBookmark,
   expandBookmarksPage,

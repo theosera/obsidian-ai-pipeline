@@ -27,7 +27,7 @@ X API v2 はフォルダ一覧・フォルダ内ポストの公式エンドポ�
 - **フォルダ構造保持**: X 側のブックマークフォルダ階層を Vault 側に反映
 - **保存先**: `<vault>/X_Bookmarks/<X側フォルダ名>/`（環境変数 `X_BOOKMARKS_FOLDER` で上書き可。旧 `Clippings/X-Bookmarks/` から移行する場合は `pnpm start -- --x-migrate-legacy`）
 - **1 グループ 1 MD + テーブルビュー**: 1 ツイート 1 MD ではなく、各グループフォルダに 1 枚の `<group>.md` を置き、`<vault>/X_Bookmarks/.x_bookmarks.json` を Dataview の `dv.io.load()` で読み込んでテーブル描画する。**Dataview コミュニティプラグインがインストール済みであること**を前提とする
-- **AI 要約列 (`ai_summary`)**: テーブルの `summary` 列は `x_bookmarks_summarizer.ts` が SQLite `bookmarks.ai_summary` を埋めることで populate される。**1 行 200 グラフェム以内・日本語・改行なし** の制約 (`truncateSummary` で ZWJ 絵文字・サロゲートペアを割らずに切詰)。`ai_summary IS NULL` の行のみ対象 (既存要約は不変)。失敗行は NULL のまま残り次回 sync で自動再挑戦
+- **AI 要約列 (`ai_summary`)**: テーブルの `summary` 列は `x-bookmarks/summarizer.ts` が SQLite `bookmarks.ai_summary` を埋めることで populate される。**1 行 200 グラフェム以内・日本語・改行なし** の制約 (`truncateSummary` で ZWJ 絵文字・サロゲートペアを割らずに切詰)。`ai_summary IS NULL` の行のみ対象 (既存要約は不変)。失敗行は NULL のまま残り次回 sync で自動再挑戦
 - **要約 provider / model は分類フェーズと独立** (`pipeline_config.json::xSummary`): 初回 `--x-bookmarks` 実行時に対話ウィザードが起動し、cloud / Anthropic Haiku 4.5 (推奨デフォルト) / OpenAI gpt-4o-mini / Gemini 2.5 Flash / local LM Studio から選択。永続化された設定の再選択は `--x-summary-reconfig`、全件再生成 (モデル変更後の reflow) は `--x-resummarize-all`
 - **実行モード自動切替**: provider=local なら **batch** モード (10 件 = 1 プロンプトの順次)、cloud なら **inline** モード (1 件 = 1 呼出の 3 並列)。Local の単発推論オーバーヘッドと cloud の長文 hallucination リスクを両方避ける設計
 - **強制親フォルダ機能**: `<vault>/__skills/pipeline/x_forced_parents.json` に登録したキーワードを「単語境界マッチ」で含む X フォルダは、自動的に親フォルダ配下に階層化される。`pnpm start -- --x-derive-rules` で現在の vault 構造から自動推定可能 (.bak を残して提案 diff を出力)
@@ -132,7 +132,7 @@ pnpm start -- --x-migrate-legacy
 
 `/2/users/:id/bookmarks/folders` のみ叩いて、X 側のフラットなフォルダ群を **2 階層 Tree** に再構築して表示します。`/bookmarks/folders/:id` (本文取得) は走らないので Stage 1 のコストは小さい。
 
-Tree 構築ルール（[x_folder_tree.ts](../x_folder_tree.ts)）:
+Tree 構築ルール（[x-bookmarks/folder_tree.ts](../x-bookmarks/folder_tree.ts)）:
 
 | Tier | グルーピング条件 | 例 |
 |---|---|---|
@@ -185,7 +185,7 @@ Tree 構築ルール（[x_folder_tree.ts](../x_folder_tree.ts)）:
 
 各 X ブックマークコマンド (`--x-pick` / `--x-bookmarks`) の先頭で **Sync Phase** が走ります（`--no-sync` で抑止可）。X 側 folder ID と Vault フォルダ実体を **永続 session_id** で紐付けて、X 側の rename / 削除 / Vault 側の再編に追従します。
 
-**3 層で session_id を保持**（[x_session_registry.ts](../x_session_registry.ts)）:
+**3 層で session_id を保持**（[x-bookmarks/session_registry.ts](../x-bookmarks/session_registry.ts)）:
 
 | 層 | 場所 | 役割 |
 |---|---|---|
@@ -211,7 +211,7 @@ x_folder_name: "Claude Code/Tips"
 
 `session_id` は当該 .md が属する X folder session の UUID。Obsidian で別フォルダにドラッグしても、次回 sync で frontmatter を読んで「移動された」ことが検知され、新親フォルダの session に再 bind される。
 
-**Sync Phase の動作**（[x_session_sync.ts](../x_session_sync.ts)）:
+**Sync Phase の動作**（[x-bookmarks/session_sync.ts](../x-bookmarks/session_sync.ts)）:
 
 ```text
 1. <vault>/X_Bookmarks/ を再帰走査して全 _session.json を収集

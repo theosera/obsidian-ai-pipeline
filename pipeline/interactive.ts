@@ -3,10 +3,10 @@ import { saveMarkdown, updateVaultTreeSnapshot, ensureSafePath } from '../storag
 import { tokenUsageMetrics } from '../classifier';
 import { ProcessingResult, XSummaryConfig } from '../types';
 import { DEFAULT_X_SUMMARY, isDryRun } from '../config';
-import { ApiBookmark } from '../x_bookmarks_api';
-import { getDb, closeDb } from '../x_bookmarks_db';
-import { exportAndWriteAllGroupPages } from '../x_group_page_writer';
-import { summarizePendingBookmarks } from '../x_bookmarks_summarizer';
+import { ApiBookmark } from '../x-bookmarks/types';
+import { getDb, closeDb } from '../x-bookmarks/db';
+import { exportAndWriteAllGroupPages } from '../x-bookmarks/group_page_writer';
+import { summarizePendingBookmarks } from '../x-bookmarks/summarizer';
 import { askQuestion, isPromptClosed } from './prompt';
 import { generateReport } from './report';
 

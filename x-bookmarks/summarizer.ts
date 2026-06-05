@@ -30,9 +30,9 @@
  *   残し次行/バッチに進む (要約は best-effort、次回 sync で自動再挑戦)。
  */
 
-import { askAIText } from './classifier';
-import { getDb, XBookmarksDb } from './x_bookmarks_db';
-import type { AiProvider } from './types';
+import { askAIText } from '../classifier';
+import { getDb, XBookmarksDb } from './db';
+import type { AiProvider } from '../types';
 
 const SYSTEM_PROMPT = [
   '与えられた X (Twitter) のポスト本文を日本語で要約してください。',
