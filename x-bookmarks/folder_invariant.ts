@@ -22,8 +22,8 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot, getXBookmarksBaseFolder } from './config';
-import { getDb } from './x_bookmarks_db';
+import { getVaultRoot, getXBookmarksBaseFolder } from '../config';
+import { getDb } from './db';
 
 export interface InvariantCheck {
   xFolderCount: number;

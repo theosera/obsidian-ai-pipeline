@@ -43,7 +43,7 @@ export interface FolderRules {
 export type AiProvider = 'local' | 'openai' | 'anthropic' | 'gemini';
 
 /**
- * X ブックマーク AI 要約 (`x_bookmarks_summarizer`) 専用の provider / model 選択。
+ * X ブックマーク AI 要約 (`x-bookmarks/summarizer`) 専用の provider / model 選択。
  *
  * 分類フェーズの classifier とは独立した設定。デフォルトのデフォルトは
  * cloud=Anthropic + Haiku 4.5 で、初回 `--x-bookmarks` 実行時に対話ウィザード

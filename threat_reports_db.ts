@@ -1,7 +1,7 @@
 /**
  * 週次 LLM 攻撃ベクター脅威レポート用 SQLite メタデータストア。
  *
- * 設計思想 (x_bookmarks_db.ts と同じパターン):
+ * 設計思想 (x-bookmarks/db.ts と同じパターン):
  *   - 生レポート (.md) が source of truth、本 DB は派生インデックス
  *   - 用途: 横串検索 / リスクスコア順表示 / 過去レポートとの差分
  *   - 壊れたら .md から再構築可能 (rebuildFromVault)
@@ -56,7 +56,7 @@ export interface VulnerabilityRow {
   mitigations: string | null;
   /**
    * 「自リポへの関連度コメント」— LLM や Claude セッションが手動で埋める列。
-   * 例: 「x_bookmarks_summarizer.ts の sanitizeForLLM で対応済 (PR #51)」
+   * 例: 「x-bookmarks/summarizer.ts の sanitizeForLLM で対応済 (PR #51)」
    */
   ai_relevance_note: string | null;
   ingested_at: string;

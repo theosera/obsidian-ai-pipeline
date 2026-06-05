@@ -19,20 +19,21 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot } from './config';
-import { getDb, FolderSessionRow } from './x_bookmarks_db';
+import { getVaultRoot } from '../config';
+import { getDb, FolderSessionRow } from './db';
 import {
   walkSessionMarkers,
   writeSessionMarker,
   readSessionMarker,
   newSessionId,
-} from './x_session_registry';
-import { listFolders, FolderListing } from './x_bookmarks_api';
+} from './session_registry';
+import { listFolders } from './api_client';
+import { FolderListing } from './types';
 import {
   loadForcedParents,
   loadApprovedMappings,
   mapFolderToVaultPath,
-} from './x_folder_mapper';
+} from './folder_mapper';
 
 export interface OrphanOnX {
   session: FolderSessionRow;

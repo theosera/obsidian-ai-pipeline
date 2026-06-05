@@ -19,7 +19,7 @@
 | A4 | `fetcher.ts` `browserContext`/`initPromise` | in-memory (resource) | — (Playwright インスタンス) | `closeBrowser()` | プロセス内 | 二重 init は initPromise で防御済 |
 | A5 | `chrome-extension` `cachedTracks` | in-memory | YouTube ページ DOM | `yt-navigate-finish` で `resetCache()` | タブ内 | SPA 遷移検知漏れで stale |
 | B1 | `threat_reports_db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | 破損時 `.corrupted_*` 退避 → 空 DB 続行 |
-| B2 | `x_bookmarks_db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | migrate 順序ミスで**誤って破損退避** (既知/対処済) |
+| B2 | `x-bookmarks/db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | migrate 順序ミスで**誤って破損退避** (既知/対処済) |
 | C1 | `x_bookmarks.db` | on-disk SQLite (派生) | Vault `.md` | (再 ingest で上書き) | `<repo>/` / **gitignore** | rebuild 未実装 |
 | C2 | `threat_reports.db` | on-disk SQLite (派生) | `raw/<week>.md` | (再 ingest で上書き) | `<vault>/__skills/pipeline/` | rebuild 未実装 |
 | D1 | `.threat_reports.json` (v3) | on-disk JSON ビュー | `threat_reports.db` | ingest/analyze/mark 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | DB と JSON のスキーマ版ズレ |
@@ -68,8 +68,8 @@
   誤認すると正常 DB を退避してしまう** (B2 の既知事例参照)。新列追加時は
   `migrate()` (ALTER TABLE) が index 作成より**先**に走ることを必ず確認。
 
-### B2. `x_bookmarks_db.ts` `getDb()`/`_instance` (`:426`)
-- 同パターン。コメント (`x_bookmarks_db.ts:108`) に既知バグの教訓:
+### B2. `x-bookmarks/db.ts` `getDb()`/`_instance` (`:426`)
+- 同パターン。コメント (`x-bookmarks/db.ts:108`) に既知バグの教訓:
   > 旧 DB (列なし) を開いた瞬間 "no such column" で throw → catch が DB を corrupted 退避
   > → **ユーザーのキャッシュ消失**。column 追加が終わってから index を張ること。
 - 点検: DB シングルトン 2 つが**同じ corruption-recovery パターンの別実装**。リファクタ候補
@@ -103,7 +103,7 @@
 - 点検: **JSON schema version (3) と Dataview script (`threat_reports_index_writer.ts`) の整合**
   がズレると表が壊れる。フィールド追加は「追加のみ・古い script は無視」を維持すること。
 
-### D2. `.x_bookmarks.json` (`x_bookmarks_json_export.ts`)
+### D2. `.x_bookmarks.json` (`x-bookmarks/json_export.ts`)
 - `x_bookmarks.db` → JSON。sync 毎に上書き。設計コメント: 「SQLite=内部キャッシュ /
   JSON=ユーザーに見える DB ビュー」。
 - 点検: D1 と同じく **DB スキーマ ↔ JSON ↔ Dataview テンプレ**の三者整合。
@@ -178,8 +178,8 @@
 ## See also
 
 - `storage.ts` / `classifier.ts` / `fetcher.ts` — in-memory & on-disk キャッシュ実装
-- `threat_reports_db.ts` / `x_bookmarks_db.ts` — DB singleton + 破損リカバリ
-- `threat_reports_json_export.ts` / `x_bookmarks_json_export.ts` — JSON ビュー再生成
+- `threat_reports_db.ts` / `x-bookmarks/db.ts` — DB singleton + 破損リカバリ
+- `threat_reports_json_export.ts` / `x-bookmarks/json_export.ts` — JSON ビュー再生成
 - `docs/ai-coding-conventions.md` §4 — prompt cache の不変条件 (system に可変要素を入れない)
 - `.gitignore` — 派生データ/キャッシュの除外規則
 - `.claude/skills/x-bookmarks/SKILL.md` — `x_folder_mapping.json` 等 派生マッピングの正典

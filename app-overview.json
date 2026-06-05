@@ -7,7 +7,7 @@
     {
       "order": 0,
       "name": "Sync Phase (X bookmarks only)",
-      "module": "x_session_sync.ts",
+      "module": "x-bookmarks/session_sync.ts",
       "summary": "X 側 folder と Vault 側 _session.json を突き合わせ、drift (新規 / 削除 / 移動 / .md 再 bind) を解消。`--no-sync` で抑止可"
     },
     {
@@ -85,25 +85,27 @@
     { "path": "sync-rules.ts", "group": "ai", "role": "snippets → folder_rules 自動同期" },
     { "path": "storage.ts", "group": "io", "role": "Vault 保存 (7 段階パストラバーサル防御 + dry-run 対応 + getKnownUrls)", "key": true },
 
-    { "path": "x_bookmarks_api.ts", "group": "x-bookmarks", "role": "X API v2 ラッパ (OAuth + folders index → tweets hydrate 2 段)", "key": true },
-    { "path": "x_auth_server.ts", "group": "x-bookmarks", "role": "OAuth 2.0 PKCE 認可サーバ (--x-auth)" },
-    { "path": "x_bookmarks_db.ts", "group": "x-bookmarks", "role": "SQLite キャッシュ (bookmarks / folder_sessions テーブル + migration)" },
-    { "path": "x_bookmarks_json_export.ts", "group": "x-bookmarks", "role": ".x_bookmarks.json への Dataview 互換エクスポート" },
-    { "path": "x_bookmarks_summarizer.ts", "group": "x-bookmarks", "role": "AI 要約 (200 字日本語、cloud / local 切替)" },
-    { "path": "x_folder_invariant.ts", "group": "x-bookmarks", "role": "Folder-count invariant チェック (X distinct folder 数 == Vault リーフ数)" },
-    { "path": "x_folder_mapper.ts", "group": "x-bookmarks", "role": "X フォルダ名 → Vault 階層パス (Tier 1: forced / Tier 2: approved / Tier 3: dynamic)" },
-    { "path": "x_folder_tree.ts", "group": "x-bookmarks", "role": "--x-pick 用 2 階層 Tree ビルダ + ASCII レンダラ" },
-    { "path": "x_group_page_template.ts", "group": "x-bookmarks", "role": "dataviewjs テーブル付き group MD テンプレ" },
-    { "path": "x_group_page_writer.ts", "group": "x-bookmarks", "role": "group MD の sentinel-bounded 書き換え (idempotent)" },
-    { "path": "x_interactive_picker.ts", "group": "x-bookmarks", "role": "--x-pick 用 番号パーサ + 対話ループ" },
-    { "path": "x_migrate_legacy.ts", "group": "x-bookmarks", "role": "旧パス Clippings/X-Bookmarks/ → _Archived/ ワンショット移行" },
-    { "path": "x_rule_deriver.ts", "group": "x-bookmarks", "role": "vault 構造から x_forced_parents.json を自動推定" },
-    { "path": "x_session_ai.ts", "group": "x-bookmarks", "role": "orphan_on_x の AI 判定ループ (Claude / local LLM)" },
-    { "path": "x_session_registry.ts", "group": "x-bookmarks", "role": "UUID session_id レジストリ (DB + _session.json marker)" },
-    { "path": "x_session_sync.ts", "group": "x-bookmarks", "role": "Sync Phase 本体 (4 軸 drift 検出)", "key": true },
-    { "path": "x_video_frames.ts", "group": "x-bookmarks", "role": "動画キーフレーム抽出 (ffmpeg + X_VIDEO_FRAMES=true opt-in)" },
+    { "path": "x-bookmarks/types.ts", "group": "x-bookmarks", "role": "X API v2 共有型 (ApiBookmark / XPost / XMedia* 等)。api_client↔video_frames 循環を断つ集約点" },
+    { "path": "x-bookmarks/tokens.ts", "group": "x-bookmarks", "role": "OAuth トークン永続化 (x_tokens.json) + 期限判定 + refresh" },
+    { "path": "x-bookmarks/api_client.ts", "group": "x-bookmarks", "role": "X API v2 ラッパ (OAuth + folders index → tweets hydrate 2 段)", "key": true },
+    { "path": "x-bookmarks/auth_server.ts", "group": "x-bookmarks", "role": "OAuth 2.0 PKCE 認可サーバ (--x-auth)" },
+    { "path": "x-bookmarks/db.ts", "group": "x-bookmarks", "role": "SQLite キャッシュ (bookmarks / folder_sessions テーブル + migration)" },
+    { "path": "x-bookmarks/json_export.ts", "group": "x-bookmarks", "role": ".x_bookmarks.json への Dataview 互換エクスポート" },
+    { "path": "x-bookmarks/summarizer.ts", "group": "x-bookmarks", "role": "AI 要約 (200 字日本語、cloud / local 切替)" },
+    { "path": "x-bookmarks/folder_invariant.ts", "group": "x-bookmarks", "role": "Folder-count invariant チェック (X distinct folder 数 == Vault リーフ数)" },
+    { "path": "x-bookmarks/folder_mapper.ts", "group": "x-bookmarks", "role": "X フォルダ名 → Vault 階層パス (Tier 1: forced / Tier 2: approved / Tier 3: dynamic)" },
+    { "path": "x-bookmarks/folder_tree.ts", "group": "x-bookmarks", "role": "--x-pick 用 2 階層 Tree ビルダ + ASCII レンダラ" },
+    { "path": "x-bookmarks/group_page_template.ts", "group": "x-bookmarks", "role": "dataviewjs テーブル付き group MD テンプレ" },
+    { "path": "x-bookmarks/group_page_writer.ts", "group": "x-bookmarks", "role": "group MD の sentinel-bounded 書き換え (idempotent)" },
+    { "path": "x-bookmarks/interactive_picker.ts", "group": "x-bookmarks", "role": "--x-pick 用 番号パーサ + 対話ループ" },
+    { "path": "x-bookmarks/migrate_legacy.ts", "group": "x-bookmarks", "role": "旧パス Clippings/X-Bookmarks/ → _Archived/ ワンショット移行" },
+    { "path": "x-bookmarks/rule_deriver.ts", "group": "x-bookmarks", "role": "vault 構造から x_forced_parents.json を自動推定" },
+    { "path": "x-bookmarks/session_ai.ts", "group": "x-bookmarks", "role": "orphan_on_x の AI 判定ループ (Claude / local LLM)" },
+    { "path": "x-bookmarks/session_registry.ts", "group": "x-bookmarks", "role": "UUID session_id レジストリ (DB + _session.json marker)" },
+    { "path": "x-bookmarks/session_sync.ts", "group": "x-bookmarks", "role": "Sync Phase 本体 (4 軸 drift 検出)", "key": true },
+    { "path": "x-bookmarks/video_frames.ts", "group": "x-bookmarks", "role": "動画キーフレーム抽出 (ffmpeg + X_VIDEO_FRAMES=true opt-in)" },
 
-    { "path": "hands_on_generator.ts", "group": "post-process", "role": "X ブックマーク DB → Claude CLI でハンズオン .md 生成" },
+    { "path": "x-bookmarks/hands_on_generator.ts", "group": "post-process", "role": "X ブックマーク DB → Claude CLI でハンズオン .md 生成" },
     { "path": "merge-articles.ts", "group": "post-process", "role": "記事マージユーティリティ" },
     { "path": "rescue-from-report.ts", "group": "post-process", "role": "中断したレポートから処理を再開 (API コスト $0)" },
     { "path": "fix_agentic_move.ts", "group": "maintenance", "role": "AI 移動ミスのリカバリ" },
@@ -237,6 +239,6 @@
 
   "implementationNote": {
     "title": "X bookmarks 実装 (flat)",
-    "description": "X ブックマーク取得は root のフラット TypeScript 実装 (x_bookmarks_*.ts / x_auth_server.ts / x_folder_mapper.ts / x_session_*.ts) 単体。かつて Codex の pnpm workspace 実装 (apps/* + packages/core) と並走させた Claude-vs-Codex 対照実験を行っていたが、比較目的を終えたため Codex 側は 2026-06 にリポジトリから削除した。ユーザー設定 x_forced_parents.json / x_folder_mapping.json のみ残存"
+    "description": "X ブックマーク取得は `x-bookmarks/` ディレクトリの TypeScript 実装 (api_client.ts / tokens.ts / types.ts / folder_*.ts / session_*.ts / summarizer.ts 等。2026-06 に root フラットな x_*.ts から移設・命名統一、god-file だった x_bookmarks_api.ts は types/tokens/api_client に分割) 単体。かつて Codex の pnpm workspace 実装 (apps/* + packages/core) と並走させた Claude-vs-Codex 対照実験を行っていたが、比較目的を終えたため Codex 側は 2026-06 にリポジトリから削除した。ユーザー設定 x_forced_parents.json / x_folder_mapping.json のみ残存"
   }
 }

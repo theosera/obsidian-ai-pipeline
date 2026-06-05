@@ -19,7 +19,7 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 | 発火条件 (このタスクを始める前に) | 必ずロードするスキル |
 |---|---|
 | PR を作成 / auto-merge 判断 / PR body を書く / CI 期待値を確認 | `pr-workflow` |
-| X bookmarks のコード (`x_bookmarks_*.ts` 等) / `--x-bookmarks` / `X_Bookmarks/` / `x_*_mapping.json` を触る | `x-bookmarks` |
+| X bookmarks のコード (`x-bookmarks/` 配下 = `api_client.ts` / `tokens.ts` / `folder_*.ts` / `session_*.ts` / `summarizer.ts` 等) / `--x-bookmarks` / `X_Bookmarks/` / `x_*_mapping.json` を触る | `x-bookmarks` |
 | このリポの TypeScript を書く / 直す / レビューする | `ts-coding-conventions` |
 | sec-mode 取込で脅威レポート本文を扱う (injection ゲート) | `scan-threat-report` |
 

@@ -19,8 +19,8 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot, isDryRun } from './config';
-import { getDb } from './x_bookmarks_db';
+import { getVaultRoot, isDryRun } from '../config';
+import { getDb } from './db';
 
 const LEGACY_RELATIVE = path.posix.join('Clippings', 'X-Bookmarks');
 const ARCHIVE_ROOT = '_Archived';

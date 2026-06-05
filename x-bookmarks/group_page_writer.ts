@@ -15,19 +15,19 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot, getXBookmarksBaseFolder, isDryRun } from './config';
+import { getVaultRoot, getXBookmarksBaseFolder, isDryRun } from '../config';
 import {
   renderGroupPage,
   replaceAutoBlock,
   SENTINEL_START,
   SENTINEL_END,
-} from './x_group_page_template';
+} from './group_page_template';
 import {
   exportBookmarksJson,
   ExportedJson,
   buildExportPayload,
   X_JSON_FILENAME,
-} from './x_bookmarks_json_export';
+} from './json_export';
 
 interface GroupPageWriteResult {
   group: string;

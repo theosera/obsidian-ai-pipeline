@@ -1,7 +1,7 @@
 /**
  * 脅威レポート Dataview インデックスページ writer。
  *
- * x_group_page_writer + x_group_page_template と同じ sentinel-bound 差し替え
+ * x-bookmarks/group_page_writer + x-bookmarks/group_page_template と同じ sentinel-bound 差し替え
  * パターン。ユーザーがページ上下に書き加えた本文は保護する。
  *
  * 配置: `<vault>/<base>/_index.md`

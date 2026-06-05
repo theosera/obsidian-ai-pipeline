@@ -19,7 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
-import { getVaultRoot } from './config';
+import { getVaultRoot } from '../config';
 import Database from 'better-sqlite3';
 
 interface BookmarkRow {

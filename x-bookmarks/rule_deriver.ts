@@ -26,9 +26,9 @@ import path from 'path';
 import {
   getVaultRoot,
   getXBookmarksBaseFolder,
-} from './config';
-import { getDb, FolderSessionRow } from './x_bookmarks_db';
-import { loadForcedParents } from './x_folder_mapper';
+} from '../config';
+import { getDb, FolderSessionRow } from './db';
+import { loadForcedParents } from './folder_mapper';
 
 const FORCED_PARENTS_FILENAME = 'x_forced_parents.json';
 
@@ -144,7 +144,7 @@ export function writeForcedParents(next: string[], options: { vaultRoot?: string
 export async function runDeriveRulesCli(args: {
   ask?: (q: string) => Promise<string>;
 } = {}): Promise<void> {
-  const ask = args.ask ?? (await import('./pipeline/prompt')).askQuestion;
+  const ask = args.ask ?? (await import('../pipeline/prompt')).askQuestion;
   const result = deriveForcedParents();
   console.log(formatDeriveDiff(result));
 
