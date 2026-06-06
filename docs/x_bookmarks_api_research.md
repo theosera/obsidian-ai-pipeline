@@ -90,4 +90,4 @@ X API のフォルダ別ブックマーク取得は **1 リクエストで完結
 ## 参考
 
 - 調査スクリプト: `inspect_folder_schema.ts` (実装完了後に削除予定)
-- 既存実装: `x_bookmarks_api.ts` (auto-refresh / xGet ヘルパー)
+- 既存実装: `x-bookmarks/api_client.ts` + `x-bookmarks/tokens.ts` (auto-refresh / xGet ヘルパー)

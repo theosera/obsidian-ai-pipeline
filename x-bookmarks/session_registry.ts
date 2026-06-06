@@ -14,8 +14,8 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { getVaultRoot } from './config';
-import { getDb, FolderSessionRow, SessionStatus } from './x_bookmarks_db';
+import { getVaultRoot } from '../config';
+import { getDb, FolderSessionRow, SessionStatus } from './db';
 
 export interface SessionMarker {
   session_id: string;

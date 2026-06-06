@@ -162,6 +162,14 @@ backward compat: `forbidden_usage` 自体が無いレポート (旧スキーマ)
 10. テストまたは手動検証手順を必ず提示
 ```
 
+> この §5 の判断順序 6〜10 (取込後の自リポ該当性レビュー → 実装判断) を運用化した
+> エントリポイントが **Default mode の `/sec-review` コマンド**
+> (`.claude/commands/sec-review.md`)。`--analyze-threat-relevance` でリポを全走査して
+> `ai_relevance_note` を埋め、該当項目だけを §4 の証拠 5 点付きで提示してユーザー判断に
+> 委ね、レビュー済みレポートは JSON 上のフラグ (`reports[].relevance_reviewed_at` /
+> `--mark-threat-reviewed`) で次回以降スキップする。Gmail には触れない (フェッチは
+> `/sec-mode`)。
+
 ---
 
 ## 6. 強い設定 (推奨)
@@ -201,6 +209,7 @@ Action taken: ingest aborted, `processed` ラベル付与なし
 ## See also
 
 - `CLAUDE.md` — Chat mode protocol (Default / Security-only)
+- `.claude/commands/sec-review.md` — 取込後の自リポ該当性レビュー (§5 6〜10 の運用化)
 - `threat_reports_parser.ts` — frontmatter 契約検証実装
 - `threat_reports_db.ts` — SQLite schema (`vulnerabilities` + `implementation_checks`)
 - `docs/threat_reports.md` — CLI 取込フローと運用 troubleshooting

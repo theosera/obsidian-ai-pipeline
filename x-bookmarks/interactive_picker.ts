@@ -19,7 +19,7 @@
  * pipeline/prompt.ts の askQuestion を依存注入で受け取る。
  */
 
-import type { FolderTree } from './x_folder_tree';
+import type { FolderTree } from './folder_tree';
 
 export interface SelectionResult {
   folderIds: string[];

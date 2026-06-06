@@ -18,23 +18,23 @@ import {
   loadApprovedMappings,
   writeGroupingProposal,
   prioritizeForcedParents,
-} from '../x_folder_mapper';
-import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
-import { parseSelection } from '../x_interactive_picker';
-import { fetchBookmarksViaApi, saveTokens } from '../x_bookmarks_api';
+} from '../x-bookmarks/folder_mapper';
+import { buildFolderTree, renderFolderTree } from '../x-bookmarks/folder_tree';
+import { parseSelection } from '../x-bookmarks/interactive_picker';
+import { fetchBookmarksViaApi, __test as apiInternals } from '../x-bookmarks/api_client';
+import { saveTokens } from '../x-bookmarks/tokens';
 import {
   newSessionId,
   writeSessionMarker,
   readSessionMarker,
   walkSessionMarkers,
-} from '../x_session_registry';
-import { runSyncPhase, __test as syncInternals } from '../x_session_sync';
-import { __test as aiInternals, createInteractiveOrphanResolver } from '../x_session_ai';
-import { XBookmarksDb, getDb } from '../x_bookmarks_db';
+} from '../x-bookmarks/session_registry';
+import { runSyncPhase, __test as syncInternals } from '../x-bookmarks/session_sync';
+import { __test as aiInternals, createInteractiveOrphanResolver } from '../x-bookmarks/session_ai';
+import { XBookmarksDb, getDb } from '../x-bookmarks/db';
 import Database from 'better-sqlite3';
-import { __test as apiInternals } from '../x_bookmarks_api';
-import { __test as authInternals } from '../x_auth_server';
-import { __test as videoInternals } from '../x_video_frames';
+import { __test as authInternals } from '../x-bookmarks/auth_server';
+import { __test as videoInternals } from '../x-bookmarks/video_frames';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export async function run(): Promise<TestSuiteResult> {
@@ -1813,7 +1813,7 @@ body
 
     {
       const { deriveGroup, buildExportPayload, exportBookmarksJson } =
-        await import('../x_bookmarks_json_export');
+        await import('../x-bookmarks/json_export');
 
       runner.test('deriveGroup: <base>/<group>/<sub> → <group>', () => {
         assert.strictEqual(deriveGroup('X_Bookmarks/Claude/Tips', 'X_Bookmarks'), 'Claude');
@@ -1921,7 +1921,7 @@ body
 
     {
       const { renderGroupPage, replaceAutoBlock, SENTINEL_START, SENTINEL_END } =
-        await import('../x_group_page_template');
+        await import('../x-bookmarks/group_page_template');
       const args = { group: 'Claude', jsonRelativePath: 'X_Bookmarks/.x_bookmarks.json' };
 
       runner.test('renderGroupPage: header + sentinel + dataviewjs を含む', () => {
@@ -1973,7 +1973,7 @@ body
     runner.section('x_group_page_writer');
 
     {
-      const { writeAllGroupPages } = await import('../x_group_page_writer');
+      const { writeAllGroupPages } = await import('../x-bookmarks/group_page_writer');
       const writerVault = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-xbm-writer-'));
       try {
         const payload = {
@@ -2082,7 +2082,7 @@ body
 
     {
       const { deriveForcedParents, writeForcedParents } =
-        await import('../x_rule_deriver');
+        await import('../x-bookmarks/rule_deriver');
 
       runner.test('deriveForcedParents: group に 2+ session があれば候補化', () => {
         const sessions = [
@@ -2156,7 +2156,7 @@ body
 
     {
       const { listLeafFolders, checkFolderCountInvariant } =
-        await import('../x_folder_invariant');
+        await import('../x-bookmarks/folder_invariant');
       const invVault = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-inv-'));
       try {
         // base 配下に 2 リーフ (Tips, Hooks) と 1 中間 (Claude Code) を作成
@@ -2210,7 +2210,7 @@ body
         resolveMode,
         sanitizeForLLM,
         escapeBatchItemBoundary,
-      } = await import('../x_bookmarks_summarizer');
+      } = await import('../x-bookmarks/summarizer');
 
       runner.test('truncateSummary: 200 文字以内ならそのまま', () => {
         const s = 'あ'.repeat(150);
@@ -3074,7 +3074,7 @@ body
     runner.section('x_migrate_legacy');
 
     {
-      const { runMigrateLegacy } = await import('../x_migrate_legacy');
+      const { runMigrateLegacy } = await import('../x-bookmarks/migrate_legacy');
 
       runner.test('runMigrateLegacy: 旧パス無しなら no-op', () => {
         const v = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-mig-noop-'));
@@ -3120,7 +3120,7 @@ body
     await runner.testAsync('dry-run: X bookmark の upsertBookmark をスキップする', async () => {
       const { __test: interactiveInternals } = await import('../pipeline/interactive');
       const { setDryRun, isDryRun } = await import('../config');
-      const { getDb } = await import('../x_bookmarks_db');
+      const { getDb } = await import('../x-bookmarks/db');
 
       // 事前: DB を空にする
       (getDb() as any).db.exec('DELETE FROM bookmarks');

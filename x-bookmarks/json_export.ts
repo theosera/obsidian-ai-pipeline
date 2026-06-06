@@ -14,8 +14,8 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot, getXBookmarksBaseFolder } from './config';
-import { XBookmarksDb, getDb } from './x_bookmarks_db';
+import { getVaultRoot, getXBookmarksBaseFolder } from '../config';
+import { XBookmarksDb, getDb } from './db';
 
 export interface ExportedBookmarkRow {
   tweet_id: string;
@@ -99,7 +99,7 @@ export function buildExportPayload(options: ExportOptions = {}): ExportedJson {
   // XBookmarksDb 内側の Database 参照は private なので、bookmarks を直接読むための
   // SQL は持たない。Phase 1 では既存 helper 経由で getKnownTweetIds() しか無いので
   // ここで内部 db を露出するアクセサを使わずに済むよう、`listBookmarksForExport()` を
-  // x_bookmarks_db.ts に追加して呼び出す (このモジュールは buildExportPayload に集中)。
+  // db.ts に追加して呼び出す (このモジュールは buildExportPayload に集中)。
   const rows = db.listBookmarksForExport() as RawRow[];
   const exported: ExportedBookmarkRow[] = rows.map(r => ({
     tweet_id: r.tweet_id,

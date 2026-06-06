@@ -14,6 +14,7 @@ import assert from 'node:assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import Database from 'better-sqlite3';
 import { setVaultRoot } from '../config';
 import {
   splitFrontmatter,
@@ -678,9 +679,12 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
 
       // JSON の中身
       const json = JSON.parse(fs.readFileSync(result.jsonPath, 'utf8'));
-      assert.strictEqual(json.version, 2, 'implementation_checks 追加で v2 に bump');
+      assert.strictEqual(json.version, 3, 'reports[] (レビュー済みフラグ) 追加で v3 に bump');
       assert.strictEqual(json.rows.length, 2);
-      assert.ok(Array.isArray(json.implementation_checks), 'v2 で implementation_checks フィールドが存在');
+      assert.ok(Array.isArray(json.implementation_checks), 'v2+ で implementation_checks フィールドが存在');
+      assert.ok(Array.isArray(json.reports), 'v3 で reports フィールドが存在');
+      assert.strictEqual(json.reports.length, 1, 'ingest した 1 レポート分の reports 行');
+      assert.strictEqual(json.reports[0].relevance_reviewed_at, null, '取込直後は未レビュー');
       assert.strictEqual(
         json.implementation_checks.length, 0,
         'Section 4 ヘッダなし fixture では checks=0 (DB sync スキップで空のまま)'
@@ -939,6 +943,78 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     const updated = replaceAutoBlock(orig, { baseFolder: 'X' });
     assert.ok(updated.startsWith('# My notes\nno auto block yet'));
     assert.ok(updated.includes('<!-- threat-reports:auto-block:start -->'));
+  });
+
+  // =====================================================
+  runner.section('該当性レビュー済みフラグ (/sec-review / relevance_reviewed_at)');
+
+  runner.test('markReportReviewed: フラグを立て、戻り値は更新行数 (未知 id は 0)', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    assert.strictEqual(db.getReport('r1')?.relevance_reviewed_at, null, '初期は未レビュー (null)');
+    const changed = db.markReportReviewed('r1', '2026-06-04T00:00:00Z');
+    assert.strictEqual(changed, 1);
+    assert.strictEqual(db.getReport('r1')?.relevance_reviewed_at, '2026-06-04T00:00:00Z');
+    assert.strictEqual(db.markReportReviewed('missing'), 0, '未知 id は 0 行更新');
+    db.close();
+  });
+
+  runner.test('listUnreviewedReports: レビュー済みを除外し古い週順で返す', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-18', rawMarkdown: '' });
+    db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.markReportReviewed('r1');
+    const unreviewed = db.listUnreviewedReports();
+    assert.deepStrictEqual(unreviewed.map(r => r.id), ['r2'], 'r1 はレビュー済みなので外れる');
+    db.close();
+  });
+
+  runner.test('upsertReport (再 ingest) は relevance_reviewed_at を保持する', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: 'v1' });
+    db.markReportReviewed('r1', '2026-06-04T00:00:00Z');
+    // 再 ingest をシミュレート (本文だけ更新)
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'later', weekOf: '2026-05-25', rawMarkdown: 'v2' });
+    const r = db.getReport('r1');
+    assert.strictEqual(r?.relevance_reviewed_at, '2026-06-04T00:00:00Z', 'レビュー済み印は再 ingest で消えない');
+    assert.strictEqual(r?.raw_markdown, 'v2', '本文は更新される');
+    db.close();
+  });
+
+  runner.test('migrate: 旧スキーマ (列なし) の DB を開くと relevance_reviewed_at 列が補われる', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-migrate-'));
+    const file = path.join(dir, 'old.db');
+    // relevance_reviewed_at を持たない旧 reports テーブルを raw sqlite で作る
+    const raw = new Database(file);
+    raw.exec(`CREATE TABLE reports (
+      id TEXT PRIMARY KEY, source TEXT NOT NULL, received_at TEXT NOT NULL,
+      week_of TEXT NOT NULL, raw_markdown TEXT NOT NULL, vault_path TEXT,
+      schema_version INTEGER NOT NULL DEFAULT 1, trust_level TEXT, report_type TEXT,
+      ingested_at TEXT NOT NULL
+    );`);
+    raw.prepare(
+      'INSERT INTO reports (id, source, received_at, week_of, raw_markdown, ingested_at) VALUES (?,?,?,?,?,?)'
+    ).run('r1', 't', 'now', '2026-05-25', '', 'now');
+    raw.close();
+    // ThreatReportsDb で開く → constructor の migrate() が ALTER TABLE で列を足す
+    const db = new ThreatReportsDb(file);
+    assert.strictEqual(db.markReportReviewed('r1', '2026-06-04T00:00:00Z'), 1, '旧 DB でも markReportReviewed が動く');
+    assert.strictEqual(db.getReport('r1')?.relevance_reviewed_at, '2026-06-04T00:00:00Z');
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  runner.test('buildExportPayload: version 3 / reports[] にレビュー済みフラグを載せる', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-18', rawMarkdown: '' });
+    db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.markReportReviewed('r1', '2026-06-04T00:00:00Z');
+    const payload = buildExportPayload({ db, vaultRoot: '/tmp', baseFolder: 'X' });
+    assert.strictEqual(payload.version, 3);
+    const byId = new Map(payload.reports.map(r => [r.report_id, r]));
+    assert.strictEqual(byId.get('r1')?.relevance_reviewed_at, '2026-06-04T00:00:00Z', 'r1 はレビュー済み');
+    assert.strictEqual(byId.get('r2')?.relevance_reviewed_at, null, 'r2 は未レビュー');
+    db.close();
   });
 
   return runner.report();

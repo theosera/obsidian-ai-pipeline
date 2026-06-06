@@ -13,15 +13,15 @@ import { prepareXBookmarks } from './input_x_bookmarks';
 import { processEntries } from './processor';
 import { generateReport } from './report';
 import { interactiveReviewLoop, regenerateXBookmarkArtifacts } from './interactive';
-import { closeDb } from '../x_bookmarks_db';
+import { closeDb } from '../x-bookmarks/db';
 import { askQuestion } from './prompt';
-import { listFolders } from '../x_bookmarks_api';
-import { buildFolderTree, renderFolderTree } from '../x_folder_tree';
-import { pickFolders } from '../x_interactive_picker';
-import { loadForcedParents, loadApprovedMappings } from '../x_folder_mapper';
-import { runSyncPhase } from '../x_session_sync';
-import { createInteractiveOrphanResolver } from '../x_session_ai';
-import { checkFolderCountInvariant, logInvariantCheck } from '../x_folder_invariant';
+import { listFolders } from '../x-bookmarks/api_client';
+import { buildFolderTree, renderFolderTree } from '../x-bookmarks/folder_tree';
+import { pickFolders } from '../x-bookmarks/interactive_picker';
+import { loadForcedParents, loadApprovedMappings } from '../x-bookmarks/folder_mapper';
+import { runSyncPhase } from '../x-bookmarks/session_sync';
+import { createInteractiveOrphanResolver } from '../x-bookmarks/session_ai';
+import { checkFolderCountInvariant, logInvariantCheck } from '../x-bookmarks/folder_invariant';
 
 /**
  * X API ブックマーク専用のベースフォルダ。
@@ -55,7 +55,7 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
 
   // `--x-resummarize-all` のクリア処理はここでは行わない。
   // ユーザーが confirmation で中止 / 処理 0 件の場合に「summary だけ消えて
-  // 再生成されない」事故を防ぐため、x_bookmarks_summarizer.ts の中で
+  // 再生成されない」事故を防ぐため、x-bookmarks/summarizer.ts の中で
   // クリアと再生成をアトミックに実行する (interactive.ts から呼ばれる)。
 
   // === 0. Sync Phase (X bookmarks モードの先頭で必ず走る・--no-sync で抑止) ===
