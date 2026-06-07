@@ -14,14 +14,14 @@
 | # | キャッシュ | 種別 | source of truth | 無効化手段 | 永続性 / gitignore | 主なリスク |
 |---|---|---|---|---|---|---|
 | A1 | `storage.ts` `cachedFolders` | in-memory | Vault の実フォルダ構造 | `getVaultFolders(forceRefresh=true)` | プロセス内 | 長命プロセスで stale |
-| A2 | `storage.ts` `cachedKnownUrls` | in-memory | Vault 内 `.md` の URL | `resetKnownUrlsCache()` (**テスト専用**) | プロセス内 | **本番に無効化口なし** → stale dedupe |
+| A2 | `storage.ts` `cachedKnownUrls` | in-memory | Vault 内 `.md` の URL | `addKnownUrl()` (**本番更新口**) / `resetKnownUrlsCache()` (テスト全破棄) | プロセス内 | ~~本番に無効化口なし~~ → **解消** (保存直後に集合へ反映) |
 | A3 | `classifier.ts` `cachedSnippetsArr` | in-memory | `_分析コンテキスト/snippets_*.xml` | なし (プロセス起動毎に 1 回) | プロセス内 | snippets 更新が同一プロセス内で反映されない |
 | A4 | `fetcher.ts` `browserContext`/`initPromise` | in-memory (resource) | — (Playwright インスタンス) | `closeBrowser()` | プロセス内 | 二重 init は initPromise で防御済 |
 | A5 | `chrome-extension` `cachedTracks` | in-memory | YouTube ページ DOM | `yt-navigate-finish` で `resetCache()` | タブ内 | SPA 遷移検知漏れで stale |
 | B1 | `threat_reports_db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | 破損時 `.corrupted_*` 退避 → 空 DB 続行 |
 | B2 | `x-bookmarks/db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | migrate 順序ミスで**誤って破損退避** (既知/対処済) |
-| C1 | `x_bookmarks.db` | on-disk SQLite (派生) | Vault `.md` | (再 ingest で上書き) | `<repo>/` / **gitignore** | rebuild 未実装 |
-| C2 | `threat_reports.db` | on-disk SQLite (派生) | `raw/<week>.md` | (再 ingest で上書き) | `<vault>/__skills/pipeline/` | rebuild 未実装 |
+| C1 | `x_bookmarks.db` | on-disk SQLite (**transactional core**) | (実質 DB 自身) | 再スクレイプ / JSON import | `<repo>/` / **gitignore** | per-tweet MD 廃止で **MD 再構築は不可** |
+| C2 | `threat_reports.db` | on-disk SQLite (派生) | `raw/<week>.md` | 再 ingest / **`--rebuild-threat-reports-db`** | `<vault>/__skills/pipeline/` | rebuild **実装済** (human note は非復元) |
 | D1 | `.threat_reports.json` (v3) | on-disk JSON ビュー | `threat_reports.db` | ingest/analyze/mark 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | DB と JSON のスキーマ版ズレ |
 | D2 | `.x_bookmarks.json` | on-disk JSON ビュー | `x_bookmarks.db` | sync 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | 同上 |
 | E1 | `.html_cache/<md5(url)>.html` | on-disk HTTP/レンダ | 取得元 URL | **なし (TTL 無し)** | `<repo>/` / **gitignore** | URL のみキー・**永続** → 内容変化に追従しない |
@@ -41,9 +41,13 @@
 
 ### A2. `cachedKnownUrls` (`storage.ts:268`)
 - `getKnownUrls()` が Vault 内 `.md` から既知 URL 集合 (重複検出用) を構築・保持。
-- 無効化: **`resetKnownUrlsCache()` はテスト専用** (`storage.ts:310`)。本番経路に無効化口が
-  ない = **同一プロセス内で新規保存した URL が dedupe 集合に載らない**可能性。
-- 点検: パイプラインが 1 プロセスで複数バッチを処理する設計に変えるなら要再設計。
+- 無効化/更新: **本番更新口 `addKnownUrl()` を追加済**。`saveMarkdown()` が `.md` を書き出した
+  直後に呼び、保存 URL を即 dedup 集合へ反映する (走査 `getKnownUrls` と同じ正規化を共有)。
+  テスト用の全破棄は `resetKnownUrlsCache()`。
+- 旧懸念 (解消): かつては reset がテスト専用しか無く「同一プロセス内で新規保存した URL が
+  dedup 集合に載らない」潜在 stale があった。`addKnownUrl` の保存直後 hook で塞いだ。
+  (call site 実測では `getKnownUrls` は実行毎 1 回 = memo 自体は inert、欠陥は無効化口の不在
+  だったため、memo 削除でなく更新口の追加で対処した。)
 
 ### A3. `cachedSnippetsArr` (`classifier.ts:32`)
 - `loadSnippetsStructured()` が最新 `snippets_YYYYMMDD.xml` をパースして保持。
@@ -87,11 +91,19 @@
 - `<vault>/__skills/pipeline/threat_reports.db` (vault 配下・repo 外)。
 - source of truth は `raw/<week>.md`。DB は横串検索 / risk 順表示の派生インデックス。
 
-> **両 DB 共通の点検ギャップ**: ヘッダコメントは「壊れたら .md から再構築可能
-> (`rebuildFromVault`)」と謳うが、**`rebuildFromVault` は未実装** (x_bookmarks は明記で
-> "Phase 2"、threat_reports はコメントのみで関数なし)。= 破損退避後に**自動復旧する経路が
-> 無い**。リファクタ時の最有力候補: source of truth からの再構築を実装し、コメントの主張と
-> 実装を一致させる。
+> **両 DB の再構築可能性 (2026-06 更新 — コメントと実装を一致させた)**:
+> - **threat_reports (C2)**: `raw/<week>.md` が真実 →
+>   `threat_reports_ingest.ts::rebuildThreatReportsDbFromVault()` **実装済**
+>   (CLI `--rebuild-threat-reports-db`)。破損退避 / 手動削除後に raw から派生インデックスを
+>   復旧する明示コマンド。⚠ ただし `ai_relevance_note` / `relevance_reviewed_at` は raw に
+>   無い human 入力なので **再構築では復元されない** (退避 `<db>.corrupted_*` から手動
+>   サルベージ)。破壊性ゆえ破損時に**自動起動はしない**。
+> - **x_bookmarks (C1)**: group-page 移行 (2026-05) で **per-tweet MD は廃止**され、Vault に
+>   残るのは Dataview レンダ済みビューのみ。個々のツイート全データは持たないため
+>   **MD からの無損失再構築は原理的に不可** (DB が実質 transactional core)。復旧経路は
+>   再スクレイプ (全件) or 直近 `.x_bookmarks.json` (全行エクスポート) からの import。
+>   旧ヘッダコメントの「.md が source of truth / rebuildFromVault は Phase 2」は実態と乖離
+>   していたため**撤回**した。
 
 ---
 
@@ -150,6 +162,25 @@
 
 ---
 
+## 運用上の評価 (3 分類) — システム運用視点のメタ評価
+
+「キャッシュ」と一括りにせず、**運用規律が異なる 3 種**に分けて扱う。下に行くほど
+「捨てられる建前」が弱く、実質プライマリ状態に近い。
+
+| 性質 | 該当 | 壊れたときの影響 | 規律 |
+|---|---|---|---|
+| **純粋な揮発メモ** | A1 folders / A3 snippets | 再計算で復元 (無害) | 無効化責務は最小。`_classifyInternal` で **per-item 呼び出し**のため memo は性能上**正当** (削除は回帰) |
+| **揮発メモ (once/run)** | A2 known URLs | 同上 | memo 自体は inert。欠陥は「本番更新口の不在」だった → `addKnownUrl` で解消 |
+| **再生成可能な派生ストア** | C2 / D1 / D2 | source から作り直せる | C2 は `--rebuild-threat-reports-db` で建前を実装化。human 入力 (note) は source 外 = 非復元 |
+| **実体に近い状態** | C1 / E1 / E2 | 作り直し困難 / 鮮度・信頼境界に直結 | C1 は transactional core (MD 再構築不可)。E1 は TTL 無し永続 (鮮度バグ温床) |
+
+**今回 (2026-06) の対応**: 上 2 行のうち実害ある欠陥 (A2 の更新口不在) を塞ぎ、C2 の
+「再構築できる建前」を実装化し、C1 の誤ったコメント (MD 再構築可) を実態へ是正した。
+**A1/A3 の memo は削除しない** — call site 実測で per-item と判明し、削除は性能回帰になるため。
+
+> 未対応 (将来の候補, 優先度順): E1 `.html_cache` の TTL/無効化 + 信頼境界明示 →
+> キャッシュ hit/miss の最小観測 → prompt cache 不変条件の lint 固定。
+
 ## H. リファクタリング時の点検チェックリスト (今は実行不要)
 
 キャッシュ周りを触る PR では以下を確認する:
@@ -158,7 +189,9 @@
    ファイル削除) が**本番経路**に存在するか。A2 のように「テスト専用 reset しか無い」状態を
    増やさない。
 2. **source of truth は何か** — 派生先だけ更新して raw を更新し忘れる / 逆に raw を更新して
-   派生再生成を忘れる経路が無いか。C1/C2 は **rebuild 未実装**である点を踏まえる。
+   派生再生成を忘れる経路が無いか。C2 (threat_reports) は `--rebuild-threat-reports-db` で
+   raw から再構築できる (human note は非復元)。C1 (x_bookmarks) は **MD 再構築不可** (DB が
+   transactional core) な点を踏まえ、復旧は再スクレイプ / JSON import で考える。
 3. **スキーマ版の三者整合** — DB スキーマ ↔ JSON export (version) ↔ Dataview script。
    フィールド追加は「追加のみ・古い consumer は無視して壊れない」を維持する (D1/D2)。
 4. **migration は破損退避より先か** — DB 列追加時、`migrate()` (ALTER TABLE) が index 作成や

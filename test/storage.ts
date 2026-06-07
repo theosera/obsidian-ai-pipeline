@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { setVaultRoot } from '../config';
-import { escapeFrontmatter, saveMarkdown, getKnownUrls, resetKnownUrlsCache } from '../storage';
+import { escapeFrontmatter, saveMarkdown, getKnownUrls, resetKnownUrlsCache, addKnownUrl } from '../storage';
 import type { ArticleData } from '../types';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
@@ -339,6 +339,55 @@ export function run(): TestSuiteResult {
         } finally {
           if (chmodWorked) fs.chmodSync(lockedDir, 0o755);
         }
+      } finally {
+        fs.rmSync(sub, { recursive: true, force: true });
+        setVaultRoot(tmpDir);
+        resetKnownUrlsCache();
+      }
+    });
+
+    runner.test('addKnownUrl: 初期化後は保存 URL を本番経路で dedup 集合へ反映 (A2)', () => {
+      const sub = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-known-add-'));
+      setVaultRoot(sub);
+      resetKnownUrlsCache();
+      try {
+        makeMd(path.join(sub, 'a.md'), 'source: "https://a.example.com"');
+        const urls = getKnownUrls(); // 走査で初期化
+        assert.ok(urls.has('https://a.example.com'));
+        assert.ok(!urls.has('https://new.example.com'), '未保存 URL は最初は無い');
+
+        // 本番更新口: 末尾スラッシュは getKnownUrls と同じ正規化で除去される
+        addKnownUrl('https://new.example.com/');
+        assert.ok(
+          getKnownUrls().has('https://new.example.com'),
+          '追加 URL が同一集合に反映 (全走査の再実行なしで dedup が効く)'
+        );
+
+        // 非 http / 空はサイレント無視 (frontmatter 由来でない値を混ぜない)
+        addKnownUrl('not-a-url');
+        addKnownUrl(undefined);
+        assert.ok(!getKnownUrls().has('not-a-url'));
+      } finally {
+        fs.rmSync(sub, { recursive: true, force: true });
+        setVaultRoot(tmpDir);
+        resetKnownUrlsCache();
+      }
+    });
+
+    runner.test('addKnownUrl: キャッシュ未初期化なら no-op (部分集合で固定化しない)', () => {
+      const sub = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-known-noinit-'));
+      setVaultRoot(sub);
+      resetKnownUrlsCache();
+      try {
+        makeMd(path.join(sub, 'a.md'), 'source: "https://a.example.com"');
+        // getKnownUrls を呼ぶ前に add → cache 未初期化なので no-op であるべき
+        addKnownUrl('https://added-before-scan.example.com');
+        const urls = getKnownUrls(); // ここで初めて全走査
+        assert.ok(urls.has('https://a.example.com'), '走査で実ファイルの URL は入る');
+        assert.ok(
+          !urls.has('https://added-before-scan.example.com'),
+          '走査前の add は無視され、部分集合のまま固定化しない'
+        );
       } finally {
         fs.rmSync(sub, { recursive: true, force: true });
         setVaultRoot(tmpDir);

@@ -23,7 +23,7 @@ import {
   ContractError,
 } from '../threat_reports_parser';
 import { ThreatReportsDb } from '../threat_reports_db';
-import { ingestThreatReport } from '../threat_reports_ingest';
+import { ingestThreatReport, rebuildThreatReportsDbFromVault } from '../threat_reports_ingest';
 import { buildExportPayload } from '../threat_reports_json_export';
 import { renderAutoBlock, replaceAutoBlock } from '../threat_reports_index_writer';
 import { getThreatReportsBaseFolder } from '../threat_reports_config';
@@ -833,6 +833,113 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
         ContractError
       );
       assert.strictEqual(db.listReports().length, 0, '契約違反は何も DB に書かない');
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  runner.section('rebuildThreatReportsDbFromVault (raw/*.md → DB 復旧)');
+
+  await runner.testAsync('rebuild: raw/*.md から作り直し、孤児行を落とし human note は復元しない', async () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const tmpFile = path.join(tmpVault, 'incoming.md');
+      fs.writeFileSync(tmpFile, SAMPLE_REPORT, 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      // 1. 通常 ingest → raw/<week>.md がアーカイブされ、1 report + 2 vuln が入る
+      const ing = await ingestThreatReport({ filePath: tmpFile, db, vaultRoot: tmpVault });
+      assert.ok(ing.archivedPath && fs.existsSync(ing.archivedPath), 'raw archive 生成');
+
+      // 2. human 入力 (ai_relevance_note) を 1 件付与 — 再構築で消えることを後で確認
+      db.setRelevanceNote(ing.reportId, 'Multi-Agent Trust Pivoting', '自リポは対応済 (手動メモ)');
+      assert.ok(
+        db.listVulnerabilities().some((v) => v.ai_relevance_note === '自リポは対応済 (手動メモ)'),
+        'note 付与の前提確認'
+      );
+
+      // 3. raw が存在しない孤児レポートを直接 upsert — 再構築で落ちることを確認
+      db.upsertReport({
+        id: 'orphan-no-raw',
+        source: 'gmail:gone',
+        receivedAt: new Date().toISOString(),
+        weekOf: '2020-01-01',
+        rawMarkdown: '---\n---\n',
+        vaultPath: null,
+        schemaVersion: 1,
+        trustLevel: 'external_research_summary',
+        reportType: 'llm_security_weekly',
+      });
+      assert.strictEqual(db.listReports().length, 2, '再構築前: 実レポート + 孤児 = 2');
+
+      // 4. rebuild — raw/*.md だけを真実に作り直す
+      const res = await rebuildThreatReportsDbFromVault({ db, vaultRoot: tmpVault });
+      assert.strictEqual(res.filesFound, 1, 'raw は 1 ファイル');
+      assert.strictEqual(res.reportsRebuilt, 1, '1 レポート復元');
+      assert.strictEqual(res.vulnerabilities, 2, 'vuln 2 件復元');
+      assert.strictEqual(res.skipped.length, 0, 'skip なし');
+
+      // 孤児は落ち、実レポートのみ残る
+      const rebuilt = db.listReports();
+      assert.strictEqual(rebuilt.length, 1, '孤児行は削除される');
+      assert.strictEqual(db.listVulnerabilities().length, 2);
+
+      // 再構築行は vault_path (raw アーカイブパス) を保持する
+      // — null だと JSON の raw_md_path が切れて元レポートへのリンクが壊れる (Codex #82 P2)
+      assert.ok(
+        rebuilt[0].vault_path && rebuilt[0].vault_path.endsWith('2026-05-25.md'),
+        `再構築でも vault_path を保持 (実際: ${rebuilt[0].vault_path})`
+      );
+
+      // human note は raw に無いので復元されない (全行 null)
+      assert.ok(
+        db.listVulnerabilities().every((v) => v.ai_relevance_note === null),
+        'ai_relevance_note は再構築では復元されない'
+      );
+
+      // JSON / index も最新化されている
+      assert.ok(fs.existsSync(res.jsonPath), 'JSON 再生成');
+      assert.ok(fs.existsSync(res.indexPath), 'index 再生成');
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  await runner.testAsync('rebuild: raw が空なら DB も空に揃え JSON を再生成する', async () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const db = new ThreatReportsDb(':memory:');
+      // raw を 1 件も作らずに、DB だけ事前シードする
+      db.upsertReport({
+        id: 'stale-row',
+        source: 'gmail:x',
+        receivedAt: new Date().toISOString(),
+        weekOf: '2026-05-25',
+        rawMarkdown: '---\n---\n',
+        vaultPath: null,
+        schemaVersion: 1,
+        trustLevel: 'external_research_summary',
+        reportType: 'llm_security_weekly',
+      });
+      assert.strictEqual(db.listReports().length, 1);
+
+      const res = await rebuildThreatReportsDbFromVault({ db, vaultRoot: tmpVault });
+      assert.strictEqual(res.filesFound, 0, 'raw 0 件');
+      assert.strictEqual(res.reportsRebuilt, 0);
+      assert.strictEqual(db.listReports().length, 0, 'DB も空になる');
+      assert.ok(fs.existsSync(res.jsonPath), '空でも JSON は再生成 (古い状態を残さない)');
       db.close();
     } finally {
       if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
