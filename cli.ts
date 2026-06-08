@@ -86,6 +86,12 @@ export interface ParsedCliArgs {
    * relevance_reviewed_at を立て、JSON / index を再生成する。
    */
   markThreatReviewed?: string;
+  /**
+   * Tool Use (Function Calling) エージェントを 1 ショット起動する。
+   * `--agent=<task>` 形式。Vault サンドボックス内の read/create のみを、毎回
+   * Human-in-the-Loop 承認を挟んで実行する (`tool-use/agent.ts`)。
+   */
+  agent?: string;
   xLimit?: number;
   handsOn?: string;
   since?: string;
@@ -98,6 +104,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
   const xLimitArg = argv.find((a) => a.startsWith('--x-limit='));
   const ingestThreatReportArg = argv.find((a) => a.startsWith('--ingest-threat-report='));
   const markThreatReviewedArg = argv.find((a) => a.startsWith('--mark-threat-reviewed='));
+  const agentArg = argv.find((a) => a.startsWith('--agent='));
 
   // --key=value 形式の値抽出。= 以降を再結合するのは、--hands-on=Foo=Bar のように
   // 値側に = が含まれる可能性を考慮している (Windows パス等)。
@@ -135,6 +142,13 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     process.exit(1);
   }
 
+  const agentValue = extractValue(agentArg);
+  if (agentValue !== undefined && agentValue.trim() === '') {
+    console.error('Invalid --agent value: "" (expected a non-empty task description)');
+    printUsage();
+    process.exit(1);
+  }
+
   const xPick = argv.includes('--x-pick');
   const xSyncFolders = argv.includes('--x-sync-folders');
 
@@ -159,6 +173,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     threatRelevanceReconfig: argv.includes('--threat-relevance-reconfig'),
     rebuildThreatReportsDb: argv.includes('--rebuild-threat-reports-db'),
     markThreatReviewed: markThreatReviewedValue,
+    agent: agentValue,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
     // 位置引数 (非 flag): 先頭のみ採用
@@ -185,4 +200,5 @@ export function printUsage(): void {
   console.error('  tsx index.ts --analyze-threat-relevance --threat-relevance-reconfig  (判定 provider / model を再選択)');
   console.error('  tsx index.ts --rebuild-threat-reports-db       (raw/*.md から threat_reports DB を再構築 / 破損復旧。human note は復元不可)');
   console.error('  tsx index.ts --mark-threat-reviewed=<report_id>  (該当性レビュー済みフラグを立てる / /sec-review 用)');
+  console.error('  tsx index.ts --agent="<task>"        (Vault サンドボックス内の Tool Use エージェント / 各操作に [y/N] 承認)');
 }

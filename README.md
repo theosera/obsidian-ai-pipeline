@@ -15,6 +15,7 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | 本 README | 導入・アーキテクチャ・主要機能・環境要件・セットアップ・基本実行コマンド |
 | [docs/cli-reference.md](docs/cli-reference.md) | 実行コマンドリファレンス（フォルダルール同期 / X ブックマーク取り込み / ハンズオン生成 / 中断再開 / ナレッジ統合 / 対話型レビュー） |
 | [docs/SPECIFICATION.md](docs/SPECIFICATION.md) | 詳細仕様（X ブックマーク取得 / ファイル構成） |
+| [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 
 ---
 

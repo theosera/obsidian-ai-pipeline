@@ -230,6 +230,22 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // --agent="<task>": Vault サンドボックス内の Tool Use エージェントを 1 ショット起動。
+  // read/create のみ、各操作に Human-in-the-Loop [y/N] 承認を挟む (tool-use/agent.ts)。
+  if (args.agent) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    try {
+      const { runAgentCli } = await import('./tool-use/cli_entry');
+      await runAgentCli({ task: args.agent, config, ask: askQuestion });
+    } catch (e: any) {
+      console.error(`❌ Tool Use エージェント失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
   // --x-derive-rules: vault 構造を解析して x_forced_parents.json を自動推定 (.bak 残し)
   if (args.xDeriveRules) {
     if (!config) config = await runConfigWizard(askQuestion);

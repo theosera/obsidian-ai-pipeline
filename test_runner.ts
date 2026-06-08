@@ -13,6 +13,7 @@ import { run as runXBookmarks } from './test/x_bookmarks';
 import { run as runThreatReports } from './test/threat_reports';
 import { run as runThreatRelevance } from './test/threat_reports_relevance';
 import { run as runLlmSecWeeklyFetcher } from './test/llm_sec_weekly_fetcher';
+import { run as runToolUse } from './test/tool_use';
 
 interface Suite {
   name: string;
@@ -29,6 +30,7 @@ const suites: Suite[] = [
   { name: 'ThreatReports', run: runThreatReports },
   { name: 'ThreatRelevance', run: runThreatRelevance },
   { name: 'LlmSecWeeklyFetcher', run: runLlmSecWeeklyFetcher },
+  { name: 'ToolUse', run: runToolUse },
 ];
 
 let totalPassed = 0;
