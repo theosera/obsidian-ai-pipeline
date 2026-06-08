@@ -6,7 +6,19 @@ import { getVaultRoot, isDryRun } from './config';
 const FALLBACK_PATH = 'Clippings/Inbox';
 
 /**
- * パストラバーサル防止: resolvedパスがVAULT_ROOT配下であることを保証する。
+ * `resolveVaultPath` の判定結果 (discriminated union)。
+ *
+ * 7 フェーズ防御を通過したら絶対/相対パスを、違反したら**機械可読な理由**を返す。
+ * `ensureSafePath` (フォールバック型) と Tool Use 実行レイヤー (strict 型) の
+ * 両方がこの 1 関数を唯一の真実として共有する。
+ */
+export type VaultPathResult =
+  | { ok: true; safeRelative: string; absolute: string }
+  | { ok: false; reason: string };
+
+/**
+ * パストラバーサル防止の **strict 版**: resolved パスが VAULT_ROOT 配下である
+ * ことを 7 フェーズで保証し、違反時は **フォールバックせず** `{ ok: false }` を返す。
  *
  * 防御フェーズ:
  *   0. URL デコード（%2e%2e 等のエンコード済みトラバーサル対策）
@@ -18,11 +30,14 @@ const FALLBACK_PATH = 'Clippings/Inbox';
  *   6. 既存パスの場合 realpath(symlink解決済み)でも検証
  *   7. パス長制限
  *
- * 違反時は安全なフォールバックパスを返す。
+ * `ensureSafePath` はこの結果を安全なフォールバックパスにマップする薄いラッパで、
+ * 7 フェーズ判定の single source of truth は本関数。Tool Use 実行レイヤーは
+ * 「Inbox へ無言クランプ」が誤動作になる (モデルが要求したパスを黙って書き換えて
+ * しまう) ため strict 版を直接使い、違反を人間に提示して拒否する。
  */
-export function ensureSafePath(proposedRelative: string): string {
+export function resolveVaultPath(proposedRelative: string): VaultPathResult {
   if (!proposedRelative || typeof proposedRelative !== 'string') {
-    return FALLBACK_PATH;
+    return { ok: false, reason: 'empty-or-non-string-path' };
   }
 
   const vaultRoot = getVaultRoot();
@@ -37,8 +52,7 @@ export function ensureSafePath(proposedRelative: string): string {
 
   // Phase 1: 絶対パス拒否
   if (/^[\/\\~]|^[a-zA-Z]:/.test(decoded)) {
-    console.error(`[Security] 絶対パスが検出されました: "${proposedRelative}"`);
-    return FALLBACK_PATH;
+    return { ok: false, reason: `absolute-path-rejected: "${proposedRelative}"` };
   }
 
   // Phase 2: nullバイト・制御文字の除去
@@ -52,8 +66,7 @@ export function ensureSafePath(proposedRelative: string): string {
 
   // ".." が含まれていれば即座に拒否（sanitize ではなく reject）
   if (segments.some(seg => seg === '..')) {
-    console.error(`[Security] パストラバーサル検出 (..): "${proposedRelative}"`);
-    return FALLBACK_PATH;
+    return { ok: false, reason: `path-traversal-rejected (..): "${proposedRelative}"` };
   }
 
   // "." と空文字列はフィルタ（ドットファイル名 ".hidden" は通す）
@@ -62,14 +75,13 @@ export function ensureSafePath(proposedRelative: string): string {
     .join(path.sep);
 
   if (!sanitized) {
-    return FALLBACK_PATH;
+    return { ok: false, reason: 'empty-after-sanitize' };
   }
 
   // Phase 5: resolve後のプレフィックス検証
   const resolved = path.resolve(vaultRoot, sanitized);
   if (!resolved.startsWith(vaultRoot + path.sep) && resolved !== vaultRoot) {
-    console.error(`[Security] パストラバーサル検出 (resolve): "${proposedRelative}" -> "${resolved}"`);
-    return FALLBACK_PATH;
+    return { ok: false, reason: `path-traversal-rejected (resolve): "${proposedRelative}" -> "${resolved}"` };
   }
 
   // Phase 6: 既存パスの場合、realpath(symlink解決済み)でも検証
@@ -78,8 +90,7 @@ export function ensureSafePath(proposedRelative: string): string {
       const real = fs.realpathSync(resolved);
       const realVault = fs.realpathSync(vaultRoot);
       if (!real.startsWith(realVault + path.sep) && real !== realVault) {
-        console.error(`[Security] symlink経由のパストラバーサル検出: "${resolved}" -> realpath "${real}"`);
-        return FALLBACK_PATH;
+        return { ok: false, reason: `symlink-traversal-rejected: "${resolved}" -> realpath "${real}"` };
       }
     } catch {
       // realpathSync失敗は無視（パスが存在しない場合はPhase 5で十分）
@@ -88,11 +99,27 @@ export function ensureSafePath(proposedRelative: string): string {
 
   // Phase 7: パス長制限（極端に長いパスはOSレベルの問題を引き起こす）
   if (sanitized.length > 500) {
-    console.error(`[Security] パス長超過 (${sanitized.length} chars): "${sanitized.substring(0, 80)}..."`);
-    return FALLBACK_PATH;
+    return { ok: false, reason: `path-too-long (${sanitized.length} chars)` };
   }
 
-  return sanitized;
+  return { ok: true, safeRelative: sanitized, absolute: resolved };
+}
+
+/**
+ * パストラバーサル防止 (フォールバック版): `resolveVaultPath` を通し、違反時は
+ * 安全なフォールバックパス (`Clippings/Inbox`) を返す。AI 分類結果のパスのように
+ * 「Vault 外なら Inbox に置けばよい」セマンティクスを持つ呼出側用。
+ *
+ * Tool Use のように「黙って書き換えると危険」な経路は `resolveVaultPath` を直接使う。
+ */
+export function ensureSafePath(proposedRelative: string): string {
+  const result = resolveVaultPath(proposedRelative);
+  if (result.ok) return result.safeRelative;
+  // 空入力は元から silent fallback（過剰ログを避ける）。実トラバーサル等のみログ。
+  if (!result.reason.startsWith('empty')) {
+    console.error(`[Security] ${result.reason}`);
+  }
+  return FALLBACK_PATH;
 }
 
 /**
