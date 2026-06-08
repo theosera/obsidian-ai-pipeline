@@ -84,6 +84,7 @@ export async function run(): Promise<TestSuiteResult> {
     runner.test('各ツールは input_schema (type=object) と required を持つ', () => {
       for (const tool of TOOL_DEFINITIONS) {
         assert.strictEqual(tool.input_schema.type, 'object');
+        assert.ok(Array.isArray(tool.input_schema.required) && tool.input_schema.required.length > 0);
         assert.ok(typeof tool.description === 'string' && tool.description.length > 0);
       }
     });
@@ -123,6 +124,11 @@ export async function run(): Promise<TestSuiteResult> {
 
     runner.test('create: .. トラバーサルは拒否される', () => {
       const r = validateToolUse(req('create_obsidian_note', { filename: '../escape.md', content: 'x' }));
+      assert.strictEqual(r.ok, false);
+    });
+
+    runner.test('create: 絶対パスは拒否される', () => {
+      const r = validateToolUse(req('create_obsidian_note', { filename: '/etc/passwd', content: 'x' }));
       assert.strictEqual(r.ok, false);
     });
 
