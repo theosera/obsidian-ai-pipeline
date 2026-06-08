@@ -63,6 +63,7 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
 - **dry-run モード**: `--dry-run` フラグでファイル移動をスキップし安全確認
 - **Vault Root 外部化**: `pipeline_config.json` または環境変数 `VAULT_ROOT` で設定、ハードコードなし
 - **中断リカバリ**: レポートファイルから API コスト $0 で処理を再開（`rescue-from-report.ts`）
+- **週次 LLM 脅威レポート取込・該当性レビュー** (`/sec-mode` → `/sec-review`): Gmail 取込 + injection ゲート + DB 取込 → 本リポ該当性レビュー（詳細フローは `docs/security/` / `docs/threat_reports.md`）
 
 ---
 
