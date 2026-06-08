@@ -131,6 +131,41 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(r.ok, false);
     });
 
+    runner.test('create: Vault 外への symlink ディレクトリ経由は検証で拒否される (Codex P1)', () => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-symlink-'));
+      try {
+        fs.symlinkSync(outside, path.join(tmpDir, 'link'), 'dir');
+        // 宛先 (link/escape.md) はまだ存在しないが、最近接既存祖先 link は Vault 外へ
+        // 向く symlink なので validateToolUse は拒否しなければならない。
+        const r = validateToolUse(req('create_obsidian_note', { filename: 'link/escape.md', content: 'x' }));
+        assert.strictEqual(r.ok, false);
+        assert.strictEqual(fs.existsSync(path.join(outside, 'escape.md')), false, 'Vault 外にファイルが作られてはいけない');
+      } finally {
+        fs.rmSync(path.join(tmpDir, 'link'), { force: true });
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    runner.test('create: 検証を迂回しても実行レイヤーが symlink 越えを拒否する (defense-in-depth)', () => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-exec-'));
+      try {
+        fs.symlinkSync(outside, path.join(tmpDir, 'link2'), 'dir');
+        // validate を通さず手組みした ValidatedToolCall (TOCTOU で symlink が差し替わった
+        // 状況を模す) でも、executeValidated は書き込み前に realpath 再検証で弾く。
+        const forged: ValidatedToolCall = {
+          id: 'tu_forged', name: 'create_obsidian_note',
+          input: { filename: 'link2/escape.md', content: 'x' },
+          absolutePath: path.join(tmpDir, 'link2', 'escape.md'), preview: 'forged',
+        };
+        const res = executeValidated(forged);
+        assert.strictEqual(res.ok, false);
+        assert.strictEqual(fs.existsSync(path.join(outside, 'escape.md')), false, 'Vault 外にファイルが作られてはいけない');
+      } finally {
+        fs.rmSync(path.join(tmpDir, 'link2'), { force: true });
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
     // =====================================================
     // 実行: read / create (Step 3)
     // =====================================================

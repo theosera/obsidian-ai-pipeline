@@ -16,7 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import type Anthropic from '@anthropic-ai/sdk';
-import { resolveVaultPath } from '../storage';
+import { resolveVaultPath, isInsideVaultRealpath } from '../storage';
 import { getVaultRoot } from '../config';
 import type {
   Result,
@@ -181,6 +181,12 @@ function executeReadNote(call: Extract<ValidatedToolCall, { name: 'read_obsidian
 function executeCreateNote(call: Extract<ValidatedToolCall, { name: 'create_obsidian_note' }>): Result<string> {
   if (fs.existsSync(call.absolutePath)) {
     return { ok: false, error: `refusing to overwrite existing file: ${call.input.filename} (this tool only creates new notes)` };
+  }
+  // 書き込み座標での symlink 越え再検証 (validate→execute 間に symlink が差し替わる
+  // TOCTOU への defense-in-depth)。mkdir する前に判定して Vault 外へのディレクトリ
+  // 作成自体を防ぐ。
+  if (!isInsideVaultRealpath(call.absolutePath)) {
+    return { ok: false, error: `refusing to create through a symlink that escapes the Vault: ${call.input.filename}` };
   }
   try {
     fs.mkdirSync(path.dirname(call.absolutePath), { recursive: true });
