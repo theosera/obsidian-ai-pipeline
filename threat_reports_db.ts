@@ -23,6 +23,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { getVaultRoot } from './config';
+import { LEGACY_REPO_KEY } from './threat_reports_repo_target';
 
 export interface ReportRow {
   id: string;                  // ingest 時に生成する uuid 風 ID
@@ -90,6 +91,23 @@ export interface ImplementationCheckRow {
   recommendation: string | null;
   ai_relevance_note: string | null;
   ingested_at: string;
+}
+
+/** per-repo 該当性レビュー済みフラグ 1 行 (report_repo_reviews)。 */
+export interface ReportReviewRow {
+  report_id: string;
+  repo_key: string;
+  reviewed_at: string;
+}
+
+/** per-repo 該当性ノート 1 行 (relevance_notes)。 */
+export interface RelevanceNoteRow {
+  report_id: string;
+  item_kind: 'vuln' | 'check';
+  item_key: string;
+  repo_key: string;
+  note: string | null;
+  updated_at: string;
 }
 
 export interface ReportUpsertInput {
@@ -177,6 +195,32 @@ CREATE TABLE IF NOT EXISTS implementation_checks (
   UNIQUE(report_id, perspective)
 );
 CREATE INDEX IF NOT EXISTS idx_impl_report ON implementation_checks(report_id);
+
+-- per-repo 該当性レビュー済みフラグ。1 行 = (レポート, リポジトリ) の組。
+-- /sec-review が対象リポを指定して立てる → 同じレポートでもリポごとに独立にスキップ管理。
+-- reports.relevance_reviewed_at (単一列) はレガシー: 初回 open 時に LEGACY_REPO_KEY へ移行する。
+CREATE TABLE IF NOT EXISTS report_repo_reviews (
+  report_id   TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  repo_key    TEXT NOT NULL,
+  reviewed_at TEXT NOT NULL,
+  PRIMARY KEY (report_id, repo_key)
+);
+CREATE INDEX IF NOT EXISTS idx_rrr_repo ON report_repo_reviews(repo_key);
+
+-- per-repo 該当性ノート。1 行 = (レポート, 項目, リポジトリ) の判定結果。
+-- item_kind='vuln' なら item_key=vulnerabilities.name、'check' なら implementation_checks.perspective。
+-- vulnerabilities.ai_relevance_note / implementation_checks.ai_relevance_note (単一列) は
+-- レガシー: 初回 open 時に LEGACY_REPO_KEY へ移行し、以後は本テーブルが source of truth。
+CREATE TABLE IF NOT EXISTS relevance_notes (
+  report_id  TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  item_kind  TEXT NOT NULL CHECK (item_kind IN ('vuln', 'check')),
+  item_key   TEXT NOT NULL,
+  repo_key   TEXT NOT NULL,
+  note       TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (report_id, item_kind, item_key, repo_key)
+);
+CREATE INDEX IF NOT EXISTS idx_relnotes_repo ON relevance_notes(report_id, repo_key);
 `;
 
 export class ThreatReportsDb {
@@ -200,6 +244,37 @@ export class ThreatReportsDb {
     if (!cols.some((c) => c.name === 'relevance_reviewed_at')) {
       this.db.exec('ALTER TABLE reports ADD COLUMN relevance_reviewed_at TEXT');
     }
+    // per-repo 化 (user_version 1): レガシーな単一値 (reports.relevance_reviewed_at /
+    // {vulnerabilities,implementation_checks}.ai_relevance_note) を LEGACY_REPO_KEY 配下の
+    // per-repo テーブルへ 1 度だけコピーする。user_version で冪等化し、移行後にユーザが
+    // per-repo ノートを消しても旧列から復活しない (resurrection 防止)。
+    const version = this.db.pragma('user_version', { simple: true }) as number;
+    if (version < 1) {
+      this.migrateLegacyNotesToRepoScoped();
+      this.db.pragma('user_version = 1');
+    }
+  }
+
+  /** レガシー単一列 → per-repo テーブルへの 1 回限りコピー (INSERT OR IGNORE で冪等)。 */
+  private migrateLegacyNotesToRepoScoped(): void {
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO report_repo_reviews (report_id, repo_key, reviewed_at)
+        SELECT id, @repo, relevance_reviewed_at FROM reports
+        WHERE relevance_reviewed_at IS NOT NULL
+      `).run({ repo: LEGACY_REPO_KEY });
+      this.db.prepare(`
+        INSERT OR IGNORE INTO relevance_notes (report_id, item_kind, item_key, repo_key, note, updated_at)
+        SELECT report_id, 'vuln', name, @repo, ai_relevance_note, ingested_at FROM vulnerabilities
+        WHERE ai_relevance_note IS NOT NULL
+      `).run({ repo: LEGACY_REPO_KEY });
+      this.db.prepare(`
+        INSERT OR IGNORE INTO relevance_notes (report_id, item_kind, item_key, repo_key, note, updated_at)
+        SELECT report_id, 'check', perspective, @repo, ai_relevance_note, ingested_at FROM implementation_checks
+        WHERE ai_relevance_note IS NOT NULL
+      `).run({ repo: LEGACY_REPO_KEY });
+    });
+    tx();
   }
 
   upsertReport(input: ReportUpsertInput): void {
@@ -428,16 +503,69 @@ export class ThreatReportsDb {
     `).all() as Array<ImplementationCheckRow & { week_of: string; vault_path: string | null }>;
   }
 
-  setImplementationCheckNote(reportId: string, perspective: string, note: string | null): void {
-    this.db.prepare(
-      'UPDATE implementation_checks SET ai_relevance_note = ? WHERE report_id = ? AND perspective = ?'
-    ).run(note, reportId, perspective);
+  /**
+   * per-repo 該当性ノートを upsert / delete する (relevance_notes)。
+   * note=null は「そのリポでの判定を消す」= 行を削除する (= 未判定に戻す)。
+   * 同名 vuln / perspective の再 ingest は本テーブルを触らないので、ノートは構造的に保護される
+   * (レガシーの「ai_relevance_note 保護」を表 join なしで再現)。
+   */
+  private upsertNote(
+    reportId: string,
+    itemKind: 'vuln' | 'check',
+    itemKey: string,
+    repoKey: string,
+    note: string | null,
+  ): void {
+    if (note === null) {
+      this.db.prepare(
+        'DELETE FROM relevance_notes WHERE report_id = ? AND item_kind = ? AND item_key = ? AND repo_key = ?'
+      ).run(reportId, itemKind, itemKey, repoKey);
+      return;
+    }
+    this.db.prepare(`
+      INSERT INTO relevance_notes (report_id, item_kind, item_key, repo_key, note, updated_at)
+      VALUES (@report_id, @item_kind, @item_key, @repo_key, @note, @updated_at)
+      ON CONFLICT(report_id, item_kind, item_key, repo_key) DO UPDATE SET
+        note = excluded.note,
+        updated_at = excluded.updated_at
+    `).run({
+      report_id: reportId,
+      item_kind: itemKind,
+      item_key: itemKey,
+      repo_key: repoKey,
+      note,
+      updated_at: new Date().toISOString(),
+    });
   }
 
-  setRelevanceNote(reportId: string, name: string, note: string | null): void {
-    this.db.prepare(
-      'UPDATE vulnerabilities SET ai_relevance_note = ? WHERE report_id = ? AND name = ?'
-    ).run(note, reportId, name);
+  private getNote(reportId: string, itemKind: 'vuln' | 'check', itemKey: string, repoKey: string): string | null {
+    const row = this.db.prepare(
+      'SELECT note FROM relevance_notes WHERE report_id = ? AND item_kind = ? AND item_key = ? AND repo_key = ?'
+    ).get(reportId, itemKind, itemKey, repoKey) as { note: string | null } | undefined;
+    return row ? row.note : null;
+  }
+
+  setImplementationCheckNote(reportId: string, perspective: string, repoKey: string, note: string | null): void {
+    this.upsertNote(reportId, 'check', perspective, repoKey, note);
+  }
+
+  setRelevanceNote(reportId: string, name: string, repoKey: string, note: string | null): void {
+    this.upsertNote(reportId, 'vuln', name, repoKey, note);
+  }
+
+  getImplementationCheckNote(reportId: string, perspective: string, repoKey: string): string | null {
+    return this.getNote(reportId, 'check', perspective, repoKey);
+  }
+
+  getRelevanceNote(reportId: string, name: string, repoKey: string): string | null {
+    return this.getNote(reportId, 'vuln', name, repoKey);
+  }
+
+  /** 全 per-repo 該当性ノート (JSON エクスポート用)。 */
+  listRelevanceNotes(): RelevanceNoteRow[] {
+    return this.db.prepare(
+      'SELECT report_id, item_kind, item_key, repo_key, note, updated_at FROM relevance_notes'
+    ).all() as RelevanceNoteRow[];
   }
 
   getReport(id: string): ReportRow | undefined {
@@ -448,21 +576,50 @@ export class ThreatReportsDb {
     return this.db.prepare('SELECT * FROM reports ORDER BY week_of DESC, received_at DESC').all() as ReportRow[];
   }
 
-  /** 該当性レビュー (`/sec-review`) 未実施 (relevance_reviewed_at IS NULL) のレポートのみ。古い週順。 */
-  listUnreviewedReports(): ReportRow[] {
-    return this.db.prepare(
-      'SELECT * FROM reports WHERE relevance_reviewed_at IS NULL ORDER BY week_of ASC, received_at ASC'
-    ).all() as ReportRow[];
+  /**
+   * 指定リポジトリ (`repoKey`) について該当性レビュー未実施のレポートのみ。古い週順。
+   * `report_repo_reviews` にそのリポの行が無いレポートが対象 (= リポごとに独立スキップ)。
+   */
+  listUnreviewedReports(repoKey: string): ReportRow[] {
+    return this.db.prepare(`
+      SELECT * FROM reports r
+      WHERE NOT EXISTS (
+        SELECT 1 FROM report_repo_reviews rr WHERE rr.report_id = r.id AND rr.repo_key = @repo
+      )
+      ORDER BY r.week_of ASC, r.received_at ASC
+    `).all({ repo: repoKey }) as ReportRow[];
+  }
+
+  /** 指定リポについてレビュー済みか。 */
+  isReportReviewed(id: string, repoKey: string): boolean {
+    const row = this.db.prepare(
+      'SELECT 1 FROM report_repo_reviews WHERE report_id = ? AND repo_key = ?'
+    ).get(id, repoKey);
+    return row !== undefined;
   }
 
   /**
-   * レポートを「該当性レビュー済み」に印付けする。`/sec-review` がレポート単位の
-   * 逐次レビューを終えた後に呼ぶ → 次回以降 `listUnreviewedReports` から外れる。
-   * 戻り値は更新行数 (0 = 該当 id が無い → caller で警告できる)。
+   * レポートを **指定リポジトリについて** 「該当性レビュー済み」に印付けする。
+   * `/sec-review` がそのリポのレビューを終えた後に呼ぶ → 次回以降 `listUnreviewedReports(repoKey)`
+   * から外れる (他リポの未レビュー状態には影響しない)。
+   * 戻り値: 1 = 立てた、0 = 該当 report_id が無い (caller で警告できる)。
    */
-  markReportReviewed(id: string, reviewedAt?: string): number {
+  markReportReviewed(id: string, repoKey: string, reviewedAt?: string): number {
+    if (this.getReport(id) === undefined) return 0;
     const at = reviewedAt ?? new Date().toISOString();
-    return this.db.prepare('UPDATE reports SET relevance_reviewed_at = ? WHERE id = ?').run(at, id).changes;
+    this.db.prepare(`
+      INSERT INTO report_repo_reviews (report_id, repo_key, reviewed_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(report_id, repo_key) DO UPDATE SET reviewed_at = excluded.reviewed_at
+    `).run(id, repoKey, at);
+    return 1;
+  }
+
+  /** 全 per-repo レビュー済みフラグ (JSON エクスポート用)。 */
+  listReportReviews(): ReportReviewRow[] {
+    return this.db.prepare(
+      'SELECT report_id, repo_key, reviewed_at FROM report_repo_reviews'
+    ).all() as ReportReviewRow[];
   }
 
   listVulnerabilities(reportId?: string): VulnerabilityRow[] {

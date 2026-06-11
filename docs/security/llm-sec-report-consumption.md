@@ -164,11 +164,12 @@ backward compat: `forbidden_usage` 自体が無いレポート (旧スキーマ)
 
 > この §5 の判断順序 6〜10 (取込後の自リポ該当性レビュー → 実装判断) を運用化した
 > エントリポイントが **Default mode の `/sec-review` コマンド**
-> (`.claude/commands/sec-review.md`)。`--analyze-threat-relevance` でリポを全走査して
-> `ai_relevance_note` を埋め、該当項目だけを §4 の証拠 5 点付きで提示してユーザー判断に
-> 委ね、レビュー済みレポートは JSON 上のフラグ (`reports[].relevance_reviewed_at` /
-> `--mark-threat-reviewed`) で次回以降スキップする。Gmail には触れない (フェッチは
-> `/sec-mode`)。
+> (`.claude/commands/sec-review.md`)。レビューは **(レポート × リポジトリ) 単位**で、
+> 実行時に必ず対象リポを質問する。`--analyze-threat-relevance --target-repo=<owner/repo|path>`
+> で対象リポを全走査して **per-repo ノート** を埋め、該当項目だけを §4 の証拠 5 点付きで提示
+> してユーザー判断に委ね、レビュー済みは JSON の per-repo フラグ (`reports[].reviews[]` /
+> `--mark-threat-reviewed=<id> --target-repo=...`) でそのリポについて次回以降スキップする。
+> Gmail には触れない (フェッチは `/sec-mode`)。
 
 ---
 

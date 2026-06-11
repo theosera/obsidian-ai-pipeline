@@ -22,7 +22,7 @@
 | B2 | `x-bookmarks/db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | migrate 順序ミスで**誤って破損退避** (既知/対処済) |
 | C1 | `x_bookmarks.db` | on-disk SQLite (**transactional core**) | (実質 DB 自身) | 再スクレイプ / JSON import | `<repo>/` / **gitignore** | per-tweet MD 廃止で **MD 再構築は不可** |
 | C2 | `threat_reports.db` | on-disk SQLite (派生) | `raw/<week>.md` | 再 ingest / **`--rebuild-threat-reports-db`** | `<vault>/__skills/pipeline/` | rebuild **実装済** (human note は非復元) |
-| D1 | `.threat_reports.json` (v3) | on-disk JSON ビュー | `threat_reports.db` | ingest/analyze/mark 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | DB と JSON のスキーマ版ズレ |
+| D1 | `.threat_reports.json` (v4) | on-disk JSON ビュー | `threat_reports.db` | ingest/analyze/mark 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | DB と JSON のスキーマ版ズレ |
 | D2 | `.x_bookmarks.json` | on-disk JSON ビュー | `x_bookmarks.db` | sync 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | 同上 |
 | E1 | `.html_cache/<md5(url)>.html` | on-disk HTTP/レンダ | 取得元 URL | **なし (TTL 無し)** | `<repo>/` / **gitignore** | URL のみキー・**永続** → 内容変化に追従しない |
 | E2 | `.chromium-data/` | on-disk ブラウザ状態 | (ログインセッション) | 手動削除 | `<repo>/` / **gitignore** | 肥大・古いセッション |
@@ -95,9 +95,10 @@
 > - **threat_reports (C2)**: `raw/<week>.md` が真実 →
 >   `threat_reports_ingest.ts::rebuildThreatReportsDbFromVault()` **実装済**
 >   (CLI `--rebuild-threat-reports-db`)。破損退避 / 手動削除後に raw から派生インデックスを
->   復旧する明示コマンド。⚠ ただし `ai_relevance_note` / `relevance_reviewed_at` は raw に
->   無い human 入力なので **再構築では復元されない** (退避 `<db>.corrupted_*` から手動
->   サルベージ)。破壊性ゆえ破損時に**自動起動はしない**。
+>   復旧する明示コマンド。⚠ ただし per-repo ノート (`relevance_notes`) / per-repo レビュー済み
+>   フラグ (`report_repo_reviews`) は raw に無い human 入力なので **再構築では復元されない**
+>   (reports 削除 → CASCADE で連動削除。退避 `<db>.corrupted_*` から手動サルベージ)。
+>   破壊性ゆえ破損時に**自動起動はしない**。
 > - **x_bookmarks (C1)**: group-page 移行 (2026-05) で **per-tweet MD は廃止**され、Vault に
 >   残るのは Dataview レンダ済みビューのみ。個々のツイート全データは持たないため
 >   **MD からの無損失再構築は原理的に不可** (DB が実質 transactional core)。復旧経路は
@@ -110,10 +111,11 @@
 ## D. On-disk 派生 JSON ビュー (Dataview 用 / 同期毎に再生成)
 
 ### D1. `.threat_reports.json` (`threat_reports_json_export.ts`)
-- `threat_reports.db` → JSON。`version: 3` (rows / implementation_checks / **reports[]**)。
+- `threat_reports.db` → JSON。`version: 4` (rows / implementation_checks / **reports[]**、
+  per-repo 化で `rows[].repo_notes[]` + `reports[].reviews[]`)。
   ingest / `--analyze-threat-relevance` / `--mark-threat-reviewed` の度に上書き再生成。
-- 点検: **JSON schema version (3) と Dataview script (`threat_reports_index_writer.ts`) の整合**
-  がズレると表が壊れる。フィールド追加は「追加のみ・古い script は無視」を維持すること。
+- 点検: **JSON schema version (4) と Dataview script (`threat_reports_index_writer.ts`) の整合**
+  がズレると表が壊れる。フィールド変更時は Dataview 側の参照キー (`repo_notes` 等) も合わせること。
 
 ### D2. `.x_bookmarks.json` (`x-bookmarks/json_export.ts`)
 - `x_bookmarks.db` → JSON。sync 毎に上書き。設計コメント: 「SQLite=内部キャッシュ /

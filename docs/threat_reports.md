@@ -105,36 +105,48 @@ pnpm start -- --ingest-threat-report=<path-to-md>
 - `1`: I/O エラー (ファイル無し等)
 - `2`: 契約違反 (frontmatter 不正)
 
-## 自リポ該当性レビュー (`/sec-review` / Level 2)
+## 対象リポ該当性レビュー (`/sec-review` / Level 2 / **per-repo**)
 
 取込 (`--ingest-threat-report`) は脅威を**全件**無条件で DB に格納するだけで、
-「本リポに該当するか」の取捨選択はしない。取込**後**に、本リポへの該当性を
+「該当するか」の取捨選択はしない。取込**後**に、**対象リポ** への該当性を
 レビューして実装するかを判断する段階を `/sec-review` (Default mode コマンド) が担う。
+
+該当性判定とレビュー済み管理は **(レポート × リポジトリ)** 単位。同じレポートでも
+リポジトリごとに結論が変わるため、`/sec-review` は **走り出す前に必ず対象リポを質問** し、
+その指定を `--target-repo=<owner/repo|path>` で CLI に渡す (web=スラッグ / CLI=パス、
+いずれも git remote から同じ正準キー `owner/repo` に収束。`threat_reports_repo_target.ts`)。
 
 ```text
 ingest 済み DB (全件)
   ↓ /sec-review  (= Default mode コマンド)
-1. pnpm start -- --analyze-threat-relevance
-     → buildRepoProfile() で本リポを全走査 (決定的 fs/grep チェック)
-     → 各脅威を ⚠該当 / ✓非該当 / ?要確認 で ai_relevance_note に記入 (隔離 LLM)
-2. .threat_reports.json を読み reports[].relevance_reviewed_at が null のものだけ対象
-3. ⚠該当 / ?要確認 の項目を §4 証拠 5 点付きで提示 → 実装するかユーザー判断
-4. pnpm start -- --mark-threat-reviewed=<report_id>
-     → relevance_reviewed_at を立て、次回以降スキップ
+0. AskUserQuestion で対象リポを 1 つ選ぶ (= <TARGET>。省略・推測しない)
+1. pnpm start -- --analyze-threat-relevance --target-repo=<TARGET>
+     → buildRepoProfile(対象リポの実体ルート) で全走査 (決定的 fs/grep チェック)
+     → 各脅威を ⚠該当 / ✓非該当 / ?要確認 で **その repo の per-repo ノート** に記入 (隔離 LLM)
+2. .threat_reports.json を読み reports[].reviews[] に <TARGET> を含まないものだけ対象
+3. rows[].repo_notes[] / implementation_checks[].repo_notes[] の <TARGET> ノートを見て
+   ⚠該当 / ?要確認 の項目を §4 証拠 5 点付きで提示 → 実装するかユーザー判断
+4. pnpm start -- --mark-threat-reviewed=<report_id> --target-repo=<TARGET>
+     → (レポート × <TARGET>) のレビュー済みフラグを立て、その repo について次回以降スキップ
+       (他 repo の未レビュー状態には影響しない)
 ```
 
-- 該当性判定の実体は `threat_reports_relevance.ts` (`buildRepoProfile` +
+- 該当性判定の実体は `threat_reports_relevance.ts` (`buildRepoProfile(root, repoKey)` +
   `runThreatRelevanceAnalysis`)。脅威本文は `<threat nonce>` デリミタ内の純データとして
   隔離 LLM に渡すため、本文の偽指示で挙動が壊れない。**検知のみ** — コード変更は
   ユーザーが「実装する」と決めた項目だけ、§4 の証拠を満たして最小差分で行う。
-- **レビュー済みフラグ** (`reports[].relevance_reviewed_at`, JSON schema version 3) は
-  Gmail の `processed` ラベル (フェッチ層) とは別物で、「ローカル DB 上での該当性レビュー
-  完了印」。再 ingest では保持される (`ai_relevance_note` と同じく人手の判断を消さない)。
+- **per-repo レビュー済みフラグ** (`reports[].reviews[]` = `{repo_key, reviewed_at}` の配列,
+  JSON schema **version 4**) は Gmail の `processed` ラベル (フェッチ層) とは別物で、
+  「ローカル DB 上での *対象リポ* 該当性レビュー完了印」。再 ingest では保持される
+  (per-repo ノート `relevance_notes` と同じく人手の判断を消さない)。
+- per-repo 化以前の単一値 (`reports.relevance_reviewed_at` / `*.ai_relevance_note`) は
+  DB 初回 open 時に **`theosera/obsidian-ai-pipeline` キー配下へ自動移行** される
+  (`threat_reports_db.ts` の `migrate`、`PRAGMA user_version` で 1 回限り冪等)。
 
 ```bash
-pnpm start -- --analyze-threat-relevance       # 全走査 + ai_relevance_note 記入 (人手 note 保護)
-pnpm start -- --analyze-threat-relevance --threat-relevance-all   # AI 記入済みも再判定
-pnpm start -- --mark-threat-reviewed=<report_id>                  # レビュー済みフラグを立てる
+pnpm start -- --analyze-threat-relevance --target-repo=<owner/repo|path>   # 対象リポ全走査 + per-repo ノート記入 (人手 note 保護)
+pnpm start -- --analyze-threat-relevance --target-repo=<...> --threat-relevance-all   # AI 記入済みも再判定
+pnpm start -- --mark-threat-reviewed=<report_id> --target-repo=<...>        # 対象リポについてレビュー済みフラグを立てる
 ```
 
 ## Trust Boundary (実装側 / レビュー側で必ず守る)
@@ -171,4 +183,4 @@ frontmatter が欠けている or 値が想定外。ChatGPT 側の送信テン�
 
 raw markdown は `<base>/raw/<week_of>.md` に残っているので、parser を改良
 した後に再 ingest すれば DB の vuln 行が新仕様で上書きされる
-(`ai_relevance_note` 列だけは人手コメント保護のため上書きされない)。
+(per-repo ノート `relevance_notes` は別テーブルなので、再 ingest でも人手判断は保護される)。

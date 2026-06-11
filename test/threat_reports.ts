@@ -27,7 +27,12 @@ import { ingestThreatReport, rebuildThreatReportsDbFromVault } from '../threat_r
 import { buildExportPayload } from '../threat_reports_json_export';
 import { renderAutoBlock, replaceAutoBlock } from '../threat_reports_index_writer';
 import { getThreatReportsBaseFolder } from '../threat_reports_config';
+import { LEGACY_REPO_KEY } from '../threat_reports_repo_target';
 import { TestRunner, type TestSuiteResult } from './helpers';
+
+// per-repo テスト用の代表リポキー (= レガシー移行先と同じ。単一リポを使うテストで流用)。
+const REPO = LEGACY_REPO_KEY;
+const REPO_B = 'theosera/claude_openai_mcp_connector';
 
 const SAMPLE_FRONTMATTER = [
   '---',
@@ -521,10 +526,10 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       weekOf: '2026-05-25', rawMarkdown: '',
     });
     db.syncReportVulnerabilities('r1', [{ reportId: 'r1', name: 'V', riskScore: 5.0 }]);
-    db.setRelevanceNote('r1', 'V', 'note kept');
+    db.setRelevanceNote('r1', 'V', REPO, 'note kept');
     db.syncReportVulnerabilities('r1', [{ reportId: 'r1', name: 'V', riskScore: 9.0 }]);
     const v = db.listVulnerabilities('r1')[0];
-    assert.strictEqual(v.ai_relevance_note, 'note kept', 'sync 経由でも note は触らない');
+    assert.strictEqual(db.getRelevanceNote('r1', 'V', REPO), 'note kept', 'sync (別テーブル) でも per-repo note は触らない');
     assert.strictEqual(v.risk_score, 9.0, 'risk_score は更新される');
     db.close();
   });
@@ -570,11 +575,11 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       weekOf: '2026-05-25', rawMarkdown: '',
     });
     db.upsertVulnerability({ reportId: 'r1', name: 'V', riskScore: 8.0 });
-    db.setRelevanceNote('r1', 'V', '当リポは PR #51 で対応済');
+    db.setRelevanceNote('r1', 'V', REPO, '当リポは PR #51 で対応済');
     // 再 ingest をシミュレート
     db.upsertVulnerability({ reportId: 'r1', name: 'V', riskScore: 8.5 });
     const v = db.listVulnerabilities('r1')[0];
-    assert.strictEqual(v.ai_relevance_note, '当リポは PR #51 で対応済', 'note は保護される');
+    assert.strictEqual(db.getRelevanceNote('r1', 'V', REPO), '当リポは PR #51 で対応済', 'per-repo note は保護される');
     assert.strictEqual(v.risk_score, 8.5, '他フィールドは更新される');
     db.close();
   });
@@ -632,10 +637,10 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     const db = new ThreatReportsDb(':memory:');
     db.upsertReport({ id: 'r1', source: 'test', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
     db.syncReportImplementationChecks('r1', [{ reportId: 'r1', perspective: 'X', pattern: 'old' }]);
-    db.setImplementationCheckNote('r1', 'X', '自リポは N/A (関連実装なし)');
+    db.setImplementationCheckNote('r1', 'X', REPO, '自リポは N/A (関連実装なし)');
     db.syncReportImplementationChecks('r1', [{ reportId: 'r1', perspective: 'X', pattern: 'updated' }]);
     const c = db.listImplementationChecks('r1')[0];
-    assert.strictEqual(c.ai_relevance_note, '自リポは N/A (関連実装なし)');
+    assert.strictEqual(db.getImplementationCheckNote('r1', 'X', REPO), '自リポは N/A (関連実装なし)');
     assert.strictEqual(c.pattern, 'updated');
     db.close();
   });
@@ -679,12 +684,13 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
 
       // JSON の中身
       const json = JSON.parse(fs.readFileSync(result.jsonPath, 'utf8'));
-      assert.strictEqual(json.version, 3, 'reports[] (レビュー済みフラグ) 追加で v3 に bump');
+      assert.strictEqual(json.version, 4, 'per-repo 化 (repo_notes / reviews) で v4 に bump');
       assert.strictEqual(json.rows.length, 2);
       assert.ok(Array.isArray(json.implementation_checks), 'v2+ で implementation_checks フィールドが存在');
-      assert.ok(Array.isArray(json.reports), 'v3 で reports フィールドが存在');
+      assert.ok(Array.isArray(json.reports), 'v3+ で reports フィールドが存在');
       assert.strictEqual(json.reports.length, 1, 'ingest した 1 レポート分の reports 行');
-      assert.strictEqual(json.reports[0].relevance_reviewed_at, null, '取込直後は未レビュー');
+      assert.deepStrictEqual(json.reports[0].reviews, [], '取込直後は全リポ未レビュー (reviews=[])');
+      assert.deepStrictEqual(json.rows[0].repo_notes, [], '取込直後は全リポ未判定 (repo_notes=[])');
       assert.strictEqual(
         json.implementation_checks.length, 0,
         'Section 4 ヘッダなし fixture では checks=0 (DB sync スキップで空のまま)'
@@ -752,7 +758,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
 
       const r1 = await ingestThreatReport({ filePath: newFile, db, vaultRoot: tmpVault, source: 'gmail:same' });
       assert.strictEqual(r1.implementationChecks, 1);
-      db.setImplementationCheckNote(r1.reportId, 'MCP Server Abuse', '自リポは PR #51 で対応済');
+      db.setImplementationCheckNote(r1.reportId, 'MCP Server Abuse', REPO, '自リポは PR #51 で対応済');
 
       // 同じ source+week → 同じ report_id で再 ingest (旧フォーマット)
       const r2 = await ingestThreatReport({ filePath: oldFile, db, vaultRoot: tmpVault, source: 'gmail:same' });
@@ -763,7 +769,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       const remaining = db.listImplementationChecks(r1.reportId);
       assert.strictEqual(remaining.length, 1, 'Section 4 absent では sync スキップで既存行を残す');
       assert.strictEqual(remaining[0].perspective, 'MCP Server Abuse');
-      assert.strictEqual(remaining[0].ai_relevance_note, '自リポは PR #51 で対応済', '人手 note も温存');
+      assert.strictEqual(db.getImplementationCheckNote(r1.reportId, 'MCP Server Abuse', REPO), '自リポは PR #51 で対応済', 'per-repo note も温存');
       db.close();
     } finally {
       if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
@@ -857,10 +863,11 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       const ing = await ingestThreatReport({ filePath: tmpFile, db, vaultRoot: tmpVault });
       assert.ok(ing.archivedPath && fs.existsSync(ing.archivedPath), 'raw archive 生成');
 
-      // 2. human 入力 (ai_relevance_note) を 1 件付与 — 再構築で消えることを後で確認
-      db.setRelevanceNote(ing.reportId, 'Multi-Agent Trust Pivoting', '自リポは対応済 (手動メモ)');
-      assert.ok(
-        db.listVulnerabilities().some((v) => v.ai_relevance_note === '自リポは対応済 (手動メモ)'),
+      // 2. human 入力 (per-repo note) を 1 件付与 — 再構築で消えることを後で確認
+      db.setRelevanceNote(ing.reportId, 'Multi-Agent Trust Pivoting', REPO, '自リポは対応済 (手動メモ)');
+      assert.strictEqual(
+        db.getRelevanceNote(ing.reportId, 'Multi-Agent Trust Pivoting', REPO),
+        '自リポは対応済 (手動メモ)',
         'note 付与の前提確認'
       );
 
@@ -897,11 +904,13 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
         `再構築でも vault_path を保持 (実際: ${rebuilt[0].vault_path})`
       );
 
-      // human note は raw に無いので復元されない (全行 null)
-      assert.ok(
-        db.listVulnerabilities().every((v) => v.ai_relevance_note === null),
-        'ai_relevance_note は再構築では復元されない'
+      // human note は raw に無いので復元されない。reports 削除→CASCADE で
+      // relevance_notes / report_repo_reviews も消える。
+      assert.strictEqual(
+        db.getRelevanceNote(ing.reportId, 'Multi-Agent Trust Pivoting', REPO), null,
+        'per-repo note は再構築では復元されない'
       );
+      assert.strictEqual(db.listRelevanceNotes().length, 0, 'CASCADE で relevance_notes は空');
 
       // JSON / index も最新化されている
       assert.ok(fs.existsSync(res.jsonPath), 'JSON 再生成');
@@ -1055,40 +1064,50 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
   // =====================================================
   runner.section('該当性レビュー済みフラグ (/sec-review / relevance_reviewed_at)');
 
-  runner.test('markReportReviewed: フラグを立て、戻り値は更新行数 (未知 id は 0)', () => {
+  runner.test('markReportReviewed: 指定リポについてフラグを立て、戻り値は 1 / 未知 id は 0', () => {
     const db = new ThreatReportsDb(':memory:');
     db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
-    assert.strictEqual(db.getReport('r1')?.relevance_reviewed_at, null, '初期は未レビュー (null)');
-    const changed = db.markReportReviewed('r1', '2026-06-04T00:00:00Z');
+    assert.strictEqual(db.isReportReviewed('r1', REPO), false, '初期は未レビュー');
+    const changed = db.markReportReviewed('r1', REPO, '2026-06-04T00:00:00Z');
     assert.strictEqual(changed, 1);
-    assert.strictEqual(db.getReport('r1')?.relevance_reviewed_at, '2026-06-04T00:00:00Z');
-    assert.strictEqual(db.markReportReviewed('missing'), 0, '未知 id は 0 行更新');
+    assert.strictEqual(db.isReportReviewed('r1', REPO), true);
+    assert.strictEqual(db.markReportReviewed('missing', REPO), 0, '未知 id は 0');
     db.close();
   });
 
-  runner.test('listUnreviewedReports: レビュー済みを除外し古い週順で返す', () => {
+  runner.test('per-repo レビュー: 同じレポートでもリポごとに独立にスキップ管理される', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.markReportReviewed('r1', REPO);
+    assert.strictEqual(db.isReportReviewed('r1', REPO), true, 'REPO はレビュー済み');
+    assert.strictEqual(db.isReportReviewed('r1', REPO_B), false, 'REPO_B は未レビューのまま');
+    assert.deepStrictEqual(db.listUnreviewedReports(REPO).map(r => r.id), [], 'REPO 視点では未レビュー無し');
+    assert.deepStrictEqual(db.listUnreviewedReports(REPO_B).map(r => r.id), ['r1'], 'REPO_B 視点ではまだ未レビュー');
+    db.close();
+  });
+
+  runner.test('listUnreviewedReports: 指定リポのレビュー済みを除外し古い週順で返す', () => {
     const db = new ThreatReportsDb(':memory:');
     db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-18', rawMarkdown: '' });
     db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
-    db.markReportReviewed('r1');
-    const unreviewed = db.listUnreviewedReports();
+    db.markReportReviewed('r1', REPO);
+    const unreviewed = db.listUnreviewedReports(REPO);
     assert.deepStrictEqual(unreviewed.map(r => r.id), ['r2'], 'r1 はレビュー済みなので外れる');
     db.close();
   });
 
-  runner.test('upsertReport (再 ingest) は relevance_reviewed_at を保持する', () => {
+  runner.test('upsertReport (再 ingest) は per-repo レビュー済みフラグを保持する', () => {
     const db = new ThreatReportsDb(':memory:');
     db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: 'v1' });
-    db.markReportReviewed('r1', '2026-06-04T00:00:00Z');
+    db.markReportReviewed('r1', REPO, '2026-06-04T00:00:00Z');
     // 再 ingest をシミュレート (本文だけ更新)
     db.upsertReport({ id: 'r1', source: 't', receivedAt: 'later', weekOf: '2026-05-25', rawMarkdown: 'v2' });
-    const r = db.getReport('r1');
-    assert.strictEqual(r?.relevance_reviewed_at, '2026-06-04T00:00:00Z', 'レビュー済み印は再 ingest で消えない');
-    assert.strictEqual(r?.raw_markdown, 'v2', '本文は更新される');
+    assert.strictEqual(db.isReportReviewed('r1', REPO), true, 'レビュー済み印は再 ingest で消えない');
+    assert.strictEqual(db.getReport('r1')?.raw_markdown, 'v2', '本文は更新される');
     db.close();
   });
 
-  runner.test('migrate: 旧スキーマ (列なし) の DB を開くと relevance_reviewed_at 列が補われる', () => {
+  runner.test('migrate: 旧スキーマ (列なし) の DB を開くと per-repo レビューが動く', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-migrate-'));
     const file = path.join(dir, 'old.db');
     // relevance_reviewed_at を持たない旧 reports テーブルを raw sqlite で作る
@@ -1103,24 +1122,76 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       'INSERT INTO reports (id, source, received_at, week_of, raw_markdown, ingested_at) VALUES (?,?,?,?,?,?)'
     ).run('r1', 't', 'now', '2026-05-25', '', 'now');
     raw.close();
-    // ThreatReportsDb で開く → constructor の migrate() が ALTER TABLE で列を足す
+    // ThreatReportsDb で開く → constructor の migrate() が ALTER + 新テーブルを足す
     const db = new ThreatReportsDb(file);
-    assert.strictEqual(db.markReportReviewed('r1', '2026-06-04T00:00:00Z'), 1, '旧 DB でも markReportReviewed が動く');
-    assert.strictEqual(db.getReport('r1')?.relevance_reviewed_at, '2026-06-04T00:00:00Z');
+    assert.strictEqual(db.markReportReviewed('r1', REPO, '2026-06-04T00:00:00Z'), 1, '旧 DB でも per-repo mark が動く');
+    assert.strictEqual(db.isReportReviewed('r1', REPO), true);
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  runner.test('buildExportPayload: version 3 / reports[] にレビュー済みフラグを載せる', () => {
+  runner.test('migrate: レガシー単一値 (relevance_reviewed_at / ai_relevance_note) を LEGACY_REPO_KEY へ移行する', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-legacy-'));
+    const file = path.join(dir, 'legacy.db');
+    // per-repo 化以前の DB を raw sqlite で再現: reports.relevance_reviewed_at +
+    // vulnerabilities.ai_relevance_note にデータが入っている。
+    const raw = new Database(file);
+    raw.exec(`
+      CREATE TABLE reports (
+        id TEXT PRIMARY KEY, source TEXT NOT NULL, received_at TEXT NOT NULL,
+        week_of TEXT NOT NULL, raw_markdown TEXT NOT NULL, vault_path TEXT,
+        schema_version INTEGER NOT NULL DEFAULT 1, trust_level TEXT, report_type TEXT,
+        ingested_at TEXT NOT NULL, relevance_reviewed_at TEXT
+      );
+      CREATE TABLE vulnerabilities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL, name TEXT NOT NULL,
+        category TEXT, affected TEXT, impact INTEGER, exploitability INTEGER, risk_score REAL,
+        status TEXT, technical_summary TEXT, business_impact TEXT, mitigations TEXT,
+        ai_relevance_note TEXT, ingested_at TEXT NOT NULL, UNIQUE(report_id, name)
+      );
+    `);
+    raw.prepare(
+      'INSERT INTO reports (id, source, received_at, week_of, raw_markdown, ingested_at, relevance_reviewed_at) VALUES (?,?,?,?,?,?,?)'
+    ).run('r1', 't', 'now', '2026-05-25', '', 'now', '2026-06-01T00:00:00Z');
+    raw.prepare(
+      'INSERT INTO vulnerabilities (report_id, name, ai_relevance_note, ingested_at) VALUES (?,?,?,?)'
+    ).run('r1', 'V', '旧: 自リポ対応済', 'now');
+    raw.close();
+
+    const db = new ThreatReportsDb(file);
+    assert.strictEqual(db.isReportReviewed('r1', LEGACY_REPO_KEY), true, 'レビュー済みは LEGACY_REPO_KEY に移行');
+    assert.strictEqual(db.getRelevanceNote('r1', 'V', LEGACY_REPO_KEY), '旧: 自リポ対応済', 'ノートも LEGACY_REPO_KEY に移行');
+    // 他リポには漏れない
+    assert.strictEqual(db.isReportReviewed('r1', REPO_B), false);
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  runner.test('buildExportPayload: version 4 / reports[].reviews に per-repo フラグを載せる', () => {
     const db = new ThreatReportsDb(':memory:');
     db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-18', rawMarkdown: '' });
     db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
-    db.markReportReviewed('r1', '2026-06-04T00:00:00Z');
+    db.markReportReviewed('r1', REPO, '2026-06-04T00:00:00Z');
     const payload = buildExportPayload({ db, vaultRoot: '/tmp', baseFolder: 'X' });
-    assert.strictEqual(payload.version, 3);
+    assert.strictEqual(payload.version, 4);
     const byId = new Map(payload.reports.map(r => [r.report_id, r]));
-    assert.strictEqual(byId.get('r1')?.relevance_reviewed_at, '2026-06-04T00:00:00Z', 'r1 はレビュー済み');
-    assert.strictEqual(byId.get('r2')?.relevance_reviewed_at, null, 'r2 は未レビュー');
+    assert.deepStrictEqual(byId.get('r1')?.reviews, [{ repo_key: REPO, reviewed_at: '2026-06-04T00:00:00Z' }], 'r1 は REPO でレビュー済み');
+    assert.deepStrictEqual(byId.get('r2')?.reviews, [], 'r2 は未レビュー');
+    db.close();
+  });
+
+  runner.test('buildExportPayload: rows[].repo_notes に per-repo ノートを集約する', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
+    db.upsertVulnerability({ reportId: 'r1', name: 'V', riskScore: 8.0 });
+    db.setRelevanceNote('r1', 'V', REPO, '🤖⚠ 該当: A');
+    db.setRelevanceNote('r1', 'V', REPO_B, '🤖✓ 非該当: B');
+    const payload = buildExportPayload({ db, vaultRoot: '/tmp', baseFolder: 'X' });
+    const row = payload.rows.find(r => r.name === 'V');
+    assert.ok(row, 'V 行が存在');
+    const byRepo = new Map(row!.repo_notes.map(n => [n.repo_key, n.note]));
+    assert.strictEqual(byRepo.get(REPO), '🤖⚠ 該当: A');
+    assert.strictEqual(byRepo.get(REPO_B), '🤖✓ 非該当: B');
     db.close();
   });
 
