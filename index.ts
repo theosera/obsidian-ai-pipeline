@@ -157,8 +157,25 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // --analyze-threat-relevance: 取込済み脅威の「自リポ該当性」を判定し
-  // ai_relevance_note を自動記入する (Level 2 検知)。検知のみ — コード変更はしない。
+  // --list-target-repos: ローカル clone 済みリポを列挙する (/sec-review 対象リポ選択)。
+  // 読み取り専用 (fs 列挙 + git remote 読取のみ)。
+  if (args.listTargetRepos) {
+    const { discoverLocalRepos } = await import('./threat_reports_repo_target');
+    const repos = discoverLocalRepos();
+    console.log('\n📁 ローカル clone 済みリポジトリ (--target-repo に指定可能):');
+    if (repos.length === 0) {
+      console.log('   (見つかりません — cwd とその兄弟ディレクトリに git リポがありません)');
+    } else {
+      for (const r of repos) console.log(`   - ${r.key}\t(root: ${r.root})`);
+    }
+    console.log('\n   ※ 上記以外の owner/repo も指定できますが、該当性判定 (--analyze-threat-relevance)');
+    console.log('     はリポを fs 走査するため、ローカルに clone 済みのものに限られます。');
+    closePrompt();
+    process.exit(0);
+  }
+
+  // --analyze-threat-relevance: 取込済み脅威の「対象リポ該当性」を判定し
+  // per-repo ノートを自動記入する (Level 2 検知)。検知のみ — コード変更はしない。
   if (args.analyzeThreatRelevance) {
     if (!config) config = await runConfigWizard(askQuestion);
     applyConfigToEnv(config);
@@ -176,6 +193,14 @@ async function main(): Promise<void> {
       const { regenerateIndexPage } = await import('./threat_reports_index_writer');
       const db = getDb();
       const target = resolveRepoTarget(args.targetRepo);
+      // located=false = 対象リポのローカルチェックアウトが無い → buildRepoProfile が
+      // 別リポ (cwd) を誤走査してしまうため、ここで止める (検知の正確性を守る最後の砦)。
+      if (!target.located) {
+        console.error(`❌ 対象リポのローカルチェックアウトが見つかりません: ${target.key}`);
+        console.error('   該当性判定はリポを fs 走査するため、ローカルに clone されている必要があります。');
+        console.error('   `--list-target-repos` で候補を確認するか、`--target-repo=<ローカルパス>` を指定してください。');
+        process.exit(1);
+      }
       const rel = config.threatRelevance ?? { provider: config.provider, model: config.smartModel };
       const stats = await runThreatRelevanceAnalysis(db, {
         provider: rel.provider,

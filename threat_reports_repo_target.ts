@@ -30,6 +30,13 @@ export interface RepoTarget {
   key: string;
   /** buildRepoProfile が走査するローカル実体ルート (絶対パス)。 */
   root: string;
+  /**
+   * root が「指定リポの実チェックアウト」であることを確認できたか。
+   * false = 見つからず cwd にフォールバックした状態 (= リポ識別はできるが fs 走査は
+   * 別リポになる)。buildRepoProfile を走らせる analyze 側は located を必ず確認し、
+   * located=false なら誤走査を避けて拒否する。レビュー済みフラグ付与 (key のみ) は located 不問。
+   */
+  located: boolean;
 }
 
 /** `owner/repo` 形 (パスではなく GitHub スラッグ) の判定。 */
@@ -83,17 +90,17 @@ function repoKeyFromRoot(root: string, remoteResolver: (r: string) => string | n
 
 /**
  * `owner/repo` スラッグに対応するローカルチェックアウトを探す。
- * web セッションでは対象 3 リポが cwd の **兄弟ディレクトリ** として checkout される
+ * web セッションでは対象リポが cwd の **兄弟ディレクトリ** として checkout される
  * (例 cwd=/home/user/obsidian-ai-pipeline に対し /home/user/claude_openai_mcp_connector)。
- * 見つからなければ cwd を最後の手段として返す (key はスラッグのまま)。
+ * 見つからなければ null (caller が located=false でフォールバック判断する)。
  */
-function locateLocalCheckout(slug: string, cwd: string, existsDir: (p: string) => boolean): string {
+function locateLocalCheckout(slug: string, cwd: string, existsDir: (p: string) => boolean): string | null {
   const name = slug.split('/')[1];
   const here = path.resolve(cwd);
   const sibling = path.join(path.dirname(here), name);
   if (existsDir(sibling)) return sibling;
   if (path.basename(here) === name) return here;
-  return here;
+  return null;
 }
 
 /**
@@ -114,17 +121,61 @@ export function resolveRepoTarget(spec: string | undefined, opts: ResolveOptions
 
   const trimmed = spec?.trim();
   if (!trimmed) {
-    return { key: repoKeyFromRoot(cwd, remoteResolver), root: path.resolve(cwd) };
+    // 指定なし = 現在のリポ (cwd 自身が実チェックアウト)。
+    return { key: repoKeyFromRoot(cwd, remoteResolver), root: path.resolve(cwd), located: true };
   }
 
   const asPath = path.resolve(cwd, trimmed);
   if (existsDir(asPath)) {
-    return { key: repoKeyFromRoot(asPath, remoteResolver), root: asPath };
+    return { key: repoKeyFromRoot(asPath, remoteResolver), root: asPath, located: true };
   }
   if (SLUG_RE.test(trimmed)) {
     const slug = trimmed.replace(/\.git$/, '');
-    return { key: slug, root: locateLocalCheckout(slug, cwd, existsDir) };
+    const checkout = locateLocalCheckout(slug, cwd, existsDir);
+    // key は任意の owner/repo を受け付ける (= 3 リポに限定しない)。ただし checkout が
+    // 見つからなければ located=false: 該当性判定はこのリポに対しては実行できない
+    // (fs 走査対象が無い)。レビュー済みフラグ等 key だけの操作は引き続き可能。
+    return { key: slug, root: checkout ?? path.resolve(cwd), located: checkout !== null };
   }
-  // パスとして指定されたが存在しない → cwd を走査しつつ key は導出 (誤指定の安全側)。
-  return { key: repoKeyFromRoot(cwd, remoteResolver), root: path.resolve(cwd) };
+  // パスとして指定されたが存在しない → cwd へフォールバック (located=false で誤走査回避)。
+  return { key: repoKeyFromRoot(cwd, remoteResolver), root: path.resolve(cwd), located: false };
+}
+
+export interface DiscoverOptions {
+  /** 起点 (省略時 process.cwd())。この cwd 自身 + 兄弟ディレクトリを走査する。 */
+  cwd?: string;
+  remoteResolver?: (root: string) => string | null;
+  existsDir?: (p: string) => boolean;
+  /** ディレクトリ列挙 (テスト用)。既定 fs.readdirSync。 */
+  listDir?: (p: string) => string[];
+  /** `<root>/.git` 存在で git リポ判定 (テスト用)。既定 fs.existsSync。 */
+  isGitRepo?: (root: string) => boolean;
+}
+
+/**
+ * ローカルに clone 済みのリポジトリを列挙する (`/sec-review` の対象リポ選択メニュー用)。
+ * cwd 自身と、その **兄弟ディレクトリ** (web セッションで対象リポが並ぶ場所) のうち
+ * `.git` を持つものを正準キー付きで返す。3 リポに限定せず、ローカルに在るものを全部出す。
+ */
+export function discoverLocalRepos(opts: DiscoverOptions = {}): RepoTarget[] {
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const remoteResolver = opts.remoteResolver ?? defaultRemoteResolver;
+  const existsDir = opts.existsDir ?? defaultExistsDir;
+  const listDir = opts.listDir ?? ((p) => {
+    try { return fs.readdirSync(p); } catch { return []; }
+  });
+  const isGitRepo = opts.isGitRepo ?? ((root) => {
+    try { return fs.existsSync(path.join(root, '.git')); } catch { return false; }
+  });
+
+  const parent = path.dirname(cwd);
+  const roots = new Set<string>();
+  if (isGitRepo(cwd)) roots.add(cwd);
+  for (const name of listDir(parent)) {
+    const root = path.join(parent, name);
+    if (existsDir(root) && isGitRepo(root)) roots.add(root);
+  }
+  return [...roots]
+    .map((root) => ({ key: repoKeyFromRoot(root, remoteResolver), root, located: true }))
+    .sort((a, b) => a.key.localeCompare(b.key));
 }

@@ -93,6 +93,11 @@ export interface ParsedCliArgs {
    */
   targetRepo?: string;
   /**
+   * ローカルに clone 済みのリポジトリを列挙する (`/sec-review` 対象リポ選択メニュー用)。
+   * `--list-target-repos`。読み取り専用 (fs 列挙 + git remote 読取のみ)。
+   */
+  listTargetRepos: boolean;
+  /**
    * Tool Use (Function Calling) エージェントを 1 ショット起動する。
    * `--agent=<task>` 形式。Vault サンドボックス内の read/create のみを、毎回
    * Human-in-the-Loop 承認を挟んで実行する (`tool-use/agent.ts`)。
@@ -188,6 +193,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     rebuildThreatReportsDb: argv.includes('--rebuild-threat-reports-db'),
     markThreatReviewed: markThreatReviewedValue,
     targetRepo: targetRepoValue,
+    listTargetRepos: argv.includes('--list-target-repos'),
     agent: agentValue,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
@@ -215,5 +221,6 @@ export function printUsage(): void {
   console.error('  tsx index.ts --analyze-threat-relevance --threat-relevance-reconfig  (判定 provider / model を再選択)');
   console.error('  tsx index.ts --rebuild-threat-reports-db       (raw/*.md から threat_reports DB を再構築 / 破損復旧。human note は復元不可)');
   console.error('  tsx index.ts --mark-threat-reviewed=<report_id> [--target-repo=<owner/repo|path>]  (対象リポについて該当性レビュー済みフラグを立てる / /sec-review 用)');
+  console.error('  tsx index.ts --list-target-repos               (ローカル clone 済みリポを列挙 / /sec-review の対象リポ選択用)');
   console.error('  tsx index.ts --agent="<task>"        (Vault サンドボックス内の Tool Use エージェント / 各操作に [y/N] 承認)');
 }

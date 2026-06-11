@@ -10,7 +10,7 @@ description: 取込済み週次脅威レポートを本リポに照らして全�
 # **コード変更 (Edit/Write) は事前承認しない** = 「実装する」とユーザーが決めた項目だけ、
 # 通常の承認ダイアログを通して適用する (= untrusted レポート由来の変更を握る最後の砦)。
 # Gmail / GitHub MCP も事前承認しない (本コマンドはローカル DB のみ扱い、フェッチはしない)。
-allowed-tools: AskUserQuestion, Read, Grep, Glob, Bash(pnpm start -- --analyze-threat-relevance), Bash(pnpm start -- --analyze-threat-relevance --target-repo=:*), Bash(pnpm start -- --analyze-threat-relevance --target-repo=:* --threat-relevance-all), Bash(pnpm start -- --analyze-threat-relevance --threat-relevance-all), Bash(pnpm start -- --mark-threat-reviewed=:*), Bash(pnpm start -- --mark-threat-reviewed=:* --target-repo=:*)
+allowed-tools: AskUserQuestion, Read, Grep, Glob, Bash(pnpm start -- --list-target-repos), Bash(pnpm start -- --analyze-threat-relevance), Bash(pnpm start -- --analyze-threat-relevance --target-repo=:*), Bash(pnpm start -- --analyze-threat-relevance --target-repo=:* --threat-relevance-all), Bash(pnpm start -- --analyze-threat-relevance --threat-relevance-all), Bash(pnpm start -- --mark-threat-reviewed=:*), Bash(pnpm start -- --mark-threat-reviewed=:* --target-repo=:*)
 ---
 
 このコマンドは **取込済み (ingest 済み) の週次 LLM 脅威レポート**を、本リポジトリ
@@ -45,9 +45,18 @@ allowed-tools: AskUserQuestion, Read, Grep, Glob, Bash(pnpm start -- --analyze-t
 obsidian-ai-pipeline と claude_openai_mcp_connector では結論が違う)。よって本コマンドは
 **走り出す前に必ず `AskUserQuestion` で対象リポを 1 つ確認する** (省略・推測しない)。
 
-- 選択肢にはこのセッションで利用可能なリポジトリ (例: `theosera/obsidian-ai-pipeline` /
-  `theosera/claude_openai_mcp_connector` / `theosera/pipeline-youtube-SDK`) を並べる。
-- ユーザーが自由入力で `owner/repo` スラッグ、またはローカルパスを指定してもよい。
+選択肢は **ローカルに clone 済みのリポを実列挙** して作る (3 リポ固定ではない):
+
+```bash
+pnpm start -- --list-target-repos
+```
+
+- 出力された `owner/repo` 一覧を `AskUserQuestion` の選択肢に並べる (これらは fs に実在 =
+  該当性判定まで実行できるリポ)。
+- ユーザーは自由入力で **一覧外の `owner/repo` スラッグ**、または **ローカルパス** も指定できる。
+  - 該当性判定 (手順 1) はリポを fs 走査するため、**ローカルに clone 済み**である必要がある。
+    clone されていない owner/repo を指定すると CLI が `located=false` で安全に停止する
+    (key だけのレビュー済みフラグ付与は可能だが、判定は走らない)。
 - 確定した指定を以降の CLI 呼び出しの **`--target-repo=<owner/repo|path>`** に渡す。
   - web セッション: `owner/repo` スラッグ指定 (兄弟チェックアウトを自動解決)。
   - Claude Code CLI: ローカルパス指定でも可 (git remote から同じ正準キーに収束)。
