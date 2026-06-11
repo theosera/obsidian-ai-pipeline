@@ -86,6 +86,17 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(t.root, abs);
   });
 
+  runner.test('存在しないパス指定 → located=false (typo を mark で誤適用させない)', () => {
+    // --target-repo=/typo/path のようにパスが存在しない場合、key は cwd 由来に化けるため
+    // located=false にして caller (mark/analyze) が拒否できるようにする。
+    const t = resolveRepoTarget('/no/such/path', {
+      cwd: '/home/user/obsidian-ai-pipeline',
+      existsDir: () => false,
+      remoteResolver: () => 'git@github.com:theosera/obsidian-ai-pipeline.git',
+    });
+    assert.strictEqual(t.located, false, '存在しないパスは located=false');
+  });
+
   runner.test('remote が取れないローカルパス → local/<basename> にフォールバック', () => {
     const abs = '/tmp/scratch-repo';
     const t = resolveRepoTarget(abs, {

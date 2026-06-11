@@ -240,6 +240,15 @@ async function main(): Promise<void> {
       const { regenerateIndexPage } = await import('./threat_reports_index_writer');
       const db = getDb();
       const target = resolveRepoTarget(args.targetRepo);
+      // located=false = 対象リポを確定できていない (typo した --target-repo=<path> は
+      // key が cwd 由来に化けるため、無確認で mark すると **現在のリポを誤ってレビュー済み**
+      // にしてしまう / CodeRabbit Major)。analyze と同様に located を要求する。
+      if (!target.located) {
+        console.error(`❌ 対象リポを確定できません: ${target.key}`);
+        console.error('   --target-repo の owner/repo がローカル clone と一致しない、またはパスが存在しません。');
+        console.error('   `--list-target-repos` で候補を確認するか、正しい owner/repo / ローカルパスを指定してください。');
+        process.exit(1);
+      }
       const reportId = args.markThreatReviewed;
       const changed = db.markReportReviewed(reportId, target.key);
       if (changed === 0) {

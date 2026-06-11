@@ -75,7 +75,7 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 > `--target-repo=<owner/repo|path>`) のみ扱う。**レビューは (レポート × リポジトリ) 単位**で、
 > `/sec-review` は実行時に必ず対象リポを質問し (web=GitHub リポ / CLI=ローカルリポ指定可)、
 > レビュー済みは JSON の per-repo フラグ (`reports[].reviews[]`, schema v4) でそのリポについて
-> 次回以降スキップする (3 リポ横断対応)。コード変更提案は consumption policy §4 の証拠 5 点を満たすときのみ。
+> 次回以降スキップする (任意の複数リポに対応 / `owner/repo` または local path 指定)。コード変更提案は consumption policy §4 の証拠 5 点を満たすときのみ。
 
 ## Trust Boundary (脅威レポート — 絶対遵守 / ハードルール)
 

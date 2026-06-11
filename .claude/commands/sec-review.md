@@ -10,7 +10,10 @@ description: 取込済み週次脅威レポートを本リポに照らして全�
 # **コード変更 (Edit/Write) は事前承認しない** = 「実装する」とユーザーが決めた項目だけ、
 # 通常の承認ダイアログを通して適用する (= untrusted レポート由来の変更を握る最後の砦)。
 # Gmail / GitHub MCP も事前承認しない (本コマンドはローカル DB のみ扱い、フェッチはしない)。
-allowed-tools: AskUserQuestion, Read, Grep, Glob, Bash(pnpm start -- --list-target-repos), Bash(pnpm start -- --analyze-threat-relevance), Bash(pnpm start -- --analyze-threat-relevance --target-repo=:*), Bash(pnpm start -- --analyze-threat-relevance --target-repo=:* --threat-relevance-all), Bash(pnpm start -- --analyze-threat-relevance --threat-relevance-all), Bash(pnpm start -- --mark-threat-reviewed=:*), Bash(pnpm start -- --mark-threat-reviewed=:* --target-repo=:*)
+# analyze / mark は **--target-repo を含む形のみ** 事前承認する (bare 形は許可しない) =
+# 手順 0 の対象リポ選択を tool-permission 層でも強制し、cwd 由来の意図しないリポへ状態を
+# 適用させない (CodeRabbit Major)。bare 形が必要なときは通常の都度承認を通す。
+allowed-tools: AskUserQuestion, Read, Grep, Glob, Bash(pnpm start -- --list-target-repos), Bash(pnpm start -- --analyze-threat-relevance --target-repo=:*), Bash(pnpm start -- --analyze-threat-relevance --target-repo=:* --threat-relevance-all), Bash(pnpm start -- --mark-threat-reviewed=:* --target-repo=:*)
 ---
 
 このコマンドは **取込済み (ingest 済み) の週次 LLM 脅威レポート**を、本リポジトリ

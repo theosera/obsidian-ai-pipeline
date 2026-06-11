@@ -22,7 +22,7 @@
 | B2 | `x-bookmarks/db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | migrate 順序ミスで**誤って破損退避** (既知/対処済) |
 | C1 | `x_bookmarks.db` | on-disk SQLite (**transactional core**) | (実質 DB 自身) | 再スクレイプ / JSON import | `<repo>/` / **gitignore** | per-tweet MD 廃止で **MD 再構築は不可** |
 | C2 | `threat_reports.db` | on-disk SQLite (派生) | `raw/<week>.md` | 再 ingest / **`--rebuild-threat-reports-db`** | `<vault>/__skills/pipeline/` | rebuild **実装済** (human note は非復元) |
-| D1 | `.threat_reports.json` (v3) | on-disk JSON ビュー | `threat_reports.db` | ingest/analyze/mark 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | DB と JSON のスキーマ版ズレ |
+| D1 | `.threat_reports.json` (v4) | on-disk JSON ビュー | `threat_reports.db` | ingest/analyze/mark 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | DB と JSON のスキーマ版ズレ |
 | D2 | `.x_bookmarks.json` | on-disk JSON ビュー | `x_bookmarks.db` | sync 毎に再生成 | vault 内 dotfile / gitignore (`.*`) | 同上 |
 | E1 | `.html_cache/<md5(url)>.html` | on-disk HTTP/レンダ | 取得元 URL | **なし (TTL 無し)** | `<repo>/` / **gitignore** | URL のみキー・**永続** → 内容変化に追従しない |
 | E2 | `.chromium-data/` | on-disk ブラウザ状態 | (ログインセッション) | 手動削除 | `<repo>/` / **gitignore** | 肥大・古いセッション |
