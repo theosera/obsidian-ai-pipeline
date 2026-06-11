@@ -21,6 +21,7 @@ import type { VulnerabilityRow, ImplementationCheckRow } from './threat_reports_
 import type { AiProvider } from './types';
 import { askAIText, type AskAITextOverride } from './classifier';
 import { sanitizeForLLM, truncateSummary } from './x-bookmarks/summarizer';
+import { LEGACY_REPO_KEY } from './threat_reports_repo_target';
 
 /** AI が書いた note の先頭に付けるセンチネル。redo 時に人手 note を保護する目印。 */
 export const AI_NOTE_SENTINEL = '🤖';
@@ -43,17 +44,27 @@ export type AskTextFn = (
   override?: AskAITextOverride,
 ) => Promise<string | null>;
 
-/** runThreatRelevanceAnalysis が必要とする DB メソッドの最小集合 (テストで fake 注入可)。 */
+/**
+ * runThreatRelevanceAnalysis が必要とする DB メソッドの最小集合 (テストで fake 注入可)。
+ * ノートは **per-repo** (`repoKey` 付き) — 同じ項目でもリポごとに独立した判定を持つ。
+ */
 export interface RelevanceDb {
   listVulnerabilities(reportId?: string): VulnerabilityRow[];
   listImplementationChecks(reportId?: string): ImplementationCheckRow[];
-  setRelevanceNote(reportId: string, name: string, note: string | null): void;
-  setImplementationCheckNote(reportId: string, perspective: string, note: string | null): void;
+  getRelevanceNote(reportId: string, name: string, repoKey: string): string | null;
+  getImplementationCheckNote(reportId: string, perspective: string, repoKey: string): string | null;
+  setRelevanceNote(reportId: string, name: string, repoKey: string, note: string | null): void;
+  setImplementationCheckNote(reportId: string, perspective: string, repoKey: string, note: string | null): void;
 }
 
 export interface AnalyzeOptions {
   provider?: AiProvider;
   model?: string;
+  /**
+   * 判定対象リポジトリの正準キー (owner/repo)。per-repo ノートの読み書き先。
+   * 未指定なら後方互換で LEGACY_REPO_KEY。`/sec-review` は必ず明示する。
+   */
+  repoKey?: string;
   /** trusted repo profile の上書き (テスト用)。未指定なら buildRepoProfile()。 */
   repoProfile?: string;
   /** AI 呼び出しの差し替え (テスト用)。未指定なら askAIText。 */
@@ -83,10 +94,14 @@ function redactUrls(s: string): string {
 
 /**
  * trusted repo profile を構築する。**我々の決定的な fs/grep チェックのみ**で
- * 自リポの防御状況を要約する (LLM 入力の「地の文」= ground truth 側)。
- * rootDir 既定は process.cwd() (= pnpm start 時のパイプラインリポルート)。
+ * 対象リポの防御状況を要約する (LLM 入力の「地の文」= ground truth 側)。
+ *
+ * @param rootDir 走査する **ローカル実体ルート** (既定 process.cwd())。`/sec-review` は
+ *   resolveRepoTarget で解決した対象リポのチェックアウトを渡す (3 リポ横断対応)。
+ * @param repoKey identity 行に出す正準キー (owner/repo)。省略時は汎用ラベル。
+ *   チェック自体は rootDir に対して決定的に行うため、どのリポでも偽 ground truth を出さない。
  */
-export function buildRepoProfile(rootDir: string = process.cwd()): string {
+export function buildRepoProfile(rootDir: string = process.cwd(), repoKey?: string): string {
   const exists = (rel: string): boolean => {
     try { return fs.existsSync(path.join(rootDir, rel)); } catch { return false; }
   };
@@ -147,8 +162,8 @@ export function buildRepoProfile(rootDir: string = process.cwd()): string {
 
   const yn = (b: boolean) => (b ? 'YES' : 'NO');
   return [
-    'リポジトリ: obsidian-ai-pipeline (個人用 Obsidian 自動化パイプライン / TypeScript)',
-    '既知の防御状況 (本リポの決定的チェック結果。これを事実として扱うこと):',
+    `リポジトリ: ${repoKey ?? '(対象リポジトリ)'}`,
+    '既知の防御状況 (このリポの決定的チェック結果。これを事実として扱うこと):',
     `- CODEOWNERS で .github/ を所有者固定: ${yn(codeowners)}`,
     `- ブランチ保護ドキュメント (Branch-protection ruleset) 整備: ${yn(branchProtectionDoc)} (実際の enforcement は GitHub 側設定)`,
     `- GitHub Actions を全て commit SHA ピン: ${yn(actionsAllPinned)}`,
@@ -161,7 +176,7 @@ export function buildRepoProfile(rootDir: string = process.cwd()): string {
     `- Trust Boundary / レポート消費ポリシー文書: ${yn(trustBoundaryDocs)}`,
     `- workflow が参照する GITHUB_TOKEN 以外の secrets: ${secretRefs.length ? secretRefs.join(', ') : 'なし'}`,
     `- workflow で deploy key / ssh-key を使用: ${yn(usesDeployKey)}`,
-    'アーキテクチャ事実: 単一ユーザー / フラット TypeScript (root flat / workspace なし)。',
+    '注: 上記 YES/NO は rootDir 配下の実ファイルから決定的に導出。NO は「このリポにその防御が無い」事実。',
   ].join('\n');
 }
 
@@ -267,7 +282,8 @@ export async function runThreatRelevanceAnalysis(
   db: RelevanceDb,
   opts: AnalyzeOptions = {},
 ): Promise<RelevanceStats> {
-  const profile = opts.repoProfile ?? buildRepoProfile();
+  const repoKey = opts.repoKey ?? LEGACY_REPO_KEY;
+  const profile = opts.repoProfile ?? buildRepoProfile(process.cwd(), repoKey);
   const redoAll = opts.redoAll ?? false;
   const stats: RelevanceStats = {
     vulnAnalyzed: 0, implAnalyzed: 0, applies: 0, unclear: 0, skipped: 0, failed: 0,
@@ -282,11 +298,12 @@ export async function runThreatRelevanceAnalysis(
   // (setRelevanceNote 等) が throw しても run 全体を中断せず、その行を NULL の
   // まま残して次行へ進む (best-effort / never throw を実コードでも担保 — CodeRabbit #77)。
   for (const v of db.listVulnerabilities()) {
-    if (!shouldProcess(v.ai_relevance_note, redoAll)) { stats.skipped++; continue; }
+    const existing = db.getRelevanceNote(v.report_id, v.name, repoKey);
+    if (!shouldProcess(existing, redoAll)) { stats.skipped++; continue; }
     try {
       const verdict = await analyzeItemRelevance(vulnText(v), profile, opts);
       if (!verdict) { stats.failed++; continue; }
-      db.setRelevanceNote(v.report_id, v.name, formatNote(verdict));
+      db.setRelevanceNote(v.report_id, v.name, repoKey, formatNote(verdict));
       stats.vulnAnalyzed++;
       countVerdict(verdict.applies);
     } catch (e) {
@@ -296,11 +313,12 @@ export async function runThreatRelevanceAnalysis(
   }
 
   for (const c of db.listImplementationChecks()) {
-    if (!shouldProcess(c.ai_relevance_note, redoAll)) { stats.skipped++; continue; }
+    const existing = db.getImplementationCheckNote(c.report_id, c.perspective, repoKey);
+    if (!shouldProcess(existing, redoAll)) { stats.skipped++; continue; }
     try {
       const verdict = await analyzeItemRelevance(implText(c), profile, opts);
       if (!verdict) { stats.failed++; continue; }
-      db.setImplementationCheckNote(c.report_id, c.perspective, formatNote(verdict));
+      db.setImplementationCheckNote(c.report_id, c.perspective, repoKey, formatNote(verdict));
       stats.implAnalyzed++;
       countVerdict(verdict.applies);
     } catch (e) {

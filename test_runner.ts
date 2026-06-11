@@ -12,6 +12,7 @@ import { run as runStorage } from './test/storage';
 import { run as runXBookmarks } from './test/x_bookmarks';
 import { run as runThreatReports } from './test/threat_reports';
 import { run as runThreatRelevance } from './test/threat_reports_relevance';
+import { run as runThreatRepoTarget } from './test/threat_reports_repo_target';
 import { run as runLlmSecWeeklyFetcher } from './test/llm_sec_weekly_fetcher';
 import { run as runToolUse } from './test/tool_use';
 
@@ -29,6 +30,7 @@ const suites: Suite[] = [
   { name: 'XBookmarks', run: runXBookmarks },
   { name: 'ThreatReports', run: runThreatReports },
   { name: 'ThreatRelevance', run: runThreatRelevance },
+  { name: 'ThreatRepoTarget', run: runThreatRepoTarget },
   { name: 'LlmSecWeeklyFetcher', run: runLlmSecWeeklyFetcher },
   { name: 'ToolUse', run: runToolUse },
 ];

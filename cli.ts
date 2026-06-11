@@ -87,6 +87,12 @@ export interface ParsedCliArgs {
    */
   markThreatReviewed?: string;
   /**
+   * `/sec-review` の該当性レビュー対象リポジトリ。`--target-repo=<owner/repo | local-path>`。
+   * `--analyze-threat-relevance` / `--mark-threat-reviewed` の per-repo スコープを決める。
+   * 省略時は現在のリポ (cwd) を git remote から導出 (resolveRepoTarget)。
+   */
+  targetRepo?: string;
+  /**
    * Tool Use (Function Calling) エージェントを 1 ショット起動する。
    * `--agent=<task>` 形式。Vault サンドボックス内の read/create のみを、毎回
    * Human-in-the-Loop 承認を挟んで実行する (`tool-use/agent.ts`)。
@@ -104,6 +110,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
   const xLimitArg = argv.find((a) => a.startsWith('--x-limit='));
   const ingestThreatReportArg = argv.find((a) => a.startsWith('--ingest-threat-report='));
   const markThreatReviewedArg = argv.find((a) => a.startsWith('--mark-threat-reviewed='));
+  const targetRepoArg = argv.find((a) => a.startsWith('--target-repo='));
   const agentArg = argv.find((a) => a.startsWith('--agent='));
 
   // --key=value 形式の値抽出。= 以降を再結合するのは、--hands-on=Foo=Bar のように
@@ -149,6 +156,13 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     process.exit(1);
   }
 
+  const targetRepoValue = extractValue(targetRepoArg);
+  if (targetRepoValue !== undefined && targetRepoValue.trim() === '') {
+    console.error('Invalid --target-repo value: "" (expected <owner/repo> or a local path)');
+    printUsage();
+    process.exit(1);
+  }
+
   const xPick = argv.includes('--x-pick');
   const xSyncFolders = argv.includes('--x-sync-folders');
 
@@ -173,6 +187,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
     threatRelevanceReconfig: argv.includes('--threat-relevance-reconfig'),
     rebuildThreatReportsDb: argv.includes('--rebuild-threat-reports-db'),
     markThreatReviewed: markThreatReviewedValue,
+    targetRepo: targetRepoValue,
     agent: agentValue,
     handsOn: extractValue(handsOnArg),
     since: extractValue(sinceArg),
@@ -195,10 +210,10 @@ export function printUsage(): void {
   console.error('  tsx index.ts --hands-on="<vault-path>" [--since=YYYY-MM-DD]');
   console.error('  tsx index.ts --sync-rules            (snippets→folder_rules 同期のみ)');
   console.error('  tsx index.ts --ingest-threat-report=<path>.md  (週次 LLM 脅威レポート取込)');
-  console.error('  tsx index.ts --analyze-threat-relevance        (取込済み脅威の自リポ該当性を判定→ai_relevance_note 記入 / Level 2 検知)');
+  console.error('  tsx index.ts --analyze-threat-relevance [--target-repo=<owner/repo|path>]  (取込済み脅威の対象リポ該当性を判定→per-repo ノート記入 / Level 2 検知)');
   console.error('  tsx index.ts --analyze-threat-relevance --threat-relevance-all       (AI 記入済みも再判定 / 人手 note は保護)');
   console.error('  tsx index.ts --analyze-threat-relevance --threat-relevance-reconfig  (判定 provider / model を再選択)');
   console.error('  tsx index.ts --rebuild-threat-reports-db       (raw/*.md から threat_reports DB を再構築 / 破損復旧。human note は復元不可)');
-  console.error('  tsx index.ts --mark-threat-reviewed=<report_id>  (該当性レビュー済みフラグを立てる / /sec-review 用)');
+  console.error('  tsx index.ts --mark-threat-reviewed=<report_id> [--target-repo=<owner/repo|path>]  (対象リポについて該当性レビュー済みフラグを立てる / /sec-review 用)');
   console.error('  tsx index.ts --agent="<task>"        (Vault サンドボックス内の Tool Use エージェント / 各操作に [y/N] 承認)');
 }

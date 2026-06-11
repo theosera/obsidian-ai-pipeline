@@ -170,20 +170,25 @@ async function main(): Promise<void> {
     }
     try {
       const { getDb } = await import('./threat_reports_db');
-      const { runThreatRelevanceAnalysis } = await import('./threat_reports_relevance');
+      const { buildRepoProfile, runThreatRelevanceAnalysis } = await import('./threat_reports_relevance');
+      const { resolveRepoTarget } = await import('./threat_reports_repo_target');
       const { exportThreatReportsJson } = await import('./threat_reports_json_export');
       const { regenerateIndexPage } = await import('./threat_reports_index_writer');
       const db = getDb();
+      const target = resolveRepoTarget(args.targetRepo);
       const rel = config.threatRelevance ?? { provider: config.provider, model: config.smartModel };
       const stats = await runThreatRelevanceAnalysis(db, {
         provider: rel.provider,
         model: rel.model,
         redoAll: args.threatRelevanceAll,
+        repoKey: target.key,
+        repoProfile: buildRepoProfile(target.root, target.key),
       });
       const vaultRoot = getVaultRoot();
       const jsonPath = exportThreatReportsJson({ db, vaultRoot });
       const indexPath = regenerateIndexPage({ vaultRoot });
       console.log('\n🛡️  脅威レポート 該当性判定 (Level 2 検知) 完了:');
+      console.log(`   対象リポ:      ${target.key} (走査ルート: ${target.root})`);
       console.log(`   モデル:        ${rel.provider} / ${rel.model}`);
       console.log(`   vuln 判定:     ${stats.vulnAnalyzed} 件 / check 判定: ${stats.implAnalyzed} 件`);
       console.log(`   ⚠ 該当: ${stats.applies} / ? 要確認: ${stats.unclear} / skip(既存): ${stats.skipped} / 失敗: ${stats.failed}`);
@@ -205,11 +210,13 @@ async function main(): Promise<void> {
     applyConfigToEnv(config);
     try {
       const { getDb } = await import('./threat_reports_db');
+      const { resolveRepoTarget } = await import('./threat_reports_repo_target');
       const { exportThreatReportsJson } = await import('./threat_reports_json_export');
       const { regenerateIndexPage } = await import('./threat_reports_index_writer');
       const db = getDb();
+      const target = resolveRepoTarget(args.targetRepo);
       const reportId = args.markThreatReviewed;
-      const changed = db.markReportReviewed(reportId);
+      const changed = db.markReportReviewed(reportId, target.key);
       if (changed === 0) {
         console.error(`❌ 該当 report_id が見つかりません: ${reportId}`);
         console.error('   --analyze-threat-relevance の出力 / .threat_reports.json の reports[] で report_id を確認してください。');
@@ -219,6 +226,7 @@ async function main(): Promise<void> {
       const jsonPath = exportThreatReportsJson({ db, vaultRoot });
       const indexPath = regenerateIndexPage({ vaultRoot });
       console.log('\n🛡️  該当性レビュー済みフラグを立てました:');
+      console.log(`   対象リポ:  ${target.key}`);
       console.log(`   report_id: ${reportId}`);
       console.log(`   JSON:      ${jsonPath}`);
       console.log(`   index:     ${indexPath}`);
