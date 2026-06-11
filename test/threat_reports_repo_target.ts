@@ -36,16 +36,32 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(t.root, '/home/user/obsidian-ai-pipeline');
   });
 
-  runner.test('owner/repo スラッグ → 兄弟ディレクトリのチェックアウトを root に解決 (located=true)', () => {
-    // web セッション: 対象リポが /home/user/<name> に並ぶ。
+  runner.test('owner/repo スラッグ → remote slug が一致する兄弟チェックアウトに解決 (located=true)', () => {
+    // web セッション: 対象リポが /home/user/<name> に並ぶ。remote slug 照合まで通す。
     const t = resolveRepoTarget('theosera/claude_openai_mcp_connector', {
       cwd: '/home/user/obsidian-ai-pipeline',
       existsDir: (p) => p === '/home/user/claude_openai_mcp_connector',
-      remoteResolver: () => null,
+      remoteResolver: (root) =>
+        root === '/home/user/claude_openai_mcp_connector'
+          ? 'git@github.com:theosera/claude_openai_mcp_connector.git'
+          : null,
     });
     assert.strictEqual(t.key, 'theosera/claude_openai_mcp_connector', 'key はスラッグそのもの');
     assert.strictEqual(t.root, '/home/user/claude_openai_mcp_connector', 'root は兄弟チェックアウト');
     assert.strictEqual(t.located, true);
+  });
+
+  runner.test('owner 違いの同名リポ (fork 等) は located=false で誤走査を防ぐ (Codex P2)', () => {
+    // other/obsidian-ai-pipeline を指定。basename は cwd と一致するが remote owner が違う。
+    // basename だけで located=true にすると theosera のコードベースを走査しつつ
+    // other キーでノートを保存してしまう (別コードベースへの誤書込)。
+    const t = resolveRepoTarget('other/obsidian-ai-pipeline', {
+      cwd: '/home/user/obsidian-ai-pipeline',
+      existsDir: (p) => p === '/home/user/obsidian-ai-pipeline',
+      remoteResolver: () => 'git@github.com:theosera/obsidian-ai-pipeline.git',
+    });
+    assert.strictEqual(t.key, 'other/obsidian-ai-pipeline', 'key は要求スラッグ');
+    assert.strictEqual(t.located, false, 'remote owner 不一致 → located=false (analyze は拒否)');
   });
 
   runner.test('3 リポ以外の任意スラッグも key として受け付ける (チェックアウト無し → located=false)', () => {

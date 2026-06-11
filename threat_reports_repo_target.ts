@@ -92,14 +92,31 @@ function repoKeyFromRoot(root: string, remoteResolver: (r: string) => string | n
  * `owner/repo` スラッグに対応するローカルチェックアウトを探す。
  * web セッションでは対象リポが cwd の **兄弟ディレクトリ** として checkout される
  * (例 cwd=/home/user/obsidian-ai-pipeline に対し /home/user/claude_openai_mcp_connector)。
- * 見つからなければ null (caller が located=false でフォールバック判断する)。
+ *
+ * **basename 一致だけでは不十分** (Codex P2): owner 違いの同名リポ (fork 等) を指定すると、
+ * 別 owner のチェックアウトを走査しつつノートを要求 owner キーで保存してしまう。よって候補の
+ * **remote slug が要求 slug と一致 (大小文字無視)** することを確認できた場合のみ返す。確認
+ * できない (remote 無し / owner 不一致) 場合は null → caller が located=false で誤走査を防ぐ。
  */
-function locateLocalCheckout(slug: string, cwd: string, existsDir: (p: string) => boolean): string | null {
+function locateLocalCheckout(
+  slug: string,
+  cwd: string,
+  existsDir: (p: string) => boolean,
+  remoteResolver: (root: string) => string | null,
+): string | null {
   const name = slug.split('/')[1];
   const here = path.resolve(cwd);
+  const candidates: string[] = [];
   const sibling = path.join(path.dirname(here), name);
-  if (existsDir(sibling)) return sibling;
-  if (path.basename(here) === name) return here;
+  if (existsDir(sibling)) candidates.push(sibling);
+  if (path.basename(here) === name) candidates.push(here);
+
+  const want = slug.toLowerCase();
+  for (const dir of candidates) {
+    const url = remoteResolver(dir);
+    const got = url ? parseRepoSlug(url) : null;
+    if (got && got.toLowerCase() === want) return dir;
+  }
   return null;
 }
 
@@ -131,7 +148,7 @@ export function resolveRepoTarget(spec: string | undefined, opts: ResolveOptions
   }
   if (SLUG_RE.test(trimmed)) {
     const slug = trimmed.replace(/\.git$/, '');
-    const checkout = locateLocalCheckout(slug, cwd, existsDir);
+    const checkout = locateLocalCheckout(slug, cwd, existsDir, remoteResolver);
     // key は任意の owner/repo を受け付ける (= 3 リポに限定しない)。ただし checkout が
     // 見つからなければ located=false: 該当性判定はこのリポに対しては実行できない
     // (fs 走査対象が無い)。レビュー済みフラグ等 key だけの操作は引き続き可能。
