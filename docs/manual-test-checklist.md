@@ -1,6 +1,6 @@
 # 手動実行テストチェックリスト
 
-このドキュメントは CI（`pnpm test` / `pnpm typecheck` / JSON lint / Chrome 拡張ジョブ）
+このドキュメントは CI（`pnpm test` / `pnpm typecheck` / `pnpm lint` / JSON lint）
 で担保できない、**実環境が必要なため手動で実行検証すべきテスト**を機能別にまとめたものです。
 実 X 認可・実 Obsidian vault・各種プラグイン・API キー・`ffmpeg`・Claude Code CLI・
 対話プロンプトなどが必要な項目が対象です。

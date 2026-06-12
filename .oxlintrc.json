@@ -4,7 +4,6 @@
 
   // 方針 (旧 eslint.config.js を全置換。範囲・ルールは同一に保つ):
   //   - 対象は **ルートのアプリコードのみ** (`*.ts` + `pipeline/**` + `test/**`)。
-  //     chrome-extension は独立 workspace のため対象外。
   //   - ルールは **バグ検出のみ**。スタイル統一は CodeRabbit に委譲する。
   //     recommended / correctness カテゴリーは使わず、価値が確実な 4 ルールだけを
   //     明示有効化する (ESLint 時代と同一の最小主義)。
@@ -36,10 +35,9 @@
     "prefer-const": "error"
   },
 
-  // 旧 eslint.config.js の ignores を踏襲 (独立 workspace / アーカイブ /
+  // 旧 eslint.config.js の ignores を踏襲 (アーカイブ /
   // ビルド成果物 / 非 TS / ユーティリティスクリプトを一切対象にしない)。
   "ignorePatterns": [
-    "chrome-extension/**",
     "scripts/**",
     "utils/**",
     "dist/**",

@@ -32,10 +32,6 @@ data/pkce_state.json
 analysis/x_folder_grouping_proposal_data.json
 analysis/x_folder_stats.json
 
-# Chrome Extension build output
-chrome-extension/dist/
-chrome-extension/node_modules/
-
 # pnpm workspace 配下の nested node_modules
 apps/*/node_modules/
 packages/*/node_modules/

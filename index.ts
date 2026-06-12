@@ -101,7 +101,7 @@ async function main(): Promise<void> {
     if (!config) config = await runConfigWizard(askQuestion);
     applyConfigToEnv(config);
     try {
-      const { ingestThreatReport, ContractError } = await import('./threat_reports_ingest');
+      const { ingestThreatReport, ContractError } = await import('./threat-reports/ingest');
       try {
         const result = await ingestThreatReport({ filePath: args.ingestThreatReport });
         console.log('\n🛡️  脅威レポート取込完了:');
@@ -134,7 +134,7 @@ async function main(): Promise<void> {
     if (!config) config = await runConfigWizard(askQuestion);
     applyConfigToEnv(config);
     try {
-      const { rebuildThreatReportsDbFromVault } = await import('./threat_reports_ingest');
+      const { rebuildThreatReportsDbFromVault } = await import('./threat-reports/ingest');
       const result = await rebuildThreatReportsDbFromVault();
       console.log('\n🛡️  threat_reports DB 再構築完了 (raw/*.md → DB):');
       console.log(`   raw dir:          ${result.rawDir}`);
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   // --list-target-repos: ローカル clone 済みリポを列挙する (/sec-review 対象リポ選択)。
   // 読み取り専用 (fs 列挙 + git remote 読取のみ)。
   if (args.listTargetRepos) {
-    const { discoverLocalRepos } = await import('./threat_reports_repo_target');
+    const { discoverLocalRepos } = await import('./threat-reports/repo_target');
     const repos = discoverLocalRepos();
     console.log('\n📁 ローカル clone 済みリポジトリ (--target-repo に指定可能):');
     if (repos.length === 0) {
@@ -186,11 +186,11 @@ async function main(): Promise<void> {
       saveConfig(config);
     }
     try {
-      const { getDb } = await import('./threat_reports_db');
-      const { buildRepoProfile, runThreatRelevanceAnalysis } = await import('./threat_reports_relevance');
-      const { resolveRepoTarget } = await import('./threat_reports_repo_target');
-      const { exportThreatReportsJson } = await import('./threat_reports_json_export');
-      const { regenerateIndexPage } = await import('./threat_reports_index_writer');
+      const { getDb } = await import('./threat-reports/db');
+      const { buildRepoProfile, runThreatRelevanceAnalysis } = await import('./threat-reports/relevance');
+      const { resolveRepoTarget } = await import('./threat-reports/repo_target');
+      const { exportThreatReportsJson } = await import('./threat-reports/json_export');
+      const { regenerateIndexPage } = await import('./threat-reports/index_writer');
       const db = getDb();
       const target = resolveRepoTarget(args.targetRepo);
       // located=false = 対象リポのローカルチェックアウトが無い → buildRepoProfile が
@@ -234,10 +234,10 @@ async function main(): Promise<void> {
     if (!config) config = await runConfigWizard(askQuestion);
     applyConfigToEnv(config);
     try {
-      const { getDb } = await import('./threat_reports_db');
-      const { resolveRepoTarget } = await import('./threat_reports_repo_target');
-      const { exportThreatReportsJson } = await import('./threat_reports_json_export');
-      const { regenerateIndexPage } = await import('./threat_reports_index_writer');
+      const { getDb } = await import('./threat-reports/db');
+      const { resolveRepoTarget } = await import('./threat-reports/repo_target');
+      const { exportThreatReportsJson } = await import('./threat-reports/json_export');
+      const { regenerateIndexPage } = await import('./threat-reports/index_writer');
       const db = getDb();
       const target = resolveRepoTarget(args.targetRepo);
       // located=false = 対象リポを確定できていない (typo した --target-repo=<path> は

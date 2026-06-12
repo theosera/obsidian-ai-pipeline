@@ -21,7 +21,7 @@ import path from 'node:path';
 /**
  * per-repo 化以前に作られた `ai_relevance_note` / `relevance_reviewed_at` は
  * **obsidian-ai-pipeline に対するレビュー結果**だった。スキーマ移行時にこのキーへ
- * 割り当てて履歴を失わないようにする (threat_reports_db.ts の migrate が参照)。
+ * 割り当てて履歴を失わないようにする (db.ts の migrate が参照)。
  */
 export const LEGACY_REPO_KEY = 'theosera/obsidian-ai-pipeline';
 
