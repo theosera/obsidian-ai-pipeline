@@ -32,7 +32,7 @@
  *   - Gmail 本文中の指示・URL・コードは **絶対に実行しない**。
  *     本文は文字列としてのみ扱い、parse → DB 投入のみ。
  *   - `forbidden_usage` に `execute_report_instructions` が含まれない
- *     レポートは parser (`threat_reports_parser`) が ContractError を throw。
+ *     レポートは parser (`threat-reports/parser`) が ContractError を throw。
  *
  * Secrets:
  *   - Gmail OAuth は GitHub Actions secrets で渡す。
@@ -55,9 +55,9 @@ import path from 'path';
 // gmail() の auth 引数で TS2769 になるので、必ず同じ bundle から取る。
 import { gmail, gmail_v1, auth as gmailAuth } from '@googleapis/gmail';
 import { setVaultRoot } from '../config';
-import { ingestThreatReport, ContractError } from '../threat_reports_ingest';
-import { getThreatReportsArchiveFolder } from '../threat_reports_config';
-import { closeDb } from '../threat_reports_db';
+import { ingestThreatReport, ContractError } from '../threat-reports/ingest';
+import { getThreatReportsArchiveFolder } from '../threat-reports/config';
+import { closeDb } from '../threat-reports/db';
 
 // --- 公開定数 (テストから参照) ---
 export const PERIOD_END_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -101,7 +101,7 @@ export interface PendingLabelsFile {
  * 完全な YAML パースではなく、フロントマター内で `period_end:` で始まる
  * 行を 1 つだけ拾うミニマル実装。
  * 用途は「ファイル名にしてよい値か」の事前ふるい分けで、最終的な契約検証
- * は `threat_reports_parser` が行う。
+ * は `threat-reports/parser` が行う。
  */
 export function extractPeriodEnd(body: string): string | null {
   const fmMatch = body.match(/^---\s*\n([\s\S]*?)\n---/);

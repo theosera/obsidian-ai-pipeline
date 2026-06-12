@@ -211,7 +211,7 @@ Action taken: ingest aborted, `processed` ラベル付与なし
 
 - `CLAUDE.md` — Chat mode protocol (Default / Security-only)
 - `.claude/commands/sec-review.md` — 取込後の自リポ該当性レビュー (§5 6〜10 の運用化)
-- `threat_reports_parser.ts` — frontmatter 契約検証実装
-- `threat_reports_db.ts` — SQLite schema (`vulnerabilities` + `implementation_checks`)
+- `threat-reports/parser.ts` — frontmatter 契約検証実装
+- `threat-reports/db.ts` — SQLite schema (`vulnerabilities` + `implementation_checks`)
 - `docs/threat_reports.md` — CLI 取込フローと運用 troubleshooting
 - `docs/branch-protection.md` — CI/CD サプライチェーン防御 (Megalodon 対策)

@@ -101,8 +101,7 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 
 TypeScript, `@types/node`, and `tsx` are declared in the `catalog:` block of
 `pnpm-workspace.yaml`. Bump versions there in a single edit; the root
-`package.json` references them via `catalog:`. Chrome-extension is intentionally
-outside the catalog (isolated workspace).
+`package.json` references them via `catalog:`.
 
 ## Secrets / sensitive files — never commit
 

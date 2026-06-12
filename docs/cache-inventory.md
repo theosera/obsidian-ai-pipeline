@@ -17,8 +17,7 @@
 | A2 | `storage.ts` `cachedKnownUrls` | in-memory | Vault 内 `.md` の URL | `addKnownUrl()` (**本番更新口**) / `resetKnownUrlsCache()` (テスト全破棄) | プロセス内 | ~~本番に無効化口なし~~ → **解消** (保存直後に集合へ反映) |
 | A3 | `classifier.ts` `cachedSnippetsArr` | in-memory | `_分析コンテキスト/snippets_*.xml` | なし (プロセス起動毎に 1 回) | プロセス内 | snippets 更新が同一プロセス内で反映されない |
 | A4 | `fetcher.ts` `browserContext`/`initPromise` | in-memory (resource) | — (Playwright インスタンス) | `closeBrowser()` | プロセス内 | 二重 init は initPromise で防御済 |
-| A5 | `chrome-extension` `cachedTracks` | in-memory | YouTube ページ DOM | `yt-navigate-finish` で `resetCache()` | タブ内 | SPA 遷移検知漏れで stale |
-| B1 | `threat_reports_db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | 破損時 `.corrupted_*` 退避 → 空 DB 続行 |
+| B1 | `threat-reports/db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | 破損時 `.corrupted_*` 退避 → 空 DB 続行 |
 | B2 | `x-bookmarks/db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | migrate 順序ミスで**誤って破損退避** (既知/対処済) |
 | C1 | `x_bookmarks.db` | on-disk SQLite (**transactional core**) | (実質 DB 自身) | 再スクレイプ / JSON import | `<repo>/` / **gitignore** | per-tweet MD 廃止で **MD 再構築は不可** |
 | C2 | `threat_reports.db` | on-disk SQLite (派生) | `raw/<week>.md` | 再 ingest / **`--rebuild-threat-reports-db`** | `<vault>/__skills/pipeline/` | rebuild **実装済** (human note は非復元) |
@@ -58,15 +57,11 @@
 - Playwright の永続ブラウザを singleton 化。`initPromise` で**並行 init の二重起動を防御**。
 - 無効化: `closeBrowser()`。データキャッシュではなくリソースのメモ化。
 
-### A5. `cachedTracks` (`chrome-extension/src/content/content-script.ts:16`)
-- YouTube caption tracks を保持。`yt-navigate-finish` イベントで `resetCache()`。
-- 点検: SPA 遷移イベントの取りこぼし時に stale。拡張は本リポ catalog 外 (隔離 workspace)。
-
 ---
 
 ## B. DB ハンドル singleton (破損リカバリ付き)
 
-### B1. `threat_reports_db.ts` `getDb()`/`_instance` (`:496`)
+### B1. `threat-reports/db.ts` `getDb()`/`_instance` (`:496`)
 - SQLite ハンドルを singleton 化。**破損時は `<file>.corrupted_<ts>` に退避し空 DB で続行**。
 - 点検観点: 退避は「開けない」ケースの救済だが、**スキーマ migration の順序ミスを破損と
   誤認すると正常 DB を退避してしまう** (B2 の既知事例参照)。新列追加時は
@@ -93,7 +88,7 @@
 
 > **両 DB の再構築可能性 (2026-06 更新 — コメントと実装を一致させた)**:
 > - **threat_reports (C2)**: `raw/<week>.md` が真実 →
->   `threat_reports_ingest.ts::rebuildThreatReportsDbFromVault()` **実装済**
+>   `threat-reports/ingest.ts::rebuildThreatReportsDbFromVault()` **実装済**
 >   (CLI `--rebuild-threat-reports-db`)。破損退避 / 手動削除後に raw から派生インデックスを
 >   復旧する明示コマンド。⚠ ただし per-repo ノート (`relevance_notes`) / per-repo レビュー済み
 >   フラグ (`report_repo_reviews`) は raw に無い human 入力なので **再構築では復元されない**
@@ -110,11 +105,11 @@
 
 ## D. On-disk 派生 JSON ビュー (Dataview 用 / 同期毎に再生成)
 
-### D1. `.threat_reports.json` (`threat_reports_json_export.ts`)
+### D1. `.threat_reports.json` (`threat-reports/json_export.ts`)
 - `threat_reports.db` → JSON。`version: 4` (rows / implementation_checks / **reports[]**、
   per-repo 化で `rows[].repo_notes[]` + `reports[].reviews[]`)。
   ingest / `--analyze-threat-relevance` / `--mark-threat-reviewed` の度に上書き再生成。
-- 点検: **JSON schema version (4) と Dataview script (`threat_reports_index_writer.ts`) の整合**
+- 点検: **JSON schema version (4) と Dataview script (`threat-reports/index_writer.ts`) の整合**
   がズレると表が壊れる。フィールド変更時は Dataview 側の参照キー (`repo_notes` 等) も合わせること。
 
 ### D2. `.x_bookmarks.json` (`x-bookmarks/json_export.ts`)
@@ -149,7 +144,7 @@
   分類のシステムプロンプトを使い回す呼び出しで input トークンを削減する。
 - 規約との関係: `docs/ai-coding-conventions.md` §4「**キャッシュ維持: システムプロンプトに
   時刻/乱数を入れない**」が前提条件。system に可変要素を混ぜると毎回 cache miss になる。
-- 点検観点: `threat_reports_relevance.ts` は `askAIText` 経由でこの prompt cache の恩恵を
+- 点検観点: `threat-reports/relevance.ts` は `askAIText` 経由でこの prompt cache の恩恵を
   受けうるが、**per-call の `nonce` は user prompt 側に注入**しており system (`SYSTEM_PROMPT`)
   は不変なので cache は効く。新たに system 側へ動的値を入れる変更は cache hit 率を壊すので
   避ける (= prompt cache の不変条件)。
@@ -213,8 +208,8 @@
 ## See also
 
 - `storage.ts` / `classifier.ts` / `fetcher.ts` — in-memory & on-disk キャッシュ実装
-- `threat_reports_db.ts` / `x-bookmarks/db.ts` — DB singleton + 破損リカバリ
-- `threat_reports_json_export.ts` / `x-bookmarks/json_export.ts` — JSON ビュー再生成
+- `threat-reports/db.ts` / `x-bookmarks/db.ts` — DB singleton + 破損リカバリ
+- `threat-reports/json_export.ts` / `x-bookmarks/json_export.ts` — JSON ビュー再生成
 - `docs/ai-coding-conventions.md` §4 — prompt cache の不変条件 (system に可変要素を入れない)
 - `.gitignore` — 派生データ/キャッシュの除外規則
 - `.claude/skills/x-bookmarks/SKILL.md` — `x_folder_mapping.json` 等 派生マッピングの正典

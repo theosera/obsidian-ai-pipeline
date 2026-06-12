@@ -21,13 +21,13 @@ import {
   validateFrontmatter,
   parseReport,
   ContractError,
-} from '../threat_reports_parser';
-import { ThreatReportsDb } from '../threat_reports_db';
-import { ingestThreatReport, rebuildThreatReportsDbFromVault } from '../threat_reports_ingest';
-import { buildExportPayload } from '../threat_reports_json_export';
-import { renderAutoBlock, replaceAutoBlock } from '../threat_reports_index_writer';
-import { getThreatReportsBaseFolder } from '../threat_reports_config';
-import { LEGACY_REPO_KEY } from '../threat_reports_repo_target';
+} from '../threat-reports/parser';
+import { ThreatReportsDb } from '../threat-reports/db';
+import { ingestThreatReport, rebuildThreatReportsDbFromVault } from '../threat-reports/ingest';
+import { buildExportPayload } from '../threat-reports/json_export';
+import { renderAutoBlock, replaceAutoBlock } from '../threat-reports/index_writer';
+import { getThreatReportsBaseFolder } from '../threat-reports/config';
+import { LEGACY_REPO_KEY } from '../threat-reports/repo_target';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 // per-repo テスト用の代表リポキー (= レガシー移行先と同じ。単一リポを使うテストで流用)。
@@ -134,7 +134,7 @@ const NOISE_ROW_REPORT = SAMPLE_FRONTMATTER + '\n' + NOISE_ROW_BODY;
 
 export async function run(): Promise<TestSuiteResult> {
   const runner = new TestRunner();
-  runner.section('threat_reports_parser: frontmatter');
+  runner.section('threat-reports/parser: frontmatter');
 
   runner.test('splitFrontmatter: 正常な frontmatter を分離', () => {
     const { yamlText, body } = splitFrontmatter(SAMPLE_REPORT);
@@ -187,7 +187,7 @@ export async function run(): Promise<TestSuiteResult> {
     ), ContractError);
   });
 
-  runner.section('threat_reports_parser: body');
+  runner.section('threat-reports/parser: body');
 
   runner.test('parseReport: 2 件の脆弱性を抽出', () => {
     const parsed = parseReport(SAMPLE_REPORT);
@@ -277,7 +277,7 @@ Lone Wolf Attack\tテスト\tテスト対象\t5.0（Impact 5 / Exploitability 5�
     assert.strictEqual(parsed.vulnerabilities[0].technical_summary, null);
   });
 
-  runner.section('threat_reports_parser: allowed_usage / forbidden_usage');
+  runner.section('threat-reports/parser: allowed_usage / forbidden_usage');
 
   runner.test('validateFrontmatter: YAML ブロックリストを配列としてパース', () => {
     const fm = validateFrontmatter(
@@ -368,7 +368,7 @@ Lone Wolf Attack\tテスト\tテスト対象\t5.0（Impact 5 / Exploitability 5�
     assert.strictEqual(fm.report_type, 'llm_security_weekly');
   });
 
-  runner.section('threat_reports_parser: implementation_checks (Section 4)');
+  runner.section('threat-reports/parser: implementation_checks (Section 4)');
 
   runner.test('parseImplementationChecks: Markdown pipe-table を 4 列で抽出', () => {
     const reportWithSection4 = SAMPLE_REPORT + `
@@ -430,7 +430,7 @@ Lone Wolf Attack\tテスト\tテスト対象\t5.0（Impact 5 / Exploitability 5�
     assert.strictEqual(parsed.implementation_checks![0].perspective, 'Real Check');
   });
 
-  runner.section('threat_reports_parser: untrusted input handling');
+  runner.section('threat-reports/parser: untrusted input handling');
 
   runner.test('parseReport: 本文中の指示文 / コードスニペット / URL は素の文字列として抽出', () => {
     // 本文に「parser を騙そうとする」インジェクションを入れても、parser は副作用を起こさない
@@ -957,7 +957,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     }
   });
 
-  runner.section('threat_reports_config: path-traversal 防御');
+  runner.section('threat-reports/config: path-traversal 防御');
 
   runner.test('getThreatReportsBaseFolder: env 未設定なら DEFAULT を返す', () => {
     const prev = process.env.THREAT_REPORTS_FOLDER;

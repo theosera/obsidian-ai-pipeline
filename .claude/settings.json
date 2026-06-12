@@ -58,6 +58,27 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-secret-git.cjs\"",
+            "if": "Bash(git *)",
+            "timeout": 15,
+            "statusMessage": "secret commit ガード"
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-git-add-all.cjs\"",
+            "if": "Bash(git *)",
+            "timeout": 10,
+            "statusMessage": "git add -A / --no-verify ガード"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash|mcp__github__.*",
@@ -66,9 +87,27 @@
         ]
       }
     ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-bootstrap.sh\"",
+            "timeout": 180,
+            "statusMessage": "依存セットアップ (pnpm install / sqlite rebuild)"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-typecheck.sh\"",
+            "timeout": 120,
+            "statusMessage": "型チェック (.ts 変更時のみ)"
+          },
           { "type": "command", "command": "bash .claude/skills/ops-logging/push-log.sh" }
         ]
       }

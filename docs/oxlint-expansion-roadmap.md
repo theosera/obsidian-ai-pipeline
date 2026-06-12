@@ -21,7 +21,6 @@
 | 領域 | lint 状態 | 除外理由 |
 |---|---|---|
 | root app code (`*.ts` / `pipeline/**` / `test/**`) | ✅ oxlint 対象 | — |
-| `chrome-extension/**` | ❌ 対象外 | 独立 workspace（独自 lockfile / `--ignore-workspace`） |
 | `scripts/**`・`utils/**`・loose `*.js/.cjs/.mjs` | ❌ 対象外 | ユーティリティ/ビルドスクリプト（旧 ESLint も除外） |
 | `correctness` カテゴリー（oxlint 既定 ON のルール群） | ❌ off | 「4 ルールのみ / スタイルは CodeRabbit」最小主義 |
 
@@ -54,25 +53,7 @@
 
 ---
 
-## Task 2 — `chrome-extension/**` を oxlint 対象に含める
-
-**着手条件**:
-1. chrome-extension の deps が解決された状態で oxlint を回せる導線（自ジョブ内 lint）が用意できる。
-2. `typeAware` は **root config 専用**（nested で有効化すると oxlint がエラー: issue #19932）。
-   よって chrome-extension は **専用 `chrome-extension/.oxlintrc.json`（browser env / 非 type-aware）**
-   として設計する。
-
-**実装**:
-- `chrome-extension/.oxlintrc.json` を新規作成（`env.browser: true`、correctness 方針は別途決定）。
-- `chrome-extension/package.json` に devDep `oxlint` を追加（独立 lockfile を更新）。
-- `.github/workflows/ci.yml` の chrome-extension ジョブに
-  `pnpm --ignore-workspace exec oxlint` ステップを build の前に追加。
-
-**検証**: `cd chrome-extension && pnpm --ignore-workspace exec oxlint` が通る。CI chrome-extension ジョブ緑。
-
----
-
-## Task 3 — `scripts/**`・`utils/**`・loose `*.js/.cjs/.mjs` を含める
+## Task 2 — `scripts/**`・`utils/**`・loose `*.js/.cjs/.mjs` を含める
 
 **着手条件**:
 1. これらのユーティリティ/ビルドスクリプトに lint する価値があると判断（型無し JS が多く、
@@ -86,7 +67,7 @@
 
 ---
 
-## Task 4 — `correctness` カテゴリー（または個別ルール）の採用
+## Task 3 — `correctness` カテゴリー（または個別ルール）の採用
 
 **着手条件**:
 1. PR #65 試走で既存コードに出た correctness findings をトリアージ済み:
@@ -105,6 +86,7 @@
 
 ## 完了の定義（このロードマップ全体）
 
-Task 2–4 が（条件成立分だけでも）それぞれ単独 PR で取り込まれ、oxlint が
-「ESLint 時代の理由で除外していた領域」を順次カバーした状態（Task 1 は対象削除に
-伴い廃止）。root のアプリコードの価値は PR #65 で確保済み。
+Task 2–3 が（条件成立分だけでも）それぞれ単独 PR で取り込まれ、oxlint が
+「ESLint 時代の理由で除外していた領域」を順次カバーした状態（Task 1 および旧
+chrome-extension タスクは対象削除に伴い廃止）。root のアプリコードの価値は
+PR #65 で確保済み。
