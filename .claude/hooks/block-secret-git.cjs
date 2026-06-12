@@ -56,10 +56,13 @@ try {
 } catch { process.exit(0); }
 if (!cmd || !/(^|[;&|(]\s*)git\b/.test(cmd)) process.exit(0);
 
-// ① `git add <paths>` — 明示パス引数を検査。
+// ① `git add <paths>` — 明示パス引数を検査。シェルのクォートを剥がしてから判定する
+//    （`git add ".env"` のすり抜け防止 / Codex P2）。フラグ除外はクォート除去後に行う。
 const addMatch = cmd.match(/git\s+add\b([^;&|]*)/);
 if (addMatch) {
-  const paths = addMatch[1].trim().split(/\s+/).filter((a) => a && !a.startsWith('-'));
+  const paths = addMatch[1].trim().split(/\s+/)
+    .map((a) => a.replace(/['"]/g, ''))
+    .filter((a) => a && !a.startsWith('-'));
   const bad = paths.filter(isSecret);
   if (bad.length) {
     deny(

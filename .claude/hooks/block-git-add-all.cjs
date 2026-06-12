@@ -36,12 +36,13 @@ if (/(^|\s)--no-verify(\s|=|$)/.test(cmd)) {
   deny('`--no-verify` は禁止です（commit / secret-scan hook をバイパスしない / CLAUDE.md）。フックを通して実行してください。');
 }
 
-// `git add` の blanket 形を禁止: -A / --all / 単独の "."（複合短縮フラグ -Av 等も A を含めば対象）。
+// `git add` の blanket 形を禁止: -A / --all / 単独の "." / "./"（複合短縮フラグ -Av 等も A を含めば対象）。
+// シェルのクォートを剥がしてから判定する（`git add "."` / `git add '.'` のすり抜け防止 / Codex P2）。
 const m = cmd.match(/git\s+add\b([^;&|]*)/);
 if (m) {
-  const args = m[1].trim().split(/\s+/).filter(Boolean);
+  const args = m[1].trim().split(/\s+/).filter(Boolean).map((a) => a.replace(/['"]/g, ''));
   const blanket = args.some(
-    (a) => a === '.' || a === '--all' || (/^-[a-z]*$/i.test(a) && a.includes('A')),
+    (a) => a === '.' || a === './' || a === '--all' || (/^-[a-z]*$/i.test(a) && a.includes('A')),
   );
   if (blanket) {
     deny('`git add -A` / `git add .` / `--all` は禁止です。CLAUDE.md の規約に従い、ファイルを個別に列挙して add してください（untracked secret の巻き込み防止）。');
