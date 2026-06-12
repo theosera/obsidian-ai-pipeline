@@ -12,9 +12,9 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot } from './config';
-import { getThreatReportsBaseFolder } from './threat_reports_config';
-import { THREAT_REPORTS_JSON_FILENAME } from './threat_reports_json_export';
+import { getVaultRoot } from '../config';
+import { getThreatReportsBaseFolder } from './config';
+import { THREAT_REPORTS_JSON_FILENAME } from './json_export';
 
 const SENTINEL_START = '<!-- threat-reports:auto-block:start -->';
 const SENTINEL_END = '<!-- threat-reports:auto-block:end -->';

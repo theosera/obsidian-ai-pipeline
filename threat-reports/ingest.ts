@@ -20,12 +20,12 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { getVaultRoot } from './config';
-import { getThreatReportsBaseFolder, getThreatReportsArchiveFolder } from './threat_reports_config';
-import { ThreatReportsDb, getDb } from './threat_reports_db';
-import { parseReport, ContractError } from './threat_reports_parser';
-import { exportThreatReportsJson } from './threat_reports_json_export';
-import { regenerateIndexPage } from './threat_reports_index_writer';
+import { getVaultRoot } from '../config';
+import { getThreatReportsBaseFolder, getThreatReportsArchiveFolder } from './config';
+import { ThreatReportsDb, getDb } from './db';
+import { parseReport, ContractError } from './parser';
+import { exportThreatReportsJson } from './json_export';
+import { regenerateIndexPage } from './index_writer';
 
 export interface IngestOptions {
   /** ingest 対象の .md ファイルパス (絶対 or cwd 相対) */

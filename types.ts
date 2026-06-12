@@ -56,7 +56,7 @@ export interface XSummaryConfig {
 }
 
 /**
- * 週次 LLM 脅威レポートの「自リポ該当性」判定 (`threat_reports_relevance`) 専用の
+ * 週次 LLM 脅威レポートの「自リポ該当性」判定 (`threat-reports/relevance`) 専用の
  * provider / model 選択 (Level 2 検知)。
  *
  * classifier / xSummary とは独立。選定基準は **ベンダではなく「reasoning 可能な

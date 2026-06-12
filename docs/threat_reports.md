@@ -114,7 +114,7 @@ pnpm start -- --ingest-threat-report=<path-to-md>
 該当性判定とレビュー済み管理は **(レポート × リポジトリ)** 単位。同じレポートでも
 リポジトリごとに結論が変わるため、`/sec-review` は **走り出す前に必ず対象リポを質問** し、
 その指定を `--target-repo=<owner/repo|path>` で CLI に渡す (web=スラッグ / CLI=パス、
-いずれも git remote から同じ正準キー `owner/repo` に収束。`threat_reports_repo_target.ts`)。
+いずれも git remote から同じ正準キー `owner/repo` に収束。`threat-reports/repo_target.ts`)。
 
 ```text
 ingest 済み DB (全件)
@@ -131,7 +131,7 @@ ingest 済み DB (全件)
        (他 repo の未レビュー状態には影響しない)
 ```
 
-- 該当性判定の実体は `threat_reports_relevance.ts` (`buildRepoProfile(root, repoKey)` +
+- 該当性判定の実体は `threat-reports/relevance.ts` (`buildRepoProfile(root, repoKey)` +
   `runThreatRelevanceAnalysis`)。脅威本文は `<threat nonce>` デリミタ内の純データとして
   隔離 LLM に渡すため、本文の偽指示で挙動が壊れない。**検知のみ** — コード変更は
   ユーザーが「実装する」と決めた項目だけ、§4 の証拠を満たして最小差分で行う。
@@ -141,7 +141,7 @@ ingest 済み DB (全件)
   (per-repo ノート `relevance_notes` と同じく人手の判断を消さない)。
 - per-repo 化以前の単一値 (`reports.relevance_reviewed_at` / `*.ai_relevance_note`) は
   DB 初回 open 時に **`theosera/obsidian-ai-pipeline` キー配下へ自動移行** される
-  (`threat_reports_db.ts` の `migrate`、`PRAGMA user_version` で 1 回限り冪等)。
+  (`threat-reports/db.ts` の `migrate`、`PRAGMA user_version` で 1 回限り冪等)。
 
 ```bash
 pnpm start -- --analyze-threat-relevance --target-repo=<owner/repo|path>   # 対象リポ全走査 + per-repo ノート記入 (人手 note 保護)

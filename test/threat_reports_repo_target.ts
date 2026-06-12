@@ -7,7 +7,7 @@
 import assert from 'node:assert';
 import path from 'node:path';
 import { TestRunner, type TestSuiteResult } from './helpers';
-import { resolveRepoTarget, parseRepoSlug, discoverLocalRepos } from '../threat_reports_repo_target';
+import { resolveRepoTarget, parseRepoSlug, discoverLocalRepos } from '../threat-reports/repo_target';
 
 export async function run(): Promise<TestSuiteResult> {
   const runner = new TestRunner();
