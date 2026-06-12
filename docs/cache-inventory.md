@@ -17,7 +17,6 @@
 | A2 | `storage.ts` `cachedKnownUrls` | in-memory | Vault 内 `.md` の URL | `addKnownUrl()` (**本番更新口**) / `resetKnownUrlsCache()` (テスト全破棄) | プロセス内 | ~~本番に無効化口なし~~ → **解消** (保存直後に集合へ反映) |
 | A3 | `classifier.ts` `cachedSnippetsArr` | in-memory | `_分析コンテキスト/snippets_*.xml` | なし (プロセス起動毎に 1 回) | プロセス内 | snippets 更新が同一プロセス内で反映されない |
 | A4 | `fetcher.ts` `browserContext`/`initPromise` | in-memory (resource) | — (Playwright インスタンス) | `closeBrowser()` | プロセス内 | 二重 init は initPromise で防御済 |
-| A5 | `chrome-extension` `cachedTracks` | in-memory | YouTube ページ DOM | `yt-navigate-finish` で `resetCache()` | タブ内 | SPA 遷移検知漏れで stale |
 | B1 | `threat_reports_db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | 破損時 `.corrupted_*` 退避 → 空 DB 続行 |
 | B2 | `x-bookmarks/db.ts` `_instance` | DB ハンドル singleton | (DB 自体) | `closeDb()` | プロセス内 | migrate 順序ミスで**誤って破損退避** (既知/対処済) |
 | C1 | `x_bookmarks.db` | on-disk SQLite (**transactional core**) | (実質 DB 自身) | 再スクレイプ / JSON import | `<repo>/` / **gitignore** | per-tweet MD 廃止で **MD 再構築は不可** |
@@ -57,10 +56,6 @@
 ### A4. `browserContext` / `initPromise` (`fetcher.ts:6,17`)
 - Playwright の永続ブラウザを singleton 化。`initPromise` で**並行 init の二重起動を防御**。
 - 無効化: `closeBrowser()`。データキャッシュではなくリソースのメモ化。
-
-### A5. `cachedTracks` (`chrome-extension/src/content/content-script.ts:16`)
-- YouTube caption tracks を保持。`yt-navigate-finish` イベントで `resetCache()`。
-- 点検: SPA 遷移イベントの取りこぼし時に stale。拡張は本リポ catalog 外 (隔離 workspace)。
 
 ---
 

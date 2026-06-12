@@ -47,7 +47,7 @@ PR #23 の post-mortem で判明した「main が静かに破損したまま複�
 | &nbsp;&nbsp;└ Require review from Code Owners | ✅ | `.github/` 等 owned ファイルは owner approve 必須 |
 | &nbsp;&nbsp;└ Require conversation resolution before merging | ✅ | 未解決レビューを残さない |
 | Require status checks to pass | ✅ | CI 通過ゲート |
-| &nbsp;&nbsp;└ required checks | `Pipeline (root) - test & typecheck`<br>`Chrome extension - build & typecheck` | CI ジョブ名と完全一致 (GitHub Actions ソース) |
+| &nbsp;&nbsp;└ required checks | `Pipeline (root) - test & typecheck` | CI ジョブ名と完全一致 (GitHub Actions ソース) |
 | &nbsp;&nbsp;└ Require branches to be up to date before merging | ✅ | **最重要**: 古い base の PR は rebase 必須 (PR #23 再発防止) |
 | Block force pushes | ✅ | main への force push 禁止 |
 
@@ -90,8 +90,7 @@ gh api --method POST -H "Accept: application/vnd.github+json" \
   -F 'rules[][parameters][required_review_thread_resolution]=true' \
   -f 'rules[][type]=required_status_checks' \
   -F 'rules[][parameters][strict_required_status_checks_policy]=true' \
-  -f 'rules[][parameters][required_status_checks][][context]=Pipeline (root) - test & typecheck' \
-  -f 'rules[][parameters][required_status_checks][][context]=Chrome extension - build & typecheck'
+  -f 'rules[][parameters][required_status_checks][][context]=Pipeline (root) - test & typecheck'
 ```
 
 > `~DEFAULT_BRANCH` で default branch (`main`) を対象化。`actor_id=5` は
@@ -104,7 +103,7 @@ gh api --method POST -H "Accept: application/vnd.github+json" \
 |---|---|---|
 | **Require a pull request before merging** | ✅ | 直 push 禁止 |
 | **Require status checks to pass before merging** | ✅ | CI 通過ゲート |
-| &nbsp;&nbsp;&nbsp;Status checks that are required | `Pipeline (root) - test & typecheck`<br>`Chrome extension - build & typecheck` | CI ジョブ名に一致 |
+| &nbsp;&nbsp;&nbsp;Status checks that are required | `Pipeline (root) - test & typecheck` | CI ジョブ名に一致 |
 | **Require branches to be up to date before merging** | ✅ | **最重要**: 古い base の PR は rebase 必須 |
 | **Require conversation resolution before merging** | ✅ | レビュー未解決を防ぐ |
 | **Do not allow bypassing the above settings** | お好み | 自分自身も含めて例外を作らないなら✅ |
@@ -120,7 +119,6 @@ gh api \
   /repos/theosera/obsidian-ai-pipeline/branches/main/protection \
   -f 'required_status_checks[strict]=true' \
   -f 'required_status_checks[contexts][]=Pipeline (root) - test & typecheck' \
-  -f 'required_status_checks[contexts][]=Chrome extension - build & typecheck' \
   -F 'enforce_admins=false' \
   -f 'required_pull_request_reviews[required_approving_review_count]=0' \
   -f 'required_pull_request_reviews[require_last_push_approval]=false' \
@@ -172,7 +170,7 @@ gh api \
 ```text
 1. Claude が create_pull_request で PR 作成
 2. Claude が直後に enable_pr_auto_merge(SQUASH) を呼ぶ
-3. CI 実行 (pipeline + chrome-extension)
+3. CI 実行 (pipeline)
 4. CodeRabbit / Codex がレビュー
 5. Claude が指摘に push で応答
 6. CI 緑 + required status checks 満たした時点で GitHub が自動 squash merge
@@ -231,7 +229,6 @@ gh api \
   /repos/theosera/obsidian-ai-pipeline/branches/main/protection \
   -F 'required_status_checks[strict]=true' \
   -f 'required_status_checks[contexts][]=Pipeline (root) - test & typecheck' \
-  -f 'required_status_checks[contexts][]=Chrome extension - build & typecheck' \
   -F 'enforce_admins=false' \
   -F 'required_pull_request_reviews[required_approving_review_count]=1' \
   -F 'required_pull_request_reviews[require_code_owner_reviews]=true' \

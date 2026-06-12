@@ -6,8 +6,7 @@ onlyBuiltDependencies:
   - better-sqlite3
 
 # Shared dev-tool versions, referenced via `"typescript": "catalog:"` etc. in
-# the root package.json. Bump here once. (chrome-extension is intentionally an
-# isolated workspace and does not use this catalog.)
+# the root package.json. Bump here once.
 catalog:
   typescript: ^5.7.0
   '@types/node': ^25.5.2
