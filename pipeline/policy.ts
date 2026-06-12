@@ -15,7 +15,9 @@ export type SitePolicy = 'manual_skip' | 'public_review' | 'public_auto';
 const SKIP_LIST = [
   'google.com/search',
   'x.com',
+  // YouTube は動画で技術記事化しないため取り込まない。短縮 URL (youtu.be) も対象。
   'youtube.com',
+  'youtu.be',
   'chatgpt.com',
   'grok.com',
   'gemini.google.com',
