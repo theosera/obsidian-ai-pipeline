@@ -17,11 +17,11 @@
 
 import fs from 'fs';
 import path from 'path';
-import type { VulnerabilityRow, ImplementationCheckRow } from './threat_reports_db';
-import type { AiProvider } from './types';
-import { askAIText, type AskAITextOverride } from './classifier';
-import { sanitizeForLLM, truncateSummary } from './x-bookmarks/summarizer';
-import { LEGACY_REPO_KEY } from './threat_reports_repo_target';
+import type { VulnerabilityRow, ImplementationCheckRow } from './db';
+import type { AiProvider } from '../types';
+import { askAIText, type AskAITextOverride } from '../classifier';
+import { sanitizeForLLM, truncateSummary } from '../x-bookmarks/summarizer';
+import { LEGACY_REPO_KEY } from './repo_target';
 
 /** AI が書いた note の先頭に付けるセンチネル。redo 時に人手 note を保護する目印。 */
 export const AI_NOTE_SENTINEL = '🤖';

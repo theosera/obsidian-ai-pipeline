@@ -5,7 +5,7 @@
  *   - 生レポート (.md) が source of truth、本 DB は派生インデックス
  *   - 用途: 横串検索 / リスクスコア順表示 / 過去レポートとの差分
  *   - 壊れたら raw/*.md から再構築できる:
- *     `threat_reports_ingest.ts::rebuildThreatReportsDbFromVault()`
+ *     `ingest.ts::rebuildThreatReportsDbFromVault()`
  *     (CLI: `--rebuild-threat-reports-db`)。ただし ai_relevance_note /
  *     relevance_reviewed_at は raw に無い human 入力なので再構築では復元されない。
  *
@@ -22,8 +22,8 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot } from './config';
-import { LEGACY_REPO_KEY } from './threat_reports_repo_target';
+import { getVaultRoot } from '../config';
+import { LEGACY_REPO_KEY } from './repo_target';
 
 export interface ReportRow {
   id: string;                  // ingest 時に生成する uuid 風 ID
