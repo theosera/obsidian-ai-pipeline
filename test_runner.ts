@@ -7,6 +7,7 @@
  */
 import { run as runSecurity } from './test/security';
 import { run as runClassifier } from './test/classifier';
+import { run as runPolicy } from './test/policy';
 import { run as runRouter } from './test/router';
 import { run as runStorage } from './test/storage';
 import { run as runXBookmarks } from './test/x_bookmarks';
@@ -25,6 +26,7 @@ interface Suite {
 const suites: Suite[] = [
   { name: 'Security', run: runSecurity },
   { name: 'Classifier', run: runClassifier },
+  { name: 'Policy', run: runPolicy },
   { name: 'Router', run: runRouter },
   { name: 'Storage', run: runStorage },
   { name: 'XBookmarks', run: runXBookmarks },
