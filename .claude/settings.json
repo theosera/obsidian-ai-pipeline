@@ -79,6 +79,14 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|mcp__github__.*",
+        "hooks": [
+          { "type": "command", "command": "bash .claude/skills/ops-logging/capture-command.sh" }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
@@ -99,7 +107,8 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-typecheck.sh\"",
             "timeout": 120,
             "statusMessage": "型チェック (.ts 変更時のみ)"
-          }
+          },
+          { "type": "command", "command": "bash .claude/skills/ops-logging/push-log.sh" }
         ]
       }
     ]
