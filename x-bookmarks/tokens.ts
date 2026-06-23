@@ -20,7 +20,7 @@ const TOKEN_ENDPOINT = `${API_BASE}/oauth2/token`;
 // ---------------------------------------------------------------------------
 export function getTokensPath(): string {
   const dir = path.join(getVaultRoot(), '__skills', 'pipeline');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return path.join(dir, 'x_tokens.json');
 }
 
@@ -50,12 +50,18 @@ export function loadTokens(): StoredTokens | null {
 
 export function saveTokens(tokens: StoredTokens): void {
   const p = getTokensPath();
-  fs.writeFileSync(p, JSON.stringify(tokens, null, 2), 'utf8');
+  // Atomic, private write: create a 0600 temp file, enforce the mode (a wide
+  // umask can loosen the create mode), then rename over the target. This closes
+  // the brief world-readable window between writeFileSync and chmod, and never
+  // leaves a half-written tokens file on crash (the refresh_token is long-lived).
+  const tmp = `${p}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600 });
   try {
-    fs.chmodSync(p, 0o600);
+    fs.chmodSync(tmp, 0o600);
   } catch {
     // Windows や一部 FS では chmod が noop / 失敗する。無視して続行。
   }
+  fs.renameSync(tmp, p);
 }
 
 /**
