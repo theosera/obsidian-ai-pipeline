@@ -22,6 +22,7 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 | X bookmarks のコード (`x-bookmarks/` 配下 = `api_client.ts` / `tokens.ts` / `folder_*.ts` / `session_*.ts` / `summarizer.ts` 等) / `--x-bookmarks` / `X_Bookmarks/` / `x_*_mapping.json` を触る | `x-bookmarks` |
 | このリポの TypeScript を書く / 直す / レビューする | `ts-coding-conventions` |
 | sec-mode 取込で脅威レポート本文を扱う (injection ゲート) | `scan-threat-report` |
+| 外部リポを `git clone` する / clone 済みリポを開く・ビルドする・その設定 (`CLAUDE.md` / `.claude` / `.mcp.json` / `.githooks` / postinstall) を読む前 | `untrusted-repo-intake` |
 | コマンド学習ログ機能を新リポへ導入 / hook 設定 (`settings.json`) を書く・直す / マスキング規則・ログ出力先を変える / `capture-command.sh`・`push-log.sh` を触る | `ops-logging` |
 
 ## Skills / Commands 構成規約 (フラット固定)
@@ -35,6 +36,7 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 | カテゴリ | 名前 (種別) |
 |---|---|
 | Security / 脅威レポート | `scan-threat-report` (skill) / `sec-mode`・`sec-audit`・`sec-review` (command) |
+| Security / リポ取込 | `untrusted-repo-intake` (skill) |
 | Dev workflow | `pr-workflow`・`ts-coding-conventions` (skill) |
 | Ops / 運用ログ | `ops-logging` (skill) |
 | Feature 知識 | `x-bookmarks` (skill) |

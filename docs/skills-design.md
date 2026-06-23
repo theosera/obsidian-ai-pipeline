@@ -57,6 +57,7 @@ Claude Code 公式 docs には "Automatic discovery from nested directories" の
 | カテゴリ | 種別 | 名前 | 役割 |
 |---|---|---|---|
 | Security / 脅威レポート | skill | `scan-threat-report` | 取込前 injection ゲート (L0〜L3) |
+| Security / リポ取込 | skill | `untrusted-repo-intake` | clone した外部リポの隔離・設定レビュー手順 (clone リポの CLAUDE.md/hooks は untrusted) |
 | Security / 脅威レポート | command | `sec-mode` | Security-only mode 起動 + 取込メニュー |
 | Security / 脅威レポート | command | `sec-audit` | 自リポの運用セキュリティ姿勢監査 (読み取り専用) |
 | Dev workflow | skill | `pr-workflow` | PR 作成 / auto-merge 判断 / CI 期待値 |

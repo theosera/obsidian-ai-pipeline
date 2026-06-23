@@ -115,6 +115,60 @@ jobs:
             pnpm tsx scripts/llm_sec_weekly_fetcher.ts --phase=ingest
           fi
 
+      # ----------------------------------------------------------------
+      # L1 injection pre-scan (concealment / 契約違反ゲート)
+      #
+      # fetcher が raw/ に書いた **この run の新規** レポートだけを L1 スキャナ
+      # (.claude/skills/scan-threat-report) で走査し、「隠蔽系 signal (不可視文字 /
+      # homoglyph / 隠しコメント / 跨行) または L0 契約違反」を検出したら
+      # commit/push 前に **run を停止**する。これらは高精度・低誤検知の signal なので
+      # 自動停止に向く (それ以外の signal は解説の可能性があり、L1 単独では block
+      # しない設計 = SKILL.md)。停止すると implicit success() が false になり、後段の
+      # "Commit & push" と Phase 2 "label" は走らない → 該当 thread は未ラベルのまま
+      # 残り、人間が /sec-mode で精査する (= loud-fail / self-healing)。
+      # スキャナは stdlib のみ (python3 で追加依存なし)。本リポの trusted コード。
+      # ----------------------------------------------------------------
+      - name: L1 injection pre-scan (concealment / contract gate)
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        working-directory: pipeline
+        env:
+          VAULT_ROOT: ${{ github.workspace }}/vault
+          TR_DIR: 10_Threat_Reports
+          SCANNER: .claude/skills/scan-threat-report/scripts/scan-threat-report.py
+        run: |
+          set -euo pipefail
+          # この run で新規/変更された raw レポートのみ対象 (vault repo の untracked/modified)。
+          mapfile -t files < <(git -C "${VAULT_ROOT}" status --porcelain -- "${TR_DIR}/raw/" | awk '{print $2}')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "新規 raw レポートなし — L1 pre-scan skip"
+            exit 0
+          fi
+          tripped=0
+          for rel in "${files[@]}"; do
+            full="${VAULT_ROOT}/${rel}"
+            [ -f "${full}" ] || continue
+            json="$(python3 "${SCANNER}" --json "${full}")" || true
+            verdict="$(printf '%s' "${json}" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+CONCEAL = {"invisible-char", "homoglyph", "hidden-comment", "multiline-injection"}
+cv = d.get("structural", {}).get("contract_violations", [])
+conceal = [s for s in d.get("signals", []) if s.get("kind") in CONCEAL]
+print("BLOCK" if (cv or conceal) else "OK")
+')"
+            if [ "${verdict}" = "BLOCK" ]; then
+              echo "::error::L1 concealment/contract gate tripped: ${rel}"
+              tripped=1
+            else
+              echo "✅ L1 clean: ${rel}"
+            fi
+          done
+          if [ "${tripped}" -eq 1 ]; then
+            echo "❌ 隠蔽系 injection または契約違反を検出。commit/push せず停止 (人間が /sec-mode で精査)。"
+            exit 1
+          fi
+          echo "✅ L1 pre-scan: 全 raw レポート clean"
+
       - name: Commit & push vault changes
         if: ${{ github.event.inputs.dry_run != 'true' }}
         working-directory: vault
