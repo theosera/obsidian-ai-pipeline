@@ -30,7 +30,8 @@ function readStdin() {
 const SECRET_LITERALS = [
   /gh[pousr]_[A-Za-z0-9]{20,}/,                 // GitHub token
   /github_pat_[A-Za-z0-9_]{20,}/,               // GitHub fine-grained PAT
-  /\bsk-[A-Za-z0-9]{20,}/,                       // OpenAI / Anthropic style
+  /\bsk-[A-Za-z0-9_-]{20,}/,                     // OpenAI / Anthropic style (incl. sk-proj-)
+  /\bAIza[0-9A-Za-z_-]{35}/,                     // Google API key (Gmail / YouTube)
   /\bAKIA[0-9A-Z]{16}\b/,                        // AWS access key id
   /\bxox[baprs]-[A-Za-z0-9-]{10,}/,             // Slack
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,         // PEM private key
