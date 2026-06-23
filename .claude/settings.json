@@ -75,6 +75,12 @@
             "if": "Bash(git *)",
             "timeout": 10,
             "statusMessage": "git add -A / --no-verify ガード"
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-secret-egress.cjs\"",
+            "timeout": 10,
+            "statusMessage": "secret egress ガード"
           }
         ]
       }
