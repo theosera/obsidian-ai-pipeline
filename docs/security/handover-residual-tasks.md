@@ -1,0 +1,238 @@
+# 引き継ぎ: セキュリティ残課題 (#6–#10, #13, #14, #16)
+
+> このドキュメントは、3 リポ脆弱性点検 (2026-06) で洗い出した残課題のうち、
+> **本セッションで未実施**のものを次の担当 (人間 or エージェント) に引き継ぐための一覧。
+> 実施済み (P1: #1–#5) は各リポの merge 済み PR (#75/#89, #99, #100 等) を参照。
+>
+> 各項目は **対象リポ / 対象ファイル / リスク / 手順 / 見積工数 / 注意点** を持つ。
+> 着手時は対応リポの `CLAUDE.md` 発火表に従い、必要な skill (`ts-coding-conventions` /
+> `py-coding-conventions` / `pr-workflow` / `x-bookmarks` 等) を**着手前にロード**すること。
+> PR は 1 PR = 1 レビュー観点 (性質が違うものを束ねない)。
+
+## 優先度サマリ
+
+| # | 課題 | 対象リポ | 見積 | 優先度 | 種別 |
+|---|---|---|---|---|---|
+| #6 | npm/pnpm postinstall スクリプト無効化 | obsidian | 1–2h | 中 | supply-chain |
+| #7 | Docker ベースイメージの digest pin + スキャン | youtube / SDK | 1–2h | 中 | supply-chain |
+| #8 | innertube XML 正規表現の ReDoS → ElementTree 化 | youtube / SDK | 2–4h | 中 | DoS |
+| #9 | sanitize デリミタのエスケープ多層化 | youtube / SDK | 1–2h | 中 | injection |
+| #10 | LLM provider `base_url` の allowlist / SSRF 緩和 | SDK | 1–2h | 中 | SSRF |
+| #13 | `stats.jsonl` の出力先見直し (vault 外) | youtube | 0.5–1h | 低 | 情報露出 |
+| #14 | X bookmarks リンク先 host allowlist | obsidian | 1–2h | 低 | SSRF/injection |
+| #16 | secret 検出パターンの四半期レビュー | 3 リポ | プロセス | 低 | 運用 |
+
+---
+
+## #6 — npm/pnpm postinstall スクリプトの無効化 (obsidian)
+
+- **対象リポ**: `obsidian-ai-pipeline`
+- **対象ファイル**: `package.json` / 新規 `.npmrc`
+- **リスク**: 依存パッケージ (推移的依存を含む) の `postinstall` / `preinstall` スクリプトは
+  `pnpm install` 時に**任意コードを実行**する。悪意ある or 侵害された依存が混入すると、
+  `.env` / `x_tokens.json` 等の窃取を install 時に実行できる (典型的なサプライチェーン攻撃)。
+- **手順**:
+  1. `.npmrc` に以下を追加してデフォルトでライフサイクルスクリプトを無効化する:
+     ```
+     # 依存の install スクリプトを既定で無効化 (supply-chain 対策)
+     enable-pre-post-scripts=false
+     ```
+     pnpm 10 系では `pnpm.onlyBuiltDependencies` (package.json) で
+     **明示許可した依存だけ** build script を走らせる方式が推奨。
+  2. **ネイティブモジュールは個別 allowlist が必要** (重要・後述の注意点):
+     `better-sqlite3` / `playwright` / `@napi-rs/keyring` は install 時の
+     prebuild/ダウンロードに lifecycle script を使う。package.json に:
+     ```jsonc
+     "pnpm": {
+       "onlyBuiltDependencies": ["better-sqlite3", "@napi-rs/keyring", "esbuild"]
+     }
+     ```
+     のように**必要なものだけ**列挙する (`playwright` はブラウザDLが別途必要なので要検証)。
+  3. クリーンな環境で `rm -rf node_modules && pnpm install` → `pnpm test` /
+     `pnpm typecheck` が通ることを確認。`@napi-rs/keyring` のネイティブバイナリが
+     ロードされる (#1 keyring が動く) ことを実機で確認。
+- **見積**: 1–2h (大半は allowlist の試行錯誤と実機検証)。
+- **注意点**: `enable-pre-post-scripts=false` を**雑に入れるとネイティブ依存が壊れる**
+  (better-sqlite3 の prebuild が落ちて `pnpm test` が全滅し得る)。必ず allowlist と
+  セットで、クリーン install を 1 回回してから PR にすること。CI でも同じ install
+  経路を使う想定。
+
+---
+
+## #7 — Docker ベースイメージの digest pin + 脆弱性スキャン (youtube / SDK)
+
+- **対象リポ**: `pipeline-youtube` / `pipeline-youtube-SDK` (両方同形)
+- **対象ファイル**: `docker/Dockerfile.capture` / (任意) `.github/workflows/*.yml`
+- **現状**: `FROM python:3.13-slim AS base` — **タグ参照**のため、同じタグでも中身が
+  差し替わる (再現性なし・侵害イメージ混入時に気付けない)。
+- **リスク**: ベースイメージが侵害 / 既知 CVE を抱えたまま capture コンテナが動く。
+  サプライチェーン + 既知脆弱性の二面。
+- **手順**:
+  1. 現行の digest を取得して pin する:
+     ```dockerfile
+     # python:3.13-slim を digest で固定 (再現性 + 改ざん検知)
+     FROM python:3.13-slim@sha256:<digest> AS base
+     ```
+     digest は `docker buildx imagetools inspect python:3.13-slim` 等で取得
+     (ネットワークが要るのでユーザー承認のもとで)。
+  2. CI にイメージスキャンを追加 (例: `trivy image` or `docker scout cves`)。
+     youtube の `.github/workflows/main.yml` には既に **pip-audit hard-fail** がある
+     ので、その隣に Docker スキャン step を足す形が自然 (別 job 推奨)。
+  3. digest 更新は手動 or Dependabot (`package-ecosystem: docker`) で追従。
+- **見積**: 1–2h (youtube/SDK 2 リポ分。Dockerfile はほぼ同一なので 2 本目は流用)。
+- **注意点**: digest を pin すると自動でセキュリティ更新が来なくなるので、
+  **更新フロー (Dependabot or 定期手動)** をセットにしないと古い CVE を抱え続ける。
+  PR は youtube / SDK で分けるか、同一変更なら本文で両リポ対応と明記。
+
+---
+
+## #8 — innertube XML 正規表現の ReDoS → ElementTree 化 (youtube / SDK)
+
+- **対象リポ**: `pipeline-youtube` / `pipeline-youtube-SDK` (両方同形)
+- **対象ファイル**: `pipeline_youtube/transcript/innertube.py`
+  (`_TEXT_TAG_RE` / `_P_TAG_RE` 等, L84–91 付近)
+- **現状**: timedtext XML を正規表現でパースしている:
+  ```python
+  _TEXT_TAG_RE = re.compile(r"<text\b([^>]*)>(.*?)</text>", re.DOTALL)
+  _P_TAG_RE    = re.compile(r"<p\b([^>]*)>(.*?)</p>", re.DOTALL)
+  _TAG_RE      = re.compile(r"<[^>]+>")
+  ```
+- **リスク**: YouTube から取得する**外部由来の XML**を正規表現で舐めるため、
+  細工された巨大 / 病的な入力で **ReDoS (catastrophic backtracking)** や
+  メモリ過大消費の可能性。`.*?` + `re.DOTALL` は入力長次第で危険。
+- **手順**:
+  1. `xml.etree.ElementTree`(標準ライブラリ) でパースし直す。timedtext は
+     `<transcript><text start dur>...</text></transcript>` / srv3 は `<p t d>` 構造なので
+     `ElementTree.fromstring()` → `iter("text")` / `iter("p")` で属性とテキストを取得。
+  2. **XXE 対策**: 標準 `ElementTree` は外部実体を展開しないが、念のため
+     `defusedxml` の採用を検討 (依存追加の是非はユーザー判断)。最小なら標準 ET で可。
+  3. 既存の振る舞い (text 形を試して空なら p/srv3 形にフォールバック、L270 付近) を
+     保ったままパーサだけ差し替える。`tests/` の transcript パーステストを必ず緑に。
+  4. 入力サイズ上限 (`_MAX_BODY_CHARS` と同思想) を入口に設けて多層防御。
+- **見積**: 2–4h (パーサ差し替え + 既存テスト維持 + 両リポ展開)。残課題で最重め。
+- **注意点**: `base.py` の抽象や `video_processing.py` 呼び出し側のインタフェースを
+  変えないこと (main.py thin orchestrator 不変条件)。HOW は innertube.py 内に閉じる。
+  py-coding-conventions skill をロードしてから着手。
+
+---
+
+## #9 — sanitize デリミタのエスケープ多層化 (youtube / SDK)
+
+- **対象リポ**: `pipeline-youtube` / `pipeline-youtube-SDK` (両方同形)
+- **対象ファイル**: `pipeline_youtube/services/sanitize.py`
+- **現状**: 外部テキストを `<untrusted_content>` XML デリミタで囲んで LLM に渡す
+  (control/zero-width strip + delimiter wrap)。本セッションで `_emit_alert` の
+  redacted stderr 化は実施済み。
+- **リスク**: 入力本文に**デリミタそのもの** (`</untrusted_content>` 等) が含まれると、
+  囲いを早期に閉じて後続を「信頼された指示」として注入できる (デリミタ・ブレイク)。
+- **手順**:
+  1. ラップ前に入力中の `<untrusted_content>` / `</untrusted_content>`
+     (大文字小文字・空白ゆらぎ含む) を**無害化** (エスケープ or 不可視置換ではなく
+     `&lt;.../&gt;` 風のプレースホルダ化) する。
+  2. デリミタをランダムな nonce 付きにする多層化も有効:
+     `<untrusted_content id="<nonce>">…</untrusted_content id="<nonce>">` で、本文側が
+     nonce を知り得ないため閉じられない (obsidian の scan-threat-report L2 と同思想)。
+  3. ユニットテスト: 「本文にデリミタ文字列を仕込んでも閉じない」ケースを追加。
+- **見積**: 1–2h (両リポ + テスト)。
+- **注意点**: obsidian 側の `scan-threat-report` skill (L2 delimiter) と**思想を揃える**
+  と全体一貫性が出る。3 リポで injection 防御の語彙を散らさないこと。
+
+---
+
+## #10 — LLM provider `base_url` の allowlist / SSRF 緩和 (SDK)
+
+- **対象リポ**: `pipeline-youtube-SDK`
+- **対象ファイル**: `pipeline_youtube/providers/openai_compat.py` (`base_url` 注入,
+  L33/L38/L43 付近) / `providers/registry.py`
+- **現状**: OpenAI 互換 provider は `base_url` を設定値から受けてそのまま叩く
+  (Ollama=localhost, OpenAI=api.openai.com 等)。`base_url` の値検証は無い。
+- **リスク**: `base_url` が設定ファイル / 環境変数経由で外部から差し替えられる経路が
+  あると、内部メタデータエンドポイント (`169.254.169.254` 等) や任意ホストへ
+  API キー付きリクエストを飛ばせる **SSRF / 資格情報漏えい**の余地。
+- **手順**:
+  1. provider 構築時に `base_url` を検証する: スキーム (`http`/`https`)、
+     既知ホスト or 明示 allowlist (`api.openai.com` / `generativelanguage.googleapis.com` /
+     `localhost` / `127.0.0.1` / ユーザー設定の self-host ホスト) のみ許可。
+  2. allowlist は config 値 + registry/strategy 方式 (CLAUDE.md 不変条件) で表現し、
+     `if/elif` 累積にしない。
+  3. metadata IP レンジ (`169.254.0.0/16` 等) は明示拒否。
+  4. registry.py 側で env 解決 (`_resolve_env_vars`, #4 で未設定時 raise 済み) と
+     同じ層で base_url 検証を行うと一貫。
+- **見積**: 1–2h。
+- **注意点**: self-host (Ollama / LM Studio) ユーザーの正規ユースケースを壊さない
+  allowlist 設計にする (任意 host を config で足せる口を残す)。py-coding-conventions
+  + Architecture invariant (provider 選択は registry) を遵守。
+
+---
+
+## #13 — `stats.jsonl` の出力先見直し (youtube)
+
+- **対象リポ**: `pipeline-youtube`
+- **対象ファイル**: `pipeline_youtube/video_processing.py` (`stats.jsonl` 書き込み箇所)
+- **リスク (低)**: 実行統計 (`stats.jsonl`) の出力先が vault 内 or 想定外の場所だと、
+  Obsidian に同期される / 第三者と共有される vault に**実行メタデータが混入**する
+  恐れ。秘密ではないが情報露出の最小化観点。
+- **手順**:
+  1. 現在の出力先パスを確認 (`video_processing.py` の該当行)。vault 配下なら
+     **vault 外の作業ディレクトリ** (例: XDG state dir / リポ内 `.local/`) へ移す。
+  2. 出力先を config 値で上書き可能にし、デフォルトを vault 外にする。
+  3. `.gitignore` に確実に入っていることを確認。
+- **見積**: 0.5–1h。
+- **注意点**: 既存の resume / 統計集計がこのパスを参照していないか確認
+  (`resume.py` / `run_result.py` 周辺)。パス変更は後方互換に注意。
+
+---
+
+## #14 — X bookmarks リンク先 host allowlist (obsidian)
+
+- **対象リポ**: `obsidian-ai-pipeline`
+- **対象ファイル**: `x-bookmarks/api_client.ts` / `x-bookmarks/video_frames.ts` /
+  `x-bookmarks/hands_on_generator.ts` (外部 URL を fetch / 展開する箇所)
+- **リスク (低〜中)**: ブックマークに含まれる任意 URL を展開 / fetch する経路があると、
+  内部ホストや metadata エンドポイントへの **SSRF**、あるいは取得本文経由の
+  二次 injection の入口になり得る。
+- **手順**:
+  1. x-bookmarks 内で外部 URL を fetch している箇所を洗い出す (api_client / video_frames)。
+  2. fetch 前に host allowlist (x.com / twimg.com / 既知 CDN 等) で検証し、
+     プライベート IP レンジ / metadata IP を拒否。
+  3. 取得した本文を LLM に渡す場合は #9 と同じデリミタ無害化を通す。
+- **見積**: 1–2h。
+- **注意点**: 着手前に `x-bookmarks` + `ts-coding-conventions` skill をロード
+  (CLAUDE.md 発火表)。X API 本体 (`api.x.com`) への正規呼び出しを壊さない。
+
+---
+
+## #16 — secret 検出パターンの四半期レビュー (3 リポ・プロセス)
+
+- **対象リポ**: 3 リポ横断 (コードではなく**運用プロセス**)
+- **関連**: obsidian `CLAUDE.md` の「Secret-pattern の維持 (egress/gitleaks/mask 同期 — SLA)」
+  節 (#5 で追加済み) の**実行**にあたる。
+- **内容**: 秘密検出パターンは 3 系統に分散しているため、四半期ごとに突き合わせて
+  漏れを潰す:
+  - egress hook: `.claude/hooks/block-secret-egress.cjs` (obsidian) +
+    `block-secret-egress.py` (youtube / SDK)
+  - `.pre-commit-config.yaml` の `gitleaks` rev (youtube / SDK)
+  - `ops-logging` skill の `mask()` (`capture-command.sh`)
+- **手順 (四半期ごと)**:
+  1. GitHub / OpenAI / 主要クラウドが新トークン形式を出していないか確認。
+  2. 3 系統の正規表現を diff し、片方にしか無いパターンを揃える (1 PR で同時更新)。
+  3. `pre-commit autoupdate` で gitleaks rev を追従。
+- **見積**: プロセス (1 回あたり 0.5–1h 程度)。
+- **注意点**: **片方だけ更新すると検出漏れ = 対策の回帰**。必ず 1 PR で 3 系統同時に。
+  次回レビュー目安: 2026-Q3。
+
+---
+
+## 実施済み (参考・本セッション P1)
+
+| # | 課題 | PR |
+|---|---|---|
+| #1 | X OAuth token を OS keyring に移行 (file fallback) | obsidian #100 |
+| #2 | scan-threat-report L2 delimiter 強化 / archive path-traversal / action-pin guard | obsidian #98 |
+| #3 | 脅威レポート表示フィールドの二次 injection sanitize | obsidian #99 |
+| #4 | Agent Teams 出力の防御的キャップ | youtube #89 / SDK #75 |
+| #5 | secret-pattern 維持 SLA (CLAUDE.md 明文化) | obsidian #99 |
+
+> ⚠️ **#1 keyring は実機テスト未了**: CI は file fallback 経路のみ検証。
+> 各 OS (macOS Keychain / Linux libsecret / Windows Credential Manager) で
+> 「keyring 保存・読込・既存 `x_tokens.json` 移行・平文削除」を確認すること。
