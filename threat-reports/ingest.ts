@@ -22,6 +22,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { getVaultRoot } from '../config';
 import { getThreatReportsBaseFolder, getThreatReportsArchiveFolder } from './config';
+import { resolveVaultPath, isInsideVaultRealpath } from '../storage';
 import { ThreatReportsDb, getDb } from './db';
 import { parseReport, ContractError } from './parser';
 import { exportThreatReportsJson } from './json_export';
@@ -275,9 +276,24 @@ function generateReportId(source: string, weekOf: string): string {
  * されても 1 ファイルにまとまる)。
  */
 function archiveRawMarkdown(vaultRoot: string, weekOf: string, markdown: string): string {
-  const archiveDir = path.join(vaultRoot, getThreatReportsArchiveFolder());
+  // 保存先が vault 配下に収まることを書込前に strict 検証する (resolveVaultPath の
+  // Phase 4/5/6: `..` 拒否 + resolve 後プレフィックス + symlink realpath)。改竄された
+  // archive-folder 設定や symlink フォルダ経由の vault 外書込への defense-in-depth。
+  const rel = path.join(getThreatReportsArchiveFolder(), `${weekOf}.md`);
+  const safe = resolveVaultPath(rel);
+  if (!safe.ok) {
+    throw new Error(`raw markdown の保存先が安全でない: ${safe.reason}`);
+  }
+  const outPath = safe.absolute;
+  if (!outPath.startsWith(vaultRoot + path.sep)) {
+    throw new Error(`raw markdown の保存先が vault 外: ${outPath}`);
+  }
+  const archiveDir = path.dirname(outPath);
   if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
-  const outPath = path.join(archiveDir, `${weekOf}.md`);
+  // mkdir 後に realpath を再検証 (validate→write 間の symlink 差し替え TOCTOU)。
+  if (!isInsideVaultRealpath(archiveDir)) {
+    throw new Error(`raw markdown の保存先 dir が vault 外 (symlink?): ${archiveDir}`);
+  }
   const tmpPath = outPath + '.tmp';
   fs.writeFileSync(tmpPath, markdown, 'utf8');
   fs.renameSync(tmpPath, outPath);

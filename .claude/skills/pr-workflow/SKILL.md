@@ -28,6 +28,10 @@ auto-merge if the change:
 - touches security-sensitive code: auth flow, token storage, path-traversal
   defenses, GITHUB_TOKEN permissions
 - touches merge / branch protection / concurrency in `.github/workflows/`
+- bumps a third-party GitHub Action's pin (SHA / version) — e.g. a Dependabot
+  `github-actions` group PR. Verify each new SHA resolves to the upstream
+  release tag before merge (a swapped SHA is a supply-chain vector). These PRs
+  are also CODEOWNERS-gated (`.github/` → @theosera), so let the human review.
 - is marked WIP / draft
 - the user explicitly said "don't auto-merge" for this PR
 - resolves a non-trivial cross-branch conflict (user judgment needed on
