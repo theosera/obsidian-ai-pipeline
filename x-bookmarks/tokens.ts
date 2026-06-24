@@ -1,8 +1,9 @@
 /**
  * X API OAuth 2.0 トークンの永続化 + リフレッシュ。
  *
- * access_token / refresh_token は `<vault>/__skills/pipeline/x_tokens.json`
- * (`.gitignore` 対象) に保存する。期限切れ時は refresh_token で自動更新する。
+ * access_token / refresh_token は **OS keyring を優先**して保存し、keyring が無い
+ * 環境では `<vault>/__skills/pipeline/x_tokens.json` (`.gitignore` 対象, 0600) へ
+ * fallback する。期限切れ時は refresh_token で自動更新する。
  *
  * 認可フロー本体 (PKCE / 認可サーバ) は `auth_server.ts`、API 呼び出しは
  * `api_client.ts` が本モジュールの `getValidAccessToken` 経由でトークンを得る。
@@ -11,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'crypto';
 import { getVaultRoot } from '../config';
+import { Entry } from '@napi-rs/keyring';
 import { StoredTokens } from './types';
 
 const API_BASE = 'https://api.x.com/2';
@@ -25,6 +27,27 @@ export function getTokensPath(): string {
   return path.join(dir, 'x_tokens.json');
 }
 
+// OS keyring (macOS Keychain / Linux libsecret / Windows Credential Manager) is
+// the primary store for the long-lived X refresh_token. When no backend is
+// available (headless CI, missing libsecret/D-Bus) keyring ops throw and we
+// transparently fall back to the hardened 0600 file below.
+const KEYRING_SERVICE = 'obsidian-ai-pipeline:x-bookmarks';
+const KEYRING_ACCOUNT = 'x_oauth_tokens';
+
+function keyringEntry(): Entry | null {
+  try {
+    return new Entry(KEYRING_SERVICE, KEYRING_ACCOUNT);
+  } catch {
+    // Native module / backend unavailable — caller falls back to the file.
+    return null;
+  }
+}
+
+/** Token file path WITHOUT the mkdir side effect (for existence-check / delete). */
+function tokensFilePath(): string {
+  return path.join(getVaultRoot(), '__skills', 'pipeline', 'x_tokens.json');
+}
+
 /**
  * パースした値が StoredTokens の必須フィールドを満たすか検証する型ガード。
  * 破損 / 旧スキーマ / 手書きミスの x_tokens.json で空や非文字列の access_token を
@@ -37,7 +60,7 @@ function isStoredTokens(v: unknown): v is StoredTokens {
     && typeof t.obtained_at === 'string';
 }
 
-export function loadTokens(): StoredTokens | null {
+function loadTokensFromFile(): StoredTokens | null {
   const p = getTokensPath();
   if (!fs.existsSync(p)) return null;
   try {
@@ -49,7 +72,7 @@ export function loadTokens(): StoredTokens | null {
   }
 }
 
-export function saveTokens(tokens: StoredTokens): void {
+function saveTokensToFile(tokens: StoredTokens): void {
   const p = getTokensPath();
   // Atomic, private write: create a UNIQUE 0600 temp file (per-process + random,
   // O_EXCL via 'wx') so concurrent --x-auth / refresh in the same vault can't
@@ -75,6 +98,59 @@ export function saveTokens(tokens: StoredTokens): void {
     }
     throw err;
   }
+}
+
+/**
+ * トークンを取得する。優先: OS keyring → fallback: 0600 ファイル。ファイルにあって
+ * keyring が使えるなら keyring へ移行し、平文ファイルを削除する (best-effort)。
+ */
+export function loadTokens(): StoredTokens | null {
+  const entry = keyringEntry();
+  if (entry) {
+    try {
+      const stored = entry.getPassword(); // null when not present in the keyring
+      if (stored != null) {
+        const parsed: unknown = JSON.parse(stored);
+        if (isStoredTokens(parsed)) return parsed;
+      }
+    } catch {
+      // backend 不可 / パース失敗 → ファイルへ。
+    }
+  }
+  const fromFile = loadTokensFromFile();
+  if (fromFile && entry) {
+    try {
+      entry.setPassword(JSON.stringify(fromFile));
+      const p = tokensFilePath();
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch {
+      // 移行失敗時はファイルを残す (次回再試行)。
+    }
+  }
+  return fromFile;
+}
+
+/**
+ * トークンを保存する。優先: OS keyring。keyring 不可なら 0600 ファイルへ fallback。
+ * keyring 保存に成功したら、残っている平文ファイルを削除する。
+ */
+export function saveTokens(tokens: StoredTokens): void {
+  const entry = keyringEntry();
+  if (entry) {
+    try {
+      entry.setPassword(JSON.stringify(tokens));
+      try {
+        const p = tokensFilePath();
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      } catch {
+        // 平文ファイル削除失敗は無視 (権限 / 未存在)。
+      }
+      return;
+    } catch {
+      // backend 不可 → ファイルへ fallback。
+    }
+  }
+  saveTokensToFile(tokens);
 }
 
 /**
