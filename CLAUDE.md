@@ -138,6 +138,19 @@ Gmail の読取・ラベル付けは**常に都度ユーザー承認**を通す 
   Gmail MCP とは別経路)。GitHub MCP (`mcp__github__*`) は PR ワークフローで使うため
   本ルールの対象外 (別途 `pr-workflow` / `ops-logging` 参照)。
 
+## Secret-pattern の維持 (egress / gitleaks / mask 同期 — SLA)
+
+秘密検出パターンは 3 系統に分散しているため、新トークン形式が出たら **1 PR で同時に**
+更新する (片方だけ古いと検出漏れ = この対策の回帰):
+
+- egress hook: `.claude/hooks/block-secret-egress.cjs` (本リポ) +
+  `block-secret-egress.py` (`pipeline-youtube` / `pipeline-youtube-SDK`)
+- `.pre-commit-config.yaml` の `gitleaks` rev (youtube / SDK。`pre-commit autoupdate` で追従)
+- `ops-logging` skill の `mask()` (`capture-command.sh`)
+
+- **更新トリガ**: GitHub / OpenAI / クラウドが新トークン形式をリリースした時。
+- **定期レビュー**: **四半期ごと**に 3 系統の差分を突き合わせ、漏れを潰す。
+
 ## Branch naming
 
 - `claude/<short-kebab-description>` for Claude-authored branches
