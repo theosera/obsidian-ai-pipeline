@@ -108,10 +108,13 @@ export function loadTokens(): StoredTokens | null {
   const entry = keyringEntry();
   if (entry) {
     try {
-      const parsed: unknown = JSON.parse(entry.getPassword());
-      if (isStoredTokens(parsed)) return parsed;
+      const stored = entry.getPassword(); // null when not present in the keyring
+      if (stored != null) {
+        const parsed: unknown = JSON.parse(stored);
+        if (isStoredTokens(parsed)) return parsed;
+      }
     } catch {
-      // keyring 未保存 / backend 不可 → ファイルへ。
+      // backend 不可 / パース失敗 → ファイルへ。
     }
   }
   const fromFile = loadTokensFromFile();
