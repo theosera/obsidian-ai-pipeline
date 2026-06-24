@@ -55,6 +55,10 @@
 
       "Bash(awk * .env*)",
       "Bash(sed * .env*)"
+    ],
+    "allow": [
+      "Skill(scan-threat-report)",
+      "Skill(pr-workflow)"
     ]
   },
   "hooks": {

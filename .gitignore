@@ -66,3 +66,4 @@ analysis/x_folder_grouping_proposal_data.json
 analysis/x_folder_stats.json
 analysis/x_folder_grouping_proposal_codex_*.json
 analysis/x_folder_grouping_proposal_codex_*.md
+.mcp.json
