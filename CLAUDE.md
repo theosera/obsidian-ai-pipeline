@@ -122,6 +122,22 @@ TypeScript, `@types/node`, and `tsx` are declared in the `catalog:` block of
   history を `git filter-repo` で消す。public push 済みなら **キーは即時 rotate**。
 - `--no-verify` で commit hook をスキップしない (secret-scan hook の bypass 文化を作らない)。
 
+## MCP 権限 — Gmail は自動許可しない (ハードルール)
+
+`mcp__Gmail__*` (`search_threads` / `get_thread` / `label_thread` 等) を
+`.claude/settings.json` の `permissions.allow` にも、skill/command の `allowed-tools`
+にも**載せない**。週次脅威レポート取込 (`/sec-mode`) は untrusted な Gmail 本文を扱うため、
+Gmail の読取・ラベル付けは**常に都度ユーザー承認**を通す (= injection 時の最後の砦)。
+
+- **自動 (無音) で Gmail を読む経路を作らない。** allow-list 化はこの不変条件を壊す
+  (= prompt-injection されたレポートが承認バリアを回避して Gmail を読める穴になる)。
+- 逆に `deny` もしない: sec-mode の正規 (承認済み) な `search_threads` / `label_thread`
+  まで殺してしまう。正しい姿勢は「**allow にも deny にも入れず、既定のプロンプト承認のまま**」。
+- 自動取込が要るのは cron (`.github/workflows/llm-sec-weekly.yml`) のみで、これは
+  エージェントではなく Node CLI が scoped な `GMAIL_*` 資格情報で行う (エージェントの
+  Gmail MCP とは別経路)。GitHub MCP (`mcp__github__*`) は PR ワークフローで使うため
+  本ルールの対象外 (別途 `pr-workflow` / `ops-logging` 参照)。
+
 ## Branch naming
 
 - `claude/<short-kebab-description>` for Claude-authored branches
