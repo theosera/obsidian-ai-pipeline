@@ -9,6 +9,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { randomBytes } from 'crypto';
 import { getVaultRoot } from '../config';
 import { StoredTokens } from './types';
 
@@ -20,7 +21,7 @@ const TOKEN_ENDPOINT = `${API_BASE}/oauth2/token`;
 // ---------------------------------------------------------------------------
 export function getTokensPath(): string {
   const dir = path.join(getVaultRoot(), '__skills', 'pipeline');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return path.join(dir, 'x_tokens.json');
 }
 
@@ -50,11 +51,29 @@ export function loadTokens(): StoredTokens | null {
 
 export function saveTokens(tokens: StoredTokens): void {
   const p = getTokensPath();
-  fs.writeFileSync(p, JSON.stringify(tokens, null, 2), 'utf8');
+  // Atomic, private write: create a UNIQUE 0600 temp file (per-process + random,
+  // O_EXCL via 'wx') so concurrent --x-auth / refresh in the same vault can't
+  // clobber a shared temp path, then rename over the target. This closes the
+  // world-readable window between writeFileSync and chmod and never leaves a
+  // half-written tokens file (the refresh_token is long-lived).
+  const tmp = `${p}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   try {
-    fs.chmodSync(p, 0o600);
-  } catch {
-    // Windows や一部 FS では chmod が noop / 失敗する。無視して続行。
+    fs.writeFileSync(tmp, JSON.stringify(tokens, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    try {
+      fs.chmodSync(tmp, 0o600);
+    } catch {
+      // Windows や一部 FS では chmod が noop / 失敗する。無視して続行。
+    }
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    // write/chmod/rename いずれかが失敗したら temp を残さない (credential を
+    // orphan させない)。rename 成功後はこの経路に来ない。
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // 既に rename 済 / 未作成なら ENOENT。無視。
+    }
+    throw err;
   }
 }
 
