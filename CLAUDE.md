@@ -148,8 +148,14 @@ Gmail の読取・ラベル付けは**常に都度ユーザー承認**を通す 
 - `.pre-commit-config.yaml` の `gitleaks` rev (youtube / SDK。`pre-commit autoupdate` で追従)
 - `ops-logging` skill の `mask()` (`capture-command.sh`)
 
+> **(ユーザー層・任意)** 開発者が egress hook を `~/.claude/hooks/block-secret-egress.py`
+> として**ユーザー層**にも配置している場合 (= リポ外の素のセッションでの `git clone` 等を
+> 覆うため)、それも**同じ secret パターンのコピー**。リポに含まれない手元ファイルなので
+> 上の「1 PR で同時」には乗らないが、**四半期レビュー時に各自のユーザー層コピーも更新**する
+> こと (古いままだとリポ外セッションだけ検出漏れ = 穴になる)。
+
 - **更新トリガ**: GitHub / OpenAI / クラウドが新トークン形式をリリースした時。
-- **定期レビュー**: **四半期ごと**に 3 系統の差分を突き合わせ、漏れを潰す。
+- **定期レビュー**: **四半期ごと**に 3 系統 (＋上記ユーザー層コピー) の差分を突き合わせ、漏れを潰す。
 
 ## Branch naming
 
