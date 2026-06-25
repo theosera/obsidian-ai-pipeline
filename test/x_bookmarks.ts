@@ -35,6 +35,7 @@ import { XBookmarksDb, getDb } from '../x-bookmarks/db';
 import Database from 'better-sqlite3';
 import { __test as authInternals } from '../x-bookmarks/auth_server';
 import { __test as videoInternals } from '../x-bookmarks/video_frames';
+import { isAllowedMediaUrl } from '../x-bookmarks/url_policy';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export async function run(): Promise<TestSuiteResult> {
@@ -808,6 +809,35 @@ export async function run(): Promise<TestSuiteResult> {
     runner.test('pickBestVariantUrl は variants 無しなら undefined', () => {
       const url = videoInternals.pickBestVariantUrl({ media_key: 'k', type: 'video' });
       assert.strictEqual(url, undefined);
+    });
+
+    runner.section('x_video_frames: isAllowedMediaUrl (SSRF guard)');
+
+    runner.test('https の twimg.com / サブドメインは許可', () => {
+      assert.strictEqual(isAllowedMediaUrl('https://video.twimg.com/ext_tw_video/1/pu/vid/720x1280/a.mp4'), true);
+      assert.strictEqual(isAllowedMediaUrl('https://pbs.twimg.com/x.jpg'), true);
+      assert.strictEqual(isAllowedMediaUrl('https://twimg.com/x'), true);
+    });
+
+    runner.test('http (平文) は拒否', () => {
+      assert.strictEqual(isAllowedMediaUrl('http://video.twimg.com/a.mp4'), false);
+    });
+
+    runner.test('内部ホスト / metadata IP / 任意ホストは拒否', () => {
+      assert.strictEqual(isAllowedMediaUrl('http://169.254.169.254/latest/meta-data/'), false);
+      assert.strictEqual(isAllowedMediaUrl('https://169.254.169.254/'), false);
+      assert.strictEqual(isAllowedMediaUrl('http://127.0.0.1:8080/'), false);
+      assert.strictEqual(isAllowedMediaUrl('https://evil.example.com/a.mp4'), false);
+    });
+
+    runner.test('twimg.com を装う look-alike は拒否', () => {
+      assert.strictEqual(isAllowedMediaUrl('https://evil-twimg.com/a.mp4'), false);
+      assert.strictEqual(isAllowedMediaUrl('https://video.twimg.com.attacker.tld/a.mp4'), false);
+    });
+
+    runner.test('不正な URL 文字列は拒否', () => {
+      assert.strictEqual(isAllowedMediaUrl('not a url'), false);
+      assert.strictEqual(isAllowedMediaUrl(''), false);
     });
 
     runner.section('x_video_frames: isVideoFramesEnabled');

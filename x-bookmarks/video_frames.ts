@@ -25,6 +25,7 @@ import path from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { getVaultRoot } from '../config';
 import type { XMediaResponse, XMediaVariant } from './types';
+import { isAllowedMediaUrl } from './url_policy';
 
 // API 型を再 export (呼び出し側の便宜)
 export type XMedia = XMediaResponse;
@@ -49,6 +50,7 @@ export interface VideoFrameResult {
     | 'no_duration'
     | 'too_long'
     | 'too_large'
+    | 'disallowed_url'
     | 'download_failed'
     | 'ffmpeg_missing'
     | 'ffmpeg_failed'
@@ -161,6 +163,13 @@ async function downloadVideo(
   maxSizeMb: number
 ): Promise<void> {
   const maxBytes = maxSizeMb * 1024 * 1024;
+
+  // SSRF guard: the URL comes from the X API media variants and is fetched
+  // directly, so confirm it targets X's media CDN over https before any request
+  // (blocks internal hosts / cloud metadata). See url_policy.ts.
+  if (!isAllowedMediaUrl(url)) {
+    throw new Error(`disallowed media host (expected https *.twimg.com): ${url}`);
+  }
 
   // HEAD pre-check (失敗は GET に進む。ただし「サイズ超過」エラーだけは伝播)
   try {
@@ -358,10 +367,15 @@ export async function extractFramesFromTweetVideo(
   } catch (e: any) {
     const msg = String(e?.message ?? e);
     cleanupSource();
+    const skipped: VideoFrameResult['skipped'] = /disallowed media host/.test(msg)
+      ? 'disallowed_url'
+      : /exceeds.*cap/.test(msg)
+        ? 'too_large'
+        : 'download_failed';
     return {
       frames: [],
       durationSec,
-      skipped: /exceeds.*cap/.test(msg) ? 'too_large' : 'download_failed',
+      skipped,
       message: msg,
     };
   }
