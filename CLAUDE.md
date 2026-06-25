@@ -148,14 +148,20 @@ Gmail の読取・ラベル付けは**常に都度ユーザー承認**を通す 
 - `.pre-commit-config.yaml` の `gitleaks` rev (youtube / SDK。`pre-commit autoupdate` で追従)
 - `ops-logging` skill の `mask()` (`capture-command.sh`)
 
-> **(ユーザー層・任意)** 開発者が egress hook を `~/.claude/hooks/block-secret-egress.py`
-> として**ユーザー層**にも配置している場合 (= リポ外の素のセッションでの `git clone` 等を
-> 覆うため)、それも**同じ secret パターンのコピー**。リポに含まれない手元ファイルなので
-> 上の「1 PR で同時」には乗らないが、**四半期レビュー時に各自のユーザー層コピーも更新**する
-> こと (古いままだとリポ外セッションだけ検出漏れ = 穴になる)。
+> **(ユーザー層・任意)** リポ外の素のセッション (例: `~/dev` 配下に OSS を `git clone` して
+> 調べる) も egress で覆うには、egress hook を**ユーザー層** (`~/.claude/hooks/block-secret-egress.py`)
+> にも置く。配置方法は 2 通りで、**drift 耐性が違う**:
+> - **推奨 (symlink / 自動同期)**: リポのクローンへ symlink する
+>   (`ln -s <clone>/.claude/hooks/block-secret-egress.py ~/.claude/hooks/block-secret-egress.py`)。
+>   `git pull` でユーザー層コピーも自動更新され drift しない (同期対象は 3 系統のまま)。
+>   ただしそのクローンが存在し pull されていることが前提 (消す/移動すると hook が壊れる)。
+> - **コピー (独立だが手動同期)**: クローンに依存せず動くが、**git 管理外で気付けない 4 つ目のコピー**
+>   になる。古いままだと**リポ外セッションだけ検出漏れ = 穴**になるため、**四半期レビュー時に
+>   各自のユーザー層コピーも必ず更新**する。
 
 - **更新トリガ**: GitHub / OpenAI / クラウドが新トークン形式をリリースした時。
-- **定期レビュー**: **四半期ごと**に 3 系統 (＋上記ユーザー層コピー) の差分を突き合わせ、漏れを潰す。
+- **定期レビュー**: **四半期ごと**に 3 系統 (ユーザー層を symlink でなく**コピー**配置している各自は
+  + そのコピー) の差分を突き合わせ、漏れを潰す。
 
 ## Branch naming
 
