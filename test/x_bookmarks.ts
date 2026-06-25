@@ -840,6 +840,52 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(isAllowedMediaUrl(''), false);
     });
 
+    runner.section('x_video_frames: fetchAllowlisted (redirect SSRF)');
+
+    await runner.testAsync('内部ホストへの redirect を拒否し、その host へは fetch しない', async () => {
+      const calls: string[] = [];
+      const orig = globalThis.fetch;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const u = String(input);
+        calls.push(u);
+        // allowlist 済み twimg から metadata エンドポイントへ open-redirect させる
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'http://169.254.169.254/latest/meta-data/' },
+        });
+      }) as typeof fetch;
+      try {
+        await assert.rejects(
+          videoInternals.fetchAllowlisted('https://video.twimg.com/a.mp4', {}),
+          /disallowed media host/
+        );
+        assert.ok(!calls.some(u => u.includes('169.254')), '内部ホストへ fetch してはいけない');
+      } finally {
+        globalThis.fetch = orig;
+      }
+    });
+
+    await runner.testAsync('allowlist 内の redirect は追従する', async () => {
+      const orig = globalThis.fetch;
+      let hop = 0;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const u = String(input);
+        if (hop++ === 0 && u === 'https://video.twimg.com/a.mp4') {
+          return new Response(null, {
+            status: 302,
+            headers: { location: 'https://video.twimg.com/cdn/a.mp4' },
+          });
+        }
+        return new Response('ok', { status: 200 });
+      }) as typeof fetch;
+      try {
+        const res = await videoInternals.fetchAllowlisted('https://video.twimg.com/a.mp4', {});
+        assert.strictEqual(res.status, 200);
+      } finally {
+        globalThis.fetch = orig;
+      }
+    });
+
     runner.section('x_video_frames: isVideoFramesEnabled');
 
     runner.test('X_VIDEO_FRAMES=true で有効', () => {
