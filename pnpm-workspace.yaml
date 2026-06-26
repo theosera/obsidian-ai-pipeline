@@ -2,6 +2,15 @@
 # dependency build scripts by default; this allow-list lets better-sqlite3
 # compile its native binding. Moved here from package.json's "pnpm" field,
 # which pnpm v11 no longer reads (see https://pnpm.io/settings).
+#
+# Supply-chain posture (handover #6): keep this list MINIMAL — only packages
+# that genuinely need to run a build script at install time. Each entry is an
+# install script we explicitly trust to execute. Intentionally NOT listed:
+#   - @napi-rs/keyring / playwright — ship prebuilt platform binaries via
+#     optional deps; pnpm reports no build script for them, so no entry needed.
+#   - esbuild — has an install script but works from its prebuilt
+#     @esbuild/<platform> binary; left blocked (pnpm warns it is "ignored",
+#     which is expected) rather than widening the trusted-script surface.
 onlyBuiltDependencies:
   - better-sqlite3
 
