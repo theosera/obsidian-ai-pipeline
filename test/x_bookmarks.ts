@@ -35,6 +35,7 @@ import { XBookmarksDb, getDb } from '../x-bookmarks/db';
 import Database from 'better-sqlite3';
 import { __test as authInternals } from '../x-bookmarks/auth_server';
 import { __test as videoInternals } from '../x-bookmarks/video_frames';
+import { isAllowedMediaUrl } from '../x-bookmarks/url_policy';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export async function run(): Promise<TestSuiteResult> {
@@ -808,6 +809,81 @@ export async function run(): Promise<TestSuiteResult> {
     runner.test('pickBestVariantUrl は variants 無しなら undefined', () => {
       const url = videoInternals.pickBestVariantUrl({ media_key: 'k', type: 'video' });
       assert.strictEqual(url, undefined);
+    });
+
+    runner.section('x_video_frames: isAllowedMediaUrl (SSRF guard)');
+
+    runner.test('https の twimg.com / サブドメインは許可', () => {
+      assert.strictEqual(isAllowedMediaUrl('https://video.twimg.com/ext_tw_video/1/pu/vid/720x1280/a.mp4'), true);
+      assert.strictEqual(isAllowedMediaUrl('https://pbs.twimg.com/x.jpg'), true);
+      assert.strictEqual(isAllowedMediaUrl('https://twimg.com/x'), true);
+    });
+
+    runner.test('http (平文) は拒否', () => {
+      assert.strictEqual(isAllowedMediaUrl('http://video.twimg.com/a.mp4'), false);
+    });
+
+    runner.test('内部ホスト / metadata IP / 任意ホストは拒否', () => {
+      assert.strictEqual(isAllowedMediaUrl('http://169.254.169.254/latest/meta-data/'), false);
+      assert.strictEqual(isAllowedMediaUrl('https://169.254.169.254/'), false);
+      assert.strictEqual(isAllowedMediaUrl('http://127.0.0.1:8080/'), false);
+      assert.strictEqual(isAllowedMediaUrl('https://evil.example.com/a.mp4'), false);
+    });
+
+    runner.test('twimg.com を装う look-alike は拒否', () => {
+      assert.strictEqual(isAllowedMediaUrl('https://evil-twimg.com/a.mp4'), false);
+      assert.strictEqual(isAllowedMediaUrl('https://video.twimg.com.attacker.tld/a.mp4'), false);
+    });
+
+    runner.test('不正な URL 文字列は拒否', () => {
+      assert.strictEqual(isAllowedMediaUrl('not a url'), false);
+      assert.strictEqual(isAllowedMediaUrl(''), false);
+    });
+
+    runner.section('x_video_frames: fetchAllowlisted (redirect SSRF)');
+
+    await runner.testAsync('内部ホストへの redirect を拒否し、その host へは fetch しない', async () => {
+      const calls: string[] = [];
+      const orig = globalThis.fetch;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const u = String(input);
+        calls.push(u);
+        // allowlist 済み twimg から metadata エンドポイントへ open-redirect させる
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'http://169.254.169.254/latest/meta-data/' },
+        });
+      }) as typeof fetch;
+      try {
+        await assert.rejects(
+          videoInternals.fetchAllowlisted('https://video.twimg.com/a.mp4', {}),
+          /disallowed media host/
+        );
+        assert.ok(!calls.some(u => u.includes('169.254')), '内部ホストへ fetch してはいけない');
+      } finally {
+        globalThis.fetch = orig;
+      }
+    });
+
+    await runner.testAsync('allowlist 内の redirect は追従する', async () => {
+      const orig = globalThis.fetch;
+      let hop = 0;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const u = String(input);
+        if (hop++ === 0 && u === 'https://video.twimg.com/a.mp4') {
+          return new Response(null, {
+            status: 302,
+            headers: { location: 'https://video.twimg.com/cdn/a.mp4' },
+          });
+        }
+        return new Response('ok', { status: 200 });
+      }) as typeof fetch;
+      try {
+        const res = await videoInternals.fetchAllowlisted('https://video.twimg.com/a.mp4', {});
+        assert.strictEqual(res.status, 200);
+      } finally {
+        globalThis.fetch = orig;
+      }
     });
 
     runner.section('x_video_frames: isVideoFramesEnabled');
