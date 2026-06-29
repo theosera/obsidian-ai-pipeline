@@ -25,6 +25,7 @@ import path from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { getVaultRoot } from '../config';
 import type { XMediaResponse, XMediaVariant } from './types';
+import { isAllowedMediaUrl } from './url_policy';
 
 // API 型を再 export (呼び出し側の便宜)
 export type XMedia = XMediaResponse;
@@ -49,6 +50,7 @@ export interface VideoFrameResult {
     | 'no_duration'
     | 'too_long'
     | 'too_large'
+    | 'disallowed_url'
     | 'download_failed'
     | 'ffmpeg_missing'
     | 'ffmpeg_failed'
@@ -148,6 +150,35 @@ function ffmpegAvailable(ffmpegPath: string): boolean {
 const FETCH_UA = 'obsidian-ai-pipeline/1.0 (+https://github.com/theosera/obsidian-ai-pipeline)';
 const HEAD_TIMEOUT_MS = 10_000;
 const GET_TIMEOUT_MS = 60_000;
+const MAX_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * fetch() with manual redirect handling where **every hop** must pass the host
+ * allowlist. Node's default `redirect: 'follow'` would chase a 30x from an
+ * allowlisted `twimg.com` URL (e.g. an open redirect on the CDN) to an internal
+ * host / metadata endpoint without re-checking — re-opening the SSRF path the
+ * allowlist closes. Here each `Location` is resolved and re-validated before it
+ * is followed, and a disallowed redirect target is rejected.
+ */
+async function fetchAllowlisted(url: string, init: RequestInit): Promise<Response> {
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    if (!isAllowedMediaUrl(current)) {
+      throw new Error(`disallowed media host (expected https *.twimg.com): ${current}`);
+    }
+    const res = await fetch(current, { ...init, redirect: 'manual' });
+    if (!REDIRECT_STATUSES.has(res.status)) return res;
+    const location = res.headers.get('location');
+    if (!location) {
+      throw new Error(`redirect (${res.status}) without Location from ${current}`);
+    }
+    if (hop >= MAX_REDIRECTS) {
+      throw new Error(`too many redirects (>${MAX_REDIRECTS}) from ${url}`);
+    }
+    current = new URL(location, current).toString();
+  }
+}
 
 /**
  * 動画 URL を mp4 として保存。
@@ -164,9 +195,14 @@ async function downloadVideo(
 ): Promise<void> {
   const maxBytes = maxSizeMb * 1024 * 1024;
 
+  // SSRF guard: the URL comes from the X API media variants and is fetched
+  // directly. fetchAllowlisted() confirms every hop (incl. redirects) targets
+  // X's media CDN over https, blocking internal hosts / cloud metadata. See
+  // url_policy.ts.
+
   // HEAD pre-check (失敗は GET に進む。ただし「サイズ超過」エラーだけは伝播)
   try {
-    const head = await fetch(url, {
+    const head = await fetchAllowlisted(url, {
       method: 'HEAD',
       headers: { 'User-Agent': FETCH_UA },
       signal: AbortSignal.timeout(HEAD_TIMEOUT_MS),
@@ -176,11 +212,13 @@ async function downloadVideo(
       throw new Error(`video size ${(Number(len) / 1024 / 1024).toFixed(1)}MB exceeds ${maxSizeMb}MB cap`);
     }
   } catch (e: any) {
-    if (/exceeds.*cap/.test(String(e?.message))) throw e;
-    // HEAD timeout / 405 / 4xx は GET で再試行
+    const m = String(e?.message);
+    // Surface a size cap or a disallowed/redirect-to-internal host immediately;
+    // a transient HEAD failure (timeout / 405 / 4xx) still falls through to GET.
+    if (/exceeds.*cap/.test(m) || /disallowed media host/.test(m)) throw e;
   }
 
-  const res = await fetch(url, {
+  const res = await fetchAllowlisted(url, {
     headers: { 'User-Agent': FETCH_UA },
     signal: AbortSignal.timeout(GET_TIMEOUT_MS),
   });
@@ -402,10 +440,15 @@ export async function extractFramesFromTweetVideo(
   } catch (e: any) {
     const msg = String(e?.message ?? e);
     cleanupSource();
+    const skipped: VideoFrameResult['skipped'] = /disallowed media host/.test(msg)
+      ? 'disallowed_url'
+      : /exceeds.*cap/.test(msg)
+        ? 'too_large'
+        : 'download_failed';
     return {
       frames: [],
       durationSec,
-      skipped: /exceeds.*cap/.test(msg) ? 'too_large' : 'download_failed',
+      skipped,
       message: msg,
     };
   }
@@ -480,4 +523,5 @@ export const __test = {
   formatTimestamp,
   alreadyExtracted,
   renderKeyFramesSection,
+  fetchAllowlisted,
 };

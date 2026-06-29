@@ -40,6 +40,9 @@ packages/*/node_modules/
 .*
 # But specifically allow gitignore itself
 !.gitignore
+# Allow the project pnpm config (supply-chain policy; no auth tokens — those
+# live in a user/global ~/.npmrc which stays untracked).
+!.npmrc
 # Allow GitHub Actions workflows (CI)
 !.github/
 !.github/**
