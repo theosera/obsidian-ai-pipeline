@@ -229,13 +229,17 @@ async function downloadVideo(
 function runWithTimeout(cmd: string, args: string[], timeoutMs: number): Promise<number> {
   return new Promise((resolve) => {
     const proc = spawn(cmd, args, { stdio: 'ignore' });
+    let timedOut = false;
     const timer = setTimeout(() => {
+      timedOut = true;
       try { proc.kill('SIGKILL'); } catch { /* noop */ }
-      resolve(124);
     }, timeoutMs);
+    // timeout 時もタイマーからは kill のみ行い、settle は exit ハンドラに一本化する。
+    // こうすると SIGKILL されたプロセスが完全に終了してから resolve されるため、
+    // 呼び出し側 (extractOneFrame) の出力ファイル削除と書き込みが競合しない。
     proc.on('exit', (code) => {
       clearTimeout(timer);
-      resolve(code ?? -1);
+      resolve(timedOut ? 124 : (code ?? -1));
     });
     proc.on('error', () => {
       clearTimeout(timer);
@@ -269,6 +273,15 @@ async function extractOneFrame(
     timeoutMs,
   );
   if (direct === 0 && fs.existsSync(outWebp)) return 0;
+  // ffmpeg/cwebp は outWebp に直接書くため、失敗時に部分ファイルが残りうる。
+  // 残すと次回 alreadyExtracted() が「存在=成功」と誤認し、壊れたフレームが
+  // 永続スキップされる。成功時以外は必ず除去し、完全なファイルだけを残す。
+  const removeOutWebp = () => {
+    if (fs.existsSync(outWebp)) {
+      try { fs.unlinkSync(outWebp); } catch { /* best-effort */ }
+    }
+  };
+  removeOutWebp();
   if (direct === 124) return 124;
 
   // フォールバック: PNG 抽出 → cwebp 変換
@@ -276,7 +289,12 @@ async function extractOneFrame(
   try {
     const png = await runWithTimeout(ffmpegPath, ['-y', ...seek, tmpPng], timeoutMs);
     if (png !== 0 || !fs.existsSync(tmpPng)) return png === 0 ? -1 : png;
-    return await runWithTimeout(cwebpPath, ['-quiet', '-q', '75', tmpPng, '-o', outWebp], timeoutMs);
+    const cwebp = await runWithTimeout(cwebpPath, ['-quiet', '-q', '75', tmpPng, '-o', outWebp], timeoutMs);
+    if (cwebp !== 0 || !fs.existsSync(outWebp)) {
+      removeOutWebp();
+      return cwebp === 0 ? -1 : cwebp;
+    }
+    return 0;
   } finally {
     if (fs.existsSync(tmpPng)) {
       try { fs.unlinkSync(tmpPng); } catch { /* best-effort */ }
@@ -404,8 +422,8 @@ export async function extractFramesFromTweetVideo(
       // 部分成功で frames を返すと renderKeyFramesSection が「成功」と
       // 解釈してしまい、本文上で抽出失敗が見えなくなる。失敗時は frames を
       // 空配列で返し、呼び出し側で必ず「取得失敗」見出しが出るようにする。
-      // (ディスクに残った partial frame は次回 alreadyExtracted=false で
-      //  再抽出のリトライ対象になる)
+      // (失敗フレームの partial ファイルは extractOneFrame 内で除去済みのため、
+      //  次回は alreadyExtracted=false となり確実に再抽出のリトライ対象になる)
       cleanupSource();
       return {
         frames: [],
