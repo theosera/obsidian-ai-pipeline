@@ -72,6 +72,8 @@ export interface ExtractFramesOptions {
   vaultRoot?: string;
   /** ffmpeg バイナリパス override (テスト用) */
   ffmpegPath?: string;
+  /** cwebp バイナリパス override (テスト用)。libwebp 非対応 ffmpeg のフォールバックで使う */
+  cwebpPath?: string;
 }
 
 const DEFAULT_OPTS = {
@@ -259,42 +261,83 @@ async function downloadVideo(
 }
 
 /**
- * ffmpeg で 1 frame webp を生成。timeoutMs 内に終わらなければ kill。
- * 戻り値は子プロセス exit code (0 が成功)。
+ * 子プロセスを timeoutMs 付きで実行し exit code を返す。
+ * 124 = timeout で kill、-1 = spawn 自体の失敗 (バイナリ不在等)。
  */
-async function extractOneFrame(
-  ffmpegPath: string,
-  inputMp4: string,
-  timestampSec: number,
-  outWebp: string,
-  timeoutMs = 15_000
-): Promise<number> {
+function runWithTimeout(cmd: string, args: string[], timeoutMs: number): Promise<number> {
   return new Promise((resolve) => {
-    const proc = spawn(ffmpegPath, [
-      '-y',
-      '-ss', String(timestampSec),
-      '-i', inputMp4,
-      '-frames:v', '1',
-      '-vf', "scale='min(720,iw)':-2",
-      '-c:v', 'libwebp',
-      '-quality', '75',
-      outWebp,
-    ], { stdio: 'ignore' });
-
+    const proc = spawn(cmd, args, { stdio: 'ignore' });
+    let timedOut = false;
     const timer = setTimeout(() => {
+      timedOut = true;
       try { proc.kill('SIGKILL'); } catch { /* noop */ }
-      resolve(124); // timeout
     }, timeoutMs);
-
+    // timeout 時もタイマーからは kill のみ行い、settle は exit ハンドラに一本化する。
+    // こうすると SIGKILL されたプロセスが完全に終了してから resolve されるため、
+    // 呼び出し側 (extractOneFrame) の出力ファイル削除と書き込みが競合しない。
     proc.on('exit', (code) => {
       clearTimeout(timer);
-      resolve(code ?? -1);
+      resolve(timedOut ? 124 : (code ?? -1));
     });
     proc.on('error', () => {
       clearTimeout(timer);
       resolve(-1);
     });
   });
+}
+
+/**
+ * 1 frame webp を生成。戻り値は exit code (0 が成功 / 124 が timeout)。
+ *
+ * 2 段構え (Homebrew 標準 ffmpeg は libwebp 無効でビルドされるため):
+ *   1. `ffmpeg -c:v libwebp` で直接 .webp (libwebp 有効ビルドのときだけ成功)
+ *   2. 失敗時フォールバック: `ffmpeg` で PNG 抽出 → `cwebp` で .webp 変換
+ * timeout (124) はリトライしない (遅い/不正な入力の可能性が高いため)。
+ */
+async function extractOneFrame(
+  ffmpegPath: string,
+  cwebpPath: string,
+  inputMp4: string,
+  timestampSec: number,
+  outWebp: string,
+  timeoutMs = 15_000
+): Promise<number> {
+  const scale = "scale='min(720,iw)':-2";
+  const seek = ['-ss', String(timestampSec), '-i', inputMp4, '-frames:v', '1', '-vf', scale];
+
+  const direct = await runWithTimeout(
+    ffmpegPath,
+    ['-y', ...seek, '-c:v', 'libwebp', '-quality', '75', outWebp],
+    timeoutMs,
+  );
+  if (direct === 0 && fs.existsSync(outWebp)) return 0;
+  // ffmpeg/cwebp は outWebp に直接書くため、失敗時に部分ファイルが残りうる。
+  // 残すと次回 alreadyExtracted() が「存在=成功」と誤認し、壊れたフレームが
+  // 永続スキップされる。成功時以外は必ず除去し、完全なファイルだけを残す。
+  const removeOutWebp = () => {
+    if (fs.existsSync(outWebp)) {
+      try { fs.unlinkSync(outWebp); } catch { /* best-effort */ }
+    }
+  };
+  removeOutWebp();
+  if (direct === 124) return 124;
+
+  // フォールバック: PNG 抽出 → cwebp 変換
+  const tmpPng = `${outWebp}.tmp.png`;
+  try {
+    const png = await runWithTimeout(ffmpegPath, ['-y', ...seek, tmpPng], timeoutMs);
+    if (png !== 0 || !fs.existsSync(tmpPng)) return png === 0 ? -1 : png;
+    const cwebp = await runWithTimeout(cwebpPath, ['-quiet', '-q', '75', tmpPng, '-o', outWebp], timeoutMs);
+    if (cwebp !== 0 || !fs.existsSync(outWebp)) {
+      removeOutWebp();
+      return cwebp === 0 ? -1 : cwebp;
+    }
+    return 0;
+  } finally {
+    if (fs.existsSync(tmpPng)) {
+      try { fs.unlinkSync(tmpPng); } catch { /* best-effort */ }
+    }
+  }
 }
 
 /**
@@ -326,6 +369,7 @@ export async function extractFramesFromTweetVideo(
   const log = opts.logger ?? (() => {});
   const vaultRoot = opts.vaultRoot ?? getVaultRoot();
   const ffmpegPath = opts.ffmpegPath ?? 'ffmpeg';
+  const cwebpPath = opts.cwebpPath ?? 'cwebp';
 
   if (!isVideoFramesEnabled()) {
     return { frames: [], skipped: 'feature_disabled' };
@@ -416,13 +460,13 @@ export async function extractFramesFromTweetVideo(
     const fileName = `frame-${String(i + 1).padStart(2, '0')}.webp`;
     const outPath = path.join(attachDir, fileName);
     log(`   🎞️  frame ${i + 1}/${timestamps.length} @ ${formatTimestamp(t)}`);
-    const code = await extractOneFrame(ffmpegPath, sourceMp4, t, outPath);
+    const code = await extractOneFrame(ffmpegPath, cwebpPath, sourceMp4, t, outPath);
     if (code !== 0 || !fs.existsSync(outPath)) {
       // 部分成功で frames を返すと renderKeyFramesSection が「成功」と
       // 解釈してしまい、本文上で抽出失敗が見えなくなる。失敗時は frames を
       // 空配列で返し、呼び出し側で必ず「取得失敗」見出しが出るようにする。
-      // (ディスクに残った partial frame は次回 alreadyExtracted=false で
-      //  再抽出のリトライ対象になる)
+      // (失敗フレームの partial ファイルは extractOneFrame 内で除去済みのため、
+      //  次回は alreadyExtracted=false となり確実に再抽出のリトライ対象になる)
       cleanupSource();
       return {
         frames: [],
