@@ -181,14 +181,15 @@ jobs:
           git config user.name "llm-sec-weekly-bot"
           git config user.email "llm-sec-weekly-bot@users.noreply.github.com"
 
-          # 個別パスを add (3 種: raw md 群 / JSON / index.md)。
-          # DB は vault repo の .gitignore で除外されていれば -f が必要だが、
-          # runbook で「vault repo は threat_reports.db を gitignore しない」を
-          # 約束しているのでここでは普通の git add を使う。
-          # それでも追跡されていなかった場合に備えて 1 回 -f でリトライする。
-          git add "${TR_DIR}/raw/" "${TR_DIR}/.threat_reports.json" "${TR_DIR}/_index.md" || true
+          # 個別パスを add (4 種: raw md 群 / JSON / index.md / DB)。すべて本パイプラインの
+          # 既知の出力なので -f を付け、vault repo の .gitignore 方針に依存せず確実に追跡する。
+          # 特に `.threat_reports.json` は dot 始まりで、Obsidian Vault 共通の
+          # `.*` (全 dotfile 除外) gitignore に黙って弾かれる (commit から欠落し
+          # _index.md の Dataview が壊れる) ため -f が必須。-A は使わず明示列挙のまま
+          # (CLAUDE.md の secret 混入防止規約)。
+          git add -f "${TR_DIR}/raw/" "${TR_DIR}/.threat_reports.json" "${TR_DIR}/_index.md" || true
           if [ -f "${DB_PATH}" ]; then
-            git add "${DB_PATH}" || git add -f "${DB_PATH}"
+            git add -f "${DB_PATH}"
           fi
 
           if git diff --staged --quiet; then
