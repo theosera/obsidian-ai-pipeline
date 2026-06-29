@@ -148,14 +148,10 @@ jobs:
             full="${VAULT_ROOT}/${rel}"
             [ -f "${full}" ] || continue
             json="$(python3 "${SCANNER}" --json "${full}")" || true
-            verdict="$(printf '%s' "${json}" | python3 -c '
-import sys, json
-d = json.load(sys.stdin)
-CONCEAL = {"invisible-char", "homoglyph", "hidden-comment", "multiline-injection"}
-cv = d.get("structural", {}).get("contract_violations", [])
-conceal = [s for s in d.get("signals", []) if s.get("kind") in CONCEAL]
-print("BLOCK" if (cv or conceal) else "OK")
-')"
+            # NOTE: 1 行に畳む。インデント付き複数行を YAML の `run: |` ブロックに
+            # 埋めると、python ソースの列0行がブロックスカラを終端させ workflow 全体が
+            # parse 不能 (= startup_failure) になる。CONCEAL 系 signal か契約違反で BLOCK。
+            verdict="$(printf '%s' "${json}" | python3 -c 'import sys, json; d = json.load(sys.stdin); CONCEAL = {"invisible-char", "homoglyph", "hidden-comment", "multiline-injection"}; cv = d.get("structural", {}).get("contract_violations", []); conceal = [s for s in d.get("signals", []) if s.get("kind") in CONCEAL]; print("BLOCK" if (cv or conceal) else "OK")')"
             if [ "${verdict}" = "BLOCK" ]; then
               echo "::error::L1 concealment/contract gate tripped: ${rel}"
               tripped=1
