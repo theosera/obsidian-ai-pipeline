@@ -100,6 +100,18 @@ export interface ReportReviewRow {
   reviewed_at: string;
 }
 
+/**
+ * per-repo 「自動トリアージ (Level 2) 実行済み」フラグ 1 行 (report_repo_checks)。
+ * `reviews` (人手レビュー済み) とは **別軸**: こちらは「`--analyze-threat-relevance` が
+ * 該当性の **下書きノートを生成した** 時刻」。`/sec-review` がこの 2 軸で
+ * 「下書きあり・人手未レビュー」状態を区別できるようにする (checked_untrusted)。
+ */
+export interface ReportCheckRow {
+  report_id: string;
+  repo_key: string;
+  checked_at: string;
+}
+
 /** per-repo 該当性ノート 1 行 (relevance_notes)。 */
 export interface RelevanceNoteRow {
   report_id: string;
@@ -221,6 +233,18 @@ CREATE TABLE IF NOT EXISTS relevance_notes (
   PRIMARY KEY (report_id, item_kind, item_key, repo_key)
 );
 CREATE INDEX IF NOT EXISTS idx_relnotes_repo ON relevance_notes(report_id, repo_key);
+
+-- per-repo 自動トリアージ (Level 2) 実行済みフラグ。1 行 = (レポート, リポジトリ) で
+-- --analyze-threat-relevance が下書きノートを生成した時刻。report_repo_reviews (人手
+-- レビュー済み) とは独立した別軸 (checked_untrusted)。新規テーブルのため移行は不要
+-- (CREATE TABLE IF NOT EXISTS で冪等)。
+CREATE TABLE IF NOT EXISTS report_repo_checks (
+  report_id  TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  repo_key   TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  PRIMARY KEY (report_id, repo_key)
+);
+CREATE INDEX IF NOT EXISTS idx_rrc_repo ON report_repo_checks(repo_key);
 `;
 
 export class ThreatReportsDb {
@@ -561,10 +585,11 @@ export class ThreatReportsDb {
     return this.getNote(reportId, 'vuln', name, repoKey);
   }
 
-  /** 全 per-repo 該当性ノート (JSON エクスポート用)。 */
+  /** 全 per-repo 該当性ノート (JSON エクスポート用)。安定順で返す (export の決定性)。 */
   listRelevanceNotes(): RelevanceNoteRow[] {
     return this.db.prepare(
-      'SELECT report_id, item_kind, item_key, repo_key, note, updated_at FROM relevance_notes'
+      `SELECT report_id, item_kind, item_key, repo_key, note, updated_at FROM relevance_notes
+       ORDER BY report_id ASC, item_kind ASC, item_key ASC, repo_key ASC`
     ).all() as RelevanceNoteRow[];
   }
 
@@ -615,11 +640,35 @@ export class ThreatReportsDb {
     return 1;
   }
 
-  /** 全 per-repo レビュー済みフラグ (JSON エクスポート用)。 */
+  /** 全 per-repo レビュー済みフラグ (JSON エクスポート用)。安定順で返す (export の決定性)。 */
   listReportReviews(): ReportReviewRow[] {
     return this.db.prepare(
-      'SELECT report_id, repo_key, reviewed_at FROM report_repo_reviews'
+      'SELECT report_id, repo_key, reviewed_at FROM report_repo_reviews ORDER BY report_id ASC, repo_key ASC'
     ).all() as ReportReviewRow[];
+  }
+
+  /**
+   * レポートを **指定リポジトリについて** 「自動トリアージ (Level 2) 実行済み」に印付ける。
+   * `--analyze-threat-relevance` が下書きノートを生成した後に呼ぶ (checked_untrusted)。
+   * 人手レビュー済み (`markReportReviewed`) とは別軸で、再実行で checked_at を更新する。
+   * 戻り値: 1 = 立てた、0 = 該当 report_id が無い。
+   */
+  markReportChecked(id: string, repoKey: string, checkedAt?: string): number {
+    if (this.getReport(id) === undefined) return 0;
+    const at = checkedAt ?? new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO report_repo_checks (report_id, repo_key, checked_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(report_id, repo_key) DO UPDATE SET checked_at = excluded.checked_at
+    `).run(id, repoKey, at);
+    return 1;
+  }
+
+  /** 全 per-repo 自動トリアージ実行済みフラグ (JSON エクスポート用)。安定順で返す (export の決定性)。 */
+  listReportChecks(): ReportCheckRow[] {
+    return this.db.prepare(
+      'SELECT report_id, repo_key, checked_at FROM report_repo_checks ORDER BY report_id ASC, repo_key ASC'
+    ).all() as ReportCheckRow[];
   }
 
   listVulnerabilities(reportId?: string): VulnerabilityRow[] {

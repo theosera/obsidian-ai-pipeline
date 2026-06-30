@@ -207,8 +207,21 @@ async function main(): Promise<void> {
         model: rel.model,
         redoAll: args.threatRelevanceAll,
         repoKey: target.key,
+        repoRoot: target.root,
         repoProfile: buildRepoProfile(target.root, target.key),
       });
+      // checked_untrusted: 「対象リポで実際に下書きノートが生成された」レポートにのみ印を
+      // 付ける (人手レビュー済みフラグとは別軸)。**finding を持つだけでは付けない** — 全 finding が
+      // AI 失敗で NULL のままなら下書きは存在しないので、checks を「下書きあり」シグナルとして
+      // 使う /sec-review を誤導しないため、relevance_notes に対象リポのノートが 1 件以上ある
+      // レポートだけを checked にする (Codex P2)。
+      const checkedAt = new Date().toISOString();
+      const draftedReportIds = new Set<string>(
+        db.listRelevanceNotes()
+          .filter((n) => n.repo_key === target.key)
+          .map((n) => n.report_id),
+      );
+      for (const reportId of draftedReportIds) db.markReportChecked(reportId, target.key, checkedAt);
       const vaultRoot = getVaultRoot();
       const jsonPath = exportThreatReportsJson({ db, vaultRoot });
       const indexPath = regenerateIndexPage({ vaultRoot });
@@ -217,6 +230,7 @@ async function main(): Promise<void> {
       console.log(`   モデル:        ${rel.provider} / ${rel.model}`);
       console.log(`   vuln 判定:     ${stats.vulnAnalyzed} 件 / check 判定: ${stats.implAnalyzed} 件`);
       console.log(`   ⚠ 該当: ${stats.applies} / ? 要確認: ${stats.unclear} / skip(既存): ${stats.skipped} / 失敗: ${stats.failed}`);
+      console.log(`   下書き生成済(checked_untrusted): ${draftedReportIds.size} レポート (人手レビューは /sec-review)`);
       console.log(`   JSON:          ${jsonPath}`);
       console.log(`   index:         ${indexPath}`);
       console.log('   ※ 検知のみ。修正は人手レビュー後に通常 PR フローで行ってください。');
