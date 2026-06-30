@@ -19,7 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
-import { getVaultRoot } from '../config';
+import { getVaultRoot, getPipelineDbDir } from '../config';
 import Database from 'better-sqlite3';
 
 interface BookmarkRow {
@@ -51,7 +51,10 @@ const PROMPT_TEMPLATE_PATH = path.join(
 );
 
 function dbPath(): string {
-  return path.join(getVaultRoot(), '__skills', 'pipeline', 'x_bookmarks.db');
+  // db.ts と同じ getPipelineDbDir() 経由にする。PIPELINE_DB_DIR 上書き時に
+  // sync (db.ts) の書込先と --hands-on の読込先が食い違わないようにするため
+  // (食い違うと「x_bookmarks.db not found」または stale DB 読み込みになる)。
+  return path.join(getPipelineDbDir(), 'x_bookmarks.db');
 }
 
 function loadBookmarksForFolder(folder: string, since?: string): BookmarkRow[] {

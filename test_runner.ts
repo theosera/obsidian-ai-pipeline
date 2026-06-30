@@ -5,6 +5,7 @@
  *
  * 各スイートは `export function run(): { passed, failed }` を提供する。
  */
+import { run as runConfig } from './test/config';
 import { run as runSecurity } from './test/security';
 import { run as runClassifier } from './test/classifier';
 import { run as runPolicy } from './test/policy';
@@ -25,6 +26,7 @@ interface Suite {
 }
 
 const suites: Suite[] = [
+  { name: 'Config', run: runConfig },
   { name: 'Security', run: runSecurity },
   { name: 'Classifier', run: runClassifier },
   { name: 'Policy', run: runPolicy },

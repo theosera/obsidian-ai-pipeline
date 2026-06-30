@@ -20,8 +20,17 @@ const DEFAULTS: Record<string, { fast: string; smart: string }> = {
 // ---------------------------------------------------------------------------
 let _vaultRoot: string | null = null;
 
-export function setVaultRoot(root: string): void {
-  _vaultRoot = path.resolve(root);
+export function setVaultRoot(root: string | null): void {
+  _vaultRoot = root === null ? null : path.resolve(root);
+}
+
+/**
+ * 現在の vault root (未設定なら null) を例外なく覗く。
+ * テストが getVaultRoot() に依存せず save → mutate → restore できるようにするため
+ * (getVaultRoot は未設定時に throw する / 解決後の値しか返さないため save/restore に不向き)。
+ */
+export function peekVaultRoot(): string | null {
+  return _vaultRoot;
 }
 
 export function getVaultRoot(): string {
@@ -51,6 +60,31 @@ const X_BOOKMARKS_BASE_DEFAULT = 'X_Bookmarks';
 
 export function getXBookmarksBaseFolder(): string {
   return process.env.X_BOOKMARKS_FOLDER || X_BOOKMARKS_BASE_DEFAULT;
+}
+
+// ---------------------------------------------------------------------------
+// パイプライン用 SQLite DB のディレクトリ
+//
+// threat_reports.db / x_bookmarks.db (+ WAL/SHM sidecar) を置くディレクトリ。
+// 既定は `<vault>/__skills/pipeline` だが、`PIPELINE_DB_DIR` で上書きできる。
+//
+// 動機: vault を iCloud / クラウドファイル同期下に置くと、SQLite の sidecar
+// (-wal/-shm) が本体 .db と独立同期され DB が desync/巻き戻りする (恒久対策の
+// 経緯は docs/threat_reports.md / PR #112)。DB だけを同期対象外のパスへ逃がす
+// 運用を可能にするためのノブ。
+//
+// 重要: この DB は vault repo に **git-tracked** される設計 (人手フィールド保持 +
+// CI が ingest 結果をコミット → ローカルへ pull)。完全に vault 外へ向けると CI と
+// ローカルで DB が分裂する。git 追跡を保ったまま iCloud 同期だけ避けたい場合は、
+// **vault 作業コピー内の `.nosync` フォルダ** (例 `<vault>/__skills/pipeline.nosync`)
+// を指すこと (macOS iCloud Drive は `.nosync` 付きを同期除外する)。CI は本変数を
+// 設定しないので、CI 側のパスは常に既定のまま (vault repo にコミットされ続ける)。
+// ---------------------------------------------------------------------------
+export function getPipelineDbDir(): string {
+  const override = process.env.PIPELINE_DB_DIR?.trim();
+  const dir = override ? path.resolve(override) : path.join(getVaultRoot(), '__skills', 'pipeline');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 // ---------------------------------------------------------------------------
