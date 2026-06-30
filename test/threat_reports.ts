@@ -1228,6 +1228,30 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  // Codex #112 P2: TRUNCATE は別接続が read lock 中だと throw せず busy=1 を返し、
+  // WAL を畳めないまま「成功」扱いになる。busy を検知して throw することで、取り残し
+  // (= 本体 .db だけ commit すると巻き戻る状態) を握り潰さないことを検証する。
+  runner.test('checkpoint: 別接続が read lock を保持中は busy を検知して throw する', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-busy-'));
+    const file = path.join(dir, 'busy.db');
+    const db = new ThreatReportsDb(file);
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-06-29', rawMarkdown: '' });
+
+    // 別接続で read transaction を張ったまま保持 → WAL を pin し TRUNCATE は busy になる。
+    const reader = new Database(file);
+    reader.exec('BEGIN');
+    reader.prepare('SELECT COUNT(*) AS n FROM reports').get();
+
+    assert.throws(() => db.checkpoint(), /busy=/, 'busy 時は throw して取り残しを surface する');
+
+    // reader を解放すれば畳み込めるようになる。
+    reader.exec('ROLLBACK');
+    reader.close();
+    db.checkpoint();
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   runner.test('close: checkpoint 経由で本体 .db を自己完結させる', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-close-'));
     const file = path.join(dir, 'close.db');

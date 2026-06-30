@@ -660,7 +660,22 @@ export class ThreatReportsDb {
    * 自己完結 (WAL 取り残しゼロ) にする。
    */
   checkpoint(): void {
-    this.db.pragma('wal_checkpoint(TRUNCATE)');
+    // PRAGMA wal_checkpoint(TRUNCATE) は別接続が read lock を保持していると throw せず
+    // busy=1 の行 (log/checkpointed にフレーム残数) を返し、WAL を畳み込めないまま「成功」
+    // 扱いになる。その状態で本体 .db だけを commit すると最新書込を欠く (= このPRが防ぎたい
+    // 巻き戻りそのもの) ため、busy を検査して非ゼロなら throw する (取り残しを握り潰さない)。
+    const rows = this.db.pragma('wal_checkpoint(TRUNCATE)') as Array<{
+      busy: number;
+      log: number;
+      checkpointed: number;
+    }>;
+    const result = rows[0];
+    if (result && result.busy !== 0) {
+      throw new Error(
+        `wal_checkpoint(TRUNCATE) busy=${result.busy} (log=${result.log}, checkpointed=${result.checkpointed}): ` +
+          '別接続が WAL を保持しているため本体 .db へ畳み込めませんでした。-wal にフレームが残存している可能性があります。'
+      );
+    }
   }
 
   close(): void {
