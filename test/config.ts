@@ -6,15 +6,18 @@ import assert from 'node:assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { getPipelineDbDir, setVaultRoot } from '../config';
+import { getPipelineDbDir, setVaultRoot, peekVaultRoot } from '../config';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export function run(): TestSuiteResult {
   const runner = new TestRunner();
   runner.section('config: getPipelineDbDir');
 
-  // env はプロセス全体の状態なので、スイート終了時に必ず元へ戻す (他スイートへ汚染しない)。
+  // env も module-global の vaultRoot もプロセス全体の状態なので、スイート終了時に必ず
+  // 元へ戻す (他スイートへ汚染しない)。特に vaultRoot は本スイートが削除済み tmpdir を
+  // 指したまま残ると後続スイートを壊しうる。
   const savedEnv = process.env.PIPELINE_DB_DIR;
+  const savedVaultRoot = peekVaultRoot();
 
   runner.test('PIPELINE_DB_DIR 未設定なら <vault>/__skills/pipeline を使い、無ければ作る', () => {
     const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-'));
@@ -57,6 +60,7 @@ export function run(): TestSuiteResult {
 
   if (savedEnv === undefined) delete process.env.PIPELINE_DB_DIR;
   else process.env.PIPELINE_DB_DIR = savedEnv;
+  setVaultRoot(savedVaultRoot);
 
   return runner.report();
 }

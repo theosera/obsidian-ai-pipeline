@@ -20,8 +20,17 @@ const DEFAULTS: Record<string, { fast: string; smart: string }> = {
 // ---------------------------------------------------------------------------
 let _vaultRoot: string | null = null;
 
-export function setVaultRoot(root: string): void {
-  _vaultRoot = path.resolve(root);
+export function setVaultRoot(root: string | null): void {
+  _vaultRoot = root === null ? null : path.resolve(root);
+}
+
+/**
+ * 現在の vault root (未設定なら null) を例外なく覗く。
+ * テストが getVaultRoot() に依存せず save → mutate → restore できるようにするため
+ * (getVaultRoot は未設定時に throw する / 解決後の値しか返さないため save/restore に不向き)。
+ */
+export function peekVaultRoot(): string | null {
+  return _vaultRoot;
 }
 
 export function getVaultRoot(): string {

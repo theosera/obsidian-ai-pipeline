@@ -56,6 +56,15 @@ desync・巻き戻りする (経緯は本書の WAL 注記 / PR #112)。DB を�
 非推奨)。なお本変数 **未設定なら従来どおり** `<vault>/__skills/pipeline` を使う
 (= このノブはオプトイン・非破壊)。
 
+移行 PR を出す際の確認事項 (チェックリスト):
+
+- [ ] CI の vault チェックアウトパスを `llm-sec-weekly.yml` の実値と突き合わせる
+      (上記 `${{ github.workspace }}/vault/...` は現行 workflow の `VAULT_ROOT` /
+      `path: vault` 前提。変えていれば合わせる)。
+- [ ] `git mv` は `x_bookmarks.db` も対象 (両 DB が同じディレクトリを使うため)。
+- [ ] 移行後も `-wal` / `-shm` が untracked のままであることを確認
+      (`*.db-wal` / `*.db-shm` の gitignore は #112 + vault 側 untrack と整合)。
+
 ## ChatGPT 側設定 (送信)
 
 Gmail Connector を使った送信タスクを ChatGPT に登録する。本リポ側は以下の
