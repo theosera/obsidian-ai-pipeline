@@ -9,7 +9,8 @@ import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { setVaultRoot } from '../config';
+import { setVaultRoot, peekVaultRoot } from '../config';
+import { generateHandsOn } from '../x-bookmarks/hands_on_generator';
 import {
   sanitizeFolderName,
   mapFolderToVaultPath,
@@ -3263,6 +3264,48 @@ body
         !fs.existsSync(dryDir),
         `dry-run でも Clippings 配下にフォルダが作られた: ${dryDir} (= saveMarkdown 抑止が破れている)`
       );
+    });
+
+    // Codex #113 P2 回帰: --hands-on の DB リーダ (hands_on_generator) が sync 側
+    // (db.ts) と同じ PIPELINE_DB_DIR を経由することを保証する。vault root は DB の
+    // 無い一時ディレクトリに、PIPELINE_DB_DIR は DB のある別ディレクトリに向け、
+    // hands-on が override 側から読めることを確認する (リーダがハードコードに戻ると
+    // 「not found」で throw して落ちる)。
+    await runner.testAsync('hands-on は PIPELINE_DB_DIR の x_bookmarks.db を読む (sync と読込先が一致)', async () => {
+      const savedEnv = process.env.PIPELINE_DB_DIR;
+      const savedVaultRoot = peekVaultRoot();
+      const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbm-hands-vault-'));
+      const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbm-hands-db-'));
+      try {
+        setVaultRoot(vaultDir);            // vault 側には DB を置かない
+        process.env.PIPELINE_DB_DIR = dbDir; // DB は override 先にだけ存在する
+        const folder = 'X_Bookmarks/HandsOnTest';
+        const uniqueText = 'HANDS_ON_OVERRIDE_MARKER_ツイート本文';
+        const db = new XBookmarksDb(path.join(dbDir, 'x_bookmarks.db'));
+        db.upsertBookmark({
+          tweetId: '1',
+          url: 'https://x.com/u/status/1',
+          author: 'tester',
+          tweetText: uniqueText,
+          createdAt: '2026-06-30',
+          xFolderName: 'HandsOnTest',
+          vaultPath: `${folder}/note.md`,
+        });
+        db.close();
+
+        const outPath = await generateHandsOn({ folder, dryRun: true });
+        const prompt = fs.readFileSync(outPath, 'utf8');
+        assert.ok(
+          prompt.includes(uniqueText),
+          'override 先 DB のブックマークが hands-on プロンプトに反映される (= 読込先が PIPELINE_DB_DIR と一致)'
+        );
+      } finally {
+        if (savedEnv === undefined) delete process.env.PIPELINE_DB_DIR;
+        else process.env.PIPELINE_DB_DIR = savedEnv;
+        setVaultRoot(savedVaultRoot);
+        fs.rmSync(vaultDir, { recursive: true, force: true });
+        fs.rmSync(dbDir, { recursive: true, force: true });
+      }
     });
 
     return runner.report();
