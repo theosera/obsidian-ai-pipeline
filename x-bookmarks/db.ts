@@ -22,7 +22,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot } from '../config';
+import { getPipelineDbDir } from '../config';
 
 export interface BookmarkRow {
   tweet_id: string;
@@ -433,9 +433,7 @@ export class XBookmarksDb {
 let _instance: XBookmarksDb | null = null;
 
 function getDbPath(): string {
-  const dir = path.join(getVaultRoot(), '__skills', 'pipeline');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, 'x_bookmarks.db');
+  return path.join(getPipelineDbDir(), 'x_bookmarks.db');
 }
 
 export function getDb(): XBookmarksDb {

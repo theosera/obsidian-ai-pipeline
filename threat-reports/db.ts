@@ -22,7 +22,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot } from '../config';
+import { getPipelineDbDir } from '../config';
 import { LEGACY_REPO_KEY } from './repo_target';
 
 export interface ReportRow {
@@ -746,9 +746,7 @@ export class ThreatReportsDb {
 let _instance: ThreatReportsDb | null = null;
 
 function getDbPath(): string {
-  const dir = path.join(getVaultRoot(), '__skills', 'pipeline');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, 'threat_reports.db');
+  return path.join(getPipelineDbDir(), 'threat_reports.db');
 }
 
 let _closeHookRegistered = false;

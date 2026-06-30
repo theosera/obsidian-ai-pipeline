@@ -54,6 +54,31 @@ export function getXBookmarksBaseFolder(): string {
 }
 
 // ---------------------------------------------------------------------------
+// パイプライン用 SQLite DB のディレクトリ
+//
+// threat_reports.db / x_bookmarks.db (+ WAL/SHM sidecar) を置くディレクトリ。
+// 既定は `<vault>/__skills/pipeline` だが、`PIPELINE_DB_DIR` で上書きできる。
+//
+// 動機: vault を iCloud / クラウドファイル同期下に置くと、SQLite の sidecar
+// (-wal/-shm) が本体 .db と独立同期され DB が desync/巻き戻りする (恒久対策の
+// 経緯は docs/threat_reports.md / PR #112)。DB だけを同期対象外のパスへ逃がす
+// 運用を可能にするためのノブ。
+//
+// 重要: この DB は vault repo に **git-tracked** される設計 (人手フィールド保持 +
+// CI が ingest 結果をコミット → ローカルへ pull)。完全に vault 外へ向けると CI と
+// ローカルで DB が分裂する。git 追跡を保ったまま iCloud 同期だけ避けたい場合は、
+// **vault 作業コピー内の `.nosync` フォルダ** (例 `<vault>/__skills/pipeline.nosync`)
+// を指すこと (macOS iCloud Drive は `.nosync` 付きを同期除外する)。CI は本変数を
+// 設定しないので、CI 側のパスは常に既定のまま (vault repo にコミットされ続ける)。
+// ---------------------------------------------------------------------------
+export function getPipelineDbDir(): string {
+  const override = process.env.PIPELINE_DB_DIR?.trim();
+  const dir = override ? path.resolve(override) : path.join(getVaultRoot(), '__skills', 'pipeline');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// ---------------------------------------------------------------------------
 // Dry-Run モード（renameSync 一括移動を安全にプレビュー）
 // ---------------------------------------------------------------------------
 let _dryRun = false;

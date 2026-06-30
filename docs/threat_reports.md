@@ -23,6 +23,39 @@ Vault: <base>/_index.md (sortable table view)
   (`THREAT_REPORTS_FOLDER` env で上書き可)
 - 取り込み頻度: 週 1 回 (cron 等の常駐は不要)
 
+### SQLite DB の置き場所 (`PIPELINE_DB_DIR`)
+
+`threat_reports.db` (と `x_bookmarks.db`) の **ディレクトリ**は既定で
+`<vault>/__skills/pipeline` だが、環境変数 `PIPELINE_DB_DIR` で上書きできる
+(未設定なら従来どおり)。`raw/*.md` / `.threat_reports.json` / `_index.md` は
+これとは独立に vault (`<base>`) 側へ出力されるので、**DB だけ**移動できる。
+
+**動機**: vault を iCloud / クラウドファイル同期下に置くと、SQLite の
+sidecar (`-wal` / `-shm`) が本体 `.db` と独立に同期されて DB が
+desync・巻き戻りする (経緯は本書の WAL 注記 / PR #112)。DB をその同期対象外へ
+逃がしたいときに使う。
+
+**重要 — git 追跡 / CI との整合**: この DB は CI が weekly ingest して vault repo に
+コミットし、ローカルは `git pull` で受け取る (人手フィールドもこの経路で共有)。
+つまり **ローカルと CI は同じ DB パスを指す必要がある** — 食い違うと「ローカルの DB」と
+「CI がコミットする DB」が別ファイルになり分裂する。よって置き場所を変えるのは
+*ローカルだけの override* では不十分で、git 追跡を保ったまま iCloud 同期だけ
+避けたい場合は、**vault 作業コピー内の `.nosync` フォルダ**へ local と CI を揃えて移行する
+(macOS iCloud Drive は名前が `*.nosync` のフォルダを同期除外する):
+
+1. **vault repo**: 追跡済み DB を移動してコミット
+   `git mv __skills/pipeline/threat_reports.db __skills/pipeline.nosync/threat_reports.db`
+   (`x_bookmarks.db` も同様)。
+2. **CI** (`.github/workflows/llm-sec-weekly.yml`): fetcher step に
+   `PIPELINE_DB_DIR: ${{ github.workspace }}/vault/__skills/pipeline.nosync` を追加し、
+   commit step の `DB_PATH` を `__skills/pipeline.nosync/threat_reports.db` に変更。
+3. **ローカル**: `export PIPELINE_DB_DIR="$VAULT_ROOT/__skills/pipeline.nosync"`。
+
+これで local と CI が一貫して「git は追跡する / iCloud は触らない」を両立できる
+(シンボリックリンクは git がリンク自体を追跡 & iCloud の symlink 扱いが不安定なため
+非推奨)。なお本変数 **未設定なら従来どおり** `<vault>/__skills/pipeline` を使う
+(= このノブはオプトイン・非破壊)。
+
 ## ChatGPT 側設定 (送信)
 
 Gmail Connector を使った送信タスクを ChatGPT に登録する。本リポ側は以下の
