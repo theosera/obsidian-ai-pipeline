@@ -135,8 +135,17 @@ ingest 済み DB (全件)
   `runThreatRelevanceAnalysis`)。脅威本文は `<threat nonce>` デリミタ内の純データとして
   隔離 LLM に渡すため、本文の偽指示で挙動が壊れない。**検知のみ** — コード変更は
   ユーザーが「実装する」と決めた項目だけ、§4 の証拠を満たして最小差分で行う。
+- **Level 2 grep 証拠** (`threat-reports/repo_evidence.ts`): 各 finding のフィールドから
+  **決定的に**識別子風トークンを抽出し、対象リポを read-only で **literal grep** して
+  「該当ファイル+行の候補」を集める。これを (A2) として判定 LLM に渡し、下書きノートの
+  末尾に `候補(要確認): file:line` を**決定的に付加**する (§4 証拠点 #2 の機械生成)。
+  返すのは **file:line と一致語のみで行内容は含めない** (ノート経由の secret exfil 防止)。
+  秘密ファイル / node_modules / .git は走査対象外。出現は確証ではなく人手確認の起点。
+- **checked_untrusted** (`reports[].checks[]` = `{repo_key, checked_at}`): `--analyze-threat-relevance`
+  が下書きノートを生成したレポート×リポの印。人手レビュー済み (`reviews[]`) とは**別軸**で、
+  `/sec-review` は「checks にあって reviews に無い = 下書きあり・人手未レビュー」を区別できる。
 - **per-repo レビュー済みフラグ** (`reports[].reviews[]` = `{repo_key, reviewed_at}` の配列,
-  JSON schema **version 4**) は Gmail の `processed` ラベル (フェッチ層) とは別物で、
+  JSON schema **version 5**) は Gmail の `processed` ラベル (フェッチ層) とは別物で、
   「ローカル DB 上での *対象リポ* 該当性レビュー完了印」。再 ingest では保持される
   (per-repo ノート `relevance_notes` と同じく人手の判断を消さない)。
 - per-repo 化以前の単一値 (`reports.relevance_reviewed_at` / `*.ai_relevance_note`) は

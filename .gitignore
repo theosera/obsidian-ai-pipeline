@@ -51,6 +51,9 @@ packages/*/node_modules/
 !.claude/
 !.claude/**
 .claude/settings.local.json
+# Runtime artifacts from the in-session scheduler (CronCreate) — never track.
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
 
 # Python bytecode caches (e.g. scan-threat-report skill scripts/tests).
 # Placed after the !.claude/** re-include so it also covers .claude/ subtrees.
