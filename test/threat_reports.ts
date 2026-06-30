@@ -684,12 +684,13 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
 
       // JSON の中身
       const json = JSON.parse(fs.readFileSync(result.jsonPath, 'utf8'));
-      assert.strictEqual(json.version, 4, 'per-repo 化 (repo_notes / reviews) で v4 に bump');
+      assert.strictEqual(json.version, 5, 'checked_untrusted (reports[].checks) で v5 に bump');
       assert.strictEqual(json.rows.length, 2);
       assert.ok(Array.isArray(json.implementation_checks), 'v2+ で implementation_checks フィールドが存在');
       assert.ok(Array.isArray(json.reports), 'v3+ で reports フィールドが存在');
       assert.strictEqual(json.reports.length, 1, 'ingest した 1 レポート分の reports 行');
       assert.deepStrictEqual(json.reports[0].reviews, [], '取込直後は全リポ未レビュー (reviews=[])');
+      assert.deepStrictEqual(json.reports[0].checks, [], '取込直後は全リポ未トリアージ (checks=[])');
       assert.deepStrictEqual(json.rows[0].repo_notes, [], '取込直後は全リポ未判定 (repo_notes=[])');
       assert.strictEqual(
         json.implementation_checks.length, 0,
@@ -1167,16 +1168,39 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  runner.test('buildExportPayload: version 4 / reports[].reviews に per-repo フラグを載せる', () => {
+  runner.test('buildExportPayload: version 5 / reports[].reviews に per-repo フラグを載せる', () => {
     const db = new ThreatReportsDb(':memory:');
     db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-18', rawMarkdown: '' });
     db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
     db.markReportReviewed('r1', REPO, '2026-06-04T00:00:00Z');
     const payload = buildExportPayload({ db, vaultRoot: '/tmp', baseFolder: 'X' });
-    assert.strictEqual(payload.version, 4);
+    assert.strictEqual(payload.version, 5);
     const byId = new Map(payload.reports.map(r => [r.report_id, r]));
     assert.deepStrictEqual(byId.get('r1')?.reviews, [{ repo_key: REPO, reviewed_at: '2026-06-04T00:00:00Z' }], 'r1 は REPO でレビュー済み');
     assert.deepStrictEqual(byId.get('r2')?.reviews, [], 'r2 は未レビュー');
+    db.close();
+  });
+
+  runner.test('checked_untrusted: markReportChecked → reports[].checks に per-repo トリアージ印 (reviews と別軸)', () => {
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-06-22', rawMarkdown: '' });
+    db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-06-29', rawMarkdown: '' });
+    // r1 は自動トリアージ済みだが人手レビューは未 (= 下書きあり・人手未レビュー)。
+    assert.strictEqual(db.markReportChecked('r1', REPO, '2026-06-30T00:00:00Z'), 1);
+    assert.strictEqual(db.markReportChecked('missing', REPO), 0, '存在しない report は 0');
+    const payload = buildExportPayload({ db, vaultRoot: '/tmp', baseFolder: 'X' });
+    const byId = new Map(payload.reports.map(r => [r.report_id, r]));
+    assert.deepStrictEqual(byId.get('r1')?.checks, [{ repo_key: REPO, checked_at: '2026-06-30T00:00:00Z' }], 'r1 はトリアージ済み');
+    assert.deepStrictEqual(byId.get('r1')?.reviews, [], 'r1 は人手未レビュー (checks と reviews は独立)');
+    assert.deepStrictEqual(byId.get('r2')?.checks, [], 'r2 は未トリアージ');
+    // 別軸: 同じ report を別リポでトリアージしても干渉しない / 再実行で checked_at 更新。
+    db.markReportChecked('r1', REPO_B, '2026-06-30T01:00:00Z');
+    db.markReportChecked('r1', REPO, '2026-06-30T02:00:00Z');
+    const p2 = buildExportPayload({ db, vaultRoot: '/tmp', baseFolder: 'X' });
+    const r1 = p2.reports.find(r => r.report_id === 'r1');
+    const repoCheck = r1?.checks.find(c => c.repo_key === REPO);
+    assert.strictEqual(repoCheck?.checked_at, '2026-06-30T02:00:00Z', '再実行で checked_at を更新');
+    assert.strictEqual(r1?.checks.length, 2, 'REPO と REPO_B が独立に並ぶ');
     db.close();
   });
 

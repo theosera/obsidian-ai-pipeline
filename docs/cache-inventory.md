@@ -106,10 +106,11 @@
 ## D. On-disk 派生 JSON ビュー (Dataview 用 / 同期毎に再生成)
 
 ### D1. `.threat_reports.json` (`threat-reports/json_export.ts`)
-- `threat_reports.db` → JSON。`version: 4` (rows / implementation_checks / **reports[]**、
-  per-repo 化で `rows[].repo_notes[]` + `reports[].reviews[]`)。
+- `threat_reports.db` → JSON。`version: 5` (rows / implementation_checks / **reports[]**、
+  per-repo 化で `rows[].repo_notes[]` + `reports[].reviews[]`、v5 で
+  `reports[].checks[]` = checked_untrusted = Level 2 自動トリアージ実行済み印を追加)。
   ingest / `--analyze-threat-relevance` / `--mark-threat-reviewed` の度に上書き再生成。
-- 点検: **JSON schema version (4) と Dataview script (`threat-reports/index_writer.ts`) の整合**
+- 点検: **JSON schema version (5) と Dataview script (`threat-reports/index_writer.ts`) の整合**
   がズレると表が壊れる。フィールド変更時は Dataview 側の参照キー (`repo_notes` 等) も合わせること。
 
 ### D2. `.x_bookmarks.json` (`x-bookmarks/json_export.ts`)

@@ -207,8 +207,18 @@ async function main(): Promise<void> {
         model: rel.model,
         redoAll: args.threatRelevanceAll,
         repoKey: target.key,
+        repoRoot: target.root,
         repoProfile: buildRepoProfile(target.root, target.key),
       });
+      // checked_untrusted: finding を持つ各レポートに「対象リポで自動トリアージ実行済み」
+      // 印を付ける (人手レビュー済みフラグとは別軸)。/sec-review が「下書きあり・人手未
+      // レビュー」を区別できるようにする。下書きノートそのものは relevance_notes 側。
+      const checkedAt = new Date().toISOString();
+      const findingReportIds = new Set<string>([
+        ...db.listVulnerabilities().map((v) => v.report_id),
+        ...db.listImplementationChecks().map((c) => c.report_id),
+      ]);
+      for (const reportId of findingReportIds) db.markReportChecked(reportId, target.key, checkedAt);
       const vaultRoot = getVaultRoot();
       const jsonPath = exportThreatReportsJson({ db, vaultRoot });
       const indexPath = regenerateIndexPage({ vaultRoot });
@@ -217,6 +227,7 @@ async function main(): Promise<void> {
       console.log(`   モデル:        ${rel.provider} / ${rel.model}`);
       console.log(`   vuln 判定:     ${stats.vulnAnalyzed} 件 / check 判定: ${stats.implAnalyzed} 件`);
       console.log(`   ⚠ 該当: ${stats.applies} / ? 要確認: ${stats.unclear} / skip(既存): ${stats.skipped} / 失敗: ${stats.failed}`);
+      console.log(`   下書き生成済(checked_untrusted): ${findingReportIds.size} レポート (人手レビューは /sec-review)`);
       console.log(`   JSON:          ${jsonPath}`);
       console.log(`   index:         ${indexPath}`);
       console.log('   ※ 検知のみ。修正は人手レビュー後に通常 PR フローで行ってください。');

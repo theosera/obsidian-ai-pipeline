@@ -224,9 +224,18 @@ ai_relevance_note を人間が curate するときは:
 
 ## 7. Level 2 への接続
 
-Level 2 (= "自リポ該当チェック") は本 workflow の `Run fetcher` step の直後に
-SDK セッションを 1 個追加で起動し、新規 ingest 行を grep+精査して
-`ai_relevance_note` を埋める拡張で実装する。本 PR の範囲外。
+Level 2 (= "自リポ該当チェック") の **Tier1 (指定 1 リポ × 取込済みレポート) は実装済み**:
+`pnpm start -- --analyze-threat-relevance --target-repo=<owner/repo|path>` が、各 finding を
+対象リポに **決定的に grep** (`threat-reports/repo_evidence.ts`) して「該当ファイル+行の候補」を
+集め、隔離 LLM の判定結果と合わせて `ai_relevance_note` を **下書き** (`🤖` sentinel 付き /
+人手 note は保護) として埋める。下書き生成済みは `reports[].checks[]` (checked_untrusted) に
+記録され、`/sec-review` が「下書きあり・人手未レビュー」を区別できる。
+
+> grep は read-only・literal・bounded で、**返すのは file:line と一致語のみ (行内容なし)**。
+> untrusted な finding 本文の指示・URL・コードは実行も fetch もしない (Trust Boundary)。
+
+cron (`Run fetcher` step) からの自動起動 (新規 ingest 直後に SDK セッションで上記を回す) や、
+横断ファンアウト / 反証検証 / ドラフト PR 化は **本 Tier1 の範囲外** (別 PR)。
 
 ## 8. 関連ドキュメント
 
