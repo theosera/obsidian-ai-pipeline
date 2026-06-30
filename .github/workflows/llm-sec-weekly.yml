@@ -80,6 +80,45 @@ jobs:
         run: pnpm rebuild better-sqlite3
 
       # ----------------------------------------------------------------
+      # DB 配置移行 (iCloud 除外): 旧 __skills/pipeline/threat_reports.db を
+      # __skills/pipeline.nosync/ へ一度だけ git mv する (idempotent / 自己修復)。
+      #
+      # 以降 fetcher は PIPELINE_DB_DIR=.../pipeline.nosync を見るため、移行前に旧パスの
+      # DB を新パスへ運んでおかないと、fetcher が空 DB を新パスに新規作成し既存レポート
+      # + 人手フィールドを失う。本 step がそれを防ぐ → vault 側の git mv が未実施でも
+      # CI 側で吸収できるので、リポ間の順序に依存しない。
+      # 注: `pipeline.nosync` は CI(Linux) では単なるフォルダ名で git は通常どおり追跡する。
+      # macOS の iCloud Drive だけがこの suffix を同期から除外する (= ローカルでの狙い)。
+      # git mv は index を更新するだけ (commit は後段 "Commit & push" step が行う)。
+      # ----------------------------------------------------------------
+      - name: Migrate threat DB to .nosync dir (idempotent)
+        working-directory: vault
+        run: |
+          set -euo pipefail
+          OLD="__skills/pipeline/threat_reports.db"
+          NEW="__skills/pipeline.nosync/threat_reports.db"
+          # 両方存在 = どちらが正本か自動判断できない異常状態 (過去の手動/失敗移行など)。
+          # 黙って NEW を採用すると、空 / stale な .nosync を commit して人手フィールドを
+          # 失う恐れがある (= この自己修復が防ぎたい split 状態そのもの)。よって warn して
+          # 続行せず loud-fail し、人間に正本確定 + 旧パス削除を委ねる (Codex #114 P2)。
+          if [ -f "${OLD}" ] && [ -f "${NEW}" ]; then
+            echo "::error::${OLD} と ${NEW} が両方存在します。どちらが正本か自動判断できません。"
+            echo "::error::正本を確定し他方を削除してから再実行してください (例: 正本=旧なら 'git rm \"${NEW}\"' 後に旧→新へ git mv し直す / 正本=新なら 'git rm \"${OLD}\"')。"
+            exit 1
+          fi
+          if [ -f "${NEW}" ]; then
+            echo "✅ 既に ${NEW} あり — 移行不要"
+            exit 0
+          fi
+          if [ -f "${OLD}" ]; then
+            mkdir -p "$(dirname "${NEW}")"
+            git mv "${OLD}" "${NEW}"
+            echo "📦 移行: ${OLD} -> ${NEW} (commit step で確定)"
+          else
+            echo "ℹ️ ${OLD} 無し — 新規環境。fetcher が ${NEW} を新規作成する。"
+          fi
+
+      # ----------------------------------------------------------------
       # Phase 1: ingest only (label は付けない)
       #
       # 成功した thread の id は pending-labels.json に書き出され、
@@ -92,6 +131,9 @@ jobs:
         working-directory: pipeline
         env:
           VAULT_ROOT: ${{ github.workspace }}/vault
+          # DB だけ iCloud 同期外の .nosync ディレクトリへ (raw md / JSON / index は vault 直下のまま)。
+          # 未設定なら従来の <vault>/__skills/pipeline。前段の移行 step が旧 DB をここへ運ぶ。
+          PIPELINE_DB_DIR: ${{ github.workspace }}/vault/__skills/pipeline.nosync
           # vault repo (= theosera/obsidian-permanent-note) は "Permanent Note"
           # フォルダの中身そのものが repo ルートにある構造なので、デフォルトの
           # 'Permanent Note/10_Threat_Reports' ではなく '10_Threat_Reports' を
@@ -175,7 +217,10 @@ jobs:
           # 持たせる必要がある (デフォルトの 'Permanent Note/10_Threat_Reports'
           # ではなく vault repo 構造に合わせた '10_Threat_Reports')。
           TR_DIR: 10_Threat_Reports
-          DB_PATH: __skills/pipeline/threat_reports.db
+          # 移行後の DB パス (.nosync)。前段の "Migrate threat DB" step が旧パスから運ぶので、
+          # ここは常に新パスを指す。fetcher の PIPELINE_DB_DIR と一致させること (食い違うと
+          # commit される .db が空 / stale になる)。
+          DB_PATH: __skills/pipeline.nosync/threat_reports.db
         run: |
           set -euo pipefail
           git config user.name "llm-sec-weekly-bot"
@@ -240,8 +285,9 @@ jobs:
         working-directory: pipeline
         env:
           # phase 2 は DB を触らないが、validateEnv の責務を変えると影響範囲が
-          # 広がるので、phase 1 と同じ env を維持する (VAULT_ROOT 含む)。
+          # 広がるので、phase 1 と同じ env を維持する (VAULT_ROOT / PIPELINE_DB_DIR 含む)。
           VAULT_ROOT: ${{ github.workspace }}/vault
+          PIPELINE_DB_DIR: ${{ github.workspace }}/vault/__skills/pipeline.nosync
           THREAT_REPORTS_FOLDER: 10_Threat_Reports
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}

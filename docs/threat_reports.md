@@ -43,27 +43,31 @@ desync・巻き戻りする (経緯は本書の WAL 注記 / PR #112)。DB を�
 避けたい場合は、**vault 作業コピー内の `.nosync` フォルダ**へ local と CI を揃えて移行する
 (macOS iCloud Drive は名前が `*.nosync` のフォルダを同期除外する):
 
-1. **vault repo**: 追跡済み DB を移動してコミット
-   `git mv __skills/pipeline/threat_reports.db __skills/pipeline.nosync/threat_reports.db`
-   (`x_bookmarks.db` も同様)。
-2. **CI** (`.github/workflows/llm-sec-weekly.yml`): fetcher step に
-   `PIPELINE_DB_DIR: ${{ github.workspace }}/vault/__skills/pipeline.nosync` を追加し、
-   commit step の `DB_PATH` を `__skills/pipeline.nosync/threat_reports.db` に変更。
-3. **ローカル**: `export PIPELINE_DB_DIR="$VAULT_ROOT/__skills/pipeline.nosync"`。
+**CI 側は本リポの `llm-sec-weekly.yml` で自動化済み** (PR で対応):
+
+- fetcher / commit step が `__skills/pipeline.nosync` を指す (`PIPELINE_DB_DIR` / `DB_PATH`)。
+- ingest 前に **"Migrate threat DB to .nosync dir" step** が旧 `__skills/pipeline/threat_reports.db`
+  を `.nosync` へ `git mv` する (idempotent / 自己修復)。→ vault 側で手で `git mv` しなくても、
+  次回 cron か手動 `workflow_dispatch` 一回で `threat_reports.db` が `.nosync` へ移り commit される。
+
+**あなたのローカル作業はこれだけ** (threat DB は CI が移すので、移行後に pull で受け取る):
+
+1. CI を 1 度走らせて移行を確定させる (GitHub Actions → "LLM-Sec-Weekly" → Run workflow)、
+   その後ローカルで `git pull` (vault repo) → `.nosync/threat_reports.db` が手元にも来る。
+2. ローカル env を設定: `export PIPELINE_DB_DIR="$VAULT_ROOT/__skills/pipeline.nosync"`
+   (シェルの rc / pipeline 実行環境に永続化)。
+3. **`x_bookmarks.db` は手動移動が必要** — これは gitignore 済み・CI 非関与のローカル専用 DB
+   (MD からの再構築不可)。`mkdir -p "$VAULT_ROOT/__skills/pipeline.nosync" && mv
+   "$VAULT_ROOT/__skills/pipeline/x_bookmarks.db" "$VAULT_ROOT/__skills/pipeline.nosync/"`
+   (`-wal`/`-shm` が残っていれば一緒に移すか、Obsidian/同期を止めてから checkpoint 後に移す)。
 
 これで local と CI が一貫して「git は追跡する / iCloud は触らない」を両立できる
 (シンボリックリンクは git がリンク自体を追跡 & iCloud の symlink 扱いが不安定なため
-非推奨)。なお本変数 **未設定なら従来どおり** `<vault>/__skills/pipeline` を使う
-(= このノブはオプトイン・非破壊)。
+非推奨)。なお `PIPELINE_DB_DIR` **未設定なら従来どおり** `<vault>/__skills/pipeline` を使う
+(= オプトイン・非破壊)。
 
-移行 PR を出す際の確認事項 (チェックリスト):
-
-- [ ] CI の vault チェックアウトパスを `llm-sec-weekly.yml` の実値と突き合わせる
-      (上記 `${{ github.workspace }}/vault/...` は現行 workflow の `VAULT_ROOT` /
-      `path: vault` 前提。変えていれば合わせる)。
-- [ ] `git mv` は `x_bookmarks.db` も対象 (両 DB が同じディレクトリを使うため)。
-- [ ] 移行後も `-wal` / `-shm` が untracked のままであることを確認
-      (`*.db-wal` / `*.db-shm` の gitignore は #112 + vault 側 untrack と整合)。
+> 補足: `-wal` / `-shm` は移行後も untracked のまま (`*.db-wal` / `*.db-shm` の gitignore は
+> #112 + vault 側 untrack と整合)。`.nosync` フォルダ内の `.db` 本体だけが git 追跡される。
 
 ## ChatGPT 側設定 (送信)
 
