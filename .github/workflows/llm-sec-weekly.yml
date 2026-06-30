@@ -189,6 +189,14 @@ jobs:
           # (CLAUDE.md の secret 混入防止規約)。
           git add -f "${TR_DIR}/raw/" "${TR_DIR}/.threat_reports.json" "${TR_DIR}/_index.md" || true
           if [ -f "${DB_PATH}" ]; then
+            # 二重防御: fetcher の closeDb() が既に wal_checkpoint(TRUNCATE) 済みのはずだが、
+            # commit される .db を確実に自己完結 (WAL 取り残しゼロ) にするため明示 checkpoint。
+            # tracked な -wal/-shm が古いまま checkout されるとデータが巻き戻るため、本体 .db に
+            # WAL を畳んでから add する。-wal/-shm は vault repo 側で gitignore 済 (履歴の
+            # tracked 分は git rm --cached で除去)。fetcher 側で checkpoint 済のため、ここで
+            # 失敗しても commit は継続させる (loud-fail せず warn のみ)。
+            sqlite3 "${DB_PATH}" "PRAGMA wal_checkpoint(TRUNCATE);" \
+              || echo "⚠️ DB checkpoint 失敗 (fetcher 側で checkpoint 済のため commit 継続)"
             git add -f "${DB_PATH}"
           fi
 

@@ -1195,5 +1195,55 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     db.close();
   });
 
+  runner.section('threat-reports/db: WAL checkpoint (tracked .db 自己完結性)');
+
+  // 地雷: この DB は vault repo 側で意図的に git tracked。WAL モードでは最新書込が
+  // -wal 側にのみ存在し本体 .db に未反映なため、checkpoint 無しに本体 .db だけ commit
+  // すると最新書込を欠いたスナップショットになり、古い tracked -wal の checkout で
+  // データが巻き戻る (2026-06-29 レポート消失の機序)。checkpoint(TRUNCATE) が本体 .db を
+  // 自己完結させることを「.db 単体をコピーして読む」= commit シナリオ再現で検証する。
+  runner.test('checkpoint: WAL を本体 .db へ畳み込み、.db 単体で最新書込を保持する', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-wal-'));
+    const file = path.join(dir, 'wal.db');
+    const db = new ThreatReportsDb(file);
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-06-29', rawMarkdown: '' });
+    db.upsertVulnerability({ reportId: 'r1', name: 'V', riskScore: 8.0 });
+
+    db.checkpoint();
+
+    // checkpoint(TRUNCATE) 後の -wal は 0 バイトへ切り詰められる (存在しても空)。
+    const walPath = file + '-wal';
+    if (fs.existsSync(walPath)) {
+      assert.strictEqual(fs.statSync(walPath).size, 0, 'checkpoint(TRUNCATE) 後の -wal は 0 バイト');
+    }
+
+    // 本体 .db **だけ** を別パスへコピーして読む = git が .db のみ commit するシナリオ。
+    const isolated = path.join(dir, 'isolated.db');
+    fs.copyFileSync(file, isolated);
+    const raw = new Database(isolated);
+    const row = raw.prepare('SELECT COUNT(*) AS n FROM vulnerabilities').get() as { n: number };
+    assert.strictEqual(row.n, 1, '本体 .db 単体に WAL の書込が畳み込まれている');
+    raw.close();
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  runner.test('close: checkpoint 経由で本体 .db を自己完結させる', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-close-'));
+    const file = path.join(dir, 'close.db');
+    const db = new ThreatReportsDb(file);
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-06-29', rawMarkdown: '' });
+    db.close(); // close は内部で checkpoint してから db.close() する
+
+    // close 済みなら本体 .db 単体 (コピー) が最新書込を保持している。
+    const isolated = path.join(dir, 'isolated.db');
+    fs.copyFileSync(file, isolated);
+    const raw = new Database(isolated);
+    const row = raw.prepare('SELECT COUNT(*) AS n FROM reports').get() as { n: number };
+    assert.strictEqual(row.n, 1, 'close 後の .db 単体が最新書込を保持');
+    raw.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   return runner.report();
 }
