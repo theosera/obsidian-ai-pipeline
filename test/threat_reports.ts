@@ -1236,5 +1236,109 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     db.close();
   });
 
+  runner.section('threat-reports/db: WAL checkpoint (tracked .db 自己完結性)');
+
+  // 地雷: この DB は vault repo 側で意図的に git tracked。WAL モードでは最新書込が
+  // -wal 側にのみ存在し本体 .db に未反映なため、checkpoint 無しに本体 .db だけ commit
+  // すると最新書込を欠いたスナップショットになり、古い tracked -wal の checkout で
+  // データが巻き戻る (2026-06-29 レポート消失の機序)。checkpoint(TRUNCATE) が本体 .db を
+  // 自己完結させることを「.db 単体をコピーして読む」= commit シナリオ再現で検証する。
+  runner.test('checkpoint: WAL を本体 .db へ畳み込み、.db 単体で最新書込を保持する', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-wal-'));
+    const file = path.join(dir, 'wal.db');
+    // assertion 失敗時もハンドルと temp dir を必ず解放するため try/finally で囲う。
+    let db: ThreatReportsDb | null = null;
+    let raw: Database.Database | null = null;
+    try {
+      db = new ThreatReportsDb(file);
+      db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-06-29', rawMarkdown: '' });
+      db.upsertVulnerability({ reportId: 'r1', name: 'V', riskScore: 8.0 });
+
+      db.checkpoint();
+
+      // checkpoint(TRUNCATE) 後の -wal は 0 バイトへ切り詰められる (存在しても空)。
+      const walPath = file + '-wal';
+      if (fs.existsSync(walPath)) {
+        assert.strictEqual(fs.statSync(walPath).size, 0, 'checkpoint(TRUNCATE) 後の -wal は 0 バイト');
+      }
+
+      // 本体 .db **だけ** を別パスへコピーして読む = git が .db のみ commit するシナリオ。
+      const isolated = path.join(dir, 'isolated.db');
+      fs.copyFileSync(file, isolated);
+      raw = new Database(isolated);
+      const row = raw.prepare('SELECT COUNT(*) AS n FROM vulnerabilities').get() as { n: number };
+      assert.strictEqual(row.n, 1, '本体 .db 単体に WAL の書込が畳み込まれている');
+    } finally {
+      raw?.close();
+      db?.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Codex #112 P2: TRUNCATE は別接続が read lock 中だと throw せず busy=1 を返し、
+  // WAL を畳めないまま「成功」扱いになる。busy を検知して throw することで、取り残し
+  // (= 本体 .db だけ commit すると巻き戻る状態) を握り潰さないことを検証する。
+  runner.test('checkpoint: 別接続が read lock を保持中は busy を検知して throw する', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-busy-'));
+    const file = path.join(dir, 'busy.db');
+    // assertion 失敗時も reader の read transaction を必ず rollback/close する。
+    let db: ThreatReportsDb | null = null;
+    let reader: Database.Database | null = null;
+    try {
+      db = new ThreatReportsDb(file);
+      db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-06-29', rawMarkdown: '' });
+
+      // 別接続で read transaction を張ったまま保持 → WAL を pin し TRUNCATE は busy になる。
+      reader = new Database(file);
+      reader.exec('BEGIN');
+      reader.prepare('SELECT COUNT(*) AS n FROM reports').get();
+
+      assert.throws(() => db!.checkpoint(), /busy=/, 'busy 時は throw して取り残しを surface する');
+
+      // reader を解放すれば畳み込めるようになる。
+      reader.exec('ROLLBACK');
+      reader.close();
+      reader = null;
+      db.checkpoint();
+    } finally {
+      // reader が open のままなら rollback (トランザクション外なら無視) してから閉じる。
+      if (reader !== null) {
+        try {
+          reader.exec('ROLLBACK');
+        } catch {
+          // 既にトランザクション外 (BEGIN 前に throw した等) なら何もしない。
+        }
+        reader.close();
+      }
+      db?.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  runner.test('close: checkpoint 経由で本体 .db を自己完結させる', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threatdb-close-'));
+    const file = path.join(dir, 'close.db');
+    // assertion 失敗時もハンドルと temp dir を必ず解放するため try/finally で囲う。
+    let db: ThreatReportsDb | null = null;
+    let raw: Database.Database | null = null;
+    try {
+      db = new ThreatReportsDb(file);
+      db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-06-29', rawMarkdown: '' });
+      db.close(); // close は内部で checkpoint してから db.close() する
+      db = null; // close 済み → finally での二重 close を避ける
+
+      // close 済みなら本体 .db 単体 (コピー) が最新書込を保持している。
+      const isolated = path.join(dir, 'isolated.db');
+      fs.copyFileSync(file, isolated);
+      raw = new Database(isolated);
+      const row = raw.prepare('SELECT COUNT(*) AS n FROM reports').get() as { n: number };
+      assert.strictEqual(row.n, 1, 'close 後の .db 単体が最新書込を保持');
+    } finally {
+      db?.close();
+      raw?.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   return runner.report();
 }

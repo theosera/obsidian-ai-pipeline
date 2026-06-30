@@ -697,7 +697,48 @@ export class ThreatReportsDb {
     this.db.prepare('DELETE FROM reports WHERE id = ?').run(id);
   }
 
+  /**
+   * WAL を本体 .db へ畳み込み、-wal を 0 バイトへ切り詰める (TRUNCATE)。
+   *
+   * この DB は vault repo 側で **意図的に git tracked** (人手フィールド保持のため
+   * gitignore しない)。WAL モードでは最近の書込が `-wal` 側にのみ存在し本体 .db に
+   * 未反映なため、checkpoint 無しで本体 .db だけを commit すると最新書込を欠いた
+   * スナップショットが記録され、別途 tracked になっていた古い `-wal`/`-shm` を
+   * checkout した瞬間 WAL リカバリでデータが巻き戻る (2026-06-29 レポート消失の機序)。
+   * 書込完了時 / プロセス終了時 (getDb の close フック) に呼び、commit される .db を
+   * 自己完結 (WAL 取り残しゼロ) にする。
+   */
+  checkpoint(): void {
+    // PRAGMA wal_checkpoint(TRUNCATE) は別接続が read lock を保持していると throw せず
+    // busy=1 の行 (log/checkpointed にフレーム残数) を返し、WAL を畳み込めないまま「成功」
+    // 扱いになる。その状態で本体 .db だけを commit すると最新書込を欠く (= このPRが防ぎたい
+    // 巻き戻りそのもの) ため、busy を検査して非ゼロなら throw する (取り残しを握り潰さない)。
+    const rows = this.db.pragma('wal_checkpoint(TRUNCATE)') as Array<{
+      busy: number;
+      log: number;
+      checkpointed: number;
+    }>;
+    const result = rows[0];
+    if (result && result.busy !== 0) {
+      throw new Error(
+        `wal_checkpoint(TRUNCATE) busy=${result.busy} (log=${result.log}, checkpointed=${result.checkpointed}): ` +
+          '別接続が WAL を保持しているため本体 .db へ畳み込めませんでした。-wal にフレームが残存している可能性があります。'
+      );
+    }
+  }
+
   close(): void {
+    // close 前に WAL を本体へ畳む。better-sqlite3 の close() は最終接続で PASSIVE
+    // checkpoint するが -wal を残し得るため、明示 TRUNCATE で取り残しを断つ。
+    // checkpoint が落ちても close 自体は必ず行う (ハンドルリーク防止) — close 経路は
+    // 失敗を握りつぶさず warn で可視化する (エラー全送の方針 / 但し close は継続)。
+    try {
+      this.checkpoint();
+    } catch (e: unknown) {
+      console.warn(
+        `⚠️  threat_reports.db checkpoint に失敗 (close は継続): ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
     this.db.close();
   }
 }
@@ -708,6 +749,24 @@ function getDbPath(): string {
   const dir = path.join(getVaultRoot(), '__skills', 'pipeline');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, 'threat_reports.db');
+}
+
+let _closeHookRegistered = false;
+
+/**
+ * プロセス終了時に必ず checkpoint + close する hook を 1 度だけ張る。
+ *
+ * CLI 取込経路 (index.ts の --ingest-threat-report / --mark-threat-reviewed 等) は
+ * `closeDb()` を明示呼びしないため、これが無いと WAL が本体 .db に畳まれないまま
+ * 終了し、後段で commit される .db が最新書込を欠く (= データ巻き戻りの起点)。
+ * better-sqlite3 は同期 API なので 'exit' ハンドラ内で checkpoint+close を実行できる。
+ */
+function registerCloseHook(): void {
+  if (_closeHookRegistered) return;
+  _closeHookRegistered = true;
+  process.once('exit', () => {
+    closeDb();
+  });
 }
 
 export function getDb(): ThreatReportsDb {
@@ -725,6 +784,7 @@ export function getDb(): ThreatReportsDb {
       throw e;
     }
   }
+  registerCloseHook();
   return _instance;
 }
 
