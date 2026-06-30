@@ -354,11 +354,24 @@ export async function runThreatRelevanceAnalysis(
     else if (applies === 'unclear') stats.unclear++;
   };
 
-  /** finding フィールドから grep 証拠を収集する (scanner 無効 / 失敗時は空)。 */
-  const gather = (fields: Array<string | null>): EvidenceHit[] => {
-    if (!scanner) return [];
-    try { return scanner.find(extractSearchTerms(fields)); } catch { return []; }
+  /**
+   * finding フィールドから grep 証拠を収集する。
+   * **戻り値の意味を 3 状態に分ける** (false negative を避ける — Codex P2):
+   *   - `null` = **スキャンしていない** (scanner 無効 / 失敗 / 検索語ゼロ)。
+   *     → (A2) を prompt に載せない。「一致なし」という偽の trusted negative を出さない。
+   *   - `[]`   = スキャンしたが一致ゼロ (正当な negative)。→ (A2) に「一致なし」と載せる。
+   *   - 非空   = 一致あり。→ (A2) に所在候補を載せる。
+   */
+  const gather = (fields: Array<string | null>): EvidenceHit[] | null => {
+    if (!scanner) return null;
+    const terms = extractSearchTerms(fields);
+    if (terms.length === 0) return null; // 検索語が無い = スキャン不能 (偽 negative を出さない)
+    try { return scanner.find(terms); } catch { return null; }
   };
+
+  /** gather の 3 状態を (A2) テキストへ。null はセクションごと省略 (undefined)。 */
+  const evidenceText = (hits: EvidenceHit[] | null): string | undefined =>
+    hits === null ? undefined : formatEvidenceForPrompt(hits);
 
   // per-row try/catch は **分析 + DB 書込 + カウンタ** を丸ごと包む。書込
   // (setRelevanceNote 等) が throw しても run 全体を中断せず、その行を NULL の
@@ -368,9 +381,9 @@ export async function runThreatRelevanceAnalysis(
     if (!shouldProcess(existing, redoAll)) { stats.skipped++; continue; }
     try {
       const hits = gather(vulnTermFields(v));
-      const verdict = await analyzeItemRelevance(vulnText(v), profile, opts, formatEvidenceForPrompt(hits));
+      const verdict = await analyzeItemRelevance(vulnText(v), profile, opts, evidenceText(hits));
       if (!verdict) { stats.failed++; continue; }
-      db.setRelevanceNote(v.report_id, v.name, repoKey, formatNote(verdict, hits));
+      db.setRelevanceNote(v.report_id, v.name, repoKey, formatNote(verdict, hits ?? []));
       stats.vulnAnalyzed++;
       countVerdict(verdict.applies);
     } catch (e) {
@@ -384,9 +397,9 @@ export async function runThreatRelevanceAnalysis(
     if (!shouldProcess(existing, redoAll)) { stats.skipped++; continue; }
     try {
       const hits = gather(implTermFields(c));
-      const verdict = await analyzeItemRelevance(implText(c), profile, opts, formatEvidenceForPrompt(hits));
+      const verdict = await analyzeItemRelevance(implText(c), profile, opts, evidenceText(hits));
       if (!verdict) { stats.failed++; continue; }
-      db.setImplementationCheckNote(c.report_id, c.perspective, repoKey, formatNote(verdict, hits));
+      db.setImplementationCheckNote(c.report_id, c.perspective, repoKey, formatNote(verdict, hits ?? []));
       stats.implAnalyzed++;
       countVerdict(verdict.applies);
     } catch (e) {

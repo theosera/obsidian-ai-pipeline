@@ -1204,6 +1204,23 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     db.close();
   });
 
+  runner.test('checked_untrusted は「下書きノートが実在するレポート」だけが対象 (全失敗は印を付けない)', () => {
+    // index.ts の導出ロジック (listRelevanceNotes を repo_key で絞って report_id を集める) を
+    // DB レベルで検証する。下書きが 1 件も無いレポートは checked にしてはならない (Codex P2)。
+    const db = new ThreatReportsDb(':memory:');
+    db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-06-22', rawMarkdown: '' });
+    db.upsertReport({ id: 'r2', source: 't', receivedAt: 'now', weekOf: '2026-06-29', rawMarkdown: '' });
+    db.upsertVulnerability({ reportId: 'r1', name: 'V1', riskScore: 8.0 });
+    db.upsertVulnerability({ reportId: 'r2', name: 'V2', riskScore: 8.0 }); // r2 は全 finding 失敗 (ノート無し) を模す
+    db.setRelevanceNote('r1', 'V1', REPO, '🤖⚠ 該当: draft');
+    const drafted = new Set(
+      db.listRelevanceNotes().filter((n) => n.repo_key === REPO).map((n) => n.report_id),
+    );
+    assert.ok(drafted.has('r1'), '下書きありの r1 は checked 対象');
+    assert.ok(!drafted.has('r2'), '下書き無しの r2 は checked 対象に含めない');
+    db.close();
+  });
+
   runner.test('buildExportPayload: rows[].repo_notes に per-repo ノートを集約する', () => {
     const db = new ThreatReportsDb(':memory:');
     db.upsertReport({ id: 'r1', source: 't', receivedAt: 'now', weekOf: '2026-05-25', rawMarkdown: '' });
