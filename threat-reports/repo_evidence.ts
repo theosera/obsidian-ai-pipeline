@@ -138,7 +138,10 @@ function listTextFiles(root: string, opts: Required<ScannerOptions>): { files: s
     const dir = stack.pop() as string;
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      // 名前順にソートしてから処理する。fs の列挙順は OS/FS 依存なので、ソートしないと
+      // maxFiles 打ち切り境界や first-hit 順が環境ごとに変わり「決定的 evidence」契約が崩れる。
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name));
     } catch {
       continue; // 読めないディレクトリはスキップ (best-effort)
     }
@@ -178,10 +181,11 @@ export function buildRepoScanner(root: string, options: ScannerOptions = {}): Re
   let truncated = listTruncated;
 
   for (const full of files) {
-    if (totalBytes >= opts.maxTotalBytes) { truncated = true; break; }
     let stat: fs.Stats;
     try { stat = fs.statSync(full); } catch { continue; }
     if (stat.size > opts.maxFileBytes) continue;
+    // 次のファイルを読むと総バイト上限を超えるなら、読まずに打ち切る (cap を実際に enforce する)。
+    if (totalBytes + stat.size > opts.maxTotalBytes) { truncated = true; break; }
     let content: string;
     try { content = fs.readFileSync(full, 'utf8'); } catch { continue; }
     if (content.indexOf(NUL_CHAR) !== -1) continue; // NUL を含む = バイナリ混入をスキップ

@@ -369,9 +369,18 @@ export async function runThreatRelevanceAnalysis(
     try { return scanner.find(terms); } catch { return null; }
   };
 
-  /** gather の 3 状態を (A2) テキストへ。null はセクションごと省略 (undefined)。 */
-  const evidenceText = (hits: EvidenceHit[] | null): string | undefined =>
-    hits === null ? undefined : formatEvidenceForPrompt(hits);
+  /**
+   * gather の 3 状態を (A2) テキストへ。null はセクションごと省略 (undefined)。
+   * scanner が上限到達で打ち切られている場合は「不完全な可能性」を明示し、bounded scan を
+   * 網羅的な negative と誤認させない (Codex/CodeRabbit)。
+   */
+  const evidenceText = (hits: EvidenceHit[] | null): string | undefined => {
+    if (hits === null) return undefined;
+    const body = formatEvidenceForPrompt(hits);
+    return scanner?.truncated
+      ? `注: 走査がファイル数/バイト上限に達したため、所在候補は不完全な可能性があります。\n${body}`
+      : body;
+  };
 
   // per-row try/catch は **分析 + DB 書込 + カウンタ** を丸ごと包む。書込
   // (setRelevanceNote 等) が throw しても run 全体を中断せず、その行を NULL の

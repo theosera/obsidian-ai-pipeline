@@ -121,6 +121,32 @@ export function run(): TestSuiteResult {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  runner.test('maxFileBytes 超のファイルはロードしない (skip)', () => {
+    const dir = mkRepo({ 'big.ts': 'needleNeedleNeedle\n'.repeat(10), 'small.ts': 'needleNeedle\n' });
+    const scanner = buildRepoScanner(dir, { maxFileBytes: 16 });
+    const hits = scanner.find(['needleNeedle']);
+    assert.ok(hits.every(h => h.file === 'small.ts'), 'big.ts はサイズ超過で除外、small.ts のみ');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  runner.test('NUL を含むファイルはバイナリ扱いで skip', () => {
+    const dir = mkRepo({ 'bin.ts': 'needleNeedle' + String.fromCharCode(0) + 'more\n', 'txt.ts': 'needleNeedle\n' });
+    const scanner = buildRepoScanner(dir);
+    const hits = scanner.find(['needleNeedle']);
+    assert.ok(hits.every(h => h.file === 'txt.ts'), 'NUL 入り bin.ts は除外、txt.ts のみ');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  runner.test('maxTotalBytes は次ファイルを読む前に enforce し truncated=true', () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 5; i++) files[`f${i}.ts`] = 'needleNeedleNeedle\n'; // 各 ~19 bytes
+    const dir = mkRepo(files);
+    const scanner = buildRepoScanner(dir, { maxTotalBytes: 25 }); // 1 ファイルで超過
+    assert.ok(scanner.truncated, '総バイト上限到達で truncated');
+    assert.ok(scanner.filesLoaded < 5, '全ファイルはロードされない');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   runner.test('短すぎる語 (<4) は一致対象にしない', () => {
     const dir = mkRepo({ 'a.ts': 'ab cd ef\n' });
     const scanner = buildRepoScanner(dir);

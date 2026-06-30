@@ -585,10 +585,11 @@ export class ThreatReportsDb {
     return this.getNote(reportId, 'vuln', name, repoKey);
   }
 
-  /** 全 per-repo 該当性ノート (JSON エクスポート用)。 */
+  /** 全 per-repo 該当性ノート (JSON エクスポート用)。安定順で返す (export の決定性)。 */
   listRelevanceNotes(): RelevanceNoteRow[] {
     return this.db.prepare(
-      'SELECT report_id, item_kind, item_key, repo_key, note, updated_at FROM relevance_notes'
+      `SELECT report_id, item_kind, item_key, repo_key, note, updated_at FROM relevance_notes
+       ORDER BY report_id ASC, item_kind ASC, item_key ASC, repo_key ASC`
     ).all() as RelevanceNoteRow[];
   }
 
@@ -639,10 +640,10 @@ export class ThreatReportsDb {
     return 1;
   }
 
-  /** 全 per-repo レビュー済みフラグ (JSON エクスポート用)。 */
+  /** 全 per-repo レビュー済みフラグ (JSON エクスポート用)。安定順で返す (export の決定性)。 */
   listReportReviews(): ReportReviewRow[] {
     return this.db.prepare(
-      'SELECT report_id, repo_key, reviewed_at FROM report_repo_reviews'
+      'SELECT report_id, repo_key, reviewed_at FROM report_repo_reviews ORDER BY report_id ASC, repo_key ASC'
     ).all() as ReportReviewRow[];
   }
 
@@ -663,10 +664,10 @@ export class ThreatReportsDb {
     return 1;
   }
 
-  /** 全 per-repo 自動トリアージ実行済みフラグ (JSON エクスポート用)。 */
+  /** 全 per-repo 自動トリアージ実行済みフラグ (JSON エクスポート用)。安定順で返す (export の決定性)。 */
   listReportChecks(): ReportCheckRow[] {
     return this.db.prepare(
-      'SELECT report_id, repo_key, checked_at FROM report_repo_checks'
+      'SELECT report_id, repo_key, checked_at FROM report_repo_checks ORDER BY report_id ASC, repo_key ASC'
     ).all() as ReportCheckRow[];
   }
 
