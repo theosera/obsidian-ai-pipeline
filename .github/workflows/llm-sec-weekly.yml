@@ -97,11 +97,17 @@ jobs:
           set -euo pipefail
           OLD="__skills/pipeline/threat_reports.db"
           NEW="__skills/pipeline.nosync/threat_reports.db"
+          # 両方存在 = どちらが正本か自動判断できない異常状態 (過去の手動/失敗移行など)。
+          # 黙って NEW を採用すると、空 / stale な .nosync を commit して人手フィールドを
+          # 失う恐れがある (= この自己修復が防ぎたい split 状態そのもの)。よって warn して
+          # 続行せず loud-fail し、人間に正本確定 + 旧パス削除を委ねる (Codex #114 P2)。
+          if [ -f "${OLD}" ] && [ -f "${NEW}" ]; then
+            echo "::error::${OLD} と ${NEW} が両方存在します。どちらが正本か自動判断できません。"
+            echo "::error::正本を確定し他方を削除してから再実行してください (例: 正本=旧なら 'git rm \"${NEW}\"' 後に旧→新へ git mv し直す / 正本=新なら 'git rm \"${OLD}\"')。"
+            exit 1
+          fi
           if [ -f "${NEW}" ]; then
             echo "✅ 既に ${NEW} あり — 移行不要"
-            if [ -f "${OLD}" ]; then
-              echo "::warning::${OLD} と ${NEW} が両方存在。新パスを使用 (旧パスは手動で git rm 推奨)。"
-            fi
             exit 0
           fi
           if [ -f "${OLD}" ]; then
