@@ -23,10 +23,15 @@ import {
   buildPendingLabels,
   writePendingLabels,
   readPendingLabels,
+  gateAndRoute,
+  readQuarantinePendingPeriodEnds,
+  GATE_SUBDIR,
   PERIOD_END_RE,
   type FetcherOutcome,
+  type GateRunner,
   type PendingLabel,
 } from '../scripts/llm_sec_weekly_fetcher';
+import { getThreatReportsBaseFolder } from '../threat-reports/config';
 import type { gmail_v1 } from '@googleapis/gmail';
 
 const ARCHIVE_DIR = '/tmp/vault/Permanent Note/10_Threat_Reports/raw';
@@ -318,6 +323,102 @@ export function run(): TestSuiteResult {
     );
     const back = readPendingLabels(fp);
     assert.deepStrictEqual(back, [{ threadId: 't1', periodEnd: '2026-05-25', messageId: 'm1' }]);
+  });
+
+  // -------------------------------------------------------------------
+  // インジェクション・ゲートのルーティング (ingest 前段)
+  //
+  // ゲート本体 (L1+L3) の判定ロジックは python の決定論テスト
+  // (.claude/skills/scan-threat-report/tests/run_gate_tests.py) が担う。
+  // ここでは fetcher 側の配線 = 「clean は ingest へ / non-clean は
+  // _quarantine/ へ退避して継続 / 実行失敗は fail-closed で隔離」だけを
+  // stub GateRunner で検証する。
+  // -------------------------------------------------------------------
+  t.section('gateAndRoute (clean=ingest / non-clean=隔離 / fail-closed)');
+
+  function gateFixture(): { rawPath: string; quarantineDir: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-gate-'));
+    const rawPath = path.join(dir, 'raw', '2026-06-08.md');
+    fs.mkdirSync(path.dirname(rawPath), { recursive: true });
+    fs.writeFileSync(rawPath, 'body', 'utf8');
+    return { rawPath, quarantineDir: path.join(dir, '_quarantine') };
+  }
+
+  t.test('clean → action=ingest、raw はその場に残る', () => {
+    const { rawPath, quarantineDir } = gateFixture();
+    const gate: GateRunner = () => ({ verdict: 'clean', detail: '' });
+    const out = gateAndRoute(rawPath, quarantineDir, gate);
+    assert.deepStrictEqual(out, { action: 'ingest' });
+    assert.ok(fs.existsSync(rawPath), 'raw が残る');
+    assert.strictEqual(fs.existsSync(quarantineDir), false);
+  });
+
+  t.test('suspicious → 隔離へ移動 + verdict/detail を返す (バッチは継続できる)', () => {
+    const { rawPath, quarantineDir } = gateFixture();
+    const gate: GateRunner = () => ({ verdict: 'suspicious', detail: 'final_rule=l1-multiline-demoted' });
+    const out = gateAndRoute(rawPath, quarantineDir, gate);
+    assert.deepStrictEqual(out, {
+      action: 'quarantine',
+      verdict: 'suspicious',
+      detail: 'final_rule=l1-multiline-demoted',
+    });
+    assert.strictEqual(fs.existsSync(rawPath), false, 'raw は残らない');
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')), '隔離先へ移動');
+  });
+
+  t.test('blocked → 同様に隔離', () => {
+    const { rawPath, quarantineDir } = gateFixture();
+    const gate: GateRunner = () => ({ verdict: 'blocked', detail: 'final_rule=l0-contract' });
+    const out = gateAndRoute(rawPath, quarantineDir, gate);
+    assert.strictEqual(out.action, 'quarantine');
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')));
+  });
+
+  t.test('ゲート実行失敗 (verdict=error) は fail-closed で隔離 (素通りさせない)', () => {
+    const { rawPath, quarantineDir } = gateFixture();
+    const gate: GateRunner = () => ({ verdict: 'error', detail: 'L1 scanner 実行失敗: spawn python3 ENOENT' });
+    const out = gateAndRoute(rawPath, quarantineDir, gate);
+    assert.strictEqual(out.action, 'quarantine');
+    assert.strictEqual(fs.existsSync(rawPath), false);
+  });
+
+  t.section('readQuarantinePendingPeriodEnds (再取込ループ防止ガード)');
+
+  function vaultWithQueue(items: unknown[] | null): string {
+    const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-vault-'));
+    if (items !== null) {
+      const gateDir = path.join(vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR);
+      fs.mkdirSync(gateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(gateDir, 'quarantine_queue.json'),
+        JSON.stringify({ schema: 'quarantine-queue@1', items }),
+        'utf8'
+      );
+    }
+    return vaultRoot;
+  }
+
+  t.test('pending の period_end だけを返す (裁定済みは対象外)', () => {
+    const vaultRoot = vaultWithQueue([
+      { period_end: '2026-06-08', status: 'pending' },
+      { period_end: '2026-06-01', status: 'ingested' },
+      { period_end: '2026-05-25', status: 'rejected' },
+      { period_end: 123, status: 'pending' }, // 型違いは無視
+    ]);
+    assert.deepStrictEqual(readQuarantinePendingPeriodEnds(vaultRoot), new Set(['2026-06-08']));
+  });
+
+  t.test('キューが無ければ空 Set (ゲート自体は毎回走るので安全側)', () => {
+    const vaultRoot = vaultWithQueue(null);
+    assert.deepStrictEqual(readQuarantinePendingPeriodEnds(vaultRoot), new Set());
+  });
+
+  t.test('キューが壊れた JSON でも throw せず空 Set', () => {
+    const vaultRoot = vaultWithQueue(null);
+    const gateDir = path.join(vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR);
+    fs.mkdirSync(gateDir, { recursive: true });
+    fs.writeFileSync(path.join(gateDir, 'quarantine_queue.json'), '{not json', 'utf8');
+    assert.deepStrictEqual(readQuarantinePendingPeriodEnds(vaultRoot), new Set());
   });
 
   return t.report();

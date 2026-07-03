@@ -158,54 +158,52 @@ jobs:
           fi
 
       # ----------------------------------------------------------------
-      # L1 injection pre-scan (concealment / 契約違反ゲート)
+      # Gate invariant re-check (belt-and-braces)
       #
-      # fetcher が raw/ に書いた **この run の新規** レポートだけを L1 スキャナ
-      # (.claude/skills/scan-threat-report) で走査し、「隠蔽系 signal (不可視文字 /
-      # homoglyph / 隠しコメント / 跨行) または L0 契約違反」を検出したら
-      # commit/push 前に **run を停止**する。これらは高精度・低誤検知の signal なので
-      # 自動停止に向く (それ以外の signal は解説の可能性があり、L1 単独では block
-      # しない設計 = SKILL.md)。停止すると implicit success() が false になり、後段の
-      # "Commit & push" と Phase 2 "label" は走らない → 該当 thread は未ラベルのまま
-      # 残り、人間が /sec-mode で精査する (= loud-fail / self-healing)。
-      # スキャナは stdlib のみ (python3 で追加依存なし)。本リポの trusted コード。
+      # ゲート本体は fetcher が thread ごとに実行済み (L0+L1 →
+      # gate_decision.py --profile=ci。non-clean は _quarantine/ へ退避 +
+      # 隔離キュー登録し、raw/ には clean 判定のものだけが残る)。本 step は
+      # **fetcher 側ゲートの配線回帰を検知する不変条件チェック**: raw/ に
+      # 残った新規レポートを同じ決定論コードで再判定し、non-clean が 1 件でも
+      # 出たら (= 本来ここに存在しないはず) commit/push 前に run を停止する。
+      # trace/queue は fetcher 実行分が正であり、ここでは書かない (--state のみ
+      # 共有して heightened を同一条件にする)。スキャナ/決定器は stdlib のみの
+      # 本リポ trusted コード。
       # ----------------------------------------------------------------
-      - name: L1 injection pre-scan (concealment / contract gate)
+      - name: Gate invariant re-check (L0+L1+L3 ci profile)
         if: ${{ github.event.inputs.dry_run != 'true' }}
         working-directory: pipeline
         env:
           VAULT_ROOT: ${{ github.workspace }}/vault
           TR_DIR: 10_Threat_Reports
           SCANNER: .claude/skills/scan-threat-report/scripts/scan-threat-report.py
+          GATE: .claude/skills/scan-threat-report/scripts/gate_decision.py
         run: |
           set -euo pipefail
           # この run で新規/変更された raw レポートのみ対象 (vault repo の untracked/modified)。
           mapfile -t files < <(git -C "${VAULT_ROOT}" status --porcelain -- "${TR_DIR}/raw/" | awk '{print $2}')
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "新規 raw レポートなし — L1 pre-scan skip"
+            echo "新規 raw レポートなし — 再チェック skip"
             exit 0
           fi
           tripped=0
           for rel in "${files[@]}"; do
             full="${VAULT_ROOT}/${rel}"
             [ -f "${full}" ] || continue
-            json="$(python3 "${SCANNER}" --json "${full}")" || true
-            # NOTE: 1 行に畳む。インデント付き複数行を YAML の `run: |` ブロックに
-            # 埋めると、python ソースの列0行がブロックスカラを終端させ workflow 全体が
-            # parse 不能 (= startup_failure) になる。CONCEAL 系 signal か契約違反で BLOCK。
-            verdict="$(printf '%s' "${json}" | python3 -c 'import sys, json; d = json.load(sys.stdin); CONCEAL = {"invisible-char", "homoglyph", "hidden-comment", "multiline-injection"}; cv = d.get("structural", {}).get("contract_violations", []); conceal = [s for s in d.get("signals", []) if s.get("kind") in CONCEAL]; print("BLOCK" if (cv or conceal) else "OK")')"
-            if [ "${verdict}" = "BLOCK" ]; then
-              echo "::error::L1 concealment/contract gate tripped: ${rel}"
-              tripped=1
+            if python3 "${SCANNER}" --json "${full}" | python3 "${GATE}" decide \
+                --l1 - --profile ci --body "${full}" \
+                --state "${VAULT_ROOT}/${TR_DIR}/_gate/gate_state.json"; then
+              echo "✅ gate clean: ${rel}"
             else
-              echo "✅ L1 clean: ${rel}"
+              echo "::error::gate invariant violated (fetcher 側ゲートの回帰疑い): ${rel}"
+              tripped=1
             fi
           done
           if [ "${tripped}" -eq 1 ]; then
-            echo "❌ 隠蔽系 injection または契約違反を検出。commit/push せず停止 (人間が /sec-mode で精査)。"
+            echo "❌ raw/ に non-clean レポートが残存。commit/push せず停止 (fetcher のゲート配線を点検)。"
             exit 1
           fi
-          echo "✅ L1 pre-scan: 全 raw レポート clean"
+          echo "✅ gate invariant re-check: 全 raw レポート clean"
 
       - name: Commit & push vault changes
         if: ${{ github.event.inputs.dry_run != 'true' }}
@@ -226,13 +224,18 @@ jobs:
           git config user.name "llm-sec-weekly-bot"
           git config user.email "llm-sec-weekly-bot@users.noreply.github.com"
 
-          # 個別パスを add (4 種: raw md 群 / JSON / index.md / DB)。すべて本パイプラインの
+          # 個別パスを add (5 種: raw md 群 / JSON / index.md / _gate (判断トレース・
+          # 隔離キュー・heightened 状態 — いずれも redact 済み) / DB)。すべて本パイプラインの
           # 既知の出力なので -f を付け、vault repo の .gitignore 方針に依存せず確実に追跡する。
           # 特に `.threat_reports.json` は dot 始まりで、Obsidian Vault 共通の
           # `.*` (全 dotfile 除外) gitignore に黙って弾かれる (commit から欠落し
           # _index.md の Dataview が壊れる) ため -f が必須。-A は使わず明示列挙のまま
-          # (CLAUDE.md の secret 混入防止規約)。
+          # (CLAUDE.md の secret 混入防止規約)。`_quarantine/` (untrusted 本文) は
+          # 追跡しない (vault 側 .gitignore で除外のまま)。
           git add -f "${TR_DIR}/raw/" "${TR_DIR}/.threat_reports.json" "${TR_DIR}/_index.md" || true
+          if [ -d "${TR_DIR}/_gate" ]; then
+            git add -f "${TR_DIR}/_gate/"
+          fi
           if [ -f "${DB_PATH}" ]; then
             # 二重防御: fetcher の closeDb() が既に wal_checkpoint(TRUNCATE) 済みのはずだが、
             # commit される .db を確実に自己完結 (WAL 取り残しゼロ) にするため明示 checkpoint。

@@ -561,8 +561,14 @@ def queue_add(path, rec, source):
     KSP 未一致の非隠蔽 signal から候補を 1 件添える (無ければ null)。
     """
     q = read_queue(path)
-    if any(it.get("decision_id") == rec["decision_id"] for it in q["items"]):
-        return  # 同一 decision の二重登録を防ぐ (idempotent)
+    # idempotent: 同一 decision、または同じ period_end が pending のままなら
+    # 追記しない (未裁定のまま cron が再走した場合のキュー重複を防ぐ。
+    # fetcher 側の skip ガードと二重防御)。
+    if any(it.get("decision_id") == rec["decision_id"] or
+           (it.get("period_end") == rec["period_end"] and
+            it.get("status") == "pending")
+           for it in q["items"]):
+        return
     candidate = None
     hit_sids = {h["signal_id"] for h in rec.get("known_safe_hits", [])}
     for s in rec["l1"]["signals"]:
