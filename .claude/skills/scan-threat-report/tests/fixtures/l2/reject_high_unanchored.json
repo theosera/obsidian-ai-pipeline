@@ -1,0 +1,10 @@
+{
+  "schema": "scan-threat-report/l2-axes@1",
+  "axes": {
+    "role_override": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "reader_directed_command": {"verdict": "reject", "confidence": "high", "evidence": [{"signal_id": 999, "line": 9999, "quote": "存在しない引用"}], "reason": "根拠 span が L1/本文に存在しない (幻覚ガード対象)"},
+    "tool_call_forgery": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "exfiltration_lure": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "concealment": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"}
+  }
+}

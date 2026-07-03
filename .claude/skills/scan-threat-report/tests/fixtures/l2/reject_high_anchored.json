@@ -1,0 +1,10 @@
+{
+  "schema": "scan-threat-report/l2-axes@1",
+  "axes": {
+    "role_override": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "reader_directed_command": {"verdict": "reject", "confidence": "high", "evidence": [{"signal_id": 1}], "reason": "prose 中の読み手宛て live 命令 (埋め込み陽性例に一致)"},
+    "tool_call_forgery": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "exfiltration_lure": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "concealment": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"}
+  }
+}
