@@ -190,7 +190,17 @@ jobs:
           for rel in "${files[@]}"; do
             full="${VAULT_ROOT}/${rel}"
             [ -f "${full}" ] || continue
-            if python3 "${SCANNER}" --json "${full}" | python3 "${GATE}" decide \
+            # scanner の exit 1 は「signal あり」の正常系 (fetcher の
+            # makeCliGateRunner と同じ扱い)。pipefail 下でパイプに直結すると
+            # gate が clean (exit 0) でもパイプ全体が 1 になり、良性 signal を
+            # 含む clean レポートが誤って push/label を塞ぐ (PR #116 Codex P1)。
+            # よって scanner の exit を個別に受けてから gate へ渡す。
+            scanner_status=0
+            json="$(python3 "${SCANNER}" --json "${full}")" || scanner_status=$?
+            if [ "${scanner_status}" -gt 1 ] || [ -z "${json}" ]; then
+              echo "::error::L1 scanner 実行失敗 (exit=${scanner_status}) — fail-closed: ${rel}"
+              tripped=1
+            elif printf '%s' "${json}" | python3 "${GATE}" decide \
                 --l1 - --profile ci --body "${full}" \
                 --state "${VAULT_ROOT}/${TR_DIR}/_gate/gate_state.json"; then
               echo "✅ gate clean: ${rel}"

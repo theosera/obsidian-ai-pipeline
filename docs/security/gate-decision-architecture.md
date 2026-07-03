@@ -152,11 +152,18 @@ redact 済みメタデータのみ (git 追跡可)。**本文**は従来通り�
 ```json
 {"schema":"quarantine-queue@1","items":[
   {"queue_id":"q-<period_end>-<sha4>","period_end":"…","file":"raw/….md",
+   "source_ref":"gmail:<threadId>",
    "decision_id":"gd-…","verdict":"suspicious","reasons":["<final_rule>"],
    "queued_at":"…","source":"interactive|ci|manual","status":"pending",
    "adjudicated_at":null,"adjudication_note":null,
    "ksp_candidate":{"signal_kind":"…","context_class":"…","span_sha1":"…"}}]}
 ```
+
+**隔離本文の永続性**: CI (ephemeral runner) で隔離された本文は runner と共に
+消える — これは**設計どおり** (untrusted 本文を commit / 同期しない不変条件)。
+永続コピーは Gmail 原本で、当該 thread は `processed` が付かないまま残る。
+裁定時にローカルへ本文が無ければ、queue entry の `source_ref` から
+`get_thread` (都度承認) で `_quarantine/` に復元する (sec-mode §2-B 手順 0)。
 
 裁定は `gate_decision.py queue --resolve <queue_id> --status ingested|rejected
 --note "<理由>"` (sec-mode メニュー「隔離キュー review」から)。

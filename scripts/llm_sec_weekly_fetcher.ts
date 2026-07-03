@@ -58,6 +58,7 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 // auth は @googleapis/gmail がバンドル再エクスポート (googleapis-common 経由)。
 // 別途 google-auth-library を直接 import すると OAuth2Client の型が微妙にずれて
 // gmail() の auth 引数で TS2769 になるので、必ず同じ bundle から取る。
@@ -80,7 +81,9 @@ export const GATE_SUBDIR = '_gate';
 /** non-clean レポート本文の退避先 (vault 側で git/iCloud 同期除外)。 */
 export const QUARANTINE_SUBDIR = '_quarantine';
 
-const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+// fileURLToPath: `new URL(...).pathname` はスペース/非 ASCII を %-encode したまま
+// 返すため、そうしたパス配下の checkout でスクリプト解決が壊れる (PR #116 レビュー)。
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SCANNER_SCRIPT = path.join(
   REPO_ROOT, '.claude/skills/scan-threat-report/scripts/scan-threat-report.py');
 const GATE_SCRIPT = path.join(
@@ -101,8 +104,15 @@ export interface GateResult {
   detail: string;
 }
 
-/** ゲート実行関数。テストでは stub を注入する (本番は `makeCliGateRunner`)。 */
-export type GateRunner = (rawPath: string) => GateResult;
+/**
+ * ゲート実行関数。テストでは stub を注入する (本番は `makeCliGateRunner`)。
+ * `sourceRef` は原本参照 (例: `gmail:<threadId>`) — decision record / 隔離キューに
+ * 保存され、CI 隔離で本文が runner と共に消えた後の再取得に使う。
+ */
+export type GateRunner = (rawPath: string, sourceRef?: string) => GateResult;
+
+/** ゲート subprocess の上限時間。untrusted 本文で hang しても週次バッチを止めない。 */
+const GATE_EXEC_TIMEOUT_MS = 60_000;
 
 /** フェーズ 1 → フェーズ 2 に橋渡しする 1 thread 分の情報。 */
 export interface PendingLabel {
@@ -213,11 +223,14 @@ function execError(e: unknown): { status: number | null; stdout: string; message
  */
 export function makeCliGateRunner(vaultRoot: string): GateRunner {
   const gateDir = path.join(vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR);
-  return (rawPath: string): GateResult => {
+  return (rawPath: string, sourceRef?: string): GateResult => {
     let l1Json: string;
     try {
+      // timeout: hang した subprocess は SIGTERM で殺され execError 経由の
+      // fail-closed (`error` → 隔離) に落ちる (status=null / signal=SIGTERM)。
       l1Json = execFileSync('python3', [SCANNER_SCRIPT, '--json', rawPath], {
         encoding: 'utf8',
+        timeout: GATE_EXEC_TIMEOUT_MS,
       });
     } catch (e) {
       const err = execError(e);
@@ -236,8 +249,9 @@ export function makeCliGateRunner(vaultRoot: string): GateRunner {
           '--state', path.join(gateDir, 'gate_state.json'),
           '--trace-out', path.join(gateDir, 'decisions.jsonl'),
           '--queue', path.join(gateDir, 'quarantine_queue.json'),
+          ...(sourceRef ? ['--source-ref', sourceRef] : []),
         ],
-        { input: l1Json, encoding: 'utf8' }
+        { input: l1Json, encoding: 'utf8', timeout: GATE_EXEC_TIMEOUT_MS }
       );
       return { verdict: 'clean', detail: '' };
     } catch (e) {
@@ -261,9 +275,10 @@ export function makeCliGateRunner(vaultRoot: string): GateRunner {
 export function gateAndRoute(
   rawPath: string,
   quarantineDir: string,
-  gate: GateRunner
+  gate: GateRunner,
+  sourceRef?: string
 ): { action: 'ingest' } | { action: 'quarantine'; verdict: GateResult['verdict']; detail: string } {
-  const result = gate(rawPath);
+  const result = gate(rawPath, sourceRef);
   if (result.verdict === 'clean') return { action: 'ingest' };
   fs.mkdirSync(quarantineDir, { recursive: true });
   fs.renameSync(rawPath, path.join(quarantineDir, path.basename(rawPath)));
@@ -429,18 +444,33 @@ async function processThread(
 
   // ★ インジェクション・ゲート: ingest が DB/JSON/index に何か書く前に検査。
   // non-clean は本文を _quarantine/ へ退避して継続 (run 全体は fail させない)。
-  const gateOutcome = gateAndRoute(
-    rawPath,
-    path.join(vaultRoot, getThreatReportsBaseFolder(), QUARANTINE_SUBDIR),
-    gate
-  );
-  if (gateOutcome.action === 'quarantine') {
+  // ルーティング自体の例外 (rename の EXDEV / permission 等) も 1 thread の
+  // error に閉じ込め、残りの thread の処理を継続する (バッチ全体を中断しない)。
+  try {
+    const gateOutcome = gateAndRoute(
+      rawPath,
+      path.join(vaultRoot, getThreatReportsBaseFolder(), QUARANTINE_SUBDIR),
+      gate,
+      `gmail:${threadId}`
+    );
+    if (gateOutcome.action === 'quarantine') {
+      return {
+        threadId,
+        messageId: msg.id,
+        periodEnd,
+        status: 'quarantined',
+        reason: `ゲート ${gateOutcome.verdict}: ${gateOutcome.detail}`,
+      };
+    }
+  } catch (e) {
     return {
       threadId,
       messageId: msg.id,
       periodEnd,
-      status: 'quarantined',
-      reason: `ゲート ${gateOutcome.verdict}: ${gateOutcome.detail}`,
+      status: 'error',
+      reason: `ゲート・ルーティング失敗 (fail-closed / raw は ingest しない): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
     };
   }
 
@@ -666,7 +696,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
   const entry = path.resolve(process.argv[1]);
-  return entry === path.resolve(new URL(import.meta.url).pathname);
+  return entry === path.resolve(fileURLToPath(import.meta.url));
 })();
 if (invokedDirectly) {
   main().then(

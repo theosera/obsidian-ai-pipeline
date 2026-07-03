@@ -280,7 +280,7 @@ def anchor_evidence(evidence, signals_by_id, body_lines):
 
 # ───────────────────────── 判定本体 ─────────────────────────────────────
 def decide(l1, l2, known_safe, heightened, profile, body_text=None,
-           l2_tool_use=False, now=None, today=None):
+           l2_tool_use=False, now=None, today=None, source_ref=None):
     """L0+L1+L2 を統合し gate-decision@1 レコードを返す (決定論)。
 
     判定表 (上から順に評価。詳細根拠は docs/security/gate-decision-architecture.md):
@@ -307,7 +307,13 @@ def decide(l1, l2, known_safe, heightened, profile, body_text=None,
     contract = structural.get("contract_violations", [])
     shape_ok = structural.get("section_shape_ok", True)
     signals = l1.get("signals", [])
-    signals_by_id = {s["id"]: s for s in signals if isinstance(s.get("id"), int)}
+    # signal の形不正は KeyError の生 traceback ではなく exit 4 (fail-closed) の
+    # 契約に統一する — 以降のルール評価は id/kind の存在を前提にしてよい。
+    for i, s in enumerate(signals):
+        if (not isinstance(s, dict) or not isinstance(s.get("id"), int) or
+                not isinstance(s.get("kind"), str)):
+            raise GateInputError(f"L1 signals[{i}] の形が不正 (id:int / kind:str 必須)")
+    signals_by_id = {s["id"]: s for s in signals}
     body_lines = body_text.splitlines() if body_text is not None else None
 
     rules_fired = []
@@ -320,7 +326,8 @@ def decide(l1, l2, known_safe, heightened, profile, body_text=None,
             l1=l1, l2_summary=l2_summary, verdict=verdict,
             final_rule=final_rule, routing=routing, rules_fired=rules_fired,
             known_safe_hits=known_safe_hits, heightened=heightened,
-            profile=profile, body_text=body_text, now=now)
+            profile=profile, body_text=body_text, now=now,
+            source_ref=source_ref)
 
     # ── rule 1: L0 契約違反 (KSP/heightened より先に確定 = 適用外を構造で保証) ──
     if contract:
@@ -402,14 +409,22 @@ def decide(l1, l2, known_safe, heightened, profile, body_text=None,
         return record("blocked", "l2-axis-concealment-reject", "quarantine")
 
     # ── rule 5/6: 他軸 reject ──────────────────────────────────────────
-    for name in AXES:
-        if name == "concealment" or axes[name]["verdict"] != "reject":
-            continue
+    # 2 パス評価: 判定表の「上から順」を軸の並び順に負けさせない。複数軸が
+    # 同時 reject した場合、先頭側の unconfirmed (rule 6) が後方の
+    # high∧anchored (rule 5 = blocked 確定) を隠すと、監査証跡が壊れ blocked が
+    # suspicious に降格する (PR #116 CodeRabbit Major)。
+    reject_axes = [n for n in AXES
+                   if n != "concealment" and axes[n]["verdict"] == "reject"]
+    # rule 5: いずれか 1 軸でも high∧anchored なら blocked (軸順に依存しない)
+    for name in reject_axes:
         anchored = [a for a in anchored_by_axis[name] if a["anchored"]]
         if axes[name]["confidence"] == "high" and anchored:
             rules_fired.append(f"l2-axis-reject-confirmed:{name}")
             return record("blocked", f"l2-axis-reject-confirmed:{name}",
                           "quarantine")
+    # rule 6: 残りの reject 軸 — KSP 全一致でのみ解除、それ以外は suspicious
+    for name in reject_axes:
+        anchored = [a for a in anchored_by_axis[name] if a["anchored"]]
         # KSP 解除: アンカー済み証拠が 1 件以上あり、その全 signal が KSP 一致
         ev_sids = [a["signal_id"] for a in anchored if a["signal_id"] is not None]
         if (apply_ksp and anchored and len(ev_sids) == len(anchored) and
@@ -474,7 +489,8 @@ def _extract_period_end(body_text, l1_file):
 
 
 def _build_record(l1, l2_summary, verdict, final_rule, routing, rules_fired,
-                  known_safe_hits, heightened, profile, body_text, now):
+                  known_safe_hits, heightened, profile, body_text, now,
+                  source_ref=None):
     """gate-decision@1 レコードを組む。payload 生文字列は含めない。"""
     ts = now or utc_now()
     body_sha = sha1(body_text) if body_text is not None else None
@@ -487,6 +503,10 @@ def _build_record(l1, l2_summary, verdict, final_rule, routing, rules_fired,
         "profile": profile,
         "file": l1.get("file"),
         "period_end": period_end,
+        # 原本への参照 (例: "gmail:<threadId>")。CI 隔離では本文が runner と共に
+        # 消える設計 (untrusted は commit しない) なので、裁定時の再取得はこの
+        # 参照で Gmail 原本 (= 永続コピー) を辿る。
+        "source_ref": source_ref,
         "body_sha1": body_sha,
         "heightened_mode": bool(heightened),
         "l0": {
@@ -581,6 +601,7 @@ def queue_add(path, rec, source):
         "queue_id": f"q-{rec['period_end']}-{rec['decision_id'][-4:]}",
         "period_end": rec["period_end"],
         "file": rec["file"],
+        "source_ref": rec.get("source_ref"),
         "decision_id": rec["decision_id"],
         "verdict": rec["verdict"],
         "reasons": [rec["final_rule"]],
@@ -610,7 +631,7 @@ def cmd_decide(args):
     state = read_state(args.state)
     rec = decide(l1, l2, known_safe, heightened=bool(state.get("heightened")),
                  profile=args.profile, body_text=body,
-                 l2_tool_use=args.l2_tool_use)
+                 l2_tool_use=args.l2_tool_use, source_ref=args.source_ref)
     if args.trace_out:
         append_trace(args.trace_out, rec)
     if args.queue and rec["verdict"] in ("suspicious", "blocked"):
@@ -703,6 +724,9 @@ def build_parser():
     d.add_argument("--queue", help="quarantine_queue.json (suspicious/blocked を追記)")
     d.add_argument("--l2-tool-use", action="store_true",
                    help="呼び出し側が L2 実行トレースに tool-use を観測した")
+    d.add_argument("--source-ref",
+                   help="原本参照 (例: gmail:<threadId>)。record/queue に保存され、"
+                        "隔離本文消失時の再取得に使う")
     d.add_argument("--json", action="store_true", help="レコード全体を JSON 出力")
     d.set_defaults(fn=cmd_decide)
 

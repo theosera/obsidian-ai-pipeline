@@ -90,8 +90,12 @@
 > `_gate/quarantine_queue.json` に登録して **他 thread の処理と push は継続**
 > する (旧設計のように run 全体を fail させない)。該当 thread は `processed`
 > が付かないが、キューが pending の間は再取込もキュー重複登録もされない。
-> 裁定は人間が `/sec-mode` の「隔離キュー review」で行う。判定表・キュー・
-> heightened モードの正典は `docs/security/gate-decision-architecture.md`。
+> 裁定は人間が `/sec-mode` の「隔離キュー review」で行う。
+> **注**: runner 上の `_quarantine/` 本文は run 終了と共に消える (untrusted
+> 本文は commit しない設計)。永続コピーは Gmail 原本 (`processed` 未付与の
+> まま残る) で、キューの `source_ref` (`gmail:<threadId>`) から裁定時に再取得
+> する。判定表・キュー・heightened モードの正典は
+> `docs/security/gate-decision-architecture.md`。
 
 ## 2. 必要な前提
 

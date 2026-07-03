@@ -71,8 +71,12 @@ def l1_base(signals=(), contract=(), shape_ok=True, file="raw/2026-06-08.md"):
                        "section_shape_ok": shape_ok,
                        "contract_violations": list(contract)},
         "signals": sig,
-        "counts": {"live": sum(1 for s in sig if s["live"]),
-                   "example": sum(1 for s in sig if not s["live"]),
+        # 形不正 signal のテストにも使うため、counts 計算は防御的に行う
+        # (counts は decide() のルール評価で id/kind ほど厳密には使われない)。
+        "counts": {"live": sum(1 for s in sig
+                               if isinstance(s, dict) and s.get("live")),
+                   "example": sum(1 for s in sig
+                                  if isinstance(s, dict) and not s.get("live")),
                    "total": len(sig)},
         "l2_required": not contract,
         "flagged": bool(sig) or bool(contract) or not shape_ok,
@@ -164,6 +168,42 @@ check("KSP 全一致で reject 解除 → clean", r["verdict"] == "clean",
       r["final_rule"])
 check("KSP ヒットが記録される", any(
     h["pattern_id"] == "ksp-test-001" for h in r["known_safe_hits"]))
+
+print("\n== rule 5/6: 複数軸同時 reject の順序非依存 (PR #116 回帰) ==")
+# AXES 先頭側 (role_override) が unconfirmed reject でも、後方の軸
+# (exfiltration_lure) に high∧anchored reject があれば rule 5 が勝ち blocked。
+multi = json.loads(json.dumps(ALL_PASS))
+multi["axes"]["role_override"] = {
+    "verdict": "reject", "confidence": "medium",
+    "evidence": [{"signal_id": 999, "line": 9999, "quote": "存在しない"}],
+    "reason": "低確信の疑い"}
+multi["axes"]["exfiltration_lure"] = {
+    "verdict": "reject", "confidence": "high",
+    "evidence": [{"signal_id": 1}], "reason": "陽性例一致"}
+r = decide(l1_base(signals=[sig("exfil-url", ctx="prose", live=True)]), multi)
+check("先頭軸の unconfirmed に隠れず blocked", r["verdict"] == "blocked",
+      r["final_rule"])
+check("final_rule は後方軸の confirmed",
+      r["final_rule"] == "l2-axis-reject-confirmed:exfiltration_lure")
+
+print("\n== L1 signal の形不正 → GateInputError (fail-closed / 生 KeyError 禁止) ==")
+for bad_sig, label in (
+        ({"id": 1}, "kind 欠落"),
+        ({"kind": "reader-imperative"}, "id 欠落"),
+        ("not-a-dict", "非 dict")):
+    try:
+        decide(l1_base(signals=[bad_sig]), ALL_PASS)
+        check(f"{label} → GateInputError", False, "例外が出なかった")
+    except gd.GateInputError:
+        check(f"{label} → GateInputError", True)
+    except Exception as e:  # noqa: BLE001 — 生 KeyError 等は契約違反として FAIL
+        check(f"{label} → GateInputError", False, f"{type(e).__name__}: {e}")
+
+print("\n== source_ref: record への保存 ==")
+r = decide(l1_base(), ALL_PASS, source_ref="gmail:thread-abc")
+check("record に source_ref が載る", r["source_ref"] == "gmail:thread-abc")
+r = decide(l1_base(), ALL_PASS)
+check("未指定なら null", r["source_ref"] is None)
 
 print("\n== rule 7: pass ∧ ≠high → suspicious / KSP で解除 / 空虚な真は不可 ==")
 r = decide(l1_base(signals=[sig("reader-imperative")]),
@@ -340,6 +380,24 @@ try:
     code = gd.main(["decide", "--l1", l1_path, "--profile", "ci",
                     "--known-safe", bad_ksp])
     check("不正 KSP → exit 4 (黙殺しない)", code == 4)
+    with open(l1_path, "w", encoding="utf-8") as f:
+        json.dump(l1_base(signals=[{"id": 1}]), f)  # kind 欠落
+    code = gd.main(["decide", "--l1", l1_path, "--profile", "ci"])
+    check("形不正 signal → exit 4 (CLI でも fail-closed)", code == 4)
+
+    print("\n== source_ref: --source-ref → queue entry round-trip ==")
+    with open(l1_path, "w", encoding="utf-8") as f:
+        json.dump(l1_base(signals=[sig("reader-imperative")],
+                          file="raw/2026-06-15.md"), f)
+    with open(l2_path, "w", encoding="utf-8") as f:
+        json.dump(l2("pass_medium_confidence.json"), f)
+    code = gd.main(["decide", "--l1", l1_path, "--l2", l2_path,
+                    "--profile", "interactive", "--queue", queue,
+                    "--source-ref", "gmail:thread-xyz"])
+    q = json.load(open(queue, encoding="utf-8"))
+    check("suspicious の queue entry に source_ref が載る", code == 2 and
+          q["items"][-1]["source_ref"] == "gmail:thread-xyz",
+          json.dumps(q["items"][-1], ensure_ascii=False)[:120])
 
     print("\n== mode (heightened) round-trip ==")
     code = gd.main(["mode", "--state", state, "--set-heightened",

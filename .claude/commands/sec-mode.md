@@ -113,6 +113,12 @@ vault 内パスの略記: `TR = <vault>/Permanent Note/10_Threat_Reports`。
 
 1. `TR/_gate/quarantine_queue.json` を `Read` し、`status: "pending"` の各
    エントリについて:
+   0. `TR/_quarantine/<period_end>.md` が**ローカルに無い場合** (CI 隔離 —
+      untrusted 本文は commit しない設計のため runner と共に消えている)、
+      エントリの `source_ref` (`gmail:<threadId>`) から **intake subagent**
+      (Task — 都度承認) で `get_thread` (都度承認) → 本文を
+      `TR/_quarantine/<period_end>.md` に復元 (Write — 都度承認) してから進む。
+      永続コピーは Gmail 原本 (thread は `processed` が付いていないので残っている)。
    1. **隔離レビュー補助 subagent** (Task — 都度承認) に委任:
       `TR/_quarantine/<period_end>.md` を Read → **redact 済みサマリ**
       (該当 span は `span_sha1` 参照) を返す。main は隔離本文を読まない。
