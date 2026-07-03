@@ -26,18 +26,25 @@
                           │ Phase 1: ingest (no label yet)           │
                           │   1. OAuth refresh                       │
                           │   2. Gmail API search                    │
+                          │      (隔離キュー pending の週は skip)    │
                           │   3. sanitize + raw md 保存              │
-                          │   4. ingestThreatReport()                │
-                          │   5. 成功 thread を                      │
+                          │   4. インジェクション・ゲート            │
+                          │      (L0+L1 → gate_decision.py ci)       │
+                          │      non-clean → _quarantine/ 退避 +     │
+                          │      隔離キュー登録し **継続**           │
+                          │   5. (clean のみ) ingestThreatReport()   │
+                          │   6. 成功 thread を                      │
                           │      pending-labels.json に書く          │
                           │                                          │
+                          │ Gate invariant re-check (belt&braces)    │
                           │ Vault push:                              │
-                          │   6. git add / commit / push (4 retry)   │
+                          │   7. git add / commit / push (4 retry)   │
+                          │      (_gate/ の trace/queue/state 含む)  │
                           │                                          │
                           │ Phase 2: label (push 成功時のみ)         │
-                          │   7. pending-labels.json を読む          │
-                          │   8. Gmail に processed ラベル付与       │
-                          │   9. 全件成功なら pending ファイル削除   │
+                          │   8. pending-labels.json を読む          │
+                          │   9. Gmail に processed ラベル付与       │
+                          │  10. 全件成功なら pending ファイル削除   │
                           └──────────────────────────────────────────┘
                                                  │
                                                  ▼
@@ -46,6 +53,10 @@
                                   │   raw/<YYYY-MM-DD>.md       │
                                   │   .threat_reports.json      │
                                   │   _index.md                 │
+                                  │   _gate/decisions.jsonl     │
+                                  │   _gate/quarantine_queue…   │
+                                  │   _gate/gate_state.json     │
+                                  │   (_quarantine/ は同期除外) │
                                   │   __skills/pipeline/        │
                                   │     threat_reports.db       │
                                   └─────────────────────────────┘
@@ -71,6 +82,20 @@
 > もし label 段階で個別 thread の付与だけ失敗 (Gmail API 一時障害等) した場合、
 > `pending-labels.json` はそのまま残り、次回 phase 2 で再試行できる。
 > 全件成功時のみファイルが削除される。
+>
+> 🛡️ **インジェクション・ゲート (非同期隔離)**: 自動経路のゲートは
+> `gate_decision.py --profile=ci` = 契約違反 + ハード隠蔽のみ auto-block
+> (L2 隔離 LLM 判定は人間監督下の /sec-mode 側のみ)。non-clean のレポートは
+> 本文を `_quarantine/` (同期除外) へ退避し、redact 済みメタデータを
+> `_gate/quarantine_queue.json` に登録して **他 thread の処理と push は継続**
+> する (旧設計のように run 全体を fail させない)。該当 thread は `processed`
+> が付かないが、キューが pending の間は再取込もキュー重複登録もされない。
+> 裁定は人間が `/sec-mode` の「隔離キュー review」で行う。
+> **注**: runner 上の `_quarantine/` 本文は run 終了と共に消える (untrusted
+> 本文は commit しない設計)。永続コピーは Gmail 原本 (`processed` 未付与の
+> まま残る) で、キューの `source_ref` (`gmail:<threadId>`) から裁定時に再取得
+> する。判定表・キュー・heightened モードの正典は
+> `docs/security/gate-decision-architecture.md`。
 
 ## 2. 必要な前提
 
@@ -201,6 +226,8 @@ CLAUDE.md「Secrets / sensitive files」節の通り、これらは **絶対に�
 | ラベル未作成 | "Gmail ラベル "X" が見つかりません" でエラー | Gmail UI でラベル作成 |
 | `period_end` が不正形式 | 該当 thread のみ error、processed ラベル付与 **しない** | メール本文を修正して送信側で再送、または手動取込 |
 | `forbidden_usage` 契約違反 (parser ContractError) | 該当 thread のみ error、processed ラベル付与 **しない** | 送信側 (ChatGPT/Codex) のテンプレートを修正 |
+| ゲート non-clean (契約違反 / ハード隠蔽 / ゲート実行失敗=fail-closed) | 該当 thread のみ quarantined (raw → `_quarantine/` + 隔離キュー)、**run は継続**・processed 付与しない | `/sec-mode` の「隔離キュー review」で裁定 (FP なら取込 + KSP 候補を PR 化) |
+| raw/ に non-clean が残存 ("Gate invariant re-check" 赤) | commit/push 前に停止 (fetcher 側ゲートの配線回帰疑い) | fetcher のゲート統合 (`makeCliGateRunner`) を点検 |
 | vault repo push 失敗 (deploy key 失効) | "Commit & push" step 赤 | deploy key 再生成、secret 更新 |
 
 エラー thread は **次の cron で自動再試行される** (processed ラベルが
@@ -240,6 +267,7 @@ cron (`Run fetcher` step) からの自動起動 (新規 ingest 直後に SDK セ
 ## 8. 関連ドキュメント
 
 - `docs/security/llm-sec-report-consumption.md` — 上位仕様 (trust boundary / 契約 / 証拠要件)
+- `docs/security/gate-decision-architecture.md` — インジェクション・ゲート判定表 / 隔離キュー / heightened
 - `docs/threat_reports.md` — Vault レイアウト / SQLite スキーマ
 - `CLAUDE.md` `chat mode protocol` 節 — 手動取込 (`/sec-mode`) の対応規定
 - `.claude/settings.json` — Claude 自身が secrets を読まない deny rule

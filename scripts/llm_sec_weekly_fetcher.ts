@@ -12,9 +12,16 @@
  *        に該当する未処理 thread を最大 N 件取得
  *     3. 各 thread の text/plain 本文を取り出し
  *     4. frontmatter から `period_end` を抽出し正規表現でサニタイズ
+ *        (隔離キューに pending の period_end は裁定待ちとして skip)
  *     5. `<vault>/<base>/raw/<period_end>.md` に保存
- *     6. `ingestThreatReport()` を直接 import して実行
- *     7. **ラベルは付与しない**。成功 thread の id を pending-labels.json に書く
+ *     6. **インジェクション・ゲート** (L0+L1 → gate_decision.py --profile=ci) を
+ *        ingest 前に実行。non-clean (suspicious/blocked/エラー = fail-closed) は
+ *        raw を `_quarantine/` へ退避 + 隔離キュー登録し、**他 thread の処理は
+ *        継続** (run 全体は fail させない。裁定は /sec-mode の隔離キュー review)
+ *     7. (clean のみ) `ingestThreatReport()` を直接 import して実行
+ *     8. **ラベルは付与しない**。成功 thread の id を pending-labels.json に書く
+ *        (隔離 thread は積まない = `processed` が付かず、pending 裁定まで
+ *        キューのガードで再取込ループも起きない)
  *
  *   フェーズ 2 (`--phase=label`):
  *     1. pending-labels.json を読み込み
@@ -48,15 +55,17 @@
  *     (= 該当 thread だけ次回再試行 = 重複 ingest になるが UPSERT 冪等で安全)
  */
 
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 // auth は @googleapis/gmail がバンドル再エクスポート (googleapis-common 経由)。
 // 別途 google-auth-library を直接 import すると OAuth2Client の型が微妙にずれて
 // gmail() の auth 引数で TS2769 になるので、必ず同じ bundle から取る。
 import { gmail, gmail_v1, auth as gmailAuth } from '@googleapis/gmail';
 import { setVaultRoot } from '../config';
 import { ingestThreatReport, ContractError } from '../threat-reports/ingest';
-import { getThreatReportsArchiveFolder } from '../threat-reports/config';
+import { getThreatReportsArchiveFolder, getThreatReportsBaseFolder } from '../threat-reports/config';
 import { closeDb } from '../threat-reports/db';
 
 // --- 公開定数 (テストから参照) ---
@@ -67,14 +76,43 @@ export const DEFAULT_PROCESSED_LABEL = 'LLM-Sec-Report/processed';
 export const DEFAULT_MAX_RESULTS = 10;
 /** フェーズ間で受け渡すファイルのデフォルトパス (cwd 相対)。 */
 export const DEFAULT_PENDING_LABELS_FILE = 'pending-labels.json';
+/** ゲート出力 (trace / queue / state) を置く vault 内サブディレクトリ。 */
+export const GATE_SUBDIR = '_gate';
+/** non-clean レポート本文の退避先 (vault 側で git/iCloud 同期除外)。 */
+export const QUARANTINE_SUBDIR = '_quarantine';
+
+// fileURLToPath: `new URL(...).pathname` はスペース/非 ASCII を %-encode したまま
+// 返すため、そうしたパス配下の checkout でスクリプト解決が壊れる (PR #116 レビュー)。
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SCANNER_SCRIPT = path.join(
+  REPO_ROOT, '.claude/skills/scan-threat-report/scripts/scan-threat-report.py');
+const GATE_SCRIPT = path.join(
+  REPO_ROOT, '.claude/skills/scan-threat-report/scripts/gate_decision.py');
 
 export interface FetcherOutcome {
   threadId: string;
   messageId: string;
   periodEnd: string | null;
-  status: 'ingested' | 'skipped' | 'error';
+  status: 'ingested' | 'skipped' | 'quarantined' | 'error';
   reason?: string;
 }
+
+/** インジェクション・ゲート 1 回分の結果。`error` は fail-closed で隔離扱い。 */
+export interface GateResult {
+  verdict: 'clean' | 'suspicious' | 'blocked' | 'error';
+  /** redact 済みの 1 行要約 (payload 全文は含めない)。 */
+  detail: string;
+}
+
+/**
+ * ゲート実行関数。テストでは stub を注入する (本番は `makeCliGateRunner`)。
+ * `sourceRef` は原本参照 (例: `gmail:<threadId>`) — decision record / 隔離キューに
+ * 保存され、CI 隔離で本文が runner と共に消えた後の再取得に使う。
+ */
+export type GateRunner = (rawPath: string, sourceRef?: string) => GateResult;
+
+/** ゲート subprocess の上限時間。untrusted 本文で hang しても週次バッチを止めない。 */
+const GATE_EXEC_TIMEOUT_MS = 60_000;
 
 /** フェーズ 1 → フェーズ 2 に橋渡しする 1 thread 分の情報。 */
 export interface PendingLabel {
@@ -157,6 +195,123 @@ export function extractPlainTextBody(message: gmail_v1.Schema$Message): string |
 }
 
 // ---------------------------------------------------------------------------
+// インジェクション・ゲート (L0+L1 → gate_decision.py --profile=ci)
+// ---------------------------------------------------------------------------
+
+/** execFileSync が throw した unknown から exit status / stdout を安全に取り出す。 */
+function execError(e: unknown): { status: number | null; stdout: string; message: string } {
+  const status = typeof (e as { status?: unknown }).status === 'number'
+    ? (e as { status: number }).status
+    : null;
+  const stdout = typeof (e as { stdout?: unknown }).stdout === 'string'
+    ? (e as { stdout: string }).stdout
+    : '';
+  return { status, stdout, message: e instanceof Error ? e.message : String(e) };
+}
+
+/**
+ * 本番のゲート実行: L1 スキャナ → gate_decision.py (ci プロファイル)。
+ *
+ * - 固定引数の `execFileSync` のみ (untrusted 本文をシェルに展開しない)。
+ * - trace / queue / state は `<vault>/<base>/_gate/` 配下 (redact 済み固定
+ *   ファイルのみ。gate_decision.py 自身が書く)。
+ * - ci プロファイルは L2 (隔離 LLM 判定) を持たない = 契約違反 + ハード隠蔽
+ *   のみ auto-block (旧 workflow pre-scan と同義。詳細は
+ *   docs/security/gate-decision-architecture.md §6)。
+ * - scanner exit 1 は「signal あり」の正常系 (stdout に JSON が出ている)。
+ *   それ以外の失敗と gate exit 4 は fail-closed で `error` (= 隔離)。
+ */
+export function makeCliGateRunner(vaultRoot: string): GateRunner {
+  const gateDir = path.join(vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR);
+  return (rawPath: string, sourceRef?: string): GateResult => {
+    let l1Json: string;
+    try {
+      // timeout: hang した subprocess は SIGTERM で殺され execError 経由の
+      // fail-closed (`error` → 隔離) に落ちる (status=null / signal=SIGTERM)。
+      l1Json = execFileSync('python3', [SCANNER_SCRIPT, '--json', rawPath], {
+        encoding: 'utf8',
+        timeout: GATE_EXEC_TIMEOUT_MS,
+      });
+    } catch (e) {
+      const err = execError(e);
+      if (err.status === 1 && err.stdout.length > 0) {
+        l1Json = err.stdout;
+      } else {
+        return { verdict: 'error', detail: `L1 scanner 実行失敗: ${err.message}` };
+      }
+    }
+    try {
+      execFileSync(
+        'python3',
+        [
+          GATE_SCRIPT, 'decide', '--l1', '-', '--profile', 'ci',
+          '--body', rawPath,
+          '--state', path.join(gateDir, 'gate_state.json'),
+          '--trace-out', path.join(gateDir, 'decisions.jsonl'),
+          '--queue', path.join(gateDir, 'quarantine_queue.json'),
+          ...(sourceRef ? ['--source-ref', sourceRef] : []),
+        ],
+        { input: l1Json, encoding: 'utf8', timeout: GATE_EXEC_TIMEOUT_MS }
+      );
+      return { verdict: 'clean', detail: '' };
+    } catch (e) {
+      const err = execError(e);
+      // gate_decision.py の非 --json 出力は redact 済み 1 行サマリ (payload なし)。
+      const detail = err.stdout.trim().split('\n')[0] || err.message;
+      if (err.status === 2) return { verdict: 'suspicious', detail };
+      if (err.status === 3) return { verdict: 'blocked', detail };
+      return { verdict: 'error', detail }; // exit 4 / spawn 失敗 = fail-closed
+    }
+  };
+}
+
+/**
+ * ゲートを実行し、non-clean なら raw を隔離ディレクトリへ移す。
+ *
+ * 隔離キュー / 判断トレースへの記録は gate_decision.py 側が済ませているため、
+ * ここでは本文ファイルの退避だけを行う (redact 済みメタデータは vault に
+ * commit され、本文は同期除外の `_quarantine/` に残る)。
+ */
+export function gateAndRoute(
+  rawPath: string,
+  quarantineDir: string,
+  gate: GateRunner,
+  sourceRef?: string
+): { action: 'ingest' } | { action: 'quarantine'; verdict: GateResult['verdict']; detail: string } {
+  const result = gate(rawPath, sourceRef);
+  if (result.verdict === 'clean') return { action: 'ingest' };
+  fs.mkdirSync(quarantineDir, { recursive: true });
+  fs.renameSync(rawPath, path.join(quarantineDir, path.basename(rawPath)));
+  return { action: 'quarantine', verdict: result.verdict, detail: result.detail };
+}
+
+/**
+ * 隔離キューで pending の period_end 一覧を返す (再取込ループ防止ガード)。
+ *
+ * 隔離済み thread は `processed` ラベルが付かないため次 cron でも検索に
+ * 出てくる。ここで pending の period_end を skip しないと、毎週 raw 書込 →
+ * 隔離 → キュー重複登録を繰り返す。キューが無い/壊れている場合は空扱い
+ * (ゲート自体は毎回走るので安全側に倒れる)。
+ */
+export function readQuarantinePendingPeriodEnds(vaultRoot: string): Set<string> {
+  const queuePath = path.join(
+    vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR, 'quarantine_queue.json');
+  if (!fs.existsSync(queuePath)) return new Set();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(queuePath, 'utf8')) as {
+      items?: Array<{ period_end?: unknown; status?: unknown }>;
+    };
+    return new Set(
+      (parsed.items ?? [])
+        .filter(i => i.status === 'pending' && typeof i.period_end === 'string')
+        .map(i => i.period_end as string)
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 環境変数バリデーション
 // ---------------------------------------------------------------------------
 
@@ -235,6 +390,8 @@ async function processThread(
   threadId: string,
   vaultRoot: string,
   dryRun: boolean,
+  gate: GateRunner,
+  quarantinePending: ReadonlySet<string>,
 ): Promise<FetcherOutcome> {
   const thread = await gm.users.threads.get({ userId: 'me', id: threadId, format: 'full' });
   const msg = thread.data.messages?.[0];
@@ -255,6 +412,15 @@ async function processThread(
       reason: `period_end が YYYY-MM-DD 形式でない: ${JSON.stringify(periodEnd)}`,
     };
   }
+  if (quarantinePending.has(periodEnd)) {
+    return {
+      threadId,
+      messageId: msg.id,
+      periodEnd,
+      status: 'skipped',
+      reason: '隔離キューに pending — 人間の裁定待ち (再取込・キュー重複登録をしない)',
+    };
+  }
   const archiveDir = path.join(vaultRoot, getThreatReportsArchiveFolder());
   const rawPath = path.join(archiveDir, `${periodEnd}.md`);
   if (!isSafeRawPath(rawPath, archiveDir)) {
@@ -267,7 +433,7 @@ async function processThread(
     };
   }
   if (dryRun) {
-    console.log(`  🧪 [dry-run] ${periodEnd}.md 書込と ingest と pending-labels.json への記録をスキップ`);
+    console.log(`  🧪 [dry-run] ${periodEnd}.md 書込とゲートと ingest と pending-labels.json への記録をスキップ`);
     return { threadId, messageId: msg.id, periodEnd, status: 'ingested' };
   }
   fs.mkdirSync(archiveDir, { recursive: true });
@@ -275,6 +441,38 @@ async function processThread(
   const tmpPath = rawPath + '.tmp';
   fs.writeFileSync(tmpPath, body, 'utf8');
   fs.renameSync(tmpPath, rawPath);
+
+  // ★ インジェクション・ゲート: ingest が DB/JSON/index に何か書く前に検査。
+  // non-clean は本文を _quarantine/ へ退避して継続 (run 全体は fail させない)。
+  // ルーティング自体の例外 (rename の EXDEV / permission 等) も 1 thread の
+  // error に閉じ込め、残りの thread の処理を継続する (バッチ全体を中断しない)。
+  try {
+    const gateOutcome = gateAndRoute(
+      rawPath,
+      path.join(vaultRoot, getThreatReportsBaseFolder(), QUARANTINE_SUBDIR),
+      gate,
+      `gmail:${threadId}`
+    );
+    if (gateOutcome.action === 'quarantine') {
+      return {
+        threadId,
+        messageId: msg.id,
+        periodEnd,
+        status: 'quarantined',
+        reason: `ゲート ${gateOutcome.verdict}: ${gateOutcome.detail}`,
+      };
+    }
+  } catch (e) {
+    return {
+      threadId,
+      messageId: msg.id,
+      periodEnd,
+      status: 'error',
+      reason: `ゲート・ルーティング失敗 (fail-closed / raw は ingest しない): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    };
+  }
 
   try {
     const result = await ingestThreatReport({
@@ -351,13 +549,22 @@ export function readPendingLabels(filePath: string): PendingLabel[] {
 function printSummary(outcomes: FetcherOutcome[]): void {
   const counts = {
     ingested: outcomes.filter(o => o.status === 'ingested').length,
+    quarantined: outcomes.filter(o => o.status === 'quarantined').length,
     skipped: outcomes.filter(o => o.status === 'skipped').length,
     error: outcomes.filter(o => o.status === 'error').length,
   };
-  console.log(`\n📊 結果: ingested=${counts.ingested}, skipped=${counts.skipped}, error=${counts.error}`);
+  console.log(
+    `\n📊 結果: ingested=${counts.ingested}, quarantined=${counts.quarantined}, ` +
+      `skipped=${counts.skipped}, error=${counts.error}`
+  );
   for (const o of outcomes) {
     if (o.status === 'error') {
       console.error(`  ❌ thread=${o.threadId} msg=${o.messageId} period_end=${o.periodEnd ?? '?'}: ${o.reason}`);
+    } else if (o.status === 'quarantined') {
+      console.warn(
+        `  🛡️  thread=${o.threadId} period_end=${o.periodEnd ?? '?'}: ${o.reason} ` +
+          `(→ _quarantine/ + 隔離キュー。/sec-mode の「隔離キュー review」で裁定)`
+      );
     } else if (o.status === 'skipped') {
       console.warn(`  ⏭️  thread=${o.threadId}: ${o.reason}`);
     }
@@ -399,10 +606,12 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
   const threads = listResp.data.threads ?? [];
   console.log(`📨 未処理 thread: ${threads.length} 件`);
 
+  const gate = makeCliGateRunner(env.vaultRoot);
+  const quarantinePending = readQuarantinePendingPeriodEnds(env.vaultRoot);
   const outcomes: FetcherOutcome[] = [];
   for (const t of threads) {
     if (!t.id) continue;
-    outcomes.push(await processThread(gm, t.id, env.vaultRoot, dryRun));
+    outcomes.push(await processThread(gm, t.id, env.vaultRoot, dryRun, gate, quarantinePending));
   }
 
   // WAL を main DB に統合してから commit させたいので明示クローズ。
@@ -487,7 +696,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
 const invokedDirectly = (() => {
   if (!process.argv[1]) return false;
   const entry = path.resolve(process.argv[1]);
-  return entry === path.resolve(new URL(import.meta.url).pathname);
+  return entry === path.resolve(fileURLToPath(import.meta.url));
 })();
 if (invokedDirectly) {
   main().then(

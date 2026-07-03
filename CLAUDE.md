@@ -66,9 +66,14 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 メッセージ `本チャットではセキュリティ更新タスクのみ受け付けます。` で拒否し再提示。
 
 > **取込タスクの完全な実行手順**は重複を避けて集約済み:
-> `.claude/commands/sec-mode.md` (手順 1〜7 の正典写し) + `scan-threat-report`
-> Skill (injection ゲート L0〜L3) + 上位仕様 `docs/security/llm-sec-report-consumption.md`
-> (Gmail クエリ / MCP 権限 / 証拠要件 / 判断順序 / 違反対応)。
+> `.claude/commands/sec-mode.md` (バッチ取込 + 隔離キュー review の正典) +
+> `scan-threat-report` Skill (injection ゲート。L2=直交5軸の隔離判定 /
+> L3=決定論コード `gate_decision.py`) + 上位仕様
+> `docs/security/llm-sec-report-consumption.md`
+> (Gmail クエリ / MCP 権限 / 証拠要件 / 判断順序 / 違反対応) + 判定表・隔離キュー・
+> heightened モードの正典 `docs/security/gate-decision-architecture.md`。
+> ゲート non-clean はバッチを止めず `_quarantine/` + 隔離キューへ退避し、人間の
+> 裁定は sec-mode メニューの「隔離キュー review」で後日バッチで行う。
 > Default mode では Security-only タスク (Gmail フェッチ / `--ingest-threat-report`)
 > を**勝手に走らせない**。必要なら別チャット `🛡️ LLM-Sec-Review` へ誘導する。
 >

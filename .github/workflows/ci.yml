@@ -42,6 +42,13 @@ jobs:
         # malformed manifests before they slip into main (see PR #23 post-mortem).
         run: python3 .github/scripts/check-package-json-duplicates.py
 
+      - name: Run injection-gate tests (python, deterministic)
+        # L1 (scan-threat-report.py) + L3 (gate_decision.py) の決定論回帰。
+        # stdlib のみで pnpm install 不要のため依存インストールより先に走らせる。
+        run: |
+          python3 .claude/skills/scan-threat-report/tests/run_l1_tests.py
+          python3 .claude/skills/scan-threat-report/tests/run_gate_tests.py
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

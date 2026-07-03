@@ -1,0 +1,9 @@
+{
+  "schema": "scan-threat-report/l2-axes@1",
+  "axes": {
+    "role_override": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "reader_directed_command": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "tool_call_forgery": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "exfiltration_lure": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"}
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "schema": "scan-threat-report/l2-axes@1",
+  "axes": {
+    "role_override": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "reader_directed_command": {"verdict": "pass", "confidence": "medium", "evidence": [{"signal_id": 1}], "reason": "表セル内の引用と判断したが埋め込み例の外側"},
+    "tool_call_forgery": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "exfiltration_lure": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"},
+    "concealment": {"verdict": "pass", "confidence": "high", "evidence": [], "reason": "なし"}
+  }
+}

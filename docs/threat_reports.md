@@ -10,9 +10,13 @@ ChatGPT/Codex 側の scheduled task が毎週 Gmail へ送る LLM セキュリ�
 ChatGPT scheduled task (毎週月曜 8:00 JST)
   ↓ Gmail Connector
 Gmail: 件名 "[LLM-Sec-Weekly] YYYY-MM-DD" + ラベル LLM-Sec-Report
-  ↓ Claude Code セッション (Gmail MCP)
+  ↓ Claude Code セッション (Gmail MCP) / CI fetcher
 Vault: <base>/raw/YYYY-MM-DD.md (frontmatter 付き原文を保存)
-  ↓ pnpm start -- --ingest-threat-report=<path>
+  ↓ ★ インジェクション・ゲート (L0+L1 scanner → gate_decision.py)
+  │    clean 以外 → <base>/_quarantine/ へ退避 (同期除外) +
+  │    <base>/_gate/quarantine_queue.json に登録して継続 (裁定は /sec-mode)
+  │    判断トレースは clean 含め <base>/_gate/decisions.jsonl に全件追記
+  ↓ (clean のみ) pnpm start -- --ingest-threat-report=<path>
 SQLite: <vault>/__skills/pipeline/threat_reports.db
   ↓ JSON エクスポート + index 再生成
 Vault: <base>/.threat_reports.json (Dataview source)
@@ -22,6 +26,8 @@ Vault: <base>/_index.md (sortable table view)
 - 既定 base: `Permanent Note/10_Threat_Reports`
   (`THREAT_REPORTS_FOLDER` env で上書き可)
 - 取り込み頻度: 週 1 回 (cron 等の常駐は不要)
+- ゲートの判定表 / 隔離キュー / heightened モードの正典:
+  `docs/security/gate-decision-architecture.md`
 
 ### SQLite DB の置き場所 (`PIPELINE_DB_DIR`)
 
