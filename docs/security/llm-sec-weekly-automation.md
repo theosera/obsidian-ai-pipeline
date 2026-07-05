@@ -241,15 +241,31 @@ CLAUDE.md「Secrets / sensitive files」節の通り、これらは **絶対に�
 付くので、次回 Actions では skip される (= 重複取込しない)。手動と
 自動を併用しても安全。
 
+### ローカル側の安全機構 (vault-ops skill)
+
+手動 push の既知事故 (non-ff 競合 / 未追跡 `.threat_reports.json` の衝突 /
+iCloud による `.git` 破損 / secret 混入) は `.claude/skills/vault-ops/` が
+実行パスで防ぐ:
+
+- `vault-push-perm` エイリアス → `safe-vault-push-perm.sh` (自動 rebase /
+  CI 版を正とした条件付き退避 / staged secret ゲート / `.git` 破損は検知して
+  vault 管理ノート「iCloud による git 破損」節へ誘導)
+- vault repo の `.githooks/pre-push` が素の `git push`・force push を機械的に拒否
+- 導入 (`install-vault-ops.sh`)・受け入れ基準・残余リスクは `vault-ops` の
+  SKILL.md が正典。受け入れテストは本リポ CI が毎 PR 実行
+
 ai_relevance_note を人間が curate するときは:
 
 1. vault repo を local で pull
 2. SQL or Obsidian で `__skills/pipeline/threat_reports.db` を編集
 3. `pnpm start -- --ingest-threat-report=...` を再実行して JSON / index を
    再生成 (または local CLI に専用コマンドを追加するかは別議論)
-4. **次の Actions 実行 (= 月曜 09:00 JST) より前に push する**
-   - push 前に Actions が走るとローカルとリモートで DB が衝突する
-   - リスクは Level 2 (LLM 自動 note 書込) PR で別途対処予定
+4. push は `vault-push-perm` (vault-ops wrapper) で行う
+   - Actions が先に走っていても、wrapper / CI の双方が fetch→rebase で自動追従
+     する (non-ff はもう事故にならない)
+   - 同一ファイルを両側で編集した稀ケースのみ rebase 衝突として loud-fail する
+     (CI 側は次回 run の UPSERT 冪等で自己修復。`.db` の人手フィールドは
+     「自動解決しない」設計で保護 — §5 の失敗表参照)
 
 ## 7. Level 2 への接続
 
