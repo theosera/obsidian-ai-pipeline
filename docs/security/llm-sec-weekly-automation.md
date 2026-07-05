@@ -228,7 +228,7 @@ CLAUDE.md「Secrets / sensitive files」節の通り、これらは **絶対に�
 | `forbidden_usage` 契約違反 (parser ContractError) | 該当 thread のみ error、processed ラベル付与 **しない** | 送信側 (ChatGPT/Codex) のテンプレートを修正 |
 | ゲート non-clean (契約違反 / ハード隠蔽 / ゲート実行失敗=fail-closed) | 該当 thread のみ quarantined (raw → `_quarantine/` + 隔離キュー)、**run は継続**・processed 付与しない | `/sec-mode` の「隔離キュー review」で裁定 (FP なら取込 + KSP 候補を PR 化) |
 | raw/ に non-clean が残存 ("Gate invariant re-check" 赤) | commit/push 前に停止 (fetcher 側ゲートの配線回帰疑い) | fetcher のゲート統合 (`makeCliGateRunner`) を点検 |
-| vault push が non-fast-forward (人間の手動 push が先行) | 失敗のたび fetch→rebase→push で自動追従 (backoff 2/4/8/16s) | 不要 (自動解消) |
+| vault push が non-fast-forward (人間の手動 push が先行) | 失敗のたび fetch→rebase→push で自動追従 (attempt 間 backoff 2/4/8s) | 不要 (自動解消) |
 | vault push の rebase 衝突 (人手 curate と自動 ingest が同一ファイルを両側編集) | rebase abort + "Commit & push" step 赤 (`-X theirs` 自動解決はしない — .db の人手フィールド保護) | 次 cron を待つ or workflow_dispatch 再実行 (processed 未付与のため UPSERT 冪等で再取込 = 自己修復) |
 | vault repo push 失敗 (deploy key 失効) | "Commit & push" step 赤 | deploy key 再生成、secret 更新 |
 

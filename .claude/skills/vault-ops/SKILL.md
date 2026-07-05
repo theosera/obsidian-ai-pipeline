@@ -27,7 +27,7 @@ vault repo は **CI (`.github/workflows/llm-sec-weekly.yml` の週次取込) と
 
 ## 構成ファイル
 
-```
+```text
 .claude/skills/vault-ops/
   SKILL.md                       … 本ファイル (規約と導入手順の正典)
   scripts/vault-pre-push.hook    … vault repo の .githooks/pre-push になるテンプレ (POSIX sh)
@@ -53,12 +53,15 @@ installer がやること (冪等 / 再実行安全):
 4. `~/.claude/bin/safe-vault-push-perm.sh` を **symlink** 配置 (clone への symlink = `git pull`
    で自動更新され drift しない。CLAUDE.md の egress hook ユーザー層配置と同じ推奨方式。
    clone に依存したくない場合のみ `--copy`)
-5. `~/.zshrc` に追記すべき 2 行を**表示** (既定では書き込まない。`--write-zshrc` 指定時のみ
-   backup + 旧 alias コメントアウト + managed block 追記):
+5. `~/.zshrc` に追記すべき managed block を**表示** (既定では書き込まない。`--write-zshrc`
+   指定時のみ backup + 旧 alias コメントアウト + managed block 追記)。alias でなく
+   **関数形式** (引数透過 + パスは single-quote エスケープして生成するため、空白や
+   quote を含むパスでも安全):
 
 ```bash
-# vault-ops (managed)
-alias vault-push-perm='PERM_NOTE_PATH="/path/to/Permanent Note" "$HOME/.claude/bin/safe-vault-push-perm.sh"'
+# >>> vault-ops managed >>>
+vault-push-perm() { PERM_NOTE_PATH='/path/to/vault' "$HOME/.claude/bin/safe-vault-push-perm.sh" "$@"; }
+# <<< vault-ops managed <<<
 ```
 
 受け入れ確認: `install-vault-ops.sh --self-test` (実 vault / 実 HOME に触れない

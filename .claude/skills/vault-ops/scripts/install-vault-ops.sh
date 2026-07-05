@@ -79,14 +79,19 @@ chmod +x "${HOOK_DST}"
 git -C "${VAULT_PATH}" config core.hooksPath .githooks
 info "✅ core.hooksPath = .githooks (local config — vault の新しい clone では installer を再実行)"
 
-# Commit the hook so it travels with the vault repo. A pathspec commit keeps
-# any unrelated staged changes in the vault out of this commit.
-if [ -n "$(git -C "${VAULT_PATH}" status --porcelain -- .githooks/pre-push)" ]; then
-  git -C "${VAULT_PATH}" add -- .githooks/pre-push
+# Commit the hook so it travels with the vault repo. Obsidian vaults commonly
+# gitignore all dotfiles (`.*`) — the same reason the weekly CI force-adds
+# `.threat_reports.json` — which hides an untracked .githooks/ from
+# `git status --porcelain` and would wrongly take the "already committed"
+# path, leaving every other clone unprotected (PR #117 Codex P2). `git add -f`
+# is ignore-proof; once tracked, later updates behave normally. The pathspec
+# commit keeps any unrelated staged changes in the vault out of this commit.
+git -C "${VAULT_PATH}" add -f -- .githooks/pre-push
+if git -C "${VAULT_PATH}" diff --cached --quiet -- .githooks/pre-push; then
+  info "✅ hook は commit 済みです"
+else
   git -C "${VAULT_PATH}" commit -m "chore: add vault-ops pre-push guard (non-ff/force push protection)" -- .githooks/pre-push
   info "✅ hook を commit しました (次回の vault push で共有されます)"
-else
-  info "✅ hook は commit 済みです"
 fi
 
 # ---- 4. wrapper into ~/.claude/bin ------------------------------------------
@@ -114,11 +119,16 @@ fi
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 BEGIN_MARK="# >>> vault-ops managed >>>"
 END_MARK="# <<< vault-ops managed <<<"
-ALIAS_LINE="alias vault-push-perm='PERM_NOTE_PATH=\"${VAULT_PATH}\" \"\$HOME/.claude/bin/safe-vault-push-perm.sh\"'"
+# Single-quote-escape for embedding a literal value in generated shell text
+# (close quote, insert \', reopen). Keeps paths containing quotes / spaces /
+# $ / backticks literal when .zshrc is sourced (PR #117 CodeRabbit). A shell
+# function instead of an alias also forwards extra arguments.
+sq() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
+ALIAS_LINE="vault-push-perm() { PERM_NOTE_PATH='$(sq "${VAULT_PATH}")' \"\$HOME/.claude/bin/safe-vault-push-perm.sh\" \"\$@\"; }"
 
 if [ "${WRITE_ZSHRC}" -eq 0 ]; then
   info ""
-  info "次の 2 行を ${ZSHRC} に追記してください (自動追記は --write-zshrc):"
+  info "次の managed block を ${ZSHRC} に追記してください (自動追記は --write-zshrc):"
   info "  ${BEGIN_MARK}"
   info "  ${ALIAS_LINE}"
   info "  ${END_MARK}"

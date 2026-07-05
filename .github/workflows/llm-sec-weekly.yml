@@ -273,7 +273,7 @@ jobs:
 
           git commit -m "chore: weekly LLM threat report ingest ($(date -u +%Y-%m-%d))"
 
-          # push リトライ (backoff は CLAUDE.md 規約: 2s/4s/8s/16s)。既知の失敗要因は
+          # push リトライ ×4 (attempt 間の指数 backoff 2s/4s/8s)。既知の失敗要因は
           # 人間の手動 push が先行して non-fast-forward になるケースで、これは決定的
           # 失敗なので素の retry では 4 回全滅する。失敗のたびに fetch→rebase で
           # remote を取り込んでから再試行する (terminal-ops-logs の archive-session.sh

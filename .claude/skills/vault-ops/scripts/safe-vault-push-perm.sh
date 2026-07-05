@@ -177,6 +177,16 @@ if [ -f "${JSON_REL}" ] \
    && ! git ls-files --error-unmatch -- "${JSON_REL}" >/dev/null 2>&1 \
    && git cat-file -e "FETCH_HEAD:${JSON_REL}" 2>/dev/null; then
   mkdir -p "${BACKUP_DIR}"
+  # The backup must live OUTSIDE the work tree: the later `git add -A` would
+  # otherwise commit the backup itself. Reject an env override that points
+  # back into the vault (PR #117 CodeRabbit).
+  vault_abs="$(pwd -P)"
+  backup_abs="$(cd "${BACKUP_DIR}" && pwd -P)"
+  case "${backup_abs}/" in
+    "${vault_abs}/"*)
+      die "VAULT_OPS_BACKUP_DIR は vault worktree の外に設定してください: ${BACKUP_DIR}"
+      ;;
+  esac
   backup_path="${BACKUP_DIR}/$(date +%Y%m%d-%H%M%S)-threat_reports.local.json"
   mv "${JSON_REL}" "${backup_path}"
   info "📦 未追跡の ${JSON_REL} を退避しました (CI 版を正として採用): ${backup_path}"

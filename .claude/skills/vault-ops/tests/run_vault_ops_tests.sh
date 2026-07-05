@@ -362,6 +362,29 @@ t_w7_rebase_conflict_aborts() {
   fi
 }
 
+t_w9_inworktree_backup_dir_rejected() {
+  # regression: PR #117 CodeRabbit — a VAULT_OPS_BACKUP_DIR override pointing
+  # into the vault must be rejected before the mv (else `git add -A` could
+  # commit the backup itself).
+  new_sandbox
+  ci_commit_push "10_Threat_Reports/.threat_reports.json" "ci-version"
+  mkdir -p "${SB}/mac-clone/10_Threat_Reports"
+  printf 'local-version\n' > "${SB}/mac-clone/10_Threat_Reports/.threat_reports.json"
+  before_sha="$(origin_main_sha)"
+  set +e
+  out="$(PERM_NOTE_PATH="${SB}/mac-clone" VAULT_OPS_BACKUP_DIR="${SB}/mac-clone/backups-inside" \
+         bash "${WRAPPER}" 2>&1)"
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -q "worktree の外" \
+     && grep -qx "local-version" "${SB}/mac-clone/10_Threat_Reports/.threat_reports.json" \
+     && [ "$(origin_main_sha)" = "${before_sha}" ]; then
+    pass "W-9 in-worktree VAULT_OPS_BACKUP_DIR rejected before quarantine"
+  else
+    fail "W-9" "rc=${rc} out=${out}"
+  fi
+}
+
 t_w8_quarantine_dir_never_pushed() {
   new_sandbox
   mkdir -p "${SB}/mac-clone/10_Threat_Reports/_quarantine"
@@ -440,6 +463,56 @@ t_i3_copy_mode() {
   fi
 }
 
+t_i4_ignored_dotfiles_vault() {
+  # regression: PR #117 Codex P2 — Obsidian-style `.*` gitignore hid the
+  # untracked .githooks/pre-push from `git status --porcelain`, so the
+  # installer skipped the initial commit and the hook never reached other
+  # clones. The installer must force-add it (same rationale as the CI's
+  # `git add -f` for .threat_reports.json).
+  new_sandbox
+  mkdir -p "${SB}/home"
+  printf '.*\n' > "${SB}/mac-clone/.gitignore"
+  git -C "${SB}/mac-clone" add -f .gitignore
+  git -C "${SB}/mac-clone" commit -qm "ignore all dotfiles"
+  run_installer
+  if [ "${rc}" -eq 0 ] \
+     && git -C "${SB}/mac-clone" ls-files --error-unmatch -- .githooks/pre-push >/dev/null 2>&1 \
+     && [ "$(git -C "${SB}/mac-clone" show --name-only --format= HEAD)" = ".githooks/pre-push" ]; then
+    pass "I-4 hook committed even in a dotfile-ignoring vault (add -f)"
+  else
+    fail "I-4" "rc=${rc} out=${out}"
+  fi
+}
+
+t_i5_quoted_path_zshrc_function() {
+  # regression: PR #117 CodeRabbit — the generated zshrc entry must keep a
+  # path containing quotes/spaces literal. Round-trip: install into a vault
+  # named with a single quote, eval the generated function with a stub
+  # wrapper, and check PERM_NOTE_PATH arrives byte-identical.
+  new_sandbox
+  mkdir -p "${SB}/home"
+  qvault="${SB}/vault's dir"
+  git clone -q "${SB}/origin.git" "${qvault}"
+  repo_cfg "${qvault}"
+  git -C "${qvault}" checkout -qB main origin/main
+  set +e
+  out="$(HOME="${SB}/home" ZDOTDIR= PERM_NOTE_PATH= \
+         bash "${INSTALLER}" --perm-note-path "${qvault}" --write-zshrc 2>&1)"
+  rc=$?
+  set -e
+  func_line="$(grep '^vault-push-perm()' "${SB}/home/.zshrc" || true)"
+  rm -f "${SB}/home/.claude/bin/safe-vault-push-perm.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%s" "${PERM_NOTE_PATH}"\n' \
+    > "${SB}/home/.claude/bin/safe-vault-push-perm.sh"
+  chmod +x "${SB}/home/.claude/bin/safe-vault-push-perm.sh"
+  received="$(HOME="${SB}/home" bash -c "${func_line}; vault-push-perm" 2>/dev/null || true)"
+  if [ "${rc}" -eq 0 ] && [ -n "${func_line}" ] && [ "${received}" = "${qvault}" ]; then
+    pass "I-5 quoted/space path survives zshrc round-trip (shell-escaped function)"
+  else
+    fail "I-5" "rc=${rc} received=${received} expected=${qvault} out=${out}"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 
 main() {
@@ -461,9 +534,12 @@ main() {
   t_w6_autostash_conflict_stops
   t_w7_rebase_conflict_aborts
   t_w8_quarantine_dir_never_pushed
+  t_w9_inworktree_backup_dir_rejected
   t_i1_first_install
   t_i2_idempotent_and_zshrc
   t_i3_copy_mode
+  t_i4_ignored_dotfiles_vault
+  t_i5_quoted_path_zshrc_function
 
   printf '%s\n' "----------------------------------------"
   printf 'vault-ops tests: %d passed, %d failed\n' "${PASS}" "${FAIL}"
