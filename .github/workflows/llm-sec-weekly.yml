@@ -273,15 +273,46 @@ jobs:
 
           git commit -m "chore: weekly LLM threat report ingest ($(date -u +%Y-%m-%d))"
 
-          # network エラーリトライ (CLAUDE.md 規約: 2s/4s/8s/16s)
+          # push リトライ (backoff は CLAUDE.md 規約: 2s/4s/8s/16s)。既知の失敗要因は
+          # 人間の手動 push が先行して non-fast-forward になるケースで、これは決定的
+          # 失敗なので素の retry では 4 回全滅する。失敗のたびに fetch→rebase で
+          # remote を取り込んでから再試行する (terminal-ops-logs の archive-session.sh
+          # と同戦略に統一)。fetch-depth:1 のままでも、人間 push は checkout 時 tip の
+          # 子孫なので増分 fetch で merge-base に届き rebase は成立する。
+          # ブランチ名はハードコードしない (vault 側 default branch に追従)。
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          if [ "${BRANCH}" = "HEAD" ]; then
+            echo "::error::detached HEAD のため push 先ブランチを特定できません (vault checkout 設定を確認)"
+            exit 1
+          fi
           for attempt in 1 2 3 4; do
-            if git push; then
+            if git push origin "${BRANCH}"; then
               echo "✅ push 成功 (attempt ${attempt})"
               exit 0
             fi
-            sleep $((2 ** attempt))
+            # non-ff か一時 network エラーかは exit code で区別できないため、まず
+            # remote を取り込む。rebase 先は FETCH_HEAD (actions/checkout が残す
+            # narrow refspec に依存しない)。fetch 自体の失敗は network 起因とみなし
+            # backoff のみで再試行する。
+            if git fetch origin "${BRANCH}"; then
+              if ! git rebase FETCH_HEAD; then
+                # rebase 衝突 = 人手 curate と自動 ingest が同一ファイルを両側編集した
+                # 稀ケース。`-X theirs` での自動解決は禁止 (.db はバイナリで、人手の
+                # ai_relevance_note を silent clobber し得る)。abort して loud-fail し、
+                # 次の cron / workflow_dispatch に委ねる (processed ラベル未付与のまま
+                # 残るので再取込され、ingest は UPSERT 冪等 = 自己修復)。
+                git rebase --abort || true
+                echo "::error::vault push の rebase が衝突しました。自動解決せず停止します (次回 run が UPSERT 冪等で再取込・自己修復)。"
+                exit 1
+              fi
+            else
+              echo "⚠️ fetch 失敗 (attempt ${attempt}) — network 起因とみなし backoff のみで再試行"
+            fi
+            if [ "${attempt}" -lt 4 ]; then
+              sleep $((2 ** attempt))
+            fi
           done
-          echo "❌ push 4 回失敗"
+          echo "::error::push 4 回失敗 (rebase 済みでも push 不可 — deploy key / vault 側 branch protection を確認)"
           exit 1
 
       # ----------------------------------------------------------------
