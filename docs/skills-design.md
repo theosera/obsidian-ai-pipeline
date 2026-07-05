@@ -63,6 +63,7 @@ Claude Code 公式 docs には "Automatic discovery from nested directories" の
 | Dev workflow | skill | `pr-workflow` | PR 作成 / auto-merge 判断 / CI 期待値 |
 | Dev workflow | skill | `ts-coding-conventions` | このリポの TS を書く/直す前の規約 |
 | Ops / 運用ログ | skill | `ops-logging` | git/shell/MCP 操作を「コマンド＋意図」(secret 全マスク) で専用 private リポに push する設定の正典 (hook の母艦) |
+| Ops / vault 書込安全 | skill | `vault-ops` | 二重書き込み vault repo への安全 push (pre-push hook / 自動 rebase / secret ゲート / installer) の正典 |
 | Feature 知識 | skill | `x-bookmarks` | X bookmarks 機能の実装知識 |
 
 ## 新規 skill 追加チェックリスト

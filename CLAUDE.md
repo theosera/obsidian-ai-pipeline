@@ -24,6 +24,7 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 | sec-mode 取込で脅威レポート本文を扱う (injection ゲート) | `scan-threat-report` |
 | 外部リポを `git clone` する / clone 済みリポを開く・ビルドする・その設定 (`CLAUDE.md` / `.claude` / `.mcp.json` / `.githooks` / postinstall) を読む前 | `untrusted-repo-intake` |
 | コマンド学習ログ機能を新リポへ導入 / hook 設定 (`settings.json`) を書く・直す / マスキング規則・ログ出力先を変える / `capture-command.sh`・`push-log.sh` を触る | `ops-logging` |
+| vault repo (Permanent Note) への push 運用 / `vault-push-perm` エイリアス / vault の `.githooks` (pre-push) / vault の git 障害対応 (non-ff・iCloud ref 破損) / `.claude/skills/vault-ops/scripts/*` を触る | `vault-ops` |
 
 ## Skills / Commands 構成規約 (フラット固定)
 
@@ -39,6 +40,7 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 | Security / リポ取込 | `untrusted-repo-intake` (skill) |
 | Dev workflow | `pr-workflow`・`ts-coding-conventions` (skill) |
 | Ops / 運用ログ | `ops-logging` (skill) |
+| Ops / vault 書込安全 | `vault-ops` (skill) |
 | Feature 知識 | `x-bookmarks` (skill) |
 
 > 命名規約 (kebab-case / `name`=ディレクトリ名) と追加手順・根拠は
@@ -145,27 +147,29 @@ Gmail の読取・ラベル付けは**常に都度ユーザー承認**を通す 
 
 ## Secret-pattern の維持 (egress / gitleaks / mask 同期 — SLA)
 
-秘密検出パターンは 3 系統に分散しているため、新トークン形式が出たら **1 PR で同時に**
+秘密検出パターンは 4 系統に分散しているため、新トークン形式が出たら **1 PR で同時に**
 更新する (片方だけ古いと検出漏れ = この対策の回帰):
 
 - egress hook: `.claude/hooks/block-secret-egress.cjs` (本リポ) +
   `block-secret-egress.py` (`pipeline-youtube` / `pipeline-youtube-SDK`)
 - `.pre-commit-config.yaml` の `gitleaks` rev (youtube / SDK。`pre-commit autoupdate` で追従)
 - `ops-logging` skill の `mask()` (`capture-command.sh`)
+- `vault-ops` skill の staged secret ゲート (`safe-vault-push-perm.sh` の `SECRET_ERE` —
+  `.claude/hooks/block-secret-git.cjs` の `SECRET_RE` の shell 転記。ファイル名パターン系)
 
 > **(ユーザー層・任意)** リポ外の素のセッション (例: `~/dev` 配下に OSS を `git clone` して
 > 調べる) も egress で覆うには、egress hook を**ユーザー層** (`~/.claude/hooks/block-secret-egress.py`)
 > にも置く。配置方法は 2 通りで、**drift 耐性が違う**:
 > - **推奨 (symlink / 自動同期)**: リポのクローンへ symlink する
 >   (`ln -s <clone>/.claude/hooks/block-secret-egress.py ~/.claude/hooks/block-secret-egress.py`)。
->   `git pull` でユーザー層コピーも自動更新され drift しない (同期対象は 3 系統のまま)。
+>   `git pull` でユーザー層コピーも自動更新され drift しない (同期対象は 4 系統のまま)。
 >   ただしそのクローンが存在し pull されていることが前提 (消す/移動すると hook が壊れる)。
 > - **コピー (独立だが手動同期)**: クローンに依存せず動くが、**git 管理外で気付けない 4 つ目のコピー**
 >   になる。古いままだと**リポ外セッションだけ検出漏れ = 穴**になるため、**四半期レビュー時に
 >   各自のユーザー層コピーも必ず更新**する。
 
 - **更新トリガ**: GitHub / OpenAI / クラウドが新トークン形式をリリースした時。
-- **定期レビュー**: **四半期ごと**に 3 系統 (ユーザー層を symlink でなく**コピー**配置している各自は
+- **定期レビュー**: **四半期ごと**に 4 系統 (ユーザー層を symlink でなく**コピー**配置している各自は
   + そのコピー) の差分を突き合わせ、漏れを潰す。
 
 ## Branch naming
@@ -177,7 +181,7 @@ Gmail の読取・ラベル付けは**常に都度ユーザー承認**を通す 
 
 - `CLAUDE.global.md` — 全リポ共通のグローバル層 (行動原則 / セキュリティ境界 / 発火規律)
 - `.claude/skills/` — `pr-workflow` / `x-bookmarks` / `ts-coding-conventions` /
-  `scan-threat-report` / `ops-logging` (発火条件付きの作業規約・機能知識)
+  `scan-threat-report` / `ops-logging` / `vault-ops` (発火条件付きの作業規約・機能知識)
 - `docs/skills-design.md` — Skills/Commands 構成規約 (フラット固定の根拠 / 命名 / カテゴリ索引)
 - `README.md` — high-level architecture + setup
 - `docs/ai-coding-conventions.md` — AI-native コーディング規約 (原本。`ts-coding-conventions` skill が参照)

@@ -49,6 +49,13 @@ jobs:
           python3 .claude/skills/scan-threat-report/tests/run_l1_tests.py
           python3 .claude/skills/scan-threat-report/tests/run_gate_tests.py
 
+      - name: Run vault-ops acceptance tests (bash, sandboxed git)
+        # vault-ops skill (pre-push hook / safe push wrapper / installer) の
+        # 決定論回帰。tmp 配下に bare origin + clone を作るだけで network /
+        # pnpm 不要のため、injection-gate テスト同様、依存インストールより
+        # 先に走らせる。
+        run: bash .claude/skills/vault-ops/tests/run_vault_ops_tests.sh
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

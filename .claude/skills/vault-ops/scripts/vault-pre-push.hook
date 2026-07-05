@@ -1,0 +1,56 @@
+#!/bin/sh
+# vault-ops pre-push guard (template; installed into the vault repo as
+# .githooks/pre-push by install-vault-ops.sh and activated via
+# `git config core.hooksPath .githooks`).
+#
+# Purpose: mechanically reject a push to the protected branch (default: main)
+# while the remote is ahead of the local ref — the dual-writer race where the
+# weekly ingest CI pushed first. The same condition also rejects
+# `git push --force`, which would silently erase the CI's commits; that is
+# the main value of this hook (a plain non-ff push is rejected by the server
+# anyway, just with a less actionable message).
+#
+# Fail-open policy: when `git fetch` fails (offline etc.) the push is allowed —
+# the server-side non-fast-forward rejection remains the last line of defense.
+# Branch deletions and tag pushes are never inspected.
+#
+# stdin protocol (one line per ref being pushed):
+#   <local ref> SP <local sha> SP <remote ref> SP <remote sha> LF
+#
+# Portability: POSIX sh. No bashisms. English comments only; user-facing
+# messages are Japanese (no emoji) per the obsidian-ai-pipeline guard style.
+
+PROTECTED="$(git config --get vault-ops.protected-branch 2>/dev/null)"
+[ -n "${PROTECTED}" ] || PROTECTED="main"
+
+# git invokes pre-push as: <hook> <remote name> <remote url>
+REMOTE_NAME="${1:-origin}"
+
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${remote_ref}" ] || continue
+  # Only guard pushes that update the protected branch on the remote side.
+  # Keying on remote_ref also catches `git push origin feature:main`.
+  # Tags (refs/tags/...) never match and are naturally skipped.
+  [ "${remote_ref}" = "refs/heads/${PROTECTED}" ] || continue
+  # Branch deletion: local sha is all zeros (works for SHA-1 and SHA-256).
+  case "${local_sha}" in
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+  # </dev/null so fetch can never consume the remaining stdin ref lines.
+  if ! git fetch --quiet "${REMOTE_NAME}" "${PROTECTED}" </dev/null; then
+    echo "vault-ops pre-push: fetch に失敗したため検査をスキップします (server 側の non-fast-forward 拒否が最終防衛)。" >&2
+    continue
+  fi
+  # Allowed iff the remote tip is an ancestor of what we are pushing
+  # (fast-forward or identical). Diverged or behind -> reject.
+  if git merge-base --is-ancestor FETCH_HEAD "${local_sha}" </dev/null; then
+    continue
+  fi
+  echo "push 拒否: ${REMOTE_NAME}/${PROTECTED} に先行コミットがあります (週次取込 CI の可能性)。" >&2
+  echo "vault-push-perm を実行してください (自動で rebase してから push します)。手動なら: git pull --rebase" >&2
+  echo "force push も先行コミットを消すため同様に拒否されます (vault-ops / .githooks/pre-push)。" >&2
+  status=1
+done
+exit "${status}"

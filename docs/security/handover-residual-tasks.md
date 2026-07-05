@@ -1,4 +1,4 @@
-# 引き継ぎ: セキュリティ残課題 (#6–#10, #13, #14, #16)
+# 引き継ぎ: セキュリティ残課題 (#6–#10, #13, #14, #16, #17)
 
 > このドキュメントは、3 リポ脆弱性点検 (2026-06) で洗い出した残課題のうち、
 > **本セッションで未実施**のものを次の担当 (人間 or エージェント) に引き継ぐための一覧。
@@ -21,6 +21,7 @@
 | #13 | `stats.jsonl` の出力先見直し (vault 外) | youtube | 0.5–1h | 低 | 情報露出 |
 | #14 | X bookmarks リンク先 host allowlist | obsidian | 1–2h | 低 | SSRF/injection |
 | #16 | secret 検出パターンの四半期レビュー | 3 リポ | プロセス | 低 | 運用 |
+| #17 | vault repo の `.git` を iCloud 同期から分離 | vault (permanent-note) | 1–2h | 低 (月1回以上再発で着手) | 運用 |
 
 ---
 
@@ -207,19 +208,44 @@
 - **対象リポ**: 3 リポ横断 (コードではなく**運用プロセス**)
 - **関連**: obsidian `CLAUDE.md` の「Secret-pattern の維持 (egress/gitleaks/mask 同期 — SLA)」
   節 (#5 で追加済み) の**実行**にあたる。
-- **内容**: 秘密検出パターンは 3 系統に分散しているため、四半期ごとに突き合わせて
+- **内容**: 秘密検出パターンは 4 系統に分散しているため、四半期ごとに突き合わせて
   漏れを潰す:
   - egress hook: `.claude/hooks/block-secret-egress.cjs` (obsidian) +
     `block-secret-egress.py` (youtube / SDK)
   - `.pre-commit-config.yaml` の `gitleaks` rev (youtube / SDK)
   - `ops-logging` skill の `mask()` (`capture-command.sh`)
+  - `vault-ops` skill の staged secret ゲート
+    (`.claude/skills/vault-ops/scripts/safe-vault-push-perm.sh` の `SECRET_ERE` —
+    `block-secret-git.cjs` の `SECRET_RE` の shell 転記。ファイル名パターン系)
 - **手順 (四半期ごと)**:
   1. GitHub / OpenAI / 主要クラウドが新トークン形式を出していないか確認。
-  2. 3 系統の正規表現を diff し、片方にしか無いパターンを揃える (1 PR で同時更新)。
+  2. 4 系統の正規表現を diff し、片方にしか無いパターンを揃える (1 PR で同時更新)。
   3. `pre-commit autoupdate` で gitleaks rev を追従。
 - **見積**: プロセス (1 回あたり 0.5–1h 程度)。
-- **注意点**: **片方だけ更新すると検出漏れ = 対策の回帰**。必ず 1 PR で 3 系統同時に。
+- **注意点**: **片方だけ更新すると検出漏れ = 対策の回帰**。必ず 1 PR で 4 系統同時に。
   次回レビュー目安: 2026-Q3。
+
+---
+
+## #17 — vault repo の `.git` を iCloud 同期から分離 (保留・再発条件付き)
+
+- **対象リポ**: vault repo (obsidian-permanent-note) の**ローカル clone 運用** (コード変更なし)
+- **対象ファイル**: `<vault>/.git` (実体を iCloud 外へ移動し gitdir ポインタ化)
+- **リスク**: iCloud が `.git` 内部を同期し、ref 重複 (`refs/heads/main 2`) や
+  オブジェクトの evict (`*.icloud` placeholder) で repo が破損する。発生頻度は
+  低いが実害あり。`.githooks/pre-push` 自体が evict されると hook 不在として
+  fail-open になる点もこの分離で根治する。
+- **手順** (着手時の参考 — **現時点では実行しない**):
+  1. `mkdir -p ~/.git-stores`
+  2. `mv "$PERM_NOTE_PATH/.git" ~/.git-stores/permanent-note.git`
+  3. `echo "gitdir: $HOME/.git-stores/permanent-note.git" > "$PERM_NOTE_PATH/.git"`
+  4. `git -C "$PERM_NOTE_PATH" status` と `vault-push-perm` で動作確認
+- **見積**: 1–2h (検証込み)
+- **注意点**: **月 1 回以上の頻度で破損が再発する場合にのみ着手** (2026-07 判断)。
+  現状の運用: `vault-ops` wrapper (`safe-vault-push-perm.sh`) が起動時に破損兆候
+  (ref 名の空白 / packed-refs 異常 / `.git` 下の `*.icloud`) を検知して停止し、
+  復旧は vault 管理ノート「iCloud による git 破損」節の確立手順で人間が行う
+  (ref 削除は破壊的操作のため自動化しない)。着手前に `vault-ops` skill をロード。
 
 ---
 
