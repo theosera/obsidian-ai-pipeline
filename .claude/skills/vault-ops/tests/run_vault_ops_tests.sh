@@ -195,19 +195,44 @@ t_h6_tag_push_skipped() {
   fi
 }
 
-t_h7_fetch_failure_fail_open() {
+t_h7_new_branch_allowed() {
   new_sandbox; install_hook
   head_sha="$(git -C "${SB}/mac-clone" rev-parse HEAD)"
-  git -C "${SB}/mac-clone" remote set-url origin "${SB}/does-not-exist.git"
+  # Remote ref does not exist yet: git passes an all-zero remote sha.
   set +e
-  out="$(cd "${SB}/mac-clone" && printf 'refs/heads/main %s refs/heads/main %s\n' "${head_sha}" "${head_sha}" \
-        | ./.githooks/pre-push origin "${SB}/does-not-exist.git" 2>&1)"
+  out="$(cd "${SB}/mac-clone" && printf 'refs/heads/main %s refs/heads/main %s\n' "${head_sha}" "${ZERO_SHA}" \
+        | ./.githooks/pre-push origin "${SB}/origin.git" 2>&1)"
   rc=$?
   set -e
-  if [ "${rc}" -eq 0 ] && printf '%s' "${out}" | grep -q "スキップ"; then
-    pass "H-7 hook fails open when fetch fails"
+  if [ "${rc}" -eq 0 ]; then
+    pass "H-7 hook allows first push of the branch (all-zero remote sha)"
   else
     fail "H-7" "rc=${rc} out=${out}"
+  fi
+}
+
+t_h8_remote_object_absent_rejected() {
+  # regression for the production failure: a concurrent writer advanced origin,
+  # the local clone never fetched it, and the old in-hook `git fetch` failed
+  # open -> the non-ff push slipped through to the server. With git's own
+  # remote sha the object is absent locally, `merge-base --is-ancestor` errors,
+  # and the hook fails CLOSED (reject) — which is what must happen.
+  new_sandbox; install_hook
+  ci_commit_push "notes/ci.md" "ci"            # origin advances; mac never fetches
+  remote_sha="$(origin_main_sha)"
+  printf 'local\n' > "${SB}/mac-clone/notes/h8.md"
+  git -C "${SB}/mac-clone" add notes/h8.md
+  git -C "${SB}/mac-clone" commit -qm "h8"      # mac diverges from origin
+  local_sha="$(git -C "${SB}/mac-clone" rev-parse HEAD)"
+  set +e
+  out="$(cd "${SB}/mac-clone" && printf 'refs/heads/main %s refs/heads/main %s\n' "${local_sha}" "${remote_sha}" \
+        | ./.githooks/pre-push origin "${SB}/origin.git" 2>&1)"
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -q "push 拒否"; then
+    pass "H-8 rejects when remote sha is unknown locally (fail-closed regression)"
+  else
+    fail "H-8" "rc=${rc} out=${out}"
   fi
 }
 
@@ -522,7 +547,8 @@ main() {
   t_h4_feature_to_main_rejected
   t_h5_delete_skipped
   t_h6_tag_push_skipped
-  t_h7_fetch_failure_fail_open
+  t_h7_new_branch_allowed
+  t_h8_remote_object_absent_rejected
   t_w1_e2e_happy_path
   t_w2_json_quarantine
   t_w2b_no_quarantine_when_remote_untracked
