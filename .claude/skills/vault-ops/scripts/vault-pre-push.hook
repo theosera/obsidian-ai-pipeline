@@ -4,15 +4,27 @@
 # `git config core.hooksPath .githooks`).
 #
 # Purpose: mechanically reject a push to the protected branch (default: main)
-# while the remote is ahead of the local ref — the dual-writer race where the
-# weekly ingest CI pushed first. The same condition also rejects
-# `git push --force`, which would silently erase the CI's commits; that is
-# the main value of this hook (a plain non-ff push is rejected by the server
-# anyway, just with a less actionable message).
+# when it is NOT a fast-forward of the current remote tip — the dual-writer
+# race where the weekly ingest CI (or another clone) pushed first. The same
+# condition also rejects `git push --force`, which would silently erase those
+# commits; that force-push protection plus the actionable message (pointing at
+# vault-push-perm) is the value of this hook. A plain non-ff push is also
+# refused server-side, but only after contacting the remote and with a less
+# actionable message.
 #
-# Fail-open policy: when `git fetch` fails (offline etc.) the push is allowed —
-# the server-side non-fast-forward rejection remains the last line of defense.
-# Branch deletions and tag pushes are never inspected.
+# Why no `git fetch` here: git already contacted the remote during push
+# negotiation and passes the authoritative current remote sha on stdin
+# (<remote sha>). An earlier version fetched inside the hook, but a `git fetch`
+# spawned while the parent `git push` holds the connection is unreliable and,
+# on failure, fell through to a fail-open `exit 0` — so the guard silently let
+# non-ff pushes reach the server (observed on a real iCloud vault). Comparing
+# against git's own <remote sha> needs no network call and cannot fail open.
+#
+# Ancestry check: allowed iff <remote sha> is an ancestor of <local sha>
+# (i.e. a fast-forward). If <remote sha> is not even a local object — which
+# only happens when we are behind/diverged (a ff descendant is always present
+# locally) — `merge-base --is-ancestor` errors non-zero and we reject
+# (fail-CLOSED), which is exactly the accident this guard must catch.
 #
 # stdin protocol (one line per ref being pushed):
 #   <local ref> SP <local sha> SP <remote ref> SP <remote sha> LF
@@ -38,14 +50,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     *[!0]*) ;;
     *) continue ;;
   esac
-  # </dev/null so fetch can never consume the remaining stdin ref lines.
-  if ! git fetch --quiet "${REMOTE_NAME}" "${PROTECTED}" </dev/null; then
-    echo "vault-ops pre-push: fetch に失敗したため検査をスキップします (server 側の non-fast-forward 拒否が最終防衛)。" >&2
-    continue
-  fi
-  # Allowed iff the remote tip is an ancestor of what we are pushing
-  # (fast-forward or identical). Diverged or behind -> reject.
-  if git merge-base --is-ancestor FETCH_HEAD "${local_sha}" </dev/null; then
+  # Remote ref does not exist yet: remote sha is all zeros -> nothing to
+  # clobber, so a first push of the branch is allowed.
+  case "${remote_sha}" in
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+  # Allowed iff the remote tip git negotiated is an ancestor of what we push
+  # (fast-forward or identical). Diverged / behind / remote object absent
+  # locally -> merge-base returns non-zero -> reject.
+  if git merge-base --is-ancestor "${remote_sha}" "${local_sha}" >/dev/null 2>&1; then
     continue
   fi
   echo "push 拒否: ${REMOTE_NAME}/${PROTECTED} に先行コミットがあります (週次取込 CI の可能性)。" >&2

@@ -109,13 +109,19 @@ CLAUDE.md の「`git add -A` 禁止」は **obsidian-ai-pipeline 自身の commi
 | `_quarantine/` | 追跡しない (untrusted 本文) | `:(exclude)` + staged assert で決して commit しない |
 | non-ff 解消戦略 | fetch→rebase FETCH_HEAD→push ×4 / 衝突 abort + loud-fail | 同一戦略 ×3 / 衝突 abort + 停止 |
 
+> **pre-push hook の判定は git 提供の `remote_sha` (push 交渉直後の権威値) を使い、
+> hook 内で `git fetch` しない**。push 進行中の自前 fetch は不安定で、失敗すると
+> 旧設計は fail-open で non-ff を通してしまった (実 vault で確認)。remote_sha 方式なら
+> ネットワーク呼び出しゼロ、リモートオブジェクトがローカル未取得のケースも
+> `merge-base --is-ancestor` がエラー→**fail-closed で拒否**する。
+
 ## 残余リスク (機構で塞がない部分 — 知っておく)
 
 - hook は `git push --no-verify` で迂回できる (CLAUDE.md: `--no-verify` を使わない文化)。
   最終防衛は server 側 non-ff 拒否。**force push まで完全に塞ぐには vault repo 側の
   branch protection (force push 禁止) を推奨**。
-- `.githooks/pre-push` 自体が iCloud に evict されると git は hook 無しとして進む
-  (fail-open)。根治は `.git`/hook の iCloud 分離 = handover #17 (保留、月 1 回以上
+- `.githooks/pre-push` 自体が iCloud に evict される (`*.icloud` placeholder 化) と git は
+  hook 無しとして進む。根治は `.git`/hook の iCloud 分離 = handover #17 (保留、月 1 回以上
   再発したら着手)。
 - secret ゲートは **ファイル名ベース** (block-secret-git.cjs と同水準)。内容ベース検知は
   gitleaks 系統 (SLA 参照) の守備範囲。
@@ -126,7 +132,7 @@ CLAUDE.md の「`git add -A` 禁止」は **obsidian-ai-pipeline 自身の commi
   サンドボックス (network / pnpm 不要)。CI (`.github/workflows/ci.yml`) で毎 PR 実行。
   ローカル (Mac) では `install-vault-ops.sh --self-test` で同じものが走る。
 - カバー: hook (ff 許可 / non-ff 拒否 / force 拒否 / `feature:main` 拒否 / delete・tag skip /
-  fetch 失敗 fail-open) / wrapper (e2e / JSON 退避と非退避 / 自動 rebase / secret 停止と
+  新規 ref 許可 / リモートオブジェクト未取得→fail-closed 拒否) / wrapper (e2e / JSON 退避と非退避 / 自動 rebase / secret 停止と
   `.env.example` 通過 / ref 破損停止 / autostash 衝突停止 / rebase 衝突 abort /
   `_quarantine` 非 commit) / installer (初回 / 冪等 / `--copy`)
 
