@@ -35,8 +35,11 @@ Anthropic 公式プラグイン `security-guidance@claude-plugins-official` の�
 
 ## リポ固有の脅威モデル注入 (導入済み)
 
-各リポの `.claude/claude-security-guidance.md` が、モデルレビュー (ターン終了時 /
-commit 時) に追加コンテキストとして読み込まれる (合計 8KB 上限・追加のみ):
+各リポの `.claude/claude-security-guidance.md` が、**ターン終了時の diff レビュー**に
+追加コンテキストとして読み込まれる (合計 8KB 上限・追加のみ)。commit 時の agentic
+レビューにも注入されるかはプラグインの実装バージョン依存で**未検証**のため、リポ固有
+不変条件の担保はターン終了時レビュー側にあるものとして扱う (commit 時レビューは
+汎用観点のみと想定する):
 
 - `obsidian-ai-pipeline`: nonce デリミタによる untrusted テキスト隔離 /
   ゲートの fail-closed 不変条件 / span_sha1 のみのログ / SHA pin 済み workflows
