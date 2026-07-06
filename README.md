@@ -60,6 +60,7 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
   - 7段階パストラバーサル防御（URL デコード迂回 / 絶対パス拒否 / Unicode NFC 正規化 / `..` 即時拒否 / symlink 解決検証）
   - プロンプトインジェクション緩和（`sanitizeUntrustedText` + `<untrusted_content>` デリミタ + システムポリシープロンプト）
   - AI 出力パスの検証（`validateClassificationResult`）
+  - security-guidance プラグイン（公式）: Claude Code が書くコードを編集時 / ターン終了時 / commit 時の 3 層で自動セキュリティレビュー。`.claude/claude-security-guidance.md` で本リポの脅威モデルをレビュー観点に注入（詳細・既存防御との棲み分け: `docs/security/security-guidance-plugin.md`）
 - **dry-run モード**: `--dry-run` フラグでファイル移動をスキップし安全確認
 - **Vault Root 外部化**: `pipeline_config.json` または環境変数 `VAULT_ROOT` で設定、ハードコードなし
 - **中断リカバリ**: レポートファイルから API コスト $0 で処理を再開（`rescue-from-report.ts`）
