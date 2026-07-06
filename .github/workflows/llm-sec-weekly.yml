@@ -16,8 +16,14 @@ name: LLM-Sec-Weekly Auto Ingest
 
 on:
   schedule:
-    # 月曜 00:00 UTC = 月曜 09:00 JST (送信予定の 8:00 JST + 1 時間バッファ)
-    - cron: '0 0 * * 1'
+    # 送信予定 (毎週月曜 8:00 JST) に対し、同じ月曜の内に最大 3 回まで取込を試みる。
+    # ChatGPT/Codex 側の遅延で 1 回目にメールが未達でも、後続 run が拾えるようにする
+    # 二段の再試行。ingest は UPSERT 冪等 + processed ラベルで self-healing のため、
+    # 既に取込済みなら後続 run は no-op (「vault に変更なし」で正常終了) になる。
+    # 3 回目 (予定 +6h) でも未達なら**その週は諦め、翌週の月曜 00:00 UTC に持ち越す**。
+    - cron: '0 0 * * 1'   # 1 回目: 月曜 00:00 UTC = 09:00 JST (送信予定 8:00 JST + 1h バッファ)
+    - cron: '0 2 * * 1'   # 2 回目: 予定 +2h  (月曜 02:00 UTC = 11:00 JST) — 遅延メール救済
+    - cron: '0 6 * * 1'   # 3 回目: 予定 +6h  (月曜 06:00 UTC = 15:00 JST) — 最終試行 (以降は翌週へ)
   workflow_dispatch:
     inputs:
       dry_run:
