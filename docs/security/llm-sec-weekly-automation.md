@@ -235,6 +235,24 @@ CLAUDE.md「Secrets / sensitive files」節の通り、これらは **絶対に�
 エラー thread は **次の cron で自動再試行される** (processed ラベルが
 付かないため Gmail query にまた引っかかる) = 自己修復性あり。
 
+### 同週内リトライ (cron 3 本立て)
+
+送信側 (ChatGPT/Codex) の遅延でメールが 09:00 JST の 1 回目に間に合わない
+ケースに備え、`schedule` は**同じ月曜の内に 3 回**発火する:
+
+| 発火 | cron (UTC) | JST | 役割 |
+|---|---|---|---|
+| 1 回目 | `0 0 * * 1` | 月 09:00 | 通常取込 (送信予定 8:00 JST + 1h バッファ) |
+| 2 回目 | `0 2 * * 1` | 月 11:00 | 予定 +2h — 遅延メール救済 |
+| 3 回目 | `0 6 * * 1` | 月 15:00 | 予定 +6h — 最終試行 |
+
+- ingest は UPSERT 冪等 + processed ラベルで **既取込なら後続 run は no-op**
+  (「vault に変更なし」で正常終了) になるため、二重取込・二重 push は起きない。
+- `concurrency: llm-sec-weekly-ingest` (`cancel-in-progress: false`) により、
+  前の run が走行中なら後続はキャンセルされず待機する。
+- 3 回目 (予定 +6h) でも未達なら**その週は諦め、翌週月曜の 1 回目 cron に持ち越す**
+  (次週も processed 未付与のため Gmail query に残り続ける = 取りこぼさない)。
+
 ## 6. ローカル運用との並行
 
 人間が `/sec-mode` で手動取込した分は Gmail 側で processed ラベルが
