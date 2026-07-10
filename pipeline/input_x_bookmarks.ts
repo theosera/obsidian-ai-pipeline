@@ -10,7 +10,7 @@ import {
 } from '../x-bookmarks/folder_mapper';
 import { getDb } from '../x-bookmarks/db';
 import { lookupVaultPath } from '../x-bookmarks/session_registry';
-import { getXBookmarksBaseFolder } from '../config';
+import { getXBookmarksBaseFolder, isDryRun } from '../config';
 import { ParsedEntry, FailureRecord } from './types';
 
 /**
@@ -99,9 +99,15 @@ export async function prepareXBookmarks(options: {
     const folderNamesRaw = [...new Set(bookmarks.map((b) => b.xFolderName))];
     const proposals = detectCommonKeywords(folderNamesRaw, forcedParents);
     if (proposals.length > 0) {
-      const reportPath = writeGroupingProposal(proposals);
-      console.log(`📋 共通キーワード提案レポート: ${reportPath}`);
-      console.log('   → 親フォルダとして承認するなら x_forced_parents.json に追記してください。');
+      // dry-run は Vault へ書き込まない契約。提案レポート .md の書き出しは抑止し、
+      // 検出件数だけをログする (P0: dry-run zero-write の X 経路)。
+      if (isDryRun()) {
+        console.log(`🧪 --dry-run: 共通キーワード提案レポートの書き出しをスキップ (${proposals.length} 件検出)`);
+      } else {
+        const reportPath = writeGroupingProposal(proposals);
+        console.log(`📋 共通キーワード提案レポート: ${reportPath}`);
+        console.log('   → 親フォルダとして承認するなら x_forced_parents.json に追記してください。');
+      }
     }
   }
 

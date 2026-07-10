@@ -60,7 +60,12 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
   // クリアと再生成をアトミックに実行する (interactive.ts から呼ばれる)。
 
   // === 0. Sync Phase (X bookmarks モードの先頭で必ず走る・--no-sync で抑止) ===
-  if (args.xBookmarks && !args.noSync) {
+  // dry-run は書き込みゼロ契約。Sync Phase は marker / DB row / フォルダ移動 / .md 書換
+  // を伴うため --dry-run では丸ごとスキップする (runSyncPhase 側にも防御的 early-return
+  // があるが、ここで明示スキップしてユーザーに理由を伝える)。
+  if (args.xBookmarks && args.dryRun) {
+    console.log('🧪 --dry-run: Sync Phase をスキップします (session marker / DB / フォルダ移動を書き込まない)');
+  } else if (args.xBookmarks && !args.noSync) {
     try {
       const result = await runSyncPhase({
         baseFolder: X_BOOKMARKS_BASE_FOLDER,
@@ -175,6 +180,7 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
   await interactiveReviewLoop(results, reportPath, {
     resummarizeAll: args.xResummarizeAll,
     xSummary: config?.xSummary,
+    isXBookmarks: args.xBookmarks,
   });
 }
 

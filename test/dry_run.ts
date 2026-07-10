@@ -22,6 +22,7 @@ import { setVaultRoot, setDryRun, isDryRun } from '../config';
 import { updateVaultTreeSnapshot, safeRename, resetFoldersCache, resetKnownUrlsCache } from '../storage';
 import { loadFolderRules, updateThresholds } from '../router';
 import { setupOutputDirs, writeFailureLog } from '../pipeline/runner';
+import { runSyncPhase } from '../x-bookmarks/session_sync';
 import { ProcessingResult } from '../types';
 import { FailureRecord } from '../pipeline/types';
 import { TestRunner, type TestSuiteResult } from './helpers';
@@ -136,7 +137,7 @@ function exercisePipelineWriteSurface(vault: string): void {
   );
 }
 
-export function run(): TestSuiteResult {
+export async function run(): Promise<TestSuiteResult> {
   const runner = new TestRunner();
   const prevDry = isDryRun();
 
@@ -183,6 +184,44 @@ export function run(): TestSuiteResult {
         assert.strictEqual(updated['Engineer/LLM'], 'monthly', 'in-memory では昇格しているべき');
         // だが永続ファイルは無改変
         assert.strictEqual(fs.readFileSync(rulesPath, 'utf8'), before, 'dry-run で folder_rules.json が書き換わった');
+      } finally {
+        fs.rmSync(vault, { recursive: true, force: true });
+      }
+    });
+
+    // =====================================================
+    // dry-run zero-write: X Sync Phase は no-op (Codex P2)
+    // =====================================================
+    runner.section('dry-run zero-write: X Sync Phase');
+
+    await runner.testAsync('dry-run では runSyncPhase が X API を叩かず zeroed result を返す', async () => {
+      const vault = buildVault();
+      try {
+        setVaultRoot(vault);
+        resetFoldersCache();
+        let fetchCalled = false;
+
+        setDryRun(true);
+        const result = await runSyncPhase({
+          baseFolder: 'X_Bookmarks',
+          fetchFolderListing: async () => {
+            fetchCalled = true;
+            return { userId: 'u1', username: 'test', folders: [{ id: 'f1', name: 'Folder One' }] };
+          },
+        });
+        setDryRun(false);
+
+        assert.strictEqual(fetchCalled, false, 'dry-run で X API (fetchFolderListing) が呼ばれた');
+        assert.deepStrictEqual(
+          result,
+          { newSessions: 0, updatedSessions: 0, vaultMoves: 0, fileReassignments: 0, orphansOnX: 0, orphansOnVault: 0 },
+          'dry-run の runSyncPhase は全ゼロを返すべき'
+        );
+        // session marker / DB 書き込みが無いこと (X_Bookmarks ディレクトリすら作られない)
+        assert.ok(
+          !fs.existsSync(path.join(vault, 'X_Bookmarks')),
+          'dry-run で X_Bookmarks 配下が作られた (Sync Phase の書き込みが漏れている)'
+        );
       } finally {
         fs.rmSync(vault, { recursive: true, force: true });
       }

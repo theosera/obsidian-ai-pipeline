@@ -33,6 +33,20 @@ export interface RescueResult {
 }
 
 /**
+ * レポートが X ブックマーク由来か (H1 タイトルが `# X-Bookmarks分類結果レポート`) を判定する。
+ *
+ * X フローは 1 ツイート 1 MD を書かず SQLite upsert + group ページ再生成で管理するため、
+ * 汎用 rescue (per-tweet `.md` を saveMarkdown) をそのまま流すと Vault に不整合ファイルを
+ * 生成し、X DB / group ページも更新されない。rescue はこれを検出して拒否する。
+ *
+ * ラベルは `report.ts::generateReport` の `# ${reportLabel}分類結果レポート` に由来
+ * (reportLabel = 'X-Bookmarks' | 'OneTab')。
+ */
+export function isXBookmarksReport(content: string): boolean {
+  return /^#\s+X-Bookmarks分類結果レポート/m.test(content);
+}
+
+/**
  * 分類結果レポート .md をパースして保存対象 {url, title, folder}[] を抽出する。
  * フォルダ見出し `### <folder>` (✨(新規提案) バッジは除去) の配下に続く
  * `- [n] [title](url)` 行を、その直近フォルダに束ねる。
@@ -83,6 +97,18 @@ export async function runRescueFromReport(opts: {
   const dry = isDryRun();
 
   const content = fs.readFileSync(opts.reportPath, 'utf8');
+
+  // X ブックマーク由来レポートは拒否する。汎用 rescue の per-tweet .md 保存は X フロー
+  // (SQLite upsert + group ページ) と非互換で、Vault に不整合ファイルを生成するため。
+  if (isXBookmarksReport(content)) {
+    console.error('❌ このレポートは X ブックマーク由来です (`# X-Bookmarks分類結果レポート`)。');
+    console.error('   --rescue は X ブックマークの再開に対応していません:');
+    console.error('   X フローは 1 ツイート 1 MD を書かず、SQLite への upsert + group ページ再生成で管理します。');
+    console.error('   汎用 rescue で per-tweet .md を書くと Vault に不整合ファイルが生成されます。');
+    console.error('   → 再取得は `pnpm start -- --x-bookmarks` を使ってください (dedup で既取得分はスキップ)。');
+    throw new Error('rescue は X ブックマークレポートに未対応です (--x-bookmarks で再取得してください)');
+  }
+
   const items = parseReportItems(content);
 
   if (items.length === 0) {

@@ -323,6 +323,13 @@ async function main(): Promise<void> {
   if (args.xSyncFolders) {
     if (!config) config = await runConfigWizard(askQuestion);
     applyConfigToEnv(config);
+    // Sync Phase は marker/DB/フォルダ移動を伴う書き込み処理。dry-run では実行しても
+    // (runSyncPhase の early-return で) 何も起きないため、誤解を避けて明示スキップする。
+    if (args.dryRun) {
+      console.log('🧪 --dry-run: --x-sync-folders は書き込み処理のためスキップします (Vault 無改変)。');
+      closePrompt();
+      process.exit(0);
+    }
     try {
       const { runSyncPhase } = await import('./x-bookmarks/session_sync');
       const { createInteractiveOrphanResolver } = await import('./x-bookmarks/session_ai');

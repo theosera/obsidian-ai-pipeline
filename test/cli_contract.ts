@@ -16,7 +16,7 @@ import path from 'path';
 import os from 'os';
 import { setVaultRoot, peekVaultRoot } from '../config';
 import { parseArgs } from '../cli';
-import { parseReportItems } from '../rescue-from-report';
+import { parseReportItems, isXBookmarksReport, runRescueFromReport } from '../rescue-from-report';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export async function run(): Promise<TestSuiteResult> {
@@ -130,6 +130,32 @@ export async function run(): Promise<TestSuiteResult> {
     runner.test('リンクの無いレポートは空配列', () => {
       const items = parseReportItems('# 空レポート\n\n本文だけ\n');
       assert.strictEqual(items.length, 0);
+    });
+
+    // =====================================================
+    // P0-3 (Codex P2): rescue は X ブックマークレポートを拒否する
+    // =====================================================
+    runner.section('P0-3: rescue は X ブックマークレポートを拒否 (per-tweet .md 誤生成の防止)');
+
+    runner.test('isXBookmarksReport: X-Bookmarks レポートを検出 / OneTab は検出しない', () => {
+      assert.strictEqual(isXBookmarksReport('# X-Bookmarks分類結果レポート\n\n## 📊'), true);
+      assert.strictEqual(isXBookmarksReport('# OneTab分類結果レポート\n\n## 📊'), false);
+      // H1 以外の位置に文字列があっても誤検出しない
+      assert.strictEqual(isXBookmarksReport('本文中に X-Bookmarks という語がある'), false);
+    });
+
+    await runner.testAsync('runRescueFromReport は X レポートを fetch せず throw する', async () => {
+      const xReportPath = path.join(parseVault, 'X-Bookmarks分類結果レポート-20260710.md');
+      fs.writeFileSync(
+        xReportPath,
+        ['# X-Bookmarks分類結果レポート', '', '## 📁 分類結果詳細', '', '### Engineer/LLM', '- [1] [t](https://x.com/i/web/status/123)'].join('\n'),
+        'utf8'
+      );
+      await assert.rejects(
+        () => runRescueFromReport({ reportPath: xReportPath }),
+        /X ブックマーク/,
+        'X レポートは拒否されるべき (throw)'
+      );
     });
   } finally {
     // vault root / env を元に戻す
