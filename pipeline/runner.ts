@@ -1,10 +1,11 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { closeBrowser } from '../fetcher';
 import { getKnownUrls, updateVaultTreeSnapshot } from '../storage';
 import { tokenUsageMetrics } from '../classifier';
 import { loadFolderRules, updateThresholds, getRoutedPath } from '../router';
-import { getVaultRoot, getXBookmarksBaseFolder } from '../config';
+import { getVaultRoot, getXBookmarksBaseFolder, isDryRun } from '../config';
 import { ProcessingResult, PipelineConfig } from '../types';
 import { ParsedCliArgs } from '../cli';
 import { ParsedEntry, FailureRecord } from './types';
@@ -178,11 +179,25 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
 }
 
 /**
- * Vault 配下に 2 種類の出力先を確保する:
+ * 2 種類の出力先を確保する:
  *   - REPORTS_DIR:     Obsidian で閲覧する分類結果レポート .md
  *   - INTERNAL_LOGS_DIR: 失敗 URL 等のパイプライン内部ログ (ユーザー向けではない)
+ *
+ * dry-run 時は Vault ツリーを一切変更しない契約 (confirmBeforeRun が「Vault 書き込み
+ * なし」と明示) を守るため、両出力先を **Vault 外の一時ディレクトリ** に切り替える。
+ * これにより分類結果レポート / 失敗ログのプレビューは残しつつ、Vault は無改変になる
+ * (P0: dry-run zero-write。実行前後で Vault ツリーのハッシュが一致する回帰を保証)。
  */
-function setupOutputDirs(): { REPORTS_DIR: string; INTERNAL_LOGS_DIR: string } {
+export function setupOutputDirs(): { REPORTS_DIR: string; INTERNAL_LOGS_DIR: string } {
+  if (isDryRun()) {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'obsidian-pipeline-dryrun-'));
+    const REPORTS_DIR = path.join(base, 'reports');
+    const INTERNAL_LOGS_DIR = path.join(base, 'internal-logs');
+    fs.mkdirSync(REPORTS_DIR, { recursive: true });
+    fs.mkdirSync(INTERNAL_LOGS_DIR, { recursive: true });
+    console.log(`🧪 dry-run: 出力は Vault 外の一時ディレクトリに書き出します (Vault は無改変): ${base}`);
+    return { REPORTS_DIR, INTERNAL_LOGS_DIR };
+  }
   const REPORTS_DIR = path.join(getVaultRoot(), '__skills', 'context', '分類結果レポート');
   const INTERNAL_LOGS_DIR = path.join(getVaultRoot(), '__skills', 'pipeline', 'reports');
   if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
@@ -289,7 +304,7 @@ async function confirmBeforeRun(
   return true;
 }
 
-function writeFailureLog(
+export function writeFailureLog(
   failures: FailureRecord[],
   internalLogsDir: string,
   sourceTag: string,

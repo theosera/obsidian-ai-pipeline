@@ -173,8 +173,11 @@ node index.js "../context/OneTab.txt"
 AI APIを**1トークンも消費することなく**、続き（本文取得と保存だけ）を最速で再開できるレスキュースクリプトが備わっています。
 
 ```bash
-node rescue-from-report.js "reports/OneTab分類結果レポート-YYYYMMDD.md"
+pnpm start -- --rescue "../context/分類結果レポート/OneTab分類結果レポート-YYYYMMDD.md"
 ```
+
+> `--dry-run` を付けると Web 取得だけ行い Vault へは保存しません（保存内容のプレビュー）。
+> `tsx rescue-from-report.ts "<report>.md"` でも同じ処理を直接起動できます。
 ---
 
 ## 🛠️ AIモデル・プロバイダーの設定（オプション）

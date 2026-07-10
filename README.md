@@ -61,9 +61,9 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
   - プロンプトインジェクション緩和（`sanitizeUntrustedText` + `<untrusted_content>` デリミタ + システムポリシープロンプト）
   - AI 出力パスの検証（`validateClassificationResult`）
   - security-guidance プラグイン（公式）: Claude Code が書くコードを編集時 / ターン終了時 / commit 時の 3 層で自動セキュリティレビュー。`.claude/claude-security-guidance.md` で本リポの脅威モデルをレビュー観点に注入（詳細・既存防御との棲み分け: `docs/security/security-guidance-plugin.md`）
-- **dry-run モード**: `--dry-run` フラグでファイル移動をスキップし安全確認
+- **dry-run モード**: `--dry-run` は Vault へ一切書き込まない（分類レポート・失敗ログは Vault 外の一時ディレクトリへ出力し、スナップショット / `folder_rules.json` 昇格の永続化も抑止）。実行前後で Vault ツリーが不変であることをテストで保証
 - **Vault Root 外部化**: `pipeline_config.json` または環境変数 `VAULT_ROOT` で設定、ハードコードなし
-- **中断リカバリ**: レポートファイルから API コスト $0 で処理を再開（`rescue-from-report.ts`）
+- **中断リカバリ**: `pnpm start -- --rescue <レポート>.md` でレポートファイルから API コスト $0 で保存を再開（`rescue-from-report.ts` / `--dry-run` 併用可）
 - **週次 LLM 脅威レポート取込・該当性レビュー** (`/sec-mode` → `/sec-review`): Gmail 取込 + injection ゲート + DB 取込 → 本リポ該当性レビュー（詳細フローは `docs/security/` / `docs/threat_reports.md`）
 
 ---

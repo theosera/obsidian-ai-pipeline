@@ -15,6 +15,7 @@
  *   2. `cli.ts::ParsedCliArgs` にフラグを追加
  *   3. ここの main() に dispatch 分岐を追加
  */
+import fs from 'fs';
 import { parseArgs, printUsage } from './cli';
 import {
   loadConfig,
@@ -30,6 +31,7 @@ import {
   runThreatRelevanceWizard,
 } from './config';
 import { syncRulesFromSnippets } from './sync-rules';
+import { runRescueFromReport } from './rescue-from-report';
 import { runAuthServer } from './x-bookmarks/auth_server';
 import { generateHandsOn } from './x-bookmarks/hands_on_generator';
 import { askQuestion, closePrompt } from './pipeline/prompt';
@@ -344,6 +346,31 @@ async function main(): Promise<void> {
       }
     } catch (e: any) {
       console.error(`❌ Sync 失敗: ${e.message}`);
+      process.exit(1);
+    }
+    closePrompt();
+    process.exit(0);
+  }
+
+  // --rescue <report>.md: 中断した分類結果レポートから Vault 保存だけを再開する
+  // (AI 分類スキップ = API コスト $0)。レポートパスは位置引数 (args.filePath)。
+  // 通常パイプラインの config ゲートが filePath を OneTab .txt と誤認する前に intercept する。
+  if (args.rescue) {
+    if (!config) config = await runConfigWizard(askQuestion);
+    applyConfigToEnv(config);
+    const reportPath = args.filePath;
+    if (!reportPath) {
+      console.error('❌ --rescue にはレポート .md のパスが必要です: pnpm start -- --rescue <report>.md');
+      process.exit(1);
+    }
+    if (!fs.existsSync(reportPath)) {
+      console.error(`❌ レポートが見つかりません: ${reportPath}`);
+      process.exit(1);
+    }
+    try {
+      await runRescueFromReport({ reportPath, dryRun: args.dryRun });
+    } catch (e: any) {
+      console.error(`❌ Rescue 失敗: ${e.message}`);
       process.exit(1);
     }
     closePrompt();

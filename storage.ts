@@ -290,6 +290,11 @@ export function escapeFrontmatter(str: string): string {
 
 let cachedFolders: string[] | null = null;
 
+/** テスト用: フォルダ一覧のモジュールキャッシュを破棄して次回走査を強制する */
+export function resetFoldersCache(): void {
+  cachedFolders = null;
+}
+
 export function getVaultFolders(forceRefresh: boolean = false): string[] {
   if (cachedFolders && !forceRefresh) return cachedFolders;
 
@@ -323,6 +328,10 @@ export function getVaultFolders(forceRefresh: boolean = false): string[] {
 }
 
 export function updateVaultTreeSnapshot(): void {
+  // dry-run は Vault ツリーを一切変更しない契約。スナップショット (tree ファイル +
+  // タイムスタンプ付き履歴) も Vault への書き込みなので抑止する (P0: dry-run zero-write)。
+  if (isDryRun()) return;
+
   const vaultRoot = getVaultRoot();
   const folders = getVaultFolders(true);
   const treeFilePath = path.join(vaultRoot, '__skills', 'context', 'iCloud Vault 2026.txt');

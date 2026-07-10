@@ -7,6 +7,7 @@
  * 対応モード:
  *   --config              設定ウィザード (他の flag と組合せ可能)
  *   --dry-run             ファイル移動/保存を抑止
+ *   --rescue <report>     中断した分類結果レポート .md から保存だけ再開 (AI 分類スキップ)
  *   --sync-rules          snippets→folder_rules 同期のみ実行
  *   --x-auth              X OAuth 認可サーバを起動して終了
  *   --x-bookmarks         X API v2 ブックマーク取込モード (全フォルダ自動)
@@ -24,6 +25,12 @@
 export interface ParsedCliArgs {
   config: boolean;
   dryRun: boolean;
+  /**
+   * 中断リカバリ。位置引数 (`filePath`) の分類結果レポート .md をパースし、
+   * AI 分類をスキップして Web fetch → Vault 保存だけを再実行する。
+   * `pnpm start -- --rescue <report>.md` (path は space 区切りの位置引数)。
+   */
+  rescue: boolean;
   syncRules: boolean;
   xAuth: boolean;
   xBookmarks: boolean;
@@ -174,6 +181,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
   return {
     config: argv.includes('--config'),
     dryRun: argv.includes('--dry-run'),
+    rescue: argv.includes('--rescue'),
     syncRules: argv.includes('--sync-rules'),
     xAuth: argv.includes('--x-auth'),
     // --x-pick は --x-bookmarks を含意 (両者の単独/併記どちらも有効)
@@ -205,6 +213,7 @@ export function parseArgs(argv: readonly string[]): ParsedCliArgs {
 export function printUsage(): void {
   console.error('Usage:');
   console.error('  tsx index.ts <path-to-onetab.txt> [--config] [--dry-run]');
+  console.error('  tsx index.ts --rescue <report>.md [--dry-run]  (中断レポートから保存を再開 / AI コスト $0)');
   console.error('  tsx index.ts --x-bookmarks [--x-limit=N] [--dry-run] [--no-sync]');
   console.error('  tsx index.ts --x-pick      [--x-limit=N] [--dry-run] [--no-sync]  (フォルダ対話選択)');
   console.error('  tsx index.ts --x-sync-folders        (Vault再編後 / orphan AI 判定用の手動同期)');
