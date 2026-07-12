@@ -10,6 +10,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { XMLParser } from 'fast-xml-parser';
 import { loadConfig, applyConfigToEnv, getVaultRoot } from './config.js';
 import { loadFolderRules, saveFolderRules } from './router.js';
@@ -125,9 +126,24 @@ export function syncRulesFromSnippets(): void {
 }
 
 // ------------------------------------------------------------------ //
-// CLI entry point
+// CLI entry point (直接実行時のみ — import では副作用を起こさない)
+//
+// index.ts は `syncRulesFromSnippets` を import して `--sync-rules` から呼ぶ。
+// もし従来のように top-level で実行すると、index.ts が本モジュールを import した
+// 瞬間に (config 未設定の fresh clone では getVaultRoot() が throw して)
+// syncRulesFromSnippets が走り、`pnpm start -- --config` すら起動不能になる。
+// `pnpm run sync-rules` (= tsx sync-rules.ts) の直接実行時のみ CLI を回す。
 // ------------------------------------------------------------------ //
 
-const config = loadConfig();
-if (config) applyConfigToEnv(config);
-syncRulesFromSnippets();
+function runCli(): void {
+  const config = loadConfig();
+  if (config) applyConfigToEnv(config);
+  syncRulesFromSnippets();
+}
+
+// 直接実行されたときだけ CLI を回す (テスト・index.ts からは import するだけ)
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false;
+  return path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+})();
+if (invokedDirectly) runCli();

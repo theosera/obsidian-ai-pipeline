@@ -19,7 +19,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { getVaultRoot } from '../config';
+import { getVaultRoot, isDryRun } from '../config';
 import { getDb, FolderSessionRow } from './db';
 import {
   walkSessionMarkers,
@@ -71,6 +71,22 @@ export async function runSyncPhase(args: {
   resolver?: OrphanResolver;
   fetchFolderListing?: () => Promise<FolderListing>;
 }): Promise<SyncResult> {
+  // dry-run は「Vault へ一切書き込まない」契約。Sync Phase は session marker /
+  // folder_sessions DB row / フォルダ archive 移動 / .md frontmatter 書換 を伴う
+  // 純粋な reconciliation (書き込み) 処理なので、プレビュー実行では **X API を叩く前**に
+  // no-op で返す。runner / index の呼出側でもスキップするが、将来の呼出漏れに備えた
+  // 防御的 early-return (P0: dry-run zero-write の X 経路)。
+  if (isDryRun()) {
+    return {
+      newSessions: 0,
+      updatedSessions: 0,
+      vaultMoves: 0,
+      fileReassignments: 0,
+      orphansOnX: 0,
+      orphansOnVault: 0,
+    };
+  }
+
   const db = getDb();
   const vaultRoot = getVaultRoot();
   const baseAbs = path.join(vaultRoot, args.baseFolder);
