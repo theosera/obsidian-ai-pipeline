@@ -400,7 +400,7 @@ const OAUTH_REAUTH_HINT =
  * メッセージに翻訳して再送する (元 error は `cause` で保持 = stack を失わない)。
  * それ以外の error はそのまま透過する。
  */
-async function withOAuthErrorHint<T>(op: () => Promise<T>): Promise<T> {
+export async function withOAuthErrorHint<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
   } catch (e) {
