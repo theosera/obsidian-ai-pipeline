@@ -24,6 +24,7 @@ import {
   writePendingLabels,
   readPendingLabels,
   gateAndRoute,
+  isInvalidGrantError,
   readQuarantinePendingPeriodEnds,
   GATE_SUBDIR,
   PERIOD_END_RE,
@@ -419,6 +420,33 @@ export function run(): TestSuiteResult {
     fs.mkdirSync(gateDir, { recursive: true });
     fs.writeFileSync(path.join(gateDir, 'quarantine_queue.json'), '{not json', 'utf8');
     assert.deepStrictEqual(readQuarantinePendingPeriodEnds(vaultRoot), new Set());
+  });
+
+  t.section('isInvalidGrantError (OAuth refresh 失敗の検出)');
+
+  t.test('GaxiosError の response.data.error=invalid_grant を検出', () => {
+    assert.strictEqual(
+      isInvalidGrantError({ response: { data: { error: 'invalid_grant' } } }),
+      true
+    );
+  });
+
+  t.test('message に invalid_grant を含む error を検出', () => {
+    assert.strictEqual(isInvalidGrantError(new Error('invalid_grant')), true);
+  });
+
+  t.test('別の OAuth error (invalid_client) は誤検出しない', () => {
+    assert.strictEqual(
+      isInvalidGrantError({ response: { data: { error: 'invalid_client' } } }),
+      false
+    );
+    assert.strictEqual(isInvalidGrantError(new Error('Not Found')), false);
+  });
+
+  t.test('null / 非 error でも throw せず false', () => {
+    assert.strictEqual(isInvalidGrantError(null), false);
+    assert.strictEqual(isInvalidGrantError(undefined), false);
+    assert.strictEqual(isInvalidGrantError('invalid_grant'), false);
   });
 
   return t.report();
