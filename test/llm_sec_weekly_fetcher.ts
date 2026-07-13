@@ -24,6 +24,8 @@ import {
   writePendingLabels,
   readPendingLabels,
   gateAndRoute,
+  isInvalidGrantError,
+  withOAuthErrorHint,
   readQuarantinePendingPeriodEnds,
   GATE_SUBDIR,
   PERIOD_END_RE,
@@ -40,7 +42,7 @@ function base64url(s: string): string {
   return Buffer.from(s, 'utf8').toString('base64url');
 }
 
-export function run(): TestSuiteResult {
+export async function run(): Promise<TestSuiteResult> {
   const t = new TestRunner();
 
   t.section('PERIOD_END_RE / isSafePeriodEnd');
@@ -419,6 +421,61 @@ export function run(): TestSuiteResult {
     fs.mkdirSync(gateDir, { recursive: true });
     fs.writeFileSync(path.join(gateDir, 'quarantine_queue.json'), '{not json', 'utf8');
     assert.deepStrictEqual(readQuarantinePendingPeriodEnds(vaultRoot), new Set());
+  });
+
+  t.section('isInvalidGrantError (OAuth refresh 失敗の検出)');
+
+  t.test('GaxiosError の response.data.error=invalid_grant を検出', () => {
+    assert.strictEqual(
+      isInvalidGrantError({ response: { data: { error: 'invalid_grant' } } }),
+      true
+    );
+  });
+
+  t.test('message に invalid_grant を含む error を検出', () => {
+    assert.strictEqual(isInvalidGrantError(new Error('invalid_grant')), true);
+  });
+
+  t.test('別の OAuth error (invalid_client) は誤検出しない', () => {
+    assert.strictEqual(
+      isInvalidGrantError({ response: { data: { error: 'invalid_client' } } }),
+      false
+    );
+    assert.strictEqual(isInvalidGrantError(new Error('Not Found')), false);
+  });
+
+  t.test('null / 非 error でも throw せず false', () => {
+    assert.strictEqual(isInvalidGrantError(null), false);
+    assert.strictEqual(isInvalidGrantError(undefined), false);
+    assert.strictEqual(isInvalidGrantError('invalid_grant'), false);
+  });
+
+  t.section('withOAuthErrorHint (invalid_grant 翻訳)');
+
+  await t.testAsync('invalid_grant を実行可能メッセージに翻訳し cause を保持', async () => {
+    const original = new Error('invalid_grant');
+    await assert.rejects(
+      () => withOAuthErrorHint(async () => { throw original; }),
+      (e: unknown) => {
+        assert.ok(e instanceof Error);
+        assert.notStrictEqual(e, original); // 別 Error に翻訳されている
+        assert.strictEqual(e.cause, original); // 元 error は cause で保持
+        assert.match(e.message, /refresh token/); // 実行可能な復旧メッセージ
+        return true;
+      }
+    );
+  });
+
+  await t.testAsync('非 invalid_grant error はそのまま透過 (翻訳しない)', async () => {
+    const original = new Error('Not Found');
+    await assert.rejects(
+      () => withOAuthErrorHint(async () => { throw original; }),
+      (e: unknown) => e === original
+    );
+  });
+
+  await t.testAsync('成功時は戻り値をそのまま返す', async () => {
+    assert.strictEqual(await withOAuthErrorHint(async () => 42), 42);
   });
 
   return t.report();
