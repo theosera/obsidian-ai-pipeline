@@ -44,7 +44,9 @@
   作成し、`Ready for review` への切り替え工程を作らない。Draft はユーザーが明示した場合、
   または merge 対象にしない umbrella PR の場合だけ使う。
 - **PR 作成と merge 承認を分離する**: PR 作成の承認だけで merge しない。レビュー後に
-  ユーザーが明示承認した場合だけ auto-merge または指定された方式で merge する。
+  ユーザーが明示承認した場合だけ auto-merge または指定された方式で merge する。ただし
+  各リポの pr-workflow skill / branch-protection が auto-merge を明示的に規定している場合は、
+  そのリポ規約 (保護ブランチ＋必須チェック green を条件とした squash auto-merge 等) に従う。
 - **PR を作成する前に、変更内容を性質別に分類する**: 異なる実行経路・異なる
   レビュー観点・live 実注入と seam-only は別 PR にする。束ね PR を作る場合は
   draft / umbrella と明記し、merge 対象にしない。
