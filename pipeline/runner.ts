@@ -1,10 +1,11 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { closeBrowser } from '../fetcher';
 import { getKnownUrls, updateVaultTreeSnapshot } from '../storage';
 import { tokenUsageMetrics } from '../classifier';
 import { loadFolderRules, updateThresholds, getRoutedPath } from '../router';
-import { getVaultRoot, getXBookmarksBaseFolder } from '../config';
+import { getVaultRoot, getXBookmarksBaseFolder, isDryRun } from '../config';
 import { ProcessingResult, PipelineConfig } from '../types';
 import { ParsedCliArgs } from '../cli';
 import { ParsedEntry, FailureRecord } from './types';
@@ -59,7 +60,12 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
   // クリアと再生成をアトミックに実行する (interactive.ts から呼ばれる)。
 
   // === 0. Sync Phase (X bookmarks モードの先頭で必ず走る・--no-sync で抑止) ===
-  if (args.xBookmarks && !args.noSync) {
+  // dry-run は書き込みゼロ契約。Sync Phase は marker / DB row / フォルダ移動 / .md 書換
+  // を伴うため --dry-run では丸ごとスキップする (runSyncPhase 側にも防御的 early-return
+  // があるが、ここで明示スキップしてユーザーに理由を伝える)。
+  if (args.xBookmarks && args.dryRun) {
+    console.log('🧪 --dry-run: Sync Phase をスキップします (session marker / DB / フォルダ移動を書き込まない)');
+  } else if (args.xBookmarks && !args.noSync) {
     try {
       const result = await runSyncPhase({
         baseFolder: X_BOOKMARKS_BASE_FOLDER,
@@ -174,15 +180,30 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
   await interactiveReviewLoop(results, reportPath, {
     resummarizeAll: args.xResummarizeAll,
     xSummary: config?.xSummary,
+    isXBookmarks: args.xBookmarks,
   });
 }
 
 /**
- * Vault 配下に 2 種類の出力先を確保する:
+ * 2 種類の出力先を確保する:
  *   - REPORTS_DIR:     Obsidian で閲覧する分類結果レポート .md
  *   - INTERNAL_LOGS_DIR: 失敗 URL 等のパイプライン内部ログ (ユーザー向けではない)
+ *
+ * dry-run 時は Vault ツリーを一切変更しない契約 (confirmBeforeRun が「Vault 書き込み
+ * なし」と明示) を守るため、両出力先を **Vault 外の一時ディレクトリ** に切り替える。
+ * これにより分類結果レポート / 失敗ログのプレビューは残しつつ、Vault は無改変になる
+ * (P0: dry-run zero-write。実行前後で Vault ツリーのハッシュが一致する回帰を保証)。
  */
-function setupOutputDirs(): { REPORTS_DIR: string; INTERNAL_LOGS_DIR: string } {
+export function setupOutputDirs(): { REPORTS_DIR: string; INTERNAL_LOGS_DIR: string } {
+  if (isDryRun()) {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'obsidian-pipeline-dryrun-'));
+    const REPORTS_DIR = path.join(base, 'reports');
+    const INTERNAL_LOGS_DIR = path.join(base, 'internal-logs');
+    fs.mkdirSync(REPORTS_DIR, { recursive: true });
+    fs.mkdirSync(INTERNAL_LOGS_DIR, { recursive: true });
+    console.log(`🧪 dry-run: 出力は Vault 外の一時ディレクトリに書き出します (Vault は無改変): ${base}`);
+    return { REPORTS_DIR, INTERNAL_LOGS_DIR };
+  }
   const REPORTS_DIR = path.join(getVaultRoot(), '__skills', 'context', '分類結果レポート');
   const INTERNAL_LOGS_DIR = path.join(getVaultRoot(), '__skills', 'pipeline', 'reports');
   if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
@@ -289,7 +310,7 @@ async function confirmBeforeRun(
   return true;
 }
 
-function writeFailureLog(
+export function writeFailureLog(
   failures: FailureRecord[],
   internalLogsDir: string,
   sourceTag: string,

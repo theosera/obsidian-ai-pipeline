@@ -73,7 +73,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'pnpm'
           cache-dependency-path: pipeline/pnpm-lock.yaml
 
@@ -83,6 +83,8 @@ jobs:
 
       - name: Rebuild native dependencies (better-sqlite3)
         working-directory: pipeline
+        # ソースビルドで native .node を生成 (CI と同方針)。better-sqlite3 の
+        # バージョン据え置き根拠と v12 bump 発動条件は ci.yml の同名ステップに正典。
         run: pnpm rebuild better-sqlite3
 
       # ----------------------------------------------------------------

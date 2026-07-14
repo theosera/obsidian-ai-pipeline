@@ -175,6 +175,14 @@ node -e '
 > ⚠️ OAuth client redirect の OOB フローは Google が段階的に廃止予定。
 > 動かなくなったら "loopback IP" 方式 (`http://127.0.0.1:port`) に切替える。
 
+> 🔴 **恒久対策 (毎週の `invalid_grant` を止める):** OAuth app の publishing status
+> を **"Testing" → "In production"** にすること (Google Cloud Console → OAuth consent
+> screen → "Publish app")。**Testing のままだと refresh token は発行から 7 日で失効**し、
+> `GMAIL_REFRESH_TOKEN` が毎週末に無効化されて "Run fetcher" step が `invalid_grant`
+> で落ちる (実測: 週次 cron が 7 日周期で成功→失敗を繰り返す)。publish 後は token が
+> 恒久化され、再生成は revoke / scope 変更時のみで済む。個人利用スコープなら審査
+> (verification) は不要で、同意画面に "unverified" 警告が出るだけ。
+
 ### 2.3 Gmail ラベル
 
 - `LLM-Sec-Report` (受信側フィルタで `[LLM-Sec-Weekly]` 件名に自動付与)
@@ -222,7 +230,7 @@ CLAUDE.md「Secrets / sensitive files」節の通り、これらは **絶対に�
 
 | 失敗パターン | workflow の挙動 | 推奨アクション |
 |---|---|---|
-| Gmail OAuth refresh 失敗 (revoked / expired) | step "Run fetcher" で early exit, job 赤 | 2.2 をやり直し refresh_token を更新 |
+| Gmail OAuth refresh 失敗 (`invalid_grant` = revoked / expired) | step "Run fetcher" で early exit, job 赤 (fetcher が実行可能メッセージ + cause stack を出す) | **即時:** 2.2 をやり直し `GMAIL_REFRESH_TOKEN` を更新。**恒久:** OAuth app を publish (§2.2 の 🔴 注記)。7 日周期で成功→失敗を繰り返す場合は Testing publishing status が原因なので publish で解消する |
 | ラベル未作成 | "Gmail ラベル "X" が見つかりません" でエラー | Gmail UI でラベル作成 |
 | `period_end` が不正形式 | 該当 thread のみ error、processed ラベル付与 **しない** | メール本文を修正して送信側で再送、または手動取込 |
 | `forbidden_usage` 契約違反 (parser ContractError) | 該当 thread のみ error、processed ラベル付与 **しない** | 送信側 (ChatGPT/Codex) のテンプレートを修正 |

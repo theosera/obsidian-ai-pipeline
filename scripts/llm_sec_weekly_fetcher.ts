@@ -368,6 +368,47 @@ function validateEnv(): ValidatedEnv {
 // Gmail 連携
 // ---------------------------------------------------------------------------
 
+/**
+ * Gmail OAuth の refresh 失敗 (`invalid_grant`) を検出する。
+ *
+ * `invalid_grant` は Google OAuth サーバが refresh token を拒否した合図
+ * (= revoke / 失効) で、**コード修正では直らない** (token 再生成 + secret 更新が必要)。
+ * google-auth-library は GaxiosError の `response.data.error` に `invalid_grant`
+ * を載せる。ネットワーク経路差で構造が変わっても拾えるよう message 文字列も見る。
+ */
+export function isInvalidGrantError(e: unknown): boolean {
+  const err = e as { response?: { data?: { error?: unknown } }; message?: unknown };
+  if (err?.response?.data?.error === 'invalid_grant') return true;
+  return typeof err?.message === 'string' && err.message.includes('invalid_grant');
+}
+
+/**
+ * `invalid_grant` 時に CI ログだけで原因と復旧手順が分かる実行可能メッセージ。
+ * 恒久対策 (OAuth app を publish) を必ず併記する — Testing publishing status の
+ * ままだと refresh token は発行 7 日で失効し、毎週この step で落ちるため。
+ */
+const OAUTH_REAUTH_HINT =
+  'Gmail OAuth の refresh token が失効/revoke されています (invalid_grant)。' +
+  ' 復旧: docs/security/llm-sec-weekly-automation.md §2.2 の手順で refresh_token を' +
+  ' 再生成し、GitHub Actions secret `GMAIL_REFRESH_TOKEN` を更新してください。' +
+  ' 恒久対策: Google Cloud Console で OAuth app の publishing status を' +
+  ' "Testing" → "In production" にしてください (Testing のままだと refresh token は' +
+  ' 発行 7 日で失効し、毎週この step で失敗します)。';
+
+/**
+ * 認証を要する Gmail 呼び出しを実行し、`invalid_grant` だけ実行可能な
+ * メッセージに翻訳して再送する (元 error は `cause` で保持 = stack を失わない)。
+ * それ以外の error はそのまま透過する。
+ */
+export async function withOAuthErrorHint<T>(op: () => Promise<T>): Promise<T> {
+  try {
+    return await op();
+  } catch (e) {
+    if (isInvalidGrantError(e)) throw new Error(OAUTH_REAUTH_HINT, { cause: e });
+    throw e;
+  }
+}
+
 async function resolveLabelId(gm: gmail_v1.Gmail, name: string): Promise<string> {
   const resp = await gm.users.labels.list({ userId: 'me' });
   const found = resp.data.labels?.find(l => l.name === name);
@@ -593,8 +634,12 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
   const gm = buildGmailClient(env);
 
   // ラベル自体の存在確認 (未作成だと検索結果が常に 0 になる罠を早期検知)。
-  await resolveLabelId(gm, env.labelName);
-  await resolveLabelId(gm, env.processedLabelName);
+  // 最初の認証付き呼び出しでもあるため、OAuth refresh 失敗 (invalid_grant) は
+  // ここで実行可能なメッセージに翻訳される。
+  await withOAuthErrorHint(async () => {
+    await resolveLabelId(gm, env.labelName);
+    await resolveLabelId(gm, env.processedLabelName);
+  });
 
   const query = `label:${env.labelName} subject:"${SUBJECT_PREFIX}" -label:${env.processedLabelName}`;
   console.log(`🔍 Gmail query: ${query} (max ${env.maxResults})`);
@@ -651,7 +696,9 @@ export async function runLabelPhase(): Promise<number> {
   console.log(`🏷️  ${pending.length} 件に "${env.processedLabelName}" ラベルを付与開始`);
 
   const gm = buildGmailClient(env);
-  const processedLabelId = await resolveLabelId(gm, env.processedLabelName);
+  const processedLabelId = await withOAuthErrorHint(() =>
+    resolveLabelId(gm, env.processedLabelName)
+  );
 
   let failed = 0;
   for (const t of pending) {
@@ -703,6 +750,10 @@ if (invokedDirectly) {
     code => process.exit(code),
     err => {
       console.error('💥 fetcher 失敗:', err instanceof Error ? err.stack : err);
+      // 翻訳した error は元 error を cause に持つ (invalid_grant 等)。原因 stack も出す。
+      if (err instanceof Error && err.cause) {
+        console.error('   ↳ cause:', err.cause instanceof Error ? err.cause.stack : err.cause);
+      }
       process.exit(1);
     }
   );

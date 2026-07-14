@@ -34,7 +34,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Lint package.json files for duplicate keys
@@ -60,10 +60,22 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Rebuild native dependencies (better-sqlite3)
-        # pnpm 10 はデフォルトでビルドスクリプトを無効化する。package.json の
-        # pnpm.onlyBuiltDependencies で allowlist 済みだが、CI の pnpm store
+        # pnpm 10 はデフォルトでビルドスクリプトを無効化する。pnpm-workspace.yaml の
+        # onlyBuiltDependencies で allowlist 済みだが、CI の pnpm store
         # キャッシュが設定追加前の状態を再利用するケースがあるため、確実に
         # native .node バイナリを生成するよう明示リビルドする。
+        #
+        # バージョン方針 (better-sqlite3 = v11.10.0 据え置き / 正典): ここで毎回
+        # ソースビルドするため upstream のプリビルトバイナリ Node 対応マトリクスに
+        # 依存せず、v11 系でも新 Node ABI 向けに .node をコンパイルできる (Node 24 /
+        # NODE_MODULE_VERSION 137 で CI green を実測確認済み)。次のいずれかを満たし
+        # たら別 PR (build(deps): bump better-sqlite3 to v12) で v12 へ上げる:
+        #   1. この rebuild (ソースビルド) を外しプリビルトバイナリ依存へ切替える
+        #   2. ビルドツールチェーン無しのローカル環境を公式サポート対象に含める
+        #   3. 将来の Node メジャーで v11 系がソースビルドすら失敗する
+        #   4. v11 系に未修正 CVE / バグがあり v12 で解消される
+        #   5. 他の依存が better-sqlite3 v12 を要求する
+        # 経緯: PR #121 (Node 24 化) の Codex P1 レビューへの回答。
         run: pnpm rebuild better-sqlite3
 
       - name: Run security tests (24 cases)

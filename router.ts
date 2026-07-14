@@ -125,6 +125,8 @@ export function updateThresholds(results: ProcessingResult[], currentRules: Rule
     if (newRule !== currentRule) {
       console.log(`\n📈 [フォルダ規則の自動昇格] '${baseCat}' の記事数が ${vaultCount} 件に達したため、ルールが [${currentRule}] -> [${newRule}] に昇格しました！`);
       console.log(`🔄 既存のファイルを新しいルール (${newRule}) に基づき再編成します...`);
+      // migrateExistingFiles は内部で isDryRun() を見て mkdir/rename/cleanup を抑止する
+      // (dry-run では「移動予定」だけをログし、実体は動かさない)。
       migrateExistingFiles(baseCat, newRule);
 
       currentRules[baseCat] = newRule;
@@ -132,8 +134,13 @@ export function updateThresholds(results: ProcessingResult[], currentRules: Rule
     }
   }
 
-  if (updated) {
+  // 昇格した rules は routing のプレビュー精度のため in-memory では反映する (返り値)。
+  // ただし folder_rules.json への永続化は Vault 書き込みなので dry-run では抑止する
+  // (P0: dry-run zero-write。次回の通常実行が同じ閾値で再昇格して正しく永続化する)。
+  if (updated && !isDryRun()) {
     saveFolderRules(currentRules);
+  } else if (updated && isDryRun()) {
+    console.log('🧪 dry-run: folder_rules.json への昇格結果の永続化はスキップしました。');
   }
 
   return currentRules;

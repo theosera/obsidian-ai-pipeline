@@ -26,7 +26,7 @@ import { generateReport } from './report';
 export async function interactiveReviewLoop(
   results: ProcessingResult[],
   reportMdPath: string,
-  options: { resummarizeAll?: boolean; xSummary?: XSummaryConfig } = {}
+  options: { resummarizeAll?: boolean; xSummary?: XSummaryConfig; isXBookmarks?: boolean } = {}
 ): Promise<void> {
   let reviewing = true;
 
@@ -48,15 +48,21 @@ export async function interactiveReviewLoop(
       console.log('Aborted execution.');
       reviewing = false;
     } else if (cmd === '' && isPromptClosed()) {
-      // stdin EOF: 非対話環境。レポートは既に生成済みなので Vault への
-      // 保存はスキップして安全に終了する。`--x-resummarize-all` を伴って実行された
-      // 場合はモデル / プロンプト変更後の再要約意図が乗っているので、rescue 提案
-      // にも flag を引き継ぐ (CodeRabbit 指摘)。
+      // stdin EOF: 非対話環境。レポートは既に生成済みなので Vault への保存はスキップして
+      // 安全に終了する。再開方法はソースで分岐する:
+      //   - X ブックマーク: 保存は SQLite upsert のため rescue 非対応 → --x-bookmarks で再取得。
+      //     `--x-resummarize-all` を伴っていた場合は再要約意図を引き継ぐ。
+      //   - それ以外 (OneTab 等): レポートから --rescue で保存を再開できる。
       const extraFlags = options.resummarizeAll ? ' --x-resummarize-all' : '';
       console.log('\n⚠️ stdin が閉じられました（非対話実行）。');
       console.log(`   レポートは生成済み: ${reportMdPath}`);
-      console.log('   レビュー後、以下で Vault への保存を実行できます:');
-      console.log(`   pnpm start -- --rescue "${reportMdPath}"${extraFlags}`);
+      if (options.isXBookmarks) {
+        console.log('   X ブックマークは SQLite upsert 保存のため rescue 非対応です。以下で再取得してください:');
+        console.log(`   pnpm start -- --x-bookmarks${extraFlags}  (dedup で既取得分はスキップ)`);
+      } else {
+        console.log('   レビュー後、以下で Vault への保存を実行できます:');
+        console.log(`   pnpm start -- --rescue "${reportMdPath}"`);
+      }
       reviewing = false;
     }
   }
