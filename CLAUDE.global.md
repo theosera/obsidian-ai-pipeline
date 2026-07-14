@@ -49,10 +49,12 @@
   レビュー観点・live 実注入と seam-only は別 PR にする。束ね PR を作る場合は
   draft / umbrella と明記し、merge 対象にしない。
 - **依存更新 PR (Dependabot 等) を「その場マージ」しない**: 更新 PR は必ず
-  (a) peer dependency 範囲の適合を確認 → (b) major / 破壊的更新は保留し opt-in の手動
-  イベントとして扱う → (c) lint / typecheck / build / test と最低限の E2E を green 確認、の
-  順で通す。詳細な判定木は各リポの `docs/dependency-policy.md` に置く (無ければ作る)。
-  CI 赤や peer 未対応のまま強制通過 (バージョン警告の無効化・peer の強制無視) はしない。
+  (a) peer dependency / 互換性の適合を確認 → (b) major / 破壊的更新は保留し opt-in の
+  手動イベントとして扱う → (c) opt-in 後は各リポの検証ゲート (そのリポにある lint /
+  typecheck / build / test / E2E 等) を green 確認、の順で通す。具体的な検証項目と判定木は
+  各リポの `docs/dependency-policy.md` に定義し、あれば必ず従う (無い場合の新規作成を依存
+  更新時の必須条件にはしない)。CI 赤や peer 未対応のまま強制通過 (バージョン警告の無効化・
+  peer の強制無視) はしない。
 
 ## 3. セキュリティ境界 (Permission Boundaries)
 
