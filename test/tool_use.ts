@@ -147,7 +147,10 @@ export async function run(): Promise<TestSuiteResult> {
         assert.strictEqual(r.ok, false);
         assert.strictEqual(fs.existsSync(path.join(outside, 'escape.md')), false, 'Vault 外にファイルが作られてはいけない');
       } finally {
-        fs.rmSync(path.join(tmpDir, 'link'), { force: true });
+        // symlink 自体だけを除去する (target=outside は残す)。Node 24 の fs.rmSync は
+        // symlink→dir を辿って EISDIR で throw するため recursive:true を付ける。recursive
+        // でも rimraf は symlink を leaf として unlink し target 中身は消さない (Node 22/24 共通)。
+        fs.rmSync(path.join(tmpDir, 'link'), { recursive: true, force: true });
         fs.rmSync(outside, { recursive: true, force: true });
       }
     });
@@ -167,7 +170,10 @@ export async function run(): Promise<TestSuiteResult> {
         assert.strictEqual(res.ok, false);
         assert.strictEqual(fs.existsSync(path.join(outside, 'escape.md')), false, 'Vault 外にファイルが作られてはいけない');
       } finally {
-        fs.rmSync(path.join(tmpDir, 'link2'), { force: true });
+        // symlink 自体だけを除去する (target=outside は残す)。Node 24 の fs.rmSync は
+        // symlink→dir を辿って EISDIR で throw するため recursive:true を付ける。recursive
+        // でも rimraf は symlink を leaf として unlink し target 中身は消さない (Node 22/24 共通)。
+        fs.rmSync(path.join(tmpDir, 'link2'), { recursive: true, force: true });
         fs.rmSync(outside, { recursive: true, force: true });
       }
     });
