@@ -29,22 +29,12 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 ## Skills / Commands 構成規約 (フラット固定)
 
 > **1 skill = 1 フラットディレクトリ + 1 `SKILL.md`** (`.claude/skills/<name>/SKILL.md`)。
-> 中間カテゴリディレクトリで**機能グループ化しない** — Claude Code の nested 検出は
-> docs と実装が乖離した既知の不具合 (#28266 / #40640 / #39138) で信頼できず、発火表の
-> 決定論性を損なうため。グループ化は**ドキュメント** (下の索引 + 発火表) で表現し、真の
-> namespace が要るときだけ**プラグイン化** (`plugin:skill`) を検討する。
-
-| カテゴリ | 名前 (種別) |
-|---|---|
-| Security / 脅威レポート | `scan-threat-report` (skill) / `sec-mode`・`sec-audit`・`sec-review` (command) |
-| Security / リポ取込 | `untrusted-repo-intake` (skill) |
-| Dev workflow | `pr-workflow`・`ts-coding-conventions` (skill) |
-| Ops / 運用ログ | `ops-logging` (skill) |
-| Ops / vault 書込安全 | `vault-ops` (skill) |
-| Feature 知識 | `x-bookmarks` (skill) |
-
-> 命名規約 (kebab-case / `name`=ディレクトリ名) と追加手順・根拠は
-> `docs/skills-design.md` に集約 (新規 skill を足すときは発火表 + 同 doc 索引も更新)。
+> 中間カテゴリディレクトリで**機能グループ化しない** (Claude Code の nested 検出は既知の
+> 不具合で信頼できず、発火表の決定論性を損なうため)。グループ化はディレクトリでなく
+> **ドキュメント**で表現する。
+>
+> 根拠 (該当 issue) / 命名規約 / カテゴリ索引 / 追加手順は `docs/skills-design.md` に集約。
+> 新規 skill を足すときは上の発火表と同 doc の索引を更新する。
 
 ## Chat mode protocol (session routing)
 
@@ -105,12 +95,6 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > (`.github/workflows/llm-sec-weekly.yml`) の詳細は重複排除のため docs に集約:
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
-
-## Shared dev-tool versions
-
-TypeScript, `@types/node`, and `tsx` are declared in the `catalog:` block of
-`pnpm-workspace.yaml`. Bump versions there in a single edit; the root
-`package.json` references them via `catalog:`.
 
 ## Secrets / sensitive files — never commit
 
