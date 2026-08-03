@@ -32,7 +32,7 @@ conventions and feature knowledge live in `.claude/skills/` and load on demand.
 > 中間カテゴリディレクトリで**機能グループ化しない** (Claude Code の nested 検出は既知の
 > 不具合で信頼できず、発火表の決定論性を損なうため)。グループ化はディレクトリでなく
 > **ドキュメント**で表現する。
-
+>
 > 根拠 (該当 issue) / 命名規約 / カテゴリ索引 / 追加手順は `docs/skills-design.md` に集約。
 > 新規 skill を足すときは上の発火表と同 doc の索引を更新する。
 
