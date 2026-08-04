@@ -16,10 +16,12 @@
  *   (旧出力: <vault>/__skills/context/ハンズオン/ は 2026-05 リファクタで廃止)
  */
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
 import { getVaultRoot, getPipelineDbDir } from '../config';
+import { neutralizeUntrusted, UNTRUSTED_OPEN_TAG, UNTRUSTED_CLOSE_TAG } from './untrusted_text';
 import Database from 'better-sqlite3';
 
 interface BookmarkRow {
@@ -83,23 +85,64 @@ function loadBookmarksForFolder(folder: string, since?: string): BookmarkRow[] {
   }
 }
 
-function buildCorpus(rows: BookmarkRow[]): string {
+/**
+ * ポスト群を 1 つの素材ブロックにまとめる。
+ *
+ * `tweet_text` / `author` / `url` は **第三者が書いた untrusted データ** (X API 由来)。
+ * ここを素通しすると、プロンプト末尾に置かれた本文がそのまま「最後の指示」として
+ * モデルに読まれる (間接プロンプトインジェクション)。`neutralizeUntrusted` で
+ * 隠蔽キャリア・偽区切り・fence 偽装を落としてから連結する。
+ *
+ * 注意: サニタイズで落ちるのは**構造的な**偽装だけ。見た目に違和感のない
+ * 「説得型」の命令文は落ちない (`untrusted_text.ts` の既知の限界)。命令として
+ * 解釈させない役割はプロンプト側の fence + 優先順位規則が担う。
+ */
+export function buildCorpus(rows: BookmarkRow[]): string {
   if (rows.length === 0) return '(素材なし)';
   return rows
     .map((r, i) => {
-      const head = `### Post ${i + 1}${r.author ? ` by @${r.author}` : ''}${r.created_at ? ` (${r.created_at})` : ''}`;
-      const body = (r.tweet_text ?? '').trim();
-      return `${head}\n${body}\n元ポスト: ${r.url}\n`;
+      const author = r.author ? neutralizeUntrusted(r.author) : '';
+      const head = `### Post ${i + 1}${author ? ` by @${author}` : ''}${r.created_at ? ` (${r.created_at})` : ''}`;
+      const body = neutralizeUntrusted(r.tweet_text ?? '').trim();
+      return `${head}\n${body}\n元ポスト: ${neutralizeUntrusted(r.url)}\n`;
     })
     .join('\n---\n\n');
 }
 
-function renderPrompt(folder: string, corpus: string, date: string): string {
+/**
+ * テンプレートが「`{{corpus}}` を untrusted fence で囲んでいる」ことを検証する。
+ *
+ * fence はプロンプト側 (`prompts/hands_on.md`) に書いてあるので、テンプレートを
+ * 編集した人が誤って外すと、コードは無傷のまま防御だけが消える。ここで
+ * **構造として強制**し、外れていたら生成させない (fail-closed)。
+ */
+function assertCorpusIsFenced(tpl: string): void {
+  const open = tpl.indexOf(UNTRUSTED_OPEN_TAG);
+  const close = tpl.indexOf(UNTRUSTED_CLOSE_TAG);
+  const corpus = tpl.indexOf('{{corpus}}');
+  if (open === -1 || close === -1 || corpus === -1 || !(open < corpus && corpus < close)) {
+    throw new Error(
+      `プロンプトテンプレートが壊れています: {{corpus}} が ${UNTRUSTED_OPEN_TAG} … ` +
+        `${UNTRUSTED_CLOSE_TAG} の内側にありません (${PROMPT_TEMPLATE_PATH})。\n` +
+        '  untrusted なポスト本文を fence 無しで渡すことになるため生成を中止しました。'
+    );
+  }
+}
+
+/**
+ * プレースホルダを置換する。
+ *
+ * 置換値は必ず**関数**で渡す: 文字列を渡すと `$&` / `` $` `` / `$'` / `$1` が
+ * 置換パターンとして解釈され、ポスト本文からテンプレートの他の部分を複製・
+ * 再構成できてしまう (fence の外へ本文を貼り出す経路になる)。
+ */
+export function renderPrompt(folder: string, corpus: string, date: string): string {
   const tpl = fs.readFileSync(PROMPT_TEMPLATE_PATH, 'utf8');
+  assertCorpusIsFenced(tpl);
   return tpl
-    .replace(/\{\{folder\}\}/g, folder)
-    .replace(/\{\{corpus\}\}/g, corpus)
-    .replace(/\{\{date\}\}/g, date);
+    .replace(/\{\{folder\}\}/g, () => folder)
+    .replace(/\{\{corpus\}\}/g, () => corpus)
+    .replace(/\{\{date\}\}/g, () => date);
 }
 
 function folderSlug(folder: string): string {
@@ -107,6 +150,39 @@ function folderSlug(folder: string): string {
   const last = folder.split('/').filter(Boolean).pop() ?? 'unfiled';
   return last.replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
+
+/**
+ * `claude` をテキスト生成専用に落とすための引数。**プロンプトの直前に置く。**
+ *
+ * `claude -p` は agentic ランタイムなので、素で呼ぶと「呼び出し元の権限を持った
+ * エージェント」に第三者のポスト本文を渡すことになる。`-p` は非対話なので
+ * 承認ダイアログも出せない (= 事前承認済みのツールは無言で走る)。
+ *
+ *   --tools ''             組込ツールを全て無効化 (= ファイル/シェル/ネットワーク到達なし)
+ *   --strict-mcp-config    --mcp-config で渡したものだけを使う = MCP サーバを一切ロードしない
+ *   --permission-mode manual  自動承認しない。-p は問い合わせできないので実質すべて拒否
+ *   --safe-mode            CLAUDE.md / skills / plugins / hooks / MCP など全カスタマイズを無効化
+ *
+ * `--safe-mode` は隔離のためだけでなく**出力品質のため**でもある: 無しで実測すると
+ * ユーザー層 `~/.claude/CLAUDE.md` の指示 (「回答末尾に JST 時刻を出す」等) が
+ * 生成物に混入し、そのまま Vault のノートへ書き込まれる。
+ *
+ * これに加えて `cwd` を使い捨ての一時ディレクトリにし、リポジトリの
+ * `.claude/settings.json` / `settings.local.json` / hooks / CLAUDE.md を
+ * 探索させない (下の `generateHandsOn` を参照)。
+ *
+ * **効いているのは主に `--tools ''`** (ツールを 1 つも持たせない) であって、
+ * cwd 隔離と `--safe-mode` は多層防御の残り 2 枚。設定探索を止めても、
+ * 「モデルが何を書くか」自体は素材に影響される (= 出力汚染は残る。だから
+ * プロンプト側の fence と併用する)。
+ */
+const CLAUDE_TEXT_ONLY_ARGS: readonly string[] = [
+  '-p',
+  '--safe-mode',
+  '--tools', '',
+  '--strict-mcp-config',
+  '--permission-mode', 'manual',
+];
 
 function preflightClaudeCli(bin: string): void {
   // `claude --version` で疎通確認
@@ -151,27 +227,37 @@ export async function generateHandsOn(options: HandsOnOptions): Promise<string> 
 
   console.log(`🤖 claude CLI を呼び出し中 (プロンプト ${prompt.length} 文字)...`);
 
-  const generated = await new Promise<string>((resolve, reject) => {
-    const proc = spawn(claudeBin, ['-p', prompt], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+  // 空の一時ディレクトリで走らせる: claude はここを起点に project 設定
+  // (.claude/settings.json / settings.local.json / hooks) と CLAUDE.md を探すので、
+  // 空ディレクトリなら「このリポジトリで事前承認したツール」を継承しない。
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'x-hands-on-'));
+  let generated: string;
+  try {
+    generated = await new Promise<string>((resolve, reject) => {
+      const proc = spawn(claudeBin, [...CLAUDE_TEXT_ONLY_ARGS, prompt], {
+        cwd: workDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const chunks: Buffer[] = [];
+      const errChunks: Buffer[] = [];
+      proc.stdout.on('data', d => chunks.push(d));
+      proc.stderr.on('data', d => errChunks.push(d));
+      proc.on('error', reject);
+      proc.on('close', code => {
+        if (code !== 0) {
+          reject(
+            new Error(
+              `claude CLI が異常終了 (code=${code}): ${Buffer.concat(errChunks).toString('utf8').slice(0, 1000)}`
+            )
+          );
+        } else {
+          resolve(Buffer.concat(chunks).toString('utf8'));
+        }
+      });
     });
-    const chunks: Buffer[] = [];
-    const errChunks: Buffer[] = [];
-    proc.stdout.on('data', d => chunks.push(d));
-    proc.stderr.on('data', d => errChunks.push(d));
-    proc.on('error', reject);
-    proc.on('close', code => {
-      if (code !== 0) {
-        reject(
-          new Error(
-            `claude CLI が異常終了 (code=${code}): ${Buffer.concat(errChunks).toString('utf8').slice(0, 1000)}`
-          )
-        );
-      } else {
-        resolve(Buffer.concat(chunks).toString('utf8'));
-      }
-    });
-  });
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
 
   fs.writeFileSync(outPath, generated, 'utf8');
   console.log(`✅ ハンズオンを生成しました: ${outPath}`);
