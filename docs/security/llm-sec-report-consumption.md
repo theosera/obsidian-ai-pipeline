@@ -20,12 +20,40 @@ Claude / Claude Code が**安全に** 消費するための運用契約。
 ### 検索条件 (必須)
 
 ```text
-label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed
+label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed from:(<許可送信者>)
 ```
 
-- `label:LLM-Sec-Report` — 送信側で Gmail filter により自動付与される
+- `label:LLM-Sec-Report` — 受信側 Gmail filter により自動付与される
 - `subject:"[LLM-Sec-Weekly]"` — 件名 prefix で誤ラベルメールを弾く 2 重防御
 - `-label:LLM-Sec-Report/processed` — 既処理メールを除外
+- `from:(...)` — `LLM_SEC_ALLOWED_SENDERS` (カンマ区切り) から組み立てる**一次フィルタ**
+
+### 送信者認証 (必須 / ラベルと件名は認証ではない)
+
+> 🔴 **ラベルも件名も「誰が送ったか」の証明にはならない。**
+> 受信側フィルタは**件名から**ラベルを付けるので、この 2 つだけを条件にすると
+> 「アドレスを知っている人なら誰でも」自動取込パイプラインに入れる。取り込まれた
+> 本文は vault repo へ push され、`--analyze-threat-relevance` と `/sec-review` の
+> LLM / エージェント文脈に載る (= 恒久的な間接プロンプトインジェクション経路)。
+
+判定は **DKIM 検証済みの `From`** で行う。`scripts/llm_sec_weekly_fetcher.ts` の
+`verifySender()` が、`from:` クエリとは独立に**メッセージ単位で**再検証する
+(クエリは検索構文の解釈に依存するため、単独では根拠にしない):
+
+1. `From` ヘッダからアドレスを取り出せること
+2. そのアドレスが `LLM_SEC_ALLOWED_SENDERS` に載っていること
+   (`user@example.com` 完全一致、または `@example.com` でドメイン全体)
+3. `Authentication-Results` (無ければ `ARC-Authentication-Results`) が存在すること
+4. その中に `dkim=pass` があり、署名ドメインが `From` のドメインと整合すること
+   (完全一致、または `From` が署名ドメインのサブドメイン)
+
+**1 つでも欠けたら取り込まない** (fail-closed / `status: 'error'` で `processed`
+ラベルも付けない)。`LLM_SEC_ALLOWED_SENDERS` **未設定なら起動時に落ちる** —
+「未設定なら従来どおり通す」に倒すと設定漏れが無言で元の穴に戻るため。
+
+> **信頼境界の明示**: `Authentication-Results` を書くのは**受信側の Gmail**であり、
+> 本実装はそれを信頼する (= Gmail の受信箱までを信頼境界とする)。送信ドメインの
+> なりすまし自体をこのコードが検証しているわけではない。
 
 ### 件名フォーマット
 

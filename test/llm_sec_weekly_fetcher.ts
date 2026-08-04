@@ -38,6 +38,12 @@ import {
   threadSourceRef,
   isPeriodEndTooFarInFuture,
   printSummary,
+  parseAllowedSenders,
+  getHeader,
+  extractEmailAddress,
+  dkimPassDomains,
+  verifySender,
+  buildGmailQuery,
   GATE_SUBDIR,
   PERIOD_END_RE,
   PERIOD_END_FUTURE_HORIZON_DAYS,
@@ -215,6 +221,150 @@ export async function run(): Promise<TestSuiteResult> {
       },
     };
     assert.strictEqual(extractPlainTextBody(msg), 'deep plain');
+  });
+
+  t.section('送信者認証 (claude-security F3 / F6 / F12 / F13)');
+
+  /** ヘッダ付き message を組む小ヘルパー。 */
+  function msgWith(headers: Record<string, string>): gmail_v1.Schema$Message {
+    return {
+      payload: {
+        headers: Object.entries(headers).map(([name, value]) => ({ name, value })),
+        mimeType: 'text/plain',
+        body: { data: base64url('body') },
+      },
+    };
+  }
+
+  const ALLOWED = ['reports@example.com', '@trusted.example'];
+  const GOOD_AUTH = 'mx.google.com; dkim=pass header.i=@example.com; spf=pass smtp.mailfrom=example.com';
+
+  t.test('parseAllowedSenders: カンマ区切りを正規化 (trim / 小文字化)', () => {
+    assert.deepStrictEqual(
+      parseAllowedSenders(' Reports@Example.com , @Trusted.Example '),
+      ['reports@example.com', '@trusted.example']
+    );
+  });
+
+  t.test('parseAllowedSenders: 未設定 / 空文字は空配列 (呼び出し側で必須エラー)', () => {
+    assert.deepStrictEqual(parseAllowedSenders(undefined), []);
+    assert.deepStrictEqual(parseAllowedSenders(''), []);
+  });
+
+  t.test('parseAllowedSenders: 形式不正は throw (無言で通さない)', () => {
+    assert.throws(() => parseAllowedSenders('not-an-address'), /形式が不正/);
+    assert.throws(() => parseAllowedSenders('reports@example.com, bare'), /形式が不正/);
+  });
+
+  t.test('getHeader: ヘッダ名は大文字小文字を無視', () => {
+    const msg = msgWith({ 'From': 'a@b.example', 'Authentication-Results': GOOD_AUTH });
+    assert.strictEqual(getHeader(msg, 'from'), 'a@b.example');
+    assert.strictEqual(getHeader(msg, 'AUTHENTICATION-RESULTS'), GOOD_AUTH);
+    assert.strictEqual(getHeader(msg, 'X-Missing'), null);
+  });
+
+  t.test('extractEmailAddress: 表示名付き / 素のアドレス両方', () => {
+    assert.strictEqual(extractEmailAddress('Weekly Bot <Reports@Example.com>'), 'reports@example.com');
+    assert.strictEqual(extractEmailAddress('reports@example.com'), 'reports@example.com');
+    assert.strictEqual(extractEmailAddress('not an address'), null);
+    assert.strictEqual(extractEmailAddress(null), null);
+  });
+
+  t.test('dkimPassDomains: pass のドメインだけを拾う', () => {
+    assert.deepStrictEqual(
+      [...dkimPassDomains('mx.google.com; dkim=pass header.i=@example.com; spf=pass')],
+      ['example.com']
+    );
+    assert.deepStrictEqual(
+      [...dkimPassDomains('mx.google.com; dkim=fail header.i=@evil.example')],
+      []
+    );
+  });
+
+  t.test('dkimPassDomains: fail と pass が混在しても fail 側は拾わない', () => {
+    const hdr = 'mx.google.com; dkim=fail header.i=@evil.example; dkim=pass header.d=example.com';
+    assert.deepStrictEqual([...dkimPassDomains(hdr)], ['example.com']);
+  });
+
+  t.test('verifySender: 許可送信者 + dkim=pass + ドメイン整合なら通る', () => {
+    const v = verifySender(msgWith({ From: 'Bot <reports@example.com>', 'Authentication-Results': GOOD_AUTH }), ALLOWED);
+    assert.strictEqual(v.ok, true);
+  });
+
+  t.test('verifySender: @domain 指定はサブドメインでなく完全なサフィックス一致', () => {
+    const v = verifySender(
+      msgWith({
+        From: 'weekly@trusted.example',
+        'Authentication-Results': 'mx.google.com; dkim=pass header.d=trusted.example',
+      }),
+      ALLOWED
+    );
+    assert.strictEqual(v.ok, true);
+  });
+
+  t.test('verifySender: 許可リスト外の送信者は拒否 (件名・ラベルは根拠にしない)', () => {
+    const v = verifySender(
+      msgWith({ From: 'attacker@evil.example', 'Authentication-Results': 'mx.google.com; dkim=pass header.d=evil.example' }),
+      ALLOWED
+    );
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok === false ? v.reason : '', /許可されていない送信者/);
+  });
+
+  t.test('verifySender: Authentication-Results が無ければ拒否 (fail-closed)', () => {
+    const v = verifySender(msgWith({ From: 'reports@example.com' }), ALLOWED);
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok === false ? v.reason : '', /Authentication-Results/);
+  });
+
+  t.test('verifySender: dkim=fail なら拒否', () => {
+    const v = verifySender(
+      msgWith({ From: 'reports@example.com', 'Authentication-Results': 'mx.google.com; dkim=fail header.i=@example.com' }),
+      ALLOWED
+    );
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok === false ? v.reason : '', /dkim=pass が無い/);
+  });
+
+  t.test('verifySender: From を偽装しても DKIM 署名ドメインが合わなければ拒否', () => {
+    // 許可送信者を名乗るが、実際に署名しているのは攻撃者ドメイン
+    const v = verifySender(
+      msgWith({
+        From: 'reports@example.com',
+        'Authentication-Results': 'mx.google.com; dkim=pass header.d=evil.example',
+      }),
+      ALLOWED
+    );
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok === false ? v.reason : '', /整合しない/);
+  });
+
+  t.test('verifySender: ARC-Authentication-Results もフォールバックとして見る', () => {
+    const v = verifySender(
+      msgWith({
+        From: 'reports@example.com',
+        'ARC-Authentication-Results': 'i=1; mx.google.com; dkim=pass header.i=@example.com',
+      }),
+      ALLOWED
+    );
+    assert.strictEqual(v.ok, true);
+  });
+
+  t.test('verifySender: From ヘッダ自体が無ければ拒否', () => {
+    const v = verifySender(msgWith({ 'Authentication-Results': GOOD_AUTH }), ALLOWED);
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok === false ? v.reason : '', /From ヘッダ/);
+  });
+
+  t.test('buildGmailQuery: from: 句が入り、既存の 3 条件も維持される', () => {
+    const q = buildGmailQuery('LLM-Sec-Report', 'LLM-Sec-Report/processed', ALLOWED);
+    assert.ok(q.includes('label:LLM-Sec-Report'), 'label 条件');
+    assert.ok(q.includes('subject:"[LLM-Sec-Weekly]"'), 'subject 条件');
+    assert.ok(q.includes('-label:LLM-Sec-Report/processed'), 'processed 除外');
+    assert.ok(
+      q.includes('from:(reports@example.com OR @trusted.example)'),
+      'from: 句が OR で入る'
+    );
   });
 
   t.section('envOrUndefined (空文字 secret injection 防御)');

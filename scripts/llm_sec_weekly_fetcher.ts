@@ -333,6 +333,160 @@ export function buildSourceRef(
 }
 
 // ---------------------------------------------------------------------------
+// 送信者認証 (claude-security F3 / F6 / F12 / F13)
+// ---------------------------------------------------------------------------
+//
+// 取込パイプラインに入る資格を「件名 + ラベル」で判定していた。ラベルは受信側
+// Gmail フィルタが**件名から**自動付与するので、実質「その件名で送れる者は誰でも
+// 入れる」状態だった。取り込まれた本文は vault repo に push され、
+// `--analyze-threat-relevance` と `/sec-review` の LLM / エージェント文脈に載る。
+//
+// そこで判定を「**DKIM 検証済みの From**」へ移す:
+//   1. Gmail クエリに from: を足して取得段階で絞る (安価な一次フィルタ)
+//   2. メッセージ単位に From ヘッダと Authentication-Results を再検証する
+//      (クエリだけに頼らない。クエリは検索構文の解釈に依存するため)
+//
+// **信頼境界の明示**: `Authentication-Results` を書くのは受信側の Gmail であり、
+// ここではそれを信頼する (= Gmail の受信箱までを信頼境界とする)。送信ドメインの
+// なりすまし自体を我々が検証しているわけではない。
+
+/** 許可送信者の指定形式: `user@example.com` (完全一致) または `@example.com` (ドメイン全体)。 */
+const ALLOWED_SENDER_RE = /^(?:[^\s@]+)?@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * `LLM_SEC_ALLOWED_SENDERS` (カンマ区切り) を正規化する。
+ *
+ * 空 / 未設定は**呼び出し側で必須エラー**にする (fail-closed)。ここで空配列を
+ * 返して「誰でも通す」に倒すと、設定漏れが無言で元の脆弱性に戻る。
+ */
+export function parseAllowedSenders(raw: string | undefined): string[] {
+  const items = (raw ?? '')
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(s => s.length > 0);
+  const invalid = items.filter(s => !ALLOWED_SENDER_RE.test(s));
+  if (invalid.length > 0) {
+    throw new Error(
+      `LLM_SEC_ALLOWED_SENDERS の形式が不正です: ${JSON.stringify(invalid)}\n` +
+        '  期待する形式: "reports@example.com" (完全一致) または "@example.com" (ドメイン全体)。' +
+        ' カンマ区切りで複数指定できます。'
+    );
+  }
+  return items;
+}
+
+/** Gmail message payload から指定ヘッダの値を取り出す (名前は大文字小文字を無視)。 */
+export function getHeader(message: gmail_v1.Schema$Message, name: string): string | null {
+  const target = name.toLowerCase();
+  const found = message.payload?.headers?.find(h => (h.name ?? '').toLowerCase() === target);
+  return found?.value ?? null;
+}
+
+/**
+ * `From: 表示名 <user@example.com>` からアドレス部分だけを小文字で返す。
+ * 山括弧が無い `From: user@example.com` 形式にも対応する。
+ */
+export function extractEmailAddress(headerValue: string | null | undefined): string | null {
+  if (!headerValue) return null;
+  const angle = headerValue.match(/<([^<>]+)>/);
+  const candidate = (angle ? angle[1] : headerValue).trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate) ? candidate : null;
+}
+
+/**
+ * `Authentication-Results` から `dkim=pass` の `header.d` / `d=` ドメイン集合を返す。
+ *
+ * 例: `mx.google.com; dkim=pass header.i=@example.com; spf=pass ...`
+ * `dkim=temperror` 等は当然含めない (pass だけを拾う)。
+ */
+export function dkimPassDomains(authResults: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!authResults) return out;
+  // "dkim=pass" 以降、次の method (spf=/dmarc=/dkim=) までを 1 件分とみなす。
+  const re = /dkim=pass\b([\s\S]*?)(?=\b(?:dkim|spf|dmarc|arc)=|$)/gi;
+  for (const m of authResults.matchAll(re)) {
+    for (const d of m[1].matchAll(/(?:header\.i=@?|header\.d=|\bd=)([A-Za-z0-9.-]+)/gi)) {
+      out.add(d[1].toLowerCase().replace(/^@/, ''));
+    }
+  }
+  return out;
+}
+
+/** From アドレスが許可リストに載っているか (完全一致 or `@domain` サフィックス)。 */
+function isAllowedSender(from: string, allowed: readonly string[]): boolean {
+  return allowed.some(a => (a.startsWith('@') ? from.endsWith(a) : from === a));
+}
+
+/**
+ * DKIM 署名ドメインが From ドメインと整合しているか (relaxed alignment)。
+ * 完全一致、または From ドメインが署名ドメインのサブドメインなら整合とみなす。
+ */
+function isDkimAligned(fromDomain: string, signedDomains: ReadonlySet<string>): boolean {
+  for (const d of signedDomains) {
+    if (fromDomain === d || fromDomain.endsWith(`.${d}`)) return true;
+  }
+  return false;
+}
+
+export type SenderVerdict =
+  | { ok: true; from: string }
+  | { ok: false; reason: string };
+
+/**
+ * メッセージ単位の送信者検証。**すべて満たさなければ拒否** (fail-closed)。
+ *
+ *   1. From ヘッダからアドレスを取り出せる
+ *   2. そのアドレスが許可リストに載っている
+ *   3. Authentication-Results (無ければ ARC-...) が存在する
+ *   4. その中に dkim=pass があり、署名ドメインが From ドメインと整合する
+ *
+ * ラベルと件名は**一切根拠にしない** (それが元の穴)。
+ */
+export function verifySender(
+  message: gmail_v1.Schema$Message,
+  allowedSenders: readonly string[]
+): SenderVerdict {
+  const from = extractEmailAddress(getHeader(message, 'From'));
+  if (!from) {
+    return { ok: false, reason: `From ヘッダを解釈できません: ${JSON.stringify(getHeader(message, 'From'))}` };
+  }
+  if (!isAllowedSender(from, allowedSenders)) {
+    return { ok: false, reason: `許可されていない送信者: ${from}` };
+  }
+  const authResults =
+    getHeader(message, 'Authentication-Results') ??
+    getHeader(message, 'ARC-Authentication-Results');
+  if (!authResults) {
+    return { ok: false, reason: `Authentication-Results ヘッダが無い (from=${from})` };
+  }
+  const signed = dkimPassDomains(authResults);
+  if (signed.size === 0) {
+    return { ok: false, reason: `dkim=pass が無い (from=${from})` };
+  }
+  const fromDomain = from.slice(from.indexOf('@') + 1);
+  if (!isDkimAligned(fromDomain, signed)) {
+    return {
+      ok: false,
+      reason: `DKIM 署名ドメインが From と整合しない (from=${from} / signed=${[...signed].join(',')})`,
+    };
+  }
+  return { ok: true, from };
+}
+
+/**
+ * Gmail 検索クエリを組み立てる。`from:` は**一次フィルタ**であって認証ではない
+ * (検索構文の解釈に依存するため、`verifySender` が本判定を担う)。
+ */
+export function buildGmailQuery(
+  labelName: string,
+  processedLabelName: string,
+  allowedSenders: readonly string[]
+): string {
+  const from = `from:(${allowedSenders.join(' OR ')})`;
+  return `label:${labelName} subject:"${SUBJECT_PREFIX}" -label:${processedLabelName} ${from}`;
+}
+
+// ---------------------------------------------------------------------------
 // インジェクション・ゲート (L0+L1 → gate_decision.py --profile=ci)
 // ---------------------------------------------------------------------------
 
@@ -637,6 +791,8 @@ interface ValidatedEnv {
   labelName: string;
   processedLabelName: string;
   maxResults: number;
+  /** 取込を許可する送信者。空にはならない (validateEnv が必須チェックする)。 */
+  allowedSenders: string[];
 }
 
 /**
@@ -651,10 +807,28 @@ export function envOrUndefined(name: string): string | undefined {
 }
 
 function validateEnv(): ValidatedEnv {
-  const required = ['GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'VAULT_ROOT'] as const;
+  const required = [
+    'GMAIL_CLIENT_ID',
+    'GMAIL_CLIENT_SECRET',
+    'GMAIL_REFRESH_TOKEN',
+    'VAULT_ROOT',
+    // 送信者の許可リスト。**未設定なら起動時に落とす** (fail-closed)。
+    // 「未設定なら従来どおり誰でも通す」に倒すと、設定漏れが無言で
+    // 認証なしの取込 (= 元の脆弱性) に戻るため、loud-fail を選ぶ。
+    'LLM_SEC_ALLOWED_SENDERS',
+  ] as const;
   const missing = required.filter(k => !envOrUndefined(k));
   if (missing.length > 0) {
-    throw new Error(`必須環境変数が未設定です: ${missing.join(', ')}`);
+    throw new Error(
+      `必須環境変数が未設定です: ${missing.join(', ')}\n` +
+        '  LLM_SEC_ALLOWED_SENDERS は取込を許可する送信者 (カンマ区切り)。' +
+        ' 例: "reports@example.com" / "@example.com"。' +
+        ' 設定手順は docs/security/llm-sec-weekly-automation.md §2.3 を参照。'
+    );
+  }
+  const allowedSenders = parseAllowedSenders(envOrUndefined('LLM_SEC_ALLOWED_SENDERS'));
+  if (allowedSenders.length === 0) {
+    throw new Error('LLM_SEC_ALLOWED_SENDERS が空です (取込を許可する送信者を 1 件以上指定してください)。');
   }
   const maxResultsRaw = envOrUndefined('LLM_SEC_MAX_RESULTS');
   let maxResults = DEFAULT_MAX_RESULTS;
@@ -675,6 +849,7 @@ function validateEnv(): ValidatedEnv {
     labelName: envOrUndefined('LLM_SEC_LABEL_NAME') ?? DEFAULT_LABEL,
     processedLabelName: envOrUndefined('LLM_SEC_PROCESSED_LABEL_NAME') ?? DEFAULT_PROCESSED_LABEL,
     maxResults,
+    allowedSenders,
   };
 }
 
@@ -792,6 +967,7 @@ async function processThread(
   dryRun: boolean,
   gate: GateRunner,
   quarantinePendingRefs: ReadonlySet<string>,
+  allowedSenders: readonly string[],
 ): Promise<FetcherOutcome[]> {
   // ガードは **thread の同一性** で判定する (period_end ではない — 未来の週を
   // 騙る隔離済みメールに正規レポートを塞がせないため)。API 呼び出しより前に
@@ -820,7 +996,7 @@ async function processThread(
   const outcomes: FetcherOutcome[] = [];
   for (const msg of messages) {
     outcomes.push(
-      await processMessage(threadId, msg, messages.length, vaultRoot, dryRun, gate));
+      await processMessage(threadId, msg, messages.length, vaultRoot, dryRun, gate, allowedSenders));
   }
   return outcomes;
 }
@@ -833,8 +1009,24 @@ async function processMessage(
   vaultRoot: string,
   dryRun: boolean,
   gate: GateRunner,
+  allowedSenders: readonly string[],
 ): Promise<FetcherOutcome> {
   const messageId = msg.id!;
+  // ★ 本文に触れる前に送信者を検証する。クエリの from: は一次フィルタに過ぎず、
+  // ここが本判定 (ラベル / 件名は根拠にしない)。terminal にはしない — 環境側
+  // (allow-list / DKIM) を直せば同じメールが再取込できるので、processed ラベルは
+  // 付けず次回 cron でも同じ理由で弾く (ループはしない — 通らない)。
+  const sender = verifySender(msg, allowedSenders);
+  if (!sender.ok) {
+    return {
+      threadId,
+      messageId,
+      periodEnd: null,
+      status: 'error',
+      sourceRef: threadSourceRef(threadId),
+      reason: `送信者検証に失敗 (fail-closed / 本文は読まない): ${sender.reason}`,
+    };
+  }
   const parts = extractBodyParts(msg);
   const sourceRef = buildSourceRef(threadId, messageId, parts.bodyPartCount, reportMessageCount);
   const at = { threadId, messageId, sourceRef };
@@ -1142,8 +1334,9 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
     await resolveLabelId(gm, env.processedLabelName);
   });
 
-  const query = `label:${env.labelName} subject:"${SUBJECT_PREFIX}" -label:${env.processedLabelName}`;
+  const query = buildGmailQuery(env.labelName, env.processedLabelName, env.allowedSenders);
   console.log(`🔍 Gmail query: ${query} (max ${env.maxResults})`);
+  console.log(`🔐 送信者検証: ${env.allowedSenders.join(', ')} かつ dkim=pass のみ取込`);
   const { threads, truncated } = await listUnprocessedThreads(gm, query, env.maxResults);
   console.log(`📨 未処理 thread: ${threads.length} 件`);
   if (truncated) {
@@ -1162,7 +1355,7 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
   for (const t of threads) {
     if (!t.id) continue;
     outcomes.push(
-      ...(await processThread(gm, t.id, env.vaultRoot, dryRun, gate, quarantinePendingRefs)));
+      ...(await processThread(gm, t.id, env.vaultRoot, dryRun, gate, quarantinePendingRefs, env.allowedSenders)));
   }
 
   // WAL を main DB に統合してから commit させたいので明示クローズ。
