@@ -29,7 +29,7 @@ Bash から起動された孫プロセスは、この層を一切通らない。
 | 層 / リポ | deny 総数 | うち Read 系 | 秘密ファイル名の Read deny | 測定者 |
 |---|---|---|---|---|
 | ユーザ層 `~/.claude/settings.json` | 21 | 4 | **0** (SSH / AWS 資格情報 / AWS config / GnuPG のみ) | 0a 実測 |
-| pipeline-youtube-SDK | **0** | 0 | 0 | 0a 実測 |
+| pipeline-youtube-SDK | **0** | 0 | 0 | 0a / 62 が独立に実測 |
 | claude_openai_mcp_connector | 47 | 18 | 有り | 62 実測 / 0a・2e 未検証 |
 | obsidian-ai-pipeline | 43 | 19 | 有り | 2e 実測 / 0a 未検証 |
 
