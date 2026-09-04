@@ -124,7 +124,7 @@ pipeline-youtube-SDK ツリー内の該当名ファイル: 0 件 (陽性対照 `
 | 器具 | 同一性 | 期待値 | 被覆の限界 |
 |---|---|---|---|
 | `~/Downloads/verify-egress-guard.py` | sha256 先頭 16 = `1d11de1dd1c82814` / 4,795 bytes | **19/20 passed, 4 known gap(s) NOT covered** | file-operand 形を **1 つも被覆していない**。2026-09-03 の一連の欠陥に感度ゼロだった |
-| SDK リポ suite `tests/test_block_secret_egress.py` | commit `844e4b4` | **90 passed, 8 xfailed** | 残差 8 形を `xfail(strict=True)` で記録。塞がった日に XPASS で赤くなる |
+| SDK リポ suite `tests/test_block_secret_egress.py` | commit `20713dd` (as-of 2026-09-04。`844e4b4` から整形のみの差分で、hook 本体とテスト結果は不変) | **90 passed, 8 xfailed** | 残差 8 形を `xfail(strict=True)` で記録。塞がった日に XPASS で赤くなる |
 
 ⛔ **器具の期待値が 20/20 に戻ったら「直った」ではなく「迂回が再び開いた」サイン。**
 ⛔ 「全緑」だけを運ばない。0 件・全緑を主張するときは、**検出器が鳴ることを示す対照**を同じ場所に置く。
