@@ -436,6 +436,26 @@ function getDbPath(): string {
   return path.join(getPipelineDbDir(), 'x_bookmarks.db');
 }
 
+let _closeHookRegistered = false;
+
+/**
+ * プロセス終了時に singleton を必ず close する hook を 1 度だけ張る。
+ *
+ * これが無いと、開いたままの Database (と prepare 済み Statement) が
+ * 環境破棄中に finalize され、better-sqlite3 の cleanup hook 解除が
+ * env 破棄後に走って abort する:
+ *   node::RemoveEnvironmentCleanupHook / Assertion failed: (env) != nullptr / exit 134
+ * GC のタイミング依存なので CI が非決定的に落ちる。`threat-reports/db.ts` の
+ * registerCloseHook と同じ形 (あちらには在り、こちらだけ欠けていた)。
+ */
+function registerCloseHook(): void {
+  if (_closeHookRegistered) return;
+  _closeHookRegistered = true;
+  process.once('exit', () => {
+    closeDb();
+  });
+}
+
 export function getDb(): XBookmarksDb {
   if (_instance) return _instance;
   const filePath = getDbPath();
@@ -452,6 +472,7 @@ export function getDb(): XBookmarksDb {
       throw e;
     }
   }
+  registerCloseHook();
   return _instance;
 }
 
