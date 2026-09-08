@@ -65,17 +65,33 @@ jobs:
         # キャッシュが設定追加前の状態を再利用するケースがあるため、確実に
         # native .node バイナリを生成するよう明示リビルドする。
         #
-        # バージョン方針 (better-sqlite3 = v11.10.0 据え置き / 正典): ここで毎回
-        # ソースビルドするため upstream のプリビルトバイナリ Node 対応マトリクスに
-        # 依存せず、v11 系でも新 Node ABI 向けに .node をコンパイルできる (Node 24 /
-        # NODE_MODULE_VERSION 137 で CI green を実測確認済み)。次のいずれかを満たし
-        # たら別 PR (build(deps): bump better-sqlite3 to v12) で v12 へ上げる:
+        # バージョン方針 (better-sqlite3 = v12.11.1 / 正典): ここで毎回ソースビルド
+        # するため upstream のプリビルトバイナリ Node 対応マトリクスに依存せず、新しい
+        # Node ABI 向けに .node をコンパイルできる。
+        #
+        # v11.10.0 からの bump は、下の条件 4 が発動したため (PR #136)。v11.10.0 では
+        # CI が非決定的に exit 134 (SIGABRT) で落ちていた: 既に close された Database
+        # の Statement が後から GC で回収され、その destructor が env 破棄後の cleanup
+        # hook 解除に当たる ->
+        #   node::RemoveEnvironmentCleanupHook / Assertion failed: (env) != nullptr
+        # 落ちるのは全テストが通った後ではなく【走行中】なので、テスト失敗 0 件のまま
+        # exit 134 になる (2026-09-08 実測: 落ちた run はいずれも「全テスト合格」を
+        # 出していない)。発生率は 2026-09-07 の実測で 6 attempt 中 success 1。
+        # ⚠️ darwin ホストでは再現しない (3/3 緑)。ネイティブビルドが異なるため、
+        # 「ローカルが緑」は検証にならない。CI と同条件の Linux コンテナでは再現する:
+        #   v11.10.0 = 3/5 crash (60%) / v12.11.1 = 10/10 pass (2026-09-08 実測)
+        # ⇒ 効果の判定は CI の反復でなくローカルのコンテナで行える:
+        #   docker run --rm -v "$PWD:/w" -w /w node:24.20.0 \
+        #     bash -lc 'corepack enable && pnpm install --frozen-lockfile && pnpm test'
+        #   (node_modules は Linux ビルドになるので、ホストと同じ木で走らせないこと)
+        #
+        # 次に v13 以降へ上げる条件は据え置き時と同じ 5 つ (番号もそのまま):
         #   1. この rebuild (ソースビルド) を外しプリビルトバイナリ依存へ切替える
         #   2. ビルドツールチェーン無しのローカル環境を公式サポート対象に含める
-        #   3. 将来の Node メジャーで v11 系がソースビルドすら失敗する
-        #   4. v11 系に未修正 CVE / バグがあり v12 で解消される
-        #   5. 他の依存が better-sqlite3 v12 を要求する
-        # 経緯: PR #121 (Node 24 化) の Codex P1 レビューへの回答。
+        #   3. 将来の Node メジャーで v12 系がソースビルドすら失敗する
+        #   4. v12 系に未修正 CVE / バグがあり v13 で解消される
+        #   5. 他の依存が better-sqlite3 v13 を要求する
+        # 経緯: PR #121 (Node 24 化) の Codex P1 レビュー / PR #136 (v12 bump)。
         run: pnpm rebuild better-sqlite3
 
       - name: Run security tests (24 cases)
