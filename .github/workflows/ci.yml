@@ -69,23 +69,45 @@ jobs:
         # するため upstream のプリビルトバイナリ Node 対応マトリクスに依存せず、新しい
         # Node ABI 向けに .node をコンパイルできる。
         #
-        # v11.10.0 からの bump は、下の条件 4 が発動したため (PR #136)。v11.10.0 では
-        # CI が非決定的に exit 134 (SIGABRT) で落ちていた: 既に close された Database
-        # の Statement が後から GC で回収され、その destructor が env 破棄後の cleanup
-        # hook 解除に当たる ->
-        #   node::RemoveEnvironmentCleanupHook / Assertion failed: (env) != nullptr
+        # v11.10.0 からの bump (PR #136) は【mitigation であって fix ではない】。
+        # ⛔ 「v11 のバグが v12 で解消された」ではない — 欠陥は v12.11.1 にも完全に残る。
+        #
+        # 真因は better-sqlite3 ではなく Node >= 24.19.0 の node::ObjectWrap:
+        #   ~ObjectWrap が RemoveEnvironmentCleanupHook を無条件に呼ぶが、これは
+        #   V8 の first-pass weak callback (= context 未進入) から走りうるため
+        #   Environment::GetCurrent(isolate) が nullptr を返して CHECK が落ちる ->
+        #     node::RemoveEnvironmentCleanupHook / Assertion failed: (env) != nullptr
+        #   gdb 実測のフレーム: ~Database -> ~ObjectWrap -> RemoveCleanupHook ->
+        #     RemoveEnvironmentCleanupHook  (呼び元は基底クラスであって better-sqlite3 ではない)
+        #   ⛔ 「env 破棄後」ではない。env は生きていて、context が entered でないだけ。
+        #
+        # 発火条件は「wrapper が実行中に GC で回収されること」だけ。2x2 介入実験で
+        # close 済み / 未 close ともに 20/20 abort、強参照で pin すると 0/40 (2026-09-08 実測)。
+        # ⇒ ⛔ close 漏れは原因ではない。close を徹底しても効果はゼロ。
+        # ⇒ v12 で実スイートが緑になるのは GC/アロケーション特性が変わって条件が
+        #    同時成立しなくなったためで、テスト追加・依存更新・Node 更新で再発しうる。
+        #
         # 落ちるのは全テストが通った後ではなく【走行中】なので、テスト失敗 0 件のまま
-        # exit 134 になる (2026-09-08 実測: 落ちた run はいずれも「全テスト合格」を
-        # 出していない)。発生率は 2026-09-07 の実測で 6 attempt 中 success 1。
-        # ⚠️ darwin ホストでは再現しない (3/3 緑)。ネイティブビルドが異なるため、
-        # 「ローカルが緑」は検証にならない。CI と同条件の Linux コンテナでは再現する:
-        #   v11.10.0 = 3/5 crash (60%) / v12.11.1 = 10/10 pass (2026-09-08 実測)
-        # ⇒ 効果の判定は CI の反復でなくローカルのコンテナで行える:
+        # exit 134 になる (落ちた run はいずれも「全テスト合格」を出していない)。
+        #
+        # ⚠️ ローカルで再現しないのは OS 差ではなく【Node のパッチ差】。Node < 24.19.0 の
+        # ヘッダには当該 cleanup hook が無く、そのヘッダでビルドした .node には
+        # abort に至るコードパスが物理的に存在しない (nm で実測)。ヘッダ二分探索:
+        #   <= 24.18.0 無し / >= 24.19.0 有り / 25.x・26.x 無し (2026-09-08 実測)
+        # ⇒ ローカルの Node が 24.19.0 未満なら「緑」は検証にならない。
+        #
+        # 検証は CI の反復でなくローカルのコンテナで行える:
         #   docker run --rm -v "$PWD:/w" -w /w node:24.20.0 \
         #     bash -lc 'corepack enable && pnpm install --frozen-lockfile && pnpm test'
         #   (node_modules は Linux ビルドになるので、ホストと同じ木で走らせないこと)
+        # ⚠️ 既定条件の発生率は run バッチ間で大きくばらつく (5/25・2/5・0/10 等)。
+        #    少数回の緑は証拠にならない。回帰を見るなら決定的な arm を使う:
+        #      NODE_OPTIONS=--max-semi-space-size=1 pnpm test
+        #    (v11.10.0 = 12/12 crash / v12.11.1 = 0/12。2026-09-08 実測)
         #
-        # 次に v13 以降へ上げる条件は据え置き時と同じ 5 つ (番号もそのまま):
+        # 次に v13 以降へ上げる条件は据え置き時と同じ 5 つ (番号もそのまま)。
+        # ⚠️ v12 への bump は、この 5 条件のどれが発動したものでもない (上記のとおり
+        #    mitigation)。条件 4 が発動したという当初の説明は誤りだった:
         #   1. この rebuild (ソースビルド) を外しプリビルトバイナリ依存へ切替える
         #   2. ビルドツールチェーン無しのローカル環境を公式サポート対象に含める
         #   3. 将来の Node メジャーで v12 系がソースビルドすら失敗する
