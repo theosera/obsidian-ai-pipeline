@@ -12,6 +12,7 @@
  * 副作用: `git commit` のときだけ `git diff --cached --name-only` を読む（読取のみ）。
  */
 const fs = require('node:fs');
+const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 function readStdin() {
@@ -48,7 +49,12 @@ const gitSubRe = (sub) => new RegExp(`\\bgit${GIT_OPTS}\\s+(?:${sub})\\b([^;&|]*
 // （`(cd sub && git add .env)` の `.env)` が secret 判定をすり抜けるのを防ぐ）。
 const stripToken = (a) => a.replace(/['"`]/g, '').replace(/[);&|]+$/, '');
 // クォートで囲まれた文字列を落としたコマンド（`git commit -m "git add した"` の誤検知避け）。
-const unquote = (s) => s.replace(/'[^']*'|"[^"]*"/g, ' ');
+// ただし **option 形のトークンは保持する**: シェルは `git commit "-a"` を `-a` として渡すので、
+// 丸ごと落とすと `-a` 判定をすり抜ける（クォートするだけでガードが外れてしまう）。
+const unquote = (s) => s.replace(/'([^']*)'|"([^"]*)"/g, (_m, sq, dq) => {
+  const inner = sq !== undefined ? sq : dq;
+  return /^--?[A-Za-z0-9][A-Za-z0-9-]*$/.test(inner) ? inner : ' ';
+});
 
 function deny(reason) {
   process.stdout.write(JSON.stringify({
@@ -116,14 +122,33 @@ if (commitMatch) {
       '実行前の staged 検査をすり抜けます。`git add <files>` で明示的に stage してから commit してください。',
     );
   }
+  // 検査対象は **そのコマンドが commit するリポ**。`git -C <dir> commit` を固定 cwd で
+  // 検査すると別リポの index を見て素通しするので、global option を検査側にも反映する。
+  const gitOptsPart = (cmd.match(new RegExp(`\\bgit(${GIT_OPTS})\\s+commit\\b`)) || [])[1] || '';
+  if (/--git-dir=|--work-tree=/.test(gitOptsPart)) {
+    deny(
+      '`git --git-dir=… / --work-tree=… commit` は staged 検査の対象リポを一意に決められないため\n' +
+      'ブロックしました (fail-closed)。対象リポの中で直接 commit してください。',
+    );
+  }
+  const cDir = (gitOptsPart.match(/-C\s*(\S+)/) || [])[1];
+  const baseDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const inspectCwd = cDir ? path.resolve(baseDir, stripToken(cDir)) : baseDir;
   let staged = '';
   try {
     staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
-      cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+      cwd: inspectCwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-  } catch { staged = ''; }
+  } catch {
+    // 従来は staged='' として素通ししていた（fail-open）。存在しない `-C` 先を指すだけで
+    // 検査を無効化できてしまうため、検査できないときは通さない。
+    deny(
+      `staged ファイルの検査に失敗しました (対象: ${inspectCwd})。\n` +
+      '検査できない状態で commit を通すと staged secret を見逃すためブロックしました (fail-closed)。',
+    );
+  }
   const bad = staged.split('\n').map((s) => s.trim()).filter(isSecret);
   if (bad.length) {
     deny(

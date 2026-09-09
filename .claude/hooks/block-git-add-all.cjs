@@ -30,7 +30,12 @@ function deny(reason) {
 const GIT_OPTS = '(?:\\s+(?:-[cC]\\s*\\S+|--(?:git-dir|work-tree|exec-path|namespace)=\\S+|--no-pager|--bare|--paginate))*';
 const gitSubRe = (sub) => new RegExp(`\\bgit${GIT_OPTS}\\s+(?:${sub})\\b([^;&|]*)`);
 // クォートで囲まれた文字列を落とす（`git commit -m "-n を直す"` の誤検知避け）。
-const unquote = (s) => s.replace(/'[^']*'|"[^"]*"/g, ' ');
+// option 形のトークンは保持する: シェルは `git commit "-n"` を `-n` として渡すので、
+// 丸ごと落とすとクォートするだけでガードが外れる (block-secret-git.cjs と同一の扱い)。
+const unquote = (s) => s.replace(/'([^']*)'|"([^"]*)"/g, (_m, sq, dq) => {
+  const inner = sq !== undefined ? sq : dq;
+  return /^--?[A-Za-z0-9][A-Za-z0-9-]*$/.test(inner) ? inner : ' ';
+});
 
 let cmd = '';
 try {
@@ -46,10 +51,11 @@ if (/(^|\s)--no-verify(\s|=|$)/.test(cmd)) {
   deny('`--no-verify` は禁止です（commit / secret-scan hook をバイパスしない / CLAUDE.md）。フックを通して実行してください。');
 }
 
-// `-n` は `git commit` では `--no-verify` の短縮形（束ね短縮フラグ `-an` 等も同様）。
-// `grep -n` / `tail -n` / `git add -n`(=--dry-run) を巻き込まないよう、対象は
-// `git commit` / `git push` / `git merge` の引数だけに限定する。
-const nMatch = cmd.match(gitSubRe('commit|push|merge'));
+// `-n` が `--no-verify` の短縮形になるのは **`git commit` だけ**。
+// `git push -n` は `--dry-run`、`git merge -n` は diffstat 抑制で、どちらも hook を
+// バイパスしない (git の help で確認)。`grep -n` / `tail -n` / `git add -n` も同様に無関係。
+// ⇒ 短縮形の判定は `git commit` の引数だけに限定する (長い `--no-verify` は上で全 git 禁止)。
+const nMatch = cmd.match(gitSubRe('commit'));
 if (nMatch) {
   const nArgs = unquote(nMatch[1]).trim().split(/\s+/).filter(Boolean);
   if (nArgs.some((a) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a))) {

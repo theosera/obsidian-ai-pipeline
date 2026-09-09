@@ -53,7 +53,9 @@ const EXFIL_SHAPES = [
   /\b(nc|ncat)\b[^\n]*\s-e\b/,                           // reverse shell
   gitRe('remote\\s+add\\b'),                             // 外部 remote 追加
   gitRe('remote\\s+set-url\\b'),                         // 既存 remote (origin) の向き先すげ替え
-  gitRe('config\\b[^\\n]*\\bremote\\.[^\\s]+\\.url\\b'), // 同上 (git config 経由)
+  // 同上 (git config 経由)。⚠️ URL キーの **後に値が続く形 = 書き込み** だけを対象にする。
+  // `git config remote.origin.url` / `git config --get remote.origin.url` は読み取りなので通す。
+  gitRe('config\\b[^\\n]*\\bremote\\.[^\\s]+\\.url\\s+[^\\s;&|]'),
   // 明示 URL への push (named remote でない)。URL は `push` の直後とは限らない
   // (`git push --force <url>` / `git push '<url>'`) ので引数列のどこでも当てる。
   // named remote への push には URL 形のトークンが無いため誤検知しない。
