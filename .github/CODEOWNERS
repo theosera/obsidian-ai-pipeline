@@ -23,3 +23,38 @@
 
 # Branch protection 運用ドキュメント。
 /docs/branch-protection.md  @theosera
+
+# ---------------------------------------------------------------------------
+# CI が「何を実行するか」を決めるファイル。
+#
+# required approvals は 0 で、PR の既定フォローアップは auto-merge。つまり
+# CODEOWNERS が付いていないパスは実質ノーレビューで main に入る。CI green は
+# **変更そのものが CI の実行内容**である場合の防御にならない (毒された
+# チェッカは自分自身を緑にする) ため、以下も所有者レビュー必須にする。
+# ---------------------------------------------------------------------------
+
+# 依存グラフとインストール時の挙動 (lockfile / ビルドスクリプト allowlist /
+# pnpm 設定)。ここが書き換わると CI ジョブ内で任意コードが走り得る。
+/package.json            @theosera
+/pnpm-lock.yaml          @theosera
+/pnpm-workspace.yaml     @theosera
+/.npmrc                  @theosera
+/scripts/package.json    @theosera
+
+# 週次脅威レポート取込の実行コード (Gmail refresh token と vault deploy key を
+# 持つジョブで動く)。
+/scripts/                @theosera
+
+# CI と週次 workflow が **直接実行する**インジェクション・ゲート本体
+# (ci.yml の run_l1_tests / run_gate_tests、weekly の gate invariant re-check)。
+/.claude/skills/scan-threat-report/scripts/  @theosera
+
+# ローカル/セッション側のガードレール (secret egress・git add -A ブロック等)。
+/.claude/hooks/          @theosera
+
+# vault repo への push 安全機構 (pre-push hook / safe push wrapper)。
+# ci.yml が受入テストを実行する。
+/.claude/skills/vault-ops/  @theosera
+
+# Claude Code のセッション設定 (permissions / hooks の配線)。
+/.claude/settings.json   @theosera

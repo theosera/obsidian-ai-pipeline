@@ -18,3 +18,28 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  # npm (pnpm lockfile) — locked dependency に advisory シグナルを与える。
+  #
+  # ci.yml は脆弱性スキャンを持たないため、この entry が無いと 200 超の locked
+  # package が「既知の脆弱性が出ても誰も気付かない」状態になる。しかもその同じ
+  # ツリーが、vault deploy key と Gmail refresh token を持つ週次ジョブの中で
+  # install される。
+  #
+  # minor / patch だけを 1 PR にまとめ、**major (破壊的更新) は個別 PR のまま**に
+  # する: グローバル規約上 major 更新は「保留して opt-in の手動イベントとして
+  # 扱う」ものなので、まとめ PR に紛れ込ませない。
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
