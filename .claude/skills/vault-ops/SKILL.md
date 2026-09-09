@@ -1,8 +1,11 @@
 ---
 name: vault-ops
 description: 週次脅威レポート取込 CI と人間の手動 push が二重書き込みする vault repo (Permanent Note) の書込安全機構の正典。pre-push hook (non-ff/force 拒否) + safe-vault-push-perm.sh (自動 rebase・.threat_reports.json 退避・staged secret ゲート・ref 破損検知) + installer を配布する。**vault repo への push 運用 / `vault-push-perm` エイリアス / `.githooks` (pre-push) / vault の git 復旧・非常時対応 / 本 skill の scripts を触る前に必ずこの Skill をロードしてから**着手せよ。実行は人間の terminal と CI が担い、本 Skill は配布物とルールの母艦。
-# allowed-tools: 導入支援 (installer / self-test 実行) に Bash が要るため許可。Write は不要 (配布物は本 skill に既収載)。
-allowed-tools: Read, Bash
+# allowed-tools: Read のみ。本 skill の実行は**人間の terminal と CI** が担う (下記参照) ため
+# Bash の事前許可は不要 — installer は git hook 導入 / core.hooksPath 設定 / ~/.claude/bin への
+# symlink / ~/.zshrc 追記まで行うので、無承認の Bash を skill ロードで開けない。Write も不要
+# (配布物は本 skill に既収載)。
+allowed-tools: Read
 ---
 
 # vault-ops — vault repo 書込安全機構
