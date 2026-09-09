@@ -41,19 +41,32 @@ const SECRET_LITERALS = [
   /(CLIENT_SECRET|REFRESH_TOKEN|API_KEY|ACCESS_TOKEN|PRIVATE_KEY|PASSWORD|GMAIL_CLIENT_SECRET)\s*[=:]\s*['"]?(?!\$)[A-Za-z0-9._\-/+]{8,}/i,
 ];
 
+// `git` と subcommand の間には global option (`-c k=v` / `-C <dir>` / `--git-dir=…`) を
+// 何個でも挟めるので、それを跨いで subcommand に当てる。block-git-add-all.cjs の
+// GIT_OPTS と同一定義 (片方だけ古くなると穴が戻るため、変えるときは両方同時に)。
+const GIT_OPTS = '(?:\\s+(?:-[cC]\\s*\\S+|--(?:git-dir|work-tree|exec-path|namespace)=\\S+|--no-pager|--bare|--paginate))*';
+const gitRe = (tail) => new RegExp(`\\bgit${GIT_OPTS}\\s+${tail}`);
+
 // (B) 古典的 exfil 形。
 const EXFIL_SHAPES = [
   /\bgh\s+gist\b/,                                       // gh gist create/...
   /\b(nc|ncat)\b[^\n]*\s-e\b/,                           // reverse shell
-  /\bgit\s+remote\s+add\b/,                              // 外部 remote 追加
-  /\bgit\s+push\s+(https?:\/\/|git@|ssh:\/\/)/,          // 明示 URL への push (named remote でない)
+  gitRe('remote\\s+add\\b'),                             // 外部 remote 追加
+  gitRe('remote\\s+set-url\\b'),                         // 既存 remote (origin) の向き先すげ替え
+  gitRe('config\\b[^\\n]*\\bremote\\.[^\\s]+\\.url\\b'), // 同上 (git config 経由)
+  // 明示 URL への push (named remote でない)。URL は `push` の直後とは限らない
+  // (`git push --force <url>` / `git push '<url>'`) ので引数列のどこでも当てる。
+  // named remote への push には URL 形のトークンが無いため誤検知しない。
+  gitRe('push\\b[^;&|]*\\s[\'"]?(https?://|git@|ssh://|git://)'),
   /\bcurl\b[^\n]*\s(--data-binary|--upload-file|-T|-F|-d|--data)\b[^\n]*@/,  // ローカルファイル upload
   /\b(scp|sftp)\b[^\n]*\s[^\s]+:[^\s]/,                  // local -> remote コピー
   /\brsync\b[^\n]*\s[^\s]+:[^\s]/,
 ];
 
 // (B') 秘密ファイル読取 + ネットワーク送信の組合せ (例: `cat .env | curl ...`)。
-const SECRET_FILE_RE = /(\.env(\.|\b)|x_tokens\.json|credentials[^/\s]*\.json|service-account[^/\s]*\.json|[^/\s]*token[^/\s]*\.json|\.pem\b|\.key\b|id_(rsa|ed25519)\b|secrets\.(json|ya?ml)\b)/i;
+// 対象は block-secret-git.cjs の SECRET_RE / vault-ops の SECRET_ERE と揃える
+// (CLAUDE.md「secret-pattern 4 系統を 1 PR で同時更新」)。
+const SECRET_FILE_RE = /(\.env(\.|\b)|x_tokens\.json|pkce_state\.json|pipeline_config\.json|credentials[^/\s]*\.json|service-account[^/\s]*\.json|[^/\s]*token[^/\s]*\.json|\.pem\b|\.key\b|id_(rsa|ed25519)\b|secrets\.(json|ya?ml)\b|(^|[\s'"/=])secrets\/)/i;
 const NET_VERB_RE = /\b(curl|wget|nc|ncat|scp|sftp|rsync|telnet)\b|\bgh\s+gist\b/i;
 // .env.example はテンプレートなので秘密ファイル扱いしない。
 const isExampleOnly = (cmd) => /\.env\.example\b/i.test(cmd) && !/\.env(\b|\.)(?!example)/i.test(cmd);
@@ -73,7 +86,9 @@ let cmd = '';
 try {
   const j = JSON.parse(readStdin() || '{}');
   cmd = (j.tool_input && j.tool_input.command) || '';
-} catch { process.exit(0); }
+} catch {
+  deny('hook 入力を解釈できませんでした (fail-closed)。egress ガードを通せないため実行をブロックします。');
+}
 if (!cmd) process.exit(0);
 
 if (SECRET_LITERALS.some((re) => re.test(cmd))) {
