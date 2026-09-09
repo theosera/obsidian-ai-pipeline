@@ -1,8 +1,10 @@
 ---
 name: ops-logging
 description: Claude Code UI で実行した git / shell / GitHub(MCP) 操作を「コマンド＋意図」だけ (secret 全マスク) 学習ログとして専用 private リポ (terminal-ops-logs) に push する仕組みの正典。PostToolUse hook で追記 → Stop hook で 1 回 push。**コマンド学習ログ機能を新リポへ導入する / hook 設定 (settings.json) を書く・直す / マスキング規則やログ出力先を変える / capture-command.sh・push-log.sh を触る前に必ずこの Skill をロードしてから**着手せよ。実際の自動実行は hook が担い、本 Skill は設定の母艦 (手順・規則・スニペット)。
-# allowed-tools: 導入時に settings.json とスクリプトを書く必要があるため Write/Edit/Bash を許可。
-allowed-tools: Read, Write, Edit, Bash
+# allowed-tools: 本 skill 自身のディレクトリ (hook スクリプト) の編集だけを事前許可する。
+# `.claude/settings.json` (= ガード設定そのもの) の編集と Bash 実行は**通常の都度承認**に戻す
+# — 「hook 設定を書く skill」をロードしただけでガード設定の書換えが無承認になるのを防ぐ。
+allowed-tools: Read, Edit(./.claude/skills/ops-logging/**), Write(./.claude/skills/ops-logging/**)
 ---
 
 # ops-logging
@@ -76,7 +78,8 @@ terminal-ops-logs/
         "matcher": "Bash|mcp__github__.*",
         "hooks": [
           { "type": "command",
-            "command": "bash .claude/skills/ops-logging/capture-command.sh" }
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/skills/ops-logging/capture-command.sh\"",
+            "timeout": 10 }
         ]
       }
     ],
@@ -84,7 +87,8 @@ terminal-ops-logs/
       {
         "hooks": [
           { "type": "command",
-            "command": "bash .claude/skills/ops-logging/push-log.sh" }
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/skills/ops-logging/push-log.sh\"",
+            "timeout": 120 }
         ]
       }
     ]

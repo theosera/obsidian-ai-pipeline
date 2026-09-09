@@ -18,6 +18,8 @@
       "Read(./**/token*.json)",
       "Read(./**/x_tokens.json)",
       "Read(./**/data/tokens.json)",
+      "Read(./**/pkce_state.json)",
+      "Read(./pipeline_config.json)",
 
       "Read(./**/*.key)",
       "Read(./**/*.pem)",
@@ -27,6 +29,7 @@
       "Read(./**/secrets.json)",
       "Read(./**/secrets.yaml)",
       "Read(./**/secrets.yml)",
+      "Read(./**/secrets/**)",
 
       "Bash(cat .env)",
       "Bash(cat .env.*)",
@@ -57,7 +60,12 @@
       "Bash(grep * **/token*)",
 
       "Bash(awk * .env*)",
-      "Bash(sed * .env*)"
+      "Bash(sed * .env*)",
+
+      "Write(./.git/**)",
+      "Edit(./.git/**)",
+      "Bash(git remote set-url*)",
+      "Bash(git config remote.*)"
     ],
     "allow": [
       "Skill(scan-threat-report)",
@@ -96,7 +104,12 @@
       {
         "matcher": "Bash|mcp__github__.*",
         "hooks": [
-          { "type": "command", "command": "bash .claude/skills/ops-logging/capture-command.sh" }
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/skills/ops-logging/capture-command.sh\"",
+            "timeout": 10,
+            "statusMessage": "コマンド学習ログ追記"
+          }
         ]
       }
     ],
@@ -121,7 +134,12 @@
             "timeout": 120,
             "statusMessage": "型チェック (.ts 変更時のみ)"
           },
-          { "type": "command", "command": "bash .claude/skills/ops-logging/push-log.sh" }
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/skills/ops-logging/push-log.sh\"",
+            "timeout": 120,
+            "statusMessage": "コマンド学習ログ push"
+          }
         ]
       }
     ]
