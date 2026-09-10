@@ -16,7 +16,8 @@
     ~/.claude/CLAUDE.md がそこへの symlink であることを想定する:
         cd "$(git rev-parse --show-toplevel)" &&
         git remote get-url origin |
-          grep -E '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)theosera/obsidian-ai-pipeline(\.git)?/?$' &&
+          grep -Eq '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)theosera/obsidian-ai-pipeline(\.git)?/?$' ||
+          { echo '⛔ 正典 checkout ではない (ルートに居ないか origin 不一致)'; false; } &&
         test -f CLAUDE.global.md &&
         ln -s "$PWD/CLAUDE.global.md" ~/.claude/CLAUDE.md
     ⛔ && を外さない。⭐ ここでの && は【検査に link を従わせる】ためにある。
@@ -30,9 +31,15 @@
     ⛔ remote URL だけでも足りない。ln -s は存在しない対象でも成功するので、
        ルートに居ない状態で走らせると dangling な symlink が黙って作られ、
        グローバル層が 1 行も読まれなくなる (実測 2026-09-07)。
-       ⇒ 1 行目の cd はその防波堤で、⛔ 省くと test -f がルート外を見る。
-    ⚠️ -q を付けない。⭐ 落ちたときに【何が落ちたか】を出すため。
-       grep -q は無出力なので、写しで止まっても画面には何も出ない。
+       ⇒ ⭐ dangling を防いでいるのは【test -f と連鎖】であって cd ではない。
+       1 行目の cd が防ぐのは「ルート外だと test -f が偽になって手順が使えない」
+       ことのほう。⛔ cd を省いても連鎖があれば ln には到達しない
+       (★ 上記 2026-09-07 の実測は【連鎖が無かった旧版】の話)。
+    ⛔ 黙って落ちる形にしない。⭐ 落ちたときに【止まった】と分かる必要がある。
+       素の grep -q は無出力なので、写しで止まっても画面には何も出ない。
+       ⚠️ ただし URL そのものは出さない。★ この手順は【写しのリポで実行される】
+       ことを前提にしており (それを止めるのが目的)、写しには private リポが
+       含まれる。⇒ 判定結果だけを出し、origin URL を画面やログへ残さない。
     ⛔ host を省いたパターンにしない。接尾辞だけを見ると、namespace を保った
        別ホストのミラーが正典として通る (実測 2026-09-10: gitlab.com /
        evil.example / mirror.example がいずれも PASS した)。
