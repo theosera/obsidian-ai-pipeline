@@ -14,9 +14,12 @@ does:
    build) and only sets `enable-pre-post-scripts=false`, which governs implicit
    pre/post *wrappers* — not the root project's own install lifecycle. Measured
    with pnpm 10.33.0: a root `preinstall`/`postinstall`/`prepare` still runs on
-   `pnpm install --frozen-lockfile`, i.e. inside the CI job that holds the vault
-   deploy key and the Gmail refresh token. Nothing else in CI reads these keys,
-   so they are rejected here.
+   `pnpm install --frozen-lockfile`. The job that holds the vault deploy key and
+   the Gmail refresh token is the weekly workflow, which also runs that install
+   but never runs this checker; this checker runs in ci.yml, whose job has only
+   `contents: read`. So this is a pre-merge gate, not a guard inside the
+   privileged job: it works because anything reaching main passes CI first, and
+   because ci.yml runs it before `pnpm install` rather than after.
 """
 from __future__ import annotations
 
@@ -25,14 +28,19 @@ import sys
 from pathlib import Path
 
 
-# pnpm/npm がインストール時に自動実行するスクリプト名。ここに載るキーは
-# `pnpm install` だけで走るので、明示的な `pnpm run <name>` に移すこと。
+# pnpm/npm がインストール時に自動実行しうるスクリプト名。明示的な
+# `pnpm run <name>` に移すこと。
+# 実測 (pnpm 10.33.0 / `pnpm install --frozen-lockfile`): preinstall / install /
+# postinstall / prepare は走る。prepublish は走らなかったが、npm 系の他バージョン
+# では走るため保守的に拒否したままにする (過剰拒否であって見逃しではない)。
+# pnpm:devPreinstall は pnpm 固有の dev install フックで、上の 4 つと同じ経路。
 INSTALL_LIFECYCLE_SCRIPTS = (
     "preinstall",
     "install",
     "postinstall",
     "prepare",
     "prepublish",
+    "pnpm:devPreinstall",
 )
 
 

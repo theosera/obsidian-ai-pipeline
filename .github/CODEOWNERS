@@ -40,14 +40,23 @@
 /pnpm-workspace.yaml     @theosera
 /.npmrc                  @theosera
 /scripts/package.json    @theosera
+# pnpm の install hook。--ignore-pnpmfile を付けていないので、置かれるだけで
+# frozen-lockfile の検証より前にトップレベルコードが走る (実測)。まだ存在しない
+# ファイルだが、無所有だと owner レビュー無しで追加できる。
+/.pnpmfile.cjs           @theosera
 
 # 週次脅威レポート取込の実行コード (Gmail refresh token と vault deploy key を
 # 持つジョブで動く)。
 /scripts/                @theosera
 
-# CI と週次 workflow が **直接実行する**インジェクション・ゲート本体
-# (ci.yml の run_l1_tests / run_gate_tests、weekly の gate invariant re-check)。
+# インジェクション・ゲート本体と、その決定論回帰テスト。
+# weekly workflow が SCANNER / GATE として scripts/ を直接指す (llm-sec-weekly.yml)。
+# ci.yml が直接実行するのは tests/ の run_l1_tests / run_gate_tests で、
+# そこから scripts/ を importlib でロードする。⇒ 両方に所有者を付ける。
 /.claude/skills/scan-threat-report/scripts/  @theosera
+/.claude/skills/scan-threat-report/tests/    @theosera
+# ゲートの判断を変えられる設定 (FP 許容リスト)。本体だけ守っても意味がない。
+/.claude/skills/scan-threat-report/policy/   @theosera
 
 # ローカル/セッション側のガードレール (secret egress・git add -A ブロック等)。
 /.claude/hooks/          @theosera
@@ -58,3 +67,25 @@
 
 # Claude Code のセッション設定 (permissions / hooks の配線)。
 /.claude/settings.json   @theosera
+
+# settings.json の hook が起動する実体。設定を守って実体を守らないと素通しになる。
+/.claude/skills/ops-logging/  @theosera
+
+# CI ゲートそのものの設定。tsconfig の strict 解除や oxlint の rules 無効化は、
+# CI を緑のままゲートだけ無力化する。
+/tsconfig.json           @theosera
+/tsconfig.base.json      @theosera
+/.oxlintrc.json          @theosera
+
+# テストランナーとテスト本体。ランナーは 15 モジュールを import で literal に
+# 列挙しているので、1 行消すとその群が走らなくなり CI は緑のまま。
+/test_runner.ts          @theosera
+/test/                   @theosera
+
+# 週次 fetcher が実行時に読み込むローカル import の閉包。エントリポイントだけを
+# 門番にしても、実際に走るコードは素通りする (Gmail token と deploy key を持つ
+# ジョブの中で実行される)。
+/config.ts               @theosera
+/storage.ts              @theosera
+/types.ts                @theosera
+/threat-reports/         @theosera
