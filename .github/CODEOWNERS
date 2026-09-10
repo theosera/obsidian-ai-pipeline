@@ -23,3 +23,69 @@
 
 # Branch protection 運用ドキュメント。
 /docs/branch-protection.md  @theosera
+
+# ---------------------------------------------------------------------------
+# CI が「何を実行するか」を決めるファイル。
+#
+# required approvals は 0 で、PR の既定フォローアップは auto-merge。つまり
+# CODEOWNERS が付いていないパスは実質ノーレビューで main に入る。CI green は
+# **変更そのものが CI の実行内容**である場合の防御にならない (毒された
+# チェッカは自分自身を緑にする) ため、以下も所有者レビュー必須にする。
+# ---------------------------------------------------------------------------
+
+# 依存グラフとインストール時の挙動 (lockfile / ビルドスクリプト allowlist /
+# pnpm 設定)。ここが書き換わると CI ジョブ内で任意コードが走り得る。
+/package.json            @theosera
+/pnpm-lock.yaml          @theosera
+/pnpm-workspace.yaml     @theosera
+/.npmrc                  @theosera
+/scripts/package.json    @theosera
+# pnpm の install hook。--ignore-pnpmfile を付けていないので、置かれるだけで
+# frozen-lockfile の検証より前にトップレベルコードが走る (実測)。まだ存在しない
+# ファイルだが、無所有だと owner レビュー無しで追加できる。
+/.pnpmfile.cjs           @theosera
+
+# 週次脅威レポート取込の実行コード (Gmail refresh token と vault deploy key を
+# 持つジョブで動く)。
+/scripts/                @theosera
+
+# インジェクション・ゲート本体と、その決定論回帰テスト。
+# weekly workflow が SCANNER / GATE として scripts/ を直接指す (llm-sec-weekly.yml)。
+# ci.yml が直接実行するのは tests/ の run_l1_tests / run_gate_tests で、
+# そこから scripts/ を importlib でロードする。⇒ 両方に所有者を付ける。
+/.claude/skills/scan-threat-report/scripts/  @theosera
+/.claude/skills/scan-threat-report/tests/    @theosera
+# ゲートの判断を変えられる設定 (FP 許容リスト)。本体だけ守っても意味がない。
+/.claude/skills/scan-threat-report/policy/   @theosera
+
+# ローカル/セッション側のガードレール (secret egress・git add -A ブロック等)。
+/.claude/hooks/          @theosera
+
+# vault repo への push 安全機構 (pre-push hook / safe push wrapper)。
+# ci.yml が受入テストを実行する。
+/.claude/skills/vault-ops/  @theosera
+
+# Claude Code のセッション設定 (permissions / hooks の配線)。
+/.claude/settings.json   @theosera
+
+# settings.json の hook が起動する実体。設定を守って実体を守らないと素通しになる。
+/.claude/skills/ops-logging/  @theosera
+
+# CI ゲートそのものの設定。tsconfig の strict 解除や oxlint の rules 無効化は、
+# CI を緑のままゲートだけ無力化する。
+/tsconfig.json           @theosera
+/tsconfig.base.json      @theosera
+/.oxlintrc.json          @theosera
+
+# テストランナーとテスト本体。ランナーは 15 モジュールを import で literal に
+# 列挙しているので、1 行消すとその群が走らなくなり CI は緑のまま。
+/test_runner.ts          @theosera
+/test/                   @theosera
+
+# 週次 fetcher が実行時に読み込むローカル import の閉包。エントリポイントだけを
+# 門番にしても、実際に走るコードは素通りする (Gmail token と deploy key を持つ
+# ジョブの中で実行される)。
+/config.ts               @theosera
+/storage.ts              @theosera
+/types.ts                @theosera
+/threat-reports/         @theosera
