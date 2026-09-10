@@ -15,13 +15,20 @@
     正典は obsidian-ai-pipeline の CLAUDE.global.md。各マシンでは
     ~/.claude/CLAUDE.md がそこへの symlink であることを想定する:
         cd "$(git rev-parse --show-toplevel)"   # 正典リポの checkout の【ルート】へ
-        test -f CLAUDE.global.md                # ⛔ 落ちたらここは正典ではない。止まる
+        git remote get-url origin | grep -Eq '[:/]theosera/obsidian-ai-pipeline(\.git)?/?$'
+        test -f CLAUDE.global.md                # ⛔ どちらか落ちたら止まる
         ln -s "$PWD/CLAUDE.global.md" ~/.claude/CLAUDE.md
-    ⚠️ このコマンドは正典リポの checkout の中で実行すること。写しのリポで
-       実行すると ~/.claude/CLAUDE.md がその写しを指す。
-    ⛔ test -f を飛ばさない。ln -s は存在しない対象でも成功するので、サブ
+    ⚠️ 2 つの検査は【別のこと】を見ている。⛔ 片方で代用しない。
+       remote URL = ここが正典リポか ／ test -f = ファイルが実在するか。
+    ⛔ test -f だけでは足りない。同じ名前のファイルは写しのリポにも在るので、
+       test -f が言うのは「ここがリポのルートである」までで、正典と写しを区別しない
+       (実測 2026-09-08: 写しの checkout でも正典の checkout でも rc=0)。
+    ⛔ remote URL だけでも足りない。ln -s は存在しない対象でも成功するので、サブ
        ディレクトリで実行すると dangling な symlink が黙って作られ、グローバル層が
        1 行も読まれなくなる (実測 2026-09-07: docs/ から実行して rc=0・対象は不在)。
+    ⚠️ fork・ミラー・origin 名が違う checkout では remote URL の検査が落ちる。
+       ⭐ そのときは推測させず、正典 checkout の絶対パスを明示して置く:
+           ln -s /path/to/obsidian-ai-pipeline/CLAUDE.global.md ~/.claude/CLAUDE.md
     ⚠️ cp で配置しない。コピーは正典が動いても何の signal も出さずに古くなる。
 
     ⚠️ 他のリポにも同名の写しが置かれているが、同一である保証は無い。
