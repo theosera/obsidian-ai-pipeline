@@ -14,15 +14,36 @@
   ■ 使い方 (配置と、同一性の確かめ方)
     正典は obsidian-ai-pipeline の CLAUDE.global.md。各マシンでは
     ~/.claude/CLAUDE.md がそこへの symlink であることを想定する:
-        cd "$(git rev-parse --show-toplevel)"   # 正典リポの checkout の【ルート】へ
-        test -f CLAUDE.global.md                # ⛔ 落ちたらここは正典ではない。止まる
+        cd "$(git rev-parse --show-toplevel)" &&
+        git remote get-url origin |
+          grep -E '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)theosera/obsidian-ai-pipeline(\.git)?/?$' &&
+        test -f CLAUDE.global.md &&
         ln -s "$PWD/CLAUDE.global.md" ~/.claude/CLAUDE.md
-    ⚠️ このコマンドは正典リポの checkout の中で実行すること。写しのリポで
-       実行すると ~/.claude/CLAUDE.md がその写しを指す。
-    ⛔ test -f を飛ばさない。ln -s は存在しない対象でも成功するので、サブ
-       ディレクトリで実行すると dangling な symlink が黙って作られ、グローバル層が
-       1 行も読まれなくなる (実測 2026-09-07: docs/ から実行して rc=0・対象は不在)。
+    ⛔ && を外さない。⭐ ここでの && は【検査に link を従わせる】ためにある。
+       外すと前段が落ちても ln が走る (実測 2026-09-10: 別 owner の checkout で
+       remote 検査 rc=1・test -f rc=0・ln rc=0 ⇒ 写しを指す link が黙って作られた)。
+       ⚠️ 下の「⛔ 2 つを && で繋がない」は【確認】側の話で、ここと逆の要求。
+    ⚠️ 2 つの検査は別のことを見ている。⛔ 片方で代用しない。
+       remote URL = ここが正典リポか ／ test -f = ファイルが実在するか。
+    ⛔ test -f だけでは足りない。同名のファイルは写しのリポにも在る
+       (実測 2026-09-08: 写しでも正典でも rc=0 で区別できない)。
+    ⛔ remote URL だけでも足りない。ln -s は存在しない対象でも成功するので、
+       ルートに居ない状態で走らせると dangling な symlink が黙って作られ、
+       グローバル層が 1 行も読まれなくなる (実測 2026-09-07)。
+       ⇒ 1 行目の cd はその防波堤で、⛔ 省くと test -f がルート外を見る。
+    ⚠️ -q を付けない。⭐ 落ちたときに【何が落ちたか】を出すため。
+       grep -q は無出力なので、写しで止まっても画面には何も出ない。
+    ⛔ host を省いたパターンにしない。接尾辞だけを見ると、namespace を保った
+       別ホストのミラーが正典として通る (実測 2026-09-10: gitlab.com /
+       evil.example / mirror.example がいずれも PASS した)。
+    ⚠️ fork・別ホストのミラー・origin 名が違う checkout では remote 検査が落ちる。
+       ⭐ そのときは推測させず、正典 checkout の絶対パスを明示して置く。
+       ⛔ ただし fallback でも存在確認を飛ばさない (上と同じ dangling の穴):
+           CANON=/path/to/obsidian-ai-pipeline/CLAUDE.global.md
+           test -f "$CANON" && ln -s "$CANON" ~/.claude/CLAUDE.md
     ⚠️ cp で配置しない。コピーは正典が動いても何の signal も出さずに古くなる。
+    ⚠️ ln -s は既存の ~/.claude/CLAUDE.md を上書きしない (File exists で rc=1)。
+       ⛔ 逆に ln -sfn は黙って張り替える。⇒ 張り替える前に下の確認を通すこと。
 
     ⚠️ 他のリポにも同名の写しが置かれているが、同一である保証は無い。
        主張ではなく確認で扱うこと。⛔ 2 つを && で繋がない — 前段が偽なら
