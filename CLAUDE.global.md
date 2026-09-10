@@ -17,7 +17,7 @@
         cd "$(git rev-parse --show-toplevel)" &&
         git remote get-url origin |
           grep -Eq '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)theosera/obsidian-ai-pipeline(\.git)?/?$' ||
-          { echo '⛔ 正典 checkout ではない (ルートに居ないか origin 不一致)'; false; } &&
+          { echo '⛔ 正典 checkout ではない (確認: pwd と git remote get-url origin)'; false; } &&
         test -f CLAUDE.global.md &&
         ln -s "$PWD/CLAUDE.global.md" ~/.claude/CLAUDE.md
     ⛔ && を外さない。⭐ ここでの && は【検査に link を従わせる】ためにある。
@@ -40,6 +40,8 @@
        ⚠️ ただし URL そのものは出さない。★ この手順は【写しのリポで実行される】
        ことを前提にしており (それを止めるのが目的)、写しには private リポが
        含まれる。⇒ 判定結果だけを出し、origin URL を画面やログへ残さない。
+       ⭐ 代わりに【自分で確かめる手段】を渡す。⇒ 何が拒否されたかは、案内された
+       コマンドを人が自分で叩けば分かる。⛔ 出力に載せて残すのとは別のこと。
     ⛔ host を省いたパターンにしない。接尾辞だけを見ると、namespace を保った
        別ホストのミラーが正典として通る (実測 2026-09-10: gitlab.com /
        evil.example / mirror.example がいずれも PASS した)。
