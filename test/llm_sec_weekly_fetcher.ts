@@ -26,9 +26,21 @@ import {
   gateAndRoute,
   isInvalidGrantError,
   withOAuthErrorHint,
-  readQuarantinePendingPeriodEnds,
+  readQuarantinePendingSourceRefs,
+  appendQuarantineQueueEntry,
+  promoteStagedRaw,
+  quarantineBody,
+  extractBodyParts,
+  extractSubject,
+  selectReportMessages,
+  buildSourceRef,
+  threadSourceRef,
+  isPeriodEndTooFarInFuture,
+  printSummary,
   GATE_SUBDIR,
   PERIOD_END_RE,
+  PERIOD_END_FUTURE_HORIZON_DAYS,
+  QUARANTINE_QUEUE_SCHEMA,
   type FetcherOutcome,
   type GateRunner,
   type PendingLabel,
@@ -363,6 +375,7 @@ export async function run(): Promise<TestSuiteResult> {
       action: 'quarantine',
       verdict: 'suspicious',
       detail: 'final_rule=l1-multiline-demoted',
+      quarantinedPath: path.join(quarantineDir, '2026-06-08.md'),
     });
     assert.strictEqual(fs.existsSync(rawPath), false, 'raw は残らない');
     assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')), '隔離先へ移動');
@@ -384,43 +397,337 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(fs.existsSync(rawPath), false);
   });
 
-  t.section('readQuarantinePendingPeriodEnds (再取込ループ防止ガード)');
+  // -------------------------------------------------------------------
+  // 再取込ループ防止ガード (sc-1 回帰)
+  //
+  // ガードのキーは **原本 thread の同一性 (source_ref)**。period_end で
+  // skip すると、untrusted 本文が名乗るだけの値で「その週」を恒久的に
+  // 塞げてしまう (しかも skipped = 成功扱いで CI は緑のまま)。
+  // -------------------------------------------------------------------
+  t.section('readQuarantinePendingSourceRefs (再取込ループ防止ガード)');
+
+  function queuePath(vaultRoot: string): string {
+    return path.join(vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR, 'quarantine_queue.json');
+  }
 
   function vaultWithQueue(items: unknown[] | null): string {
     const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-vault-'));
     if (items !== null) {
-      const gateDir = path.join(vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR);
-      fs.mkdirSync(gateDir, { recursive: true });
+      fs.mkdirSync(path.dirname(queuePath(vaultRoot)), { recursive: true });
       fs.writeFileSync(
-        path.join(gateDir, 'quarantine_queue.json'),
-        JSON.stringify({ schema: 'quarantine-queue@1', items }),
+        queuePath(vaultRoot),
+        JSON.stringify({ schema: QUARANTINE_QUEUE_SCHEMA, items }),
         'utf8'
       );
     }
     return vaultRoot;
   }
 
-  t.test('pending の period_end だけを返す (裁定済みは対象外)', () => {
+  t.test('pending の source_ref だけを返す (裁定済みは対象外)', () => {
     const vaultRoot = vaultWithQueue([
-      { period_end: '2026-06-08', status: 'pending' },
-      { period_end: '2026-06-01', status: 'ingested' },
-      { period_end: '2026-05-25', status: 'rejected' },
-      { period_end: 123, status: 'pending' }, // 型違いは無視
+      { period_end: '2026-06-08', source_ref: 'gmail:t1', status: 'pending' },
+      { period_end: '2026-06-01', source_ref: 'gmail:t2', status: 'ingested' },
+      { period_end: '2026-05-25', source_ref: 'gmail:t3', status: 'rejected' },
+      { period_end: '2026-06-15', source_ref: 123, status: 'pending' }, // 型違いは無視
     ]);
-    assert.deepStrictEqual(readQuarantinePendingPeriodEnds(vaultRoot), new Set(['2026-06-08']));
+    assert.deepStrictEqual(readQuarantinePendingSourceRefs(vaultRoot), new Set(['gmail:t1']));
+  });
+
+  t.test('source_ref の fragment は落として thread 同一性で突き合わせる', () => {
+    const vaultRoot = vaultWithQueue([
+      { period_end: '2026-06-08', source_ref: 'gmail:t1#text-plain-of-2,msg=m9', status: 'pending' },
+    ]);
+    const pending = readQuarantinePendingSourceRefs(vaultRoot);
+    assert.ok(pending.has(threadSourceRef('t1')));
+  });
+
+  t.test('sc-1: 未来の週を騙る隔離 pending は別 thread の正規レポートを塞がない', () => {
+    // 攻撃者が「未来の月曜」を名乗る non-clean メールを送り隔離させたケース。
+    const vaultRoot = vaultWithQueue([
+      { period_end: '2026-12-28', source_ref: 'gmail:tPOISON', status: 'pending' },
+      { period_end: '2027-01-04', source_ref: 'gmail:tPOISON2', status: 'pending' },
+    ]);
+    const pending = readQuarantinePendingSourceRefs(vaultRoot);
+    // 塞がれるのは隔離された thread 自身だけ。
+    assert.ok(pending.has(threadSourceRef('tPOISON')));
+    assert.strictEqual(pending.has(threadSourceRef('tGENUINE')), false);
+    // period_end はガードのキーではない (週単位の恒久 skip を作らない)。
+    assert.strictEqual(pending.has('2026-12-28'), false);
   });
 
   t.test('キューが無ければ空 Set (ゲート自体は毎回走るので安全側)', () => {
     const vaultRoot = vaultWithQueue(null);
-    assert.deepStrictEqual(readQuarantinePendingPeriodEnds(vaultRoot), new Set());
+    assert.deepStrictEqual(readQuarantinePendingSourceRefs(vaultRoot), new Set());
   });
 
   t.test('キューが壊れた JSON でも throw せず空 Set', () => {
     const vaultRoot = vaultWithQueue(null);
-    const gateDir = path.join(vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR);
-    fs.mkdirSync(gateDir, { recursive: true });
-    fs.writeFileSync(path.join(gateDir, 'quarantine_queue.json'), '{not json', 'utf8');
-    assert.deepStrictEqual(readQuarantinePendingPeriodEnds(vaultRoot), new Set());
+    fs.mkdirSync(path.dirname(queuePath(vaultRoot)), { recursive: true });
+    fs.writeFileSync(queuePath(vaultRoot), '{not json', 'utf8');
+    assert.deepStrictEqual(readQuarantinePendingSourceRefs(vaultRoot), new Set());
+  });
+
+  t.section('isPeriodEndTooFarInFuture (未来の週を騙る period_end の多層防御)');
+
+  const NOW = new Date('2026-06-08T00:00:00Z');
+
+  t.test('当週・過去は通す', () => {
+    assert.strictEqual(isPeriodEndTooFarInFuture('2026-06-08', NOW), false);
+    assert.strictEqual(isPeriodEndTooFarInFuture('2026-05-25', NOW), false);
+  });
+
+  t.test(`+${PERIOD_END_FUTURE_HORIZON_DAYS} 日までは通し、それを超えたら弾く`, () => {
+    assert.strictEqual(isPeriodEndTooFarInFuture('2026-06-22', NOW), false); // +14d
+    assert.strictEqual(isPeriodEndTooFarInFuture('2026-06-29', NOW), true); // +21d
+    assert.strictEqual(isPeriodEndTooFarInFuture('2026-12-28', NOW), true);
+  });
+
+  t.test('形式は正しいが実在しない日付も弾く (2026-02-31)', () => {
+    assert.strictEqual(isPeriodEndTooFarInFuture('2026-02-31', NOW), true);
+  });
+
+  // -------------------------------------------------------------------
+  // 隔離キューへの fetcher 側追記 (sc-3 回帰)
+  //
+  // gate_decision.py の queue_add は suspicious/blocked のときだけ走るため、
+  // verdict=error (exit 4 / spawn 失敗 / timeout) はキューに 1 件も載らない。
+  // 載らないと裁定対象から漏れ、ガードも噛まず毎 run 隔離を繰り返す。
+  // -------------------------------------------------------------------
+  t.section('appendQuarantineQueueEntry (error 判定をキューに可視化)');
+
+  function fetcherEntry(overrides: Partial<Parameters<typeof appendQuarantineQueueEntry>[1]> = {}) {
+    return {
+      periodEnd: '2026-06-08',
+      file: '/tmp/_quarantine/2026-06-08.md',
+      sourceRef: 'gmail:t1',
+      verdict: 'error',
+      reason: 'L1 scanner 実行失敗: spawn python3 ENOENT',
+      ...overrides,
+    };
+  }
+
+  t.test('キュー未作成でも作られ、pending として guard に効く', () => {
+    const vaultRoot = vaultWithQueue(null);
+    assert.strictEqual(appendQuarantineQueueEntry(queuePath(vaultRoot), fetcherEntry()), true);
+    const written = JSON.parse(fs.readFileSync(queuePath(vaultRoot), 'utf8'));
+    assert.strictEqual(written.schema, QUARANTINE_QUEUE_SCHEMA);
+    assert.strictEqual(written.items.length, 1);
+    assert.strictEqual(written.items[0].status, 'pending');
+    assert.strictEqual(written.items[0].verdict, 'error');
+    // 追記した瞬間からガードが噛む = 翌 run で同じ thread を再隔離しない。
+    assert.ok(readQuarantinePendingSourceRefs(vaultRoot).has(threadSourceRef('t1')));
+  });
+
+  t.test('同じ原本が pending のままなら二重登録しない (idempotent)', () => {
+    const vaultRoot = vaultWithQueue(null);
+    assert.strictEqual(appendQuarantineQueueEntry(queuePath(vaultRoot), fetcherEntry()), true);
+    assert.strictEqual(
+      appendQuarantineQueueEntry(queuePath(vaultRoot), fetcherEntry({ sourceRef: 'gmail:t1#text-plain-of-2' })),
+      false
+    );
+    assert.strictEqual(JSON.parse(fs.readFileSync(queuePath(vaultRoot), 'utf8')).items.length, 1);
+  });
+
+  t.test('既存エントリは保持したまま追記する', () => {
+    const vaultRoot = vaultWithQueue([
+      { period_end: '2026-06-01', source_ref: 'gmail:t0', status: 'pending' },
+    ]);
+    assert.strictEqual(appendQuarantineQueueEntry(queuePath(vaultRoot), fetcherEntry()), true);
+    const items = JSON.parse(fs.readFileSync(queuePath(vaultRoot), 'utf8')).items;
+    assert.strictEqual(items.length, 2);
+    assert.strictEqual(items[0].source_ref, 'gmail:t0');
+  });
+
+  t.test('schema が違うキューは上書きしない (人手データを壊さない)', () => {
+    const vaultRoot = vaultWithQueue(null);
+    fs.mkdirSync(path.dirname(queuePath(vaultRoot)), { recursive: true });
+    fs.writeFileSync(queuePath(vaultRoot), JSON.stringify({ schema: 'other@9', items: [] }), 'utf8');
+    assert.strictEqual(appendQuarantineQueueEntry(queuePath(vaultRoot), fetcherEntry()), false);
+    assert.strictEqual(
+      JSON.parse(fs.readFileSync(queuePath(vaultRoot), 'utf8')).schema, 'other@9');
+  });
+
+  // -------------------------------------------------------------------
+  // staging → raw/ 昇格 (sc-3 回帰)
+  //
+  // raw/ に直接書いてからゲートすると、隔離判定の rename が既存 archive を
+  // 削除し、workflow の `git add -f raw/` がその削除を stage して push する
+  // (= メール 1 通で過去の正規レポートを消せる)。
+  // -------------------------------------------------------------------
+  t.section('promoteStagedRaw (clean のみ raw/ へ昇格 / 既存は上書きしない)');
+
+  function stagingFixture(rawContent: string | null): { stagedPath: string; rawPath: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-stage-'));
+    const stagedPath = path.join(dir, '_staging', '2026-06-08.md');
+    const rawPath = path.join(dir, 'raw', '2026-06-08.md');
+    fs.mkdirSync(path.dirname(stagedPath), { recursive: true });
+    fs.writeFileSync(stagedPath, 'new body', 'utf8');
+    if (rawContent !== null) {
+      fs.mkdirSync(path.dirname(rawPath), { recursive: true });
+      fs.writeFileSync(rawPath, rawContent, 'utf8');
+    }
+    return { stagedPath, rawPath };
+  }
+
+  t.test('既存なし → promoted (raw/ に移動、staging は空になる)', () => {
+    const { stagedPath, rawPath } = stagingFixture(null);
+    assert.strictEqual(promoteStagedRaw(stagedPath, rawPath), 'promoted');
+    assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), 'new body');
+    assert.strictEqual(fs.existsSync(stagedPath), false);
+  });
+
+  t.test('既存と同一内容 → identical (再取込の self-healing 経路を壊さない)', () => {
+    const { stagedPath, rawPath } = stagingFixture('new body');
+    assert.strictEqual(promoteStagedRaw(stagedPath, rawPath), 'identical');
+    assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), 'new body');
+    assert.strictEqual(fs.existsSync(stagedPath), false);
+  });
+
+  t.test('sc-3: 既存と内容が違う → conflict。既存 raw を上書きも削除もしない', () => {
+    const { stagedPath, rawPath } = stagingFixture('archived genuine report');
+    assert.strictEqual(promoteStagedRaw(stagedPath, rawPath), 'conflict');
+    assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), 'archived genuine report');
+    assert.ok(fs.existsSync(stagedPath), 'staging は呼び出し側が隔離へ回す');
+  });
+
+  t.test('sc-3: non-clean 判定は staging だけを動かし、既存 raw に触らない', () => {
+    const { stagedPath, rawPath } = stagingFixture('archived genuine report');
+    const quarantineDir = path.join(path.dirname(path.dirname(stagedPath)), '_quarantine');
+    const gate: GateRunner = () => ({ verdict: 'blocked', detail: 'final_rule=l0-contract' });
+    const out = gateAndRoute(stagedPath, quarantineDir, gate);
+    assert.strictEqual(out.action, 'quarantine');
+    // 既存 archive は無傷 (以前は rawPath 自体が隔離先へ rename されていた)。
+    assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), 'archived genuine report');
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')));
+  });
+
+  t.test('quarantineBody: 同名が既にあれば連番で退避 (先行の証拠を消さない)', () => {
+    const { stagedPath } = stagingFixture(null);
+    const quarantineDir = path.join(path.dirname(path.dirname(stagedPath)), '_quarantine');
+    const first = quarantineBody(stagedPath, quarantineDir);
+    fs.writeFileSync(stagedPath, 'second body', 'utf8');
+    const second = quarantineBody(stagedPath, quarantineDir);
+    assert.notStrictEqual(first, second);
+    assert.strictEqual(fs.readFileSync(first, 'utf8'), 'new body');
+    assert.strictEqual(fs.readFileSync(second, 'utf8'), 'second body');
+  });
+
+  // -------------------------------------------------------------------
+  // 1 件の恒久エラーで run 全体を落とさない (sc-2 回帰)
+  //
+  // exit 1 にすると後続 step が success() 条件で丸ごと skip され、
+  // 取り込めた健全なレポートまで runner ごと破棄される。代わりに
+  // (a) terminal な失敗はラベルを付けて終端させ、(b) ::error:: 注釈で可視化する。
+  // -------------------------------------------------------------------
+  t.section('sc-2: terminal な失敗の終端化と ::error:: 注釈');
+
+  t.test('terminal な error は pending-labels に積む (窓を永久占有させない)', () => {
+    const outcomes: FetcherOutcome[] = [
+      { threadId: 't1', messageId: 'm1', periodEnd: '2026-06-08', status: 'ingested' },
+      // 決定論的失敗 = 再試行しても同じ → ラベルを付けて打ち切る
+      { threadId: 't2', messageId: 'm2', periodEnd: null, status: 'error', terminal: true, reason: 'text/plain part が見つからない' },
+      // 一過性の失敗 = 次回 cron で再試行したいので積まない
+      { threadId: 't3', messageId: 'm3', periodEnd: '2026-06-01', status: 'error', reason: 'EBUSY' },
+      // 隔離は人間の裁定後に再取込したいので積まない
+      { threadId: 't4', messageId: 'm4', periodEnd: '2026-05-25', status: 'quarantined', reason: 'ゲート blocked' },
+    ];
+    assert.deepStrictEqual(buildPendingLabels(outcomes), [
+      { threadId: 't1', periodEnd: '2026-06-08', messageId: 'm1' },
+      { threadId: 't2', periodEnd: 'unknown', messageId: 'm2' },
+    ]);
+  });
+
+  t.test('printSummary は error を ::error:: 注釈で出す (CI に見える形で劣化させる)', () => {
+    const lines: string[] = [];
+    const origError = console.error;
+    const origWarn = console.warn;
+    const origLog = console.log;
+    console.error = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    console.warn = (...a: unknown[]) => { lines.push(a.join(' ')); };
+    console.log = () => { /* サマリ本体は検証対象外 */ };
+    try {
+      printSummary([
+        { threadId: 't2', messageId: 'm2', periodEnd: null, status: 'error', terminal: true, reason: 'text/plain part が見つからない' },
+        { threadId: 't4', messageId: 'm4', periodEnd: '2026-05-25', status: 'quarantined', sourceRef: 'gmail:t4', reason: 'ゲート blocked' },
+      ]);
+    } finally {
+      console.error = origError;
+      console.warn = origWarn;
+      console.log = origLog;
+    }
+    assert.ok(lines.some(l => l.startsWith('::error::') && l.includes('t2')), 'error は ::error:: 注釈');
+    assert.ok(lines.some(l => l.startsWith('::warning::') && l.includes('t4')), '隔離は ::warning:: 注釈');
+  });
+
+  // -------------------------------------------------------------------
+  // message 単位の選別 / source_ref (sc-6 / sc-7)
+  // -------------------------------------------------------------------
+  t.section('selectReportMessages / buildSourceRef');
+
+  function msgWithSubject(id: string, subject: string): gmail_v1.Schema$Message {
+    return {
+      id,
+      payload: {
+        mimeType: 'text/plain',
+        headers: [{ name: 'Subject', value: subject }],
+        body: { data: base64url('body') },
+      },
+    };
+  }
+
+  t.test('Subject 前置詞を持たない message は対象外 (thread 単位ヒットの取りこぼし防止)', () => {
+    const thread: gmail_v1.Schema$Thread = {
+      messages: [
+        msgWithSubject('m1', 'Re: 雑談'),
+        msgWithSubject('m2', '[LLM-Sec-Weekly] 2026-06-08'),
+      ],
+    };
+    assert.deepStrictEqual(selectReportMessages(thread).map(m => m.id), ['m2']);
+  });
+
+  t.test('同一 thread に複数のレポートがあれば全件返す (2 通目の恒久 skip 防止)', () => {
+    const thread: gmail_v1.Schema$Thread = {
+      messages: [
+        msgWithSubject('m1', '[LLM-Sec-Weekly] 2026-06-01'),
+        msgWithSubject('m2', '[LLM-Sec-Weekly] 2026-06-08'),
+      ],
+    };
+    assert.deepStrictEqual(selectReportMessages(thread).map(m => m.id), ['m1', 'm2']);
+  });
+
+  t.test('Subject ヘッダの取り出しは大文字小文字を問わない', () => {
+    assert.strictEqual(
+      extractSubject({ payload: { headers: [{ name: 'subject', value: 'x' }] } }),
+      'x'
+    );
+    assert.strictEqual(extractSubject({}), null);
+  });
+
+  t.test('extractBodyParts: text/html 兄弟の存在を報告する (裁定者の原本照合用)', () => {
+    const msg: gmail_v1.Schema$Message = {
+      payload: {
+        mimeType: 'multipart/alternative',
+        parts: [
+          { mimeType: 'text/html', body: { data: base64url('<p>html</p>') } },
+          { mimeType: 'text/plain', body: { data: base64url('plain') } },
+        ],
+      },
+    };
+    assert.deepStrictEqual(extractBodyParts(msg), {
+      plain: 'plain',
+      hasHtml: true,
+      bodyPartCount: 2,
+    });
+  });
+
+  t.test('buildSourceRef: 単一 part / 単一 message なら base のまま', () => {
+    assert.strictEqual(buildSourceRef('t1', 'm1', 1, 1), 'gmail:t1');
+  });
+
+  t.test('buildSourceRef: 乖離しうる場合だけ fragment を足す (guard の比較キーは不変)', () => {
+    assert.strictEqual(buildSourceRef('t1', 'm1', 2, 1), 'gmail:t1#text-plain-of-2');
+    assert.strictEqual(buildSourceRef('t1', 'm9', 2, 2), 'gmail:t1#text-plain-of-2,msg=m9');
+    assert.strictEqual(buildSourceRef('t1', 'm9', 1, 2), 'gmail:t1#msg=m9');
   });
 
   t.section('isInvalidGrantError (OAuth refresh 失敗の検出)');
