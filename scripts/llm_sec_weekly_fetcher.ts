@@ -71,6 +71,7 @@
  */
 
 import { execFileSync } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -470,6 +471,43 @@ export function promoteStagedRaw(stagedPath: string, rawPath: string): PromoteRe
   return 'promoted';
 }
 
+/**
+ * ingest に失敗した本文を `raw/` から退避する (テスト容易性のため分離)。
+ *
+ * ★ `promoted` = **この run が raw/ を作った**ときだけ触る。`identical` は
+ * 自己修復経路で既存ファイルと同内容だっただけなので、他 run の成果物を
+ * 消さないために何もしない。
+ *
+ * 削除ではなく隔離 + キュー登録にするのは、`quarantineBody` の設計と同じ理由:
+ * 証拠を消すと人間が裁定できなくなる。
+ */
+export function discardFailedPromotion(args: {
+  promotion: PromoteResult;
+  rawPath: string;
+  quarantineDir: string;
+  queuePath: string;
+  periodEnd: string;
+  sourceRef: string;
+  reason: string;
+}): 'quarantined' | 'skipped' {
+  if (args.promotion !== 'promoted') return 'skipped';
+  let quarantinedPath = '(退避失敗)';
+  try {
+    quarantinedPath = quarantineBody(args.rawPath, args.quarantineDir);
+  } catch (e) {
+    console.error(`::error::ingest 失敗本文の raw/ からの退避に失敗: ${errText(e)}`);
+    removeIfExists(args.rawPath);
+  }
+  appendQuarantineQueueEntry(args.queuePath, {
+    periodEnd: args.periodEnd,
+    file: quarantinedPath,
+    sourceRef: args.sourceRef,
+    verdict: 'error',
+    reason: args.reason,
+  });
+  return 'quarantined';
+}
+
 /** fetcher が自前で隔離キューへ積む 1 件分の入力。 */
 export interface FetcherQueueEntry {
   periodEnd: string;
@@ -507,7 +545,7 @@ export function appendQuarantineQueueEntry(queuePath: string, entry: FetcherQueu
       items = parsed.items as Array<Record<string, unknown>>;
     }
     // idempotent: 同じ原本が pending のまま残っているなら二重登録しない
-    // (gate_decision.py の queue_add が period_end で行うガードと同趣旨)。
+    // (gate_decision.py の queue_add も period_end + source_ref で同じガードを行う)。
     const key = normalizeSourceRef(entry.sourceRef);
     if (items.some(it => it.status === 'pending' &&
         typeof it.source_ref === 'string' && normalizeSourceRef(it.source_ref) === key)) {
@@ -515,12 +553,20 @@ export function appendQuarantineQueueEntry(queuePath: string, entry: FetcherQueu
     }
     const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
     const compact = ts.replace(/[-:TZ]/g, '');
+    // ★ 秒精度の時刻だけでは id が衝突する。同じ period_end を名乗る別スレッドが
+    // 同一 run で積まれると decision_id が完全一致し、queue_id は下 4 桁 (= 分秒)
+    // しか使わないので **時刻が違っても**衝突する。衝突すると `--resolve` が
+    // 曖昧になり、人間の裁定が別の本文に付きうる。
+    // gate_decision.py の decision_id が body_sha の先頭 4 桁を持つのと同じ形で、
+    // 原本 (thread) の同一性を id に織り込む。
+    const srcDisc = crypto.createHash('sha1').update(key).digest('hex').slice(0, 4);
+    const decisionId = `fetcher-${entry.periodEnd}-${compact}-${srcDisc}`;
     items.push({
-      queue_id: `q-${entry.periodEnd}-${compact.slice(-4)}`,
+      queue_id: `q-${entry.periodEnd}-${decisionId.slice(-4)}`,
       period_end: entry.periodEnd,
       file: entry.file,
       source_ref: entry.sourceRef,
-      decision_id: `fetcher-${entry.periodEnd}-${compact}`,
+      decision_id: decisionId,
       verdict: entry.verdict,
       reasons: [entry.reason],
       queued_at: ts,
@@ -934,6 +980,22 @@ async function processMessage(
       `  ✅ ${periodEnd} ingested: ${result.vulnerabilities} vulns, ${result.implementationChecks} checks`
     );
   } catch (e) {
+    // ★ ingest が失敗した本文は「正典」ではない。この run が昇格させた raw/ を
+    // 残すと llm-sec-weekly.yml が `git add -f .../raw/` でそのまま commit/push し
+    // (ゲートは clean なので raw/ 不変条件チェックも素通りする)、後から届いた
+    // 訂正版が promoteStagedRaw で `conflict` 扱いになり恒久的に隔離され続ける。
+    // terminal でラベルが付くので原本はもう取り直されない = 自動復旧しない。
+    // `identical` (自己修復経路で既存と同内容だった) のときは **この run の産物では
+    // ない**ので触らない。証拠は消さず隔離 + キューへ回して人間の裁定に載せる。
+    discardFailedPromotion({
+      promotion,
+      rawPath,
+      quarantineDir,
+      queuePath,
+      periodEnd,
+      sourceRef,
+      reason: `ingest 失敗のため raw/ へ残さず退避: ${errText(e)}`,
+    });
     // 契約違反は本文が変わらない限り必ず再発する = terminal。
     return {
       ...at,

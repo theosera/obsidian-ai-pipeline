@@ -29,6 +29,7 @@ import {
   readQuarantinePendingSourceRefs,
   appendQuarantineQueueEntry,
   promoteStagedRaw,
+  discardFailedPromotion,
   quarantineBody,
   extractBodyParts,
   extractSubject,
@@ -493,6 +494,65 @@ export async function run(): Promise<TestSuiteResult> {
   // verdict=error (exit 4 / spawn 失敗 / timeout) はキューに 1 件も載らない。
   // 載らないと裁定対象から漏れ、ガードも噛まず毎 run 隔離を繰り返す。
   // -------------------------------------------------------------------
+  // -------------------------------------------------------------------
+  // ★ #143 Codex P1: ingest が ContractError で落ちても raw/ には昇格済みの
+  // 本文が残っていた。llm-sec-weekly.yml は `git add -f .../raw/` で commit/push
+  // するので不正本文が正典として確定し、terminal ラベルで原本は取り直されない。
+  // 訂正版が後から届いても promoteStagedRaw が `conflict` を返して恒久的に
+  // 隔離され続ける。
+  // -------------------------------------------------------------------
+  t.section('discardFailedPromotion (ingest 失敗時に raw/ を残さない)');
+
+  function rawWith(vaultRoot: string, body: string): string {
+    const rawPath = path.join(vaultRoot, 'raw', '2026-06-08.md');
+    fs.mkdirSync(path.dirname(rawPath), { recursive: true });
+    fs.writeFileSync(rawPath, body, 'utf8');
+    return rawPath;
+  }
+
+  t.test('promoted なら raw/ から退避し、キューに載せる', () => {
+    const vaultRoot = vaultWithQueue(null);
+    const rawPath = rawWith(vaultRoot, '不正な本文');
+    const quarantineDir = path.join(vaultRoot, '_quarantine');
+    const r = discardFailedPromotion({
+      promotion: 'promoted', rawPath, quarantineDir,
+      queuePath: queuePath(vaultRoot),
+      periodEnd: '2026-06-08', sourceRef: 'gmail:t1', reason: '契約違反: テスト',
+    });
+    assert.strictEqual(r, 'quarantined');
+    assert.strictEqual(fs.existsSync(rawPath), false, 'raw/ に残ってはいけない');
+    assert.strictEqual(fs.readFileSync(path.join(quarantineDir, '2026-06-08.md'), 'utf8'), '不正な本文');
+    const items = JSON.parse(fs.readFileSync(queuePath(vaultRoot), 'utf8')).items;
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].verdict, 'error');
+  });
+
+  t.test('退避後は訂正版が conflict にならず昇格できる (P1 の実害の解消)', () => {
+    const vaultRoot = vaultWithQueue(null);
+    const rawPath = rawWith(vaultRoot, '不正な本文');
+    discardFailedPromotion({
+      promotion: 'promoted', rawPath, quarantineDir: path.join(vaultRoot, '_quarantine'),
+      queuePath: queuePath(vaultRoot), periodEnd: '2026-06-08',
+      sourceRef: 'gmail:t1', reason: '契約違反: テスト',
+    });
+    const staged = path.join(vaultRoot, 'staged.md');
+    fs.writeFileSync(staged, '訂正版の本文', 'utf8');
+    assert.strictEqual(promoteStagedRaw(staged, rawPath), 'promoted');
+  });
+
+  t.test('identical は【この run の産物ではない】ので触らない', () => {
+    const vaultRoot = vaultWithQueue(null);
+    const rawPath = rawWith(vaultRoot, '既存の正しい本文');
+    const r = discardFailedPromotion({
+      promotion: 'identical', rawPath, quarantineDir: path.join(vaultRoot, '_quarantine'),
+      queuePath: queuePath(vaultRoot), periodEnd: '2026-06-08',
+      sourceRef: 'gmail:t1', reason: '契約違反: テスト',
+    });
+    assert.strictEqual(r, 'skipped');
+    assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), '既存の正しい本文');
+    assert.strictEqual(fs.existsSync(queuePath(vaultRoot)), false, 'キューにも載せない');
+  });
+
   t.section('appendQuarantineQueueEntry (error 判定をキューに可視化)');
 
   function fetcherEntry(overrides: Partial<Parameters<typeof appendQuarantineQueueEntry>[1]> = {}) {
@@ -516,6 +576,35 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(written.items[0].verdict, 'error');
     // 追記した瞬間からガードが噛む = 翌 run で同じ thread を再隔離しない。
     assert.ok(readQuarantinePendingSourceRefs(vaultRoot).has(threadSourceRef('t1')));
+  });
+
+  // ★ #143 Codex P2: 秒精度の時刻だけでは id が衝突する。同じ period_end を
+  // 名乗る別スレッドが同一 run で積まれると decision_id が一致し、queue_id は
+  // 下 4 桁 (分秒) しか使わないので時刻が違っても衝突する。衝突すると
+  // gate_decision.py の `queue --resolve` が曖昧になり裁定できない。
+  t.test('同じ週を名乗る別原本は queue_id / decision_id が衝突しない', () => {
+    const vaultRoot = vaultWithQueue(null);
+    assert.strictEqual(
+      appendQuarantineQueueEntry(queuePath(vaultRoot), fetcherEntry({ sourceRef: 'gmail:tA' })), true);
+    assert.strictEqual(
+      appendQuarantineQueueEntry(queuePath(vaultRoot), fetcherEntry({ sourceRef: 'gmail:tB' })), true);
+    const items = JSON.parse(fs.readFileSync(queuePath(vaultRoot), 'utf8')).items;
+    assert.strictEqual(items.length, 2);
+    assert.notStrictEqual(items[0].queue_id, items[1].queue_id);
+    assert.notStrictEqual(items[0].decision_id, items[1].decision_id);
+    // gate_decision.py と同じ規約: queue_id の末尾 4 桁 = decision_id の末尾 4 桁。
+    assert.ok(String(items[0].queue_id).endsWith(String(items[0].decision_id).slice(-4)));
+  });
+
+  t.test('判別子は時刻ではなく原本で決まる (同じ原本なら同じ末尾)', () => {
+    const a = vaultWithQueue(null);
+    const b = vaultWithQueue(null);
+    appendQuarantineQueueEntry(queuePath(a), fetcherEntry({ sourceRef: 'gmail:tA' }));
+    appendQuarantineQueueEntry(queuePath(b), fetcherEntry({ sourceRef: 'gmail:tA#text-plain-of-2' }));
+    const ia = JSON.parse(fs.readFileSync(queuePath(a), 'utf8')).items[0];
+    const ib = JSON.parse(fs.readFileSync(queuePath(b), 'utf8')).items[0];
+    // fragment は原本の同一性に含めない = 同じ thread なら同じ判別子。
+    assert.strictEqual(String(ia.decision_id).slice(-4), String(ib.decision_id).slice(-4));
   });
 
   t.test('同じ原本が pending のままなら二重登録しない (idempotent)', () => {
