@@ -574,6 +574,18 @@ def read_queue(path):
     return q
 
 
+def _norm_source_ref(ref):
+    """`gmail:<threadId>#...` の fragment を落として原本の同一性だけを取り出す。
+
+    fetcher 側 `normalizeSourceRef()` と同じ正規化。⛔ キーを揃えないと、
+    キューが「登録済み」と見なした原本が fetcher の skip ガードには載らず、
+    毎 cron 再取込・再隔離を繰り返す。
+    """
+    if not isinstance(ref, str):
+        return None
+    return ref.split("#", 1)[0]
+
+
 def queue_add(path, rec, source):
     """suspicious/blocked の decision record から queue entry を追記する。
 
@@ -581,12 +593,19 @@ def queue_add(path, rec, source):
     KSP 未一致の非隠蔽 signal から候補を 1 件添える (無ければ null)。
     """
     q = read_queue(path)
-    # idempotent: 同一 decision、または同じ period_end が pending のままなら
-    # 追記しない (未裁定のまま cron が再走した場合のキュー重複を防ぐ。
+    # idempotent: 同一 decision、または **同じ原本 (source_ref) の同じ period_end** が
+    # pending のままなら追記しない (未裁定のまま cron が再走した場合のキュー重複を防ぐ。
     # fetcher 側の skip ガードと二重防御)。
+    # ⛔ period_end だけで潰してはいけない: period_end は untrusted 本文が名乗る値で、
+    # 同じ週を名乗る【別スレッド】が 2 通来ると 2 通目がキューに載らない。すると
+    # fetcher の skip ガード (source_ref キー) にも現れず、毎 cron 取得 → 走査 →
+    # 隔離を繰り返し、固定サイズの Gmail 検索窓を占有し続ける。
+    # source_ref を持たない記録同士は従来どおり period_end だけで同一視する。
+    new_ref = _norm_source_ref(rec.get("source_ref"))
     if any(it.get("decision_id") == rec["decision_id"] or
            (it.get("period_end") == rec["period_end"] and
-            it.get("status") == "pending")
+            it.get("status") == "pending" and
+            _norm_source_ref(it.get("source_ref")) == new_ref)
            for it in q["items"]):
         return
     candidate = None
@@ -693,15 +712,22 @@ def cmd_queue(args):
         if args.status not in ("ingested", "rejected"):
             raise GateInputError("--resolve には --status ingested|rejected が必須")
         q = read_queue(args.queue)
-        for it in q["items"]:
-            if it["queue_id"] == args.resolve:
-                it.update({"status": args.status,
+        matches = [it for it in q["items"] if it.get("queue_id") == args.resolve]
+        if not matches:
+            raise GateInputError(f"queue_id が見つからない: {args.resolve}")
+        if len(matches) > 1:
+            # ⛔ 先頭 1 件を黙って裁定すると、人間の verdict が別の本文に付く。
+            # 曖昧なら裁定せず止める (誤裁定より未裁定のほうが安全側)。
+            ids = [it.get("decision_id") for it in matches]
+            raise GateInputError(
+                f"queue_id が {len(matches)} 件に一致するため裁定しない: "
+                f"{args.resolve} (decision_id={ids})")
+        matches[0].update({"status": args.status,
                            "adjudicated_at": utc_now(),
                            "adjudication_note": args.note or None})
-                write_json(args.queue, q)
-                print(f"resolved {args.resolve} → {args.status}")
-                return 0
-        raise GateInputError(f"queue_id が見つからない: {args.resolve}")
+        write_json(args.queue, q)
+        print(f"resolved {args.resolve} → {args.status}")
+        return 0
     raise GateInputError("queue には --list / --add / --resolve のいずれかが必須")
 
 
