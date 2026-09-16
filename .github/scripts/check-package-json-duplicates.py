@@ -1,16 +1,47 @@
 #!/usr/bin/env python3
-"""Fail CI when any package.json in the repo contains duplicate keys.
+"""Fail CI when a package.json in the repo is malformed or auto-executing.
 
-json.load accepts duplicates silently (last-wins), so malformed manifests
-can survive review — as happened with the duplicate `"private": true`
-that main accumulated during merge history. This checker rejects
-duplicates at any nesting level via object_pairs_hook.
+Two checks, both about manifests that survive review while changing what CI
+does:
+
+1. Duplicate keys. json.load accepts duplicates silently (last-wins), so
+   malformed manifests can survive review — as happened with the duplicate
+   `"private": true` that main accumulated during merge history. Rejected at
+   any nesting level via object_pairs_hook.
+
+2. Install-lifecycle scripts in our own manifests. .npmrc deliberately does
+   not set `ignore-scripts` (it would break the approved better-sqlite3 native
+   build) and only sets `enable-pre-post-scripts=false`, which governs implicit
+   pre/post *wrappers* — not the root project's own install lifecycle. Measured
+   with pnpm 10.33.0: a root `preinstall`/`postinstall`/`prepare` still runs on
+   `pnpm install --frozen-lockfile`. The job that holds the vault deploy key and
+   the Gmail refresh token is the weekly workflow, which also runs that install
+   but never runs this checker; this checker runs in ci.yml, whose job has only
+   `contents: read`. So this is a pre-merge gate, not a guard inside the
+   privileged job: it works because anything reaching main passes CI first, and
+   because ci.yml runs it before `pnpm install` rather than after.
 """
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
+
+
+# pnpm/npm がインストール時に自動実行しうるスクリプト名。明示的な
+# `pnpm run <name>` に移すこと。
+# 実測 (pnpm 10.33.0 / `pnpm install --frozen-lockfile`): preinstall / install /
+# postinstall / prepare は走る。prepublish は走らなかったが、npm 系の他バージョン
+# では走るため保守的に拒否したままにする (過剰拒否であって見逃しではない)。
+# pnpm:devPreinstall は pnpm 固有の dev install フックで、上の 4 つと同じ経路。
+INSTALL_LIFECYCLE_SCRIPTS = (
+    "preinstall",
+    "install",
+    "postinstall",
+    "prepare",
+    "prepublish",
+    "pnpm:devPreinstall",
+)
 
 
 def reject_duplicates(pairs):
@@ -20,6 +51,16 @@ def reject_duplicates(pairs):
             raise ValueError(f"duplicate key {key!r}")
         seen.add(key)
     return dict(pairs)
+
+
+def install_lifecycle_scripts(manifest) -> list[str]:
+    """Return the install-lifecycle script names declared by a manifest."""
+    if not isinstance(manifest, dict):
+        return []
+    scripts = manifest.get("scripts")
+    if not isinstance(scripts, dict):
+        return []
+    return [name for name in INSTALL_LIFECYCLE_SCRIPTS if name in scripts]
 
 
 def main() -> int:
@@ -37,9 +78,20 @@ def main() -> int:
         rel = path.relative_to(repo_root)
         try:
             with path.open() as fh:
-                json.load(fh, object_pairs_hook=reject_duplicates)
+                manifest = json.load(fh, object_pairs_hook=reject_duplicates)
         except ValueError as exc:
             print(f"::error file={rel}::{exc}")
+            failed = True
+            continue
+        lifecycle = install_lifecycle_scripts(manifest)
+        if lifecycle:
+            names = ", ".join(repr(n) for n in lifecycle)
+            print(
+                f"::error file={rel}::install-lifecycle script(s) {names} run "
+                f"automatically on `pnpm install` (inside the CI job holding the "
+                f"vault deploy key and Gmail refresh token). Move the logic to an "
+                f"explicit `pnpm run` target."
+            )
             failed = True
         else:
             print(f"OK {rel}")

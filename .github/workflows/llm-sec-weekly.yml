@@ -64,7 +64,7 @@ jobs:
 
       - name: Setup pnpm
         # Third-party action — SHA pin (CI workflow と同 SHA で揃える)。
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271  # v6.0.9
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413  # v6.1.0
         with:
           # path: pipeline で checkout しているので workspace root に package.json が
           # 無く、デフォルトの `./package.json` 自動検出が失敗する。pipeline 側を明示。
@@ -84,7 +84,7 @@ jobs:
       - name: Rebuild native dependencies (better-sqlite3)
         working-directory: pipeline
         # ソースビルドで native .node を生成 (CI と同方針)。better-sqlite3 の
-        # バージョン据え置き根拠と v12 bump 発動条件は ci.yml の同名ステップに正典。
+        # 現行バージョンの根拠と次の bump 発動条件は ci.yml の同名ステップに正典。
         run: pnpm rebuild better-sqlite3
 
       # ----------------------------------------------------------------
