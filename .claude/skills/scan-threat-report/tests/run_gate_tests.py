@@ -399,6 +399,50 @@ try:
           q["items"][-1]["source_ref"] == "gmail:thread-xyz",
           json.dumps(q["items"][-1], ensure_ascii=False)[:120])
 
+    print("\n== queue_add: 重複排除キーは period_end + source_ref (#143 P2) ==")
+    qdedup = os.path.join(tmpdir, "dedup_queue.json")
+
+    def qrec(did, ref, period="2026-06-22"):
+        return {"decision_id": did, "period_end": period,
+                "file": f"raw/{period}.md", "source_ref": ref,
+                "verdict": "suspicious", "final_rule": "rule-test",
+                "ts": "2026-06-22T00:00:00Z",
+                "l1": {"signals": []}, "known_safe_hits": []}
+
+    gd.queue_add(qdedup, qrec("gd-1", "gmail:thread-A"), "test")
+    gd.queue_add(qdedup, qrec("gd-2", "gmail:thread-B"), "test")
+    items = gd.read_queue(qdedup)["items"]
+    check("同じ週を名乗る別スレッドは 2 件ともキューに載る "
+          "(載らないと fetcher の skip ガードから漏れ毎 cron 再取込)",
+          len(items) == 2, f"source_ref={[it['source_ref'] for it in items]}")
+
+    gd.queue_add(qdedup, qrec("gd-3", "gmail:thread-A#text-plain-of-2"), "test")
+    check("同一原本の再登録は fragment 違いでも抑止 (idempotent 維持)",
+          len(gd.read_queue(qdedup)["items"]) == 2)
+
+    gd.queue_add(qdedup, qrec("gd-1", "gmail:thread-C"), "test")
+    check("同一 decision_id は source_ref が違っても抑止",
+          len(gd.read_queue(qdedup)["items"]) == 2)
+
+    print("\n== queue --resolve: queue_id が曖昧なら裁定しない (#143 P2) ==")
+    q = gd.read_queue(qdedup)
+    for it in q["items"]:
+        it["queue_id"] = "q-2026-06-22-dupe"
+    gd.write_json(qdedup, q)
+    code = gd.main(["queue", "--queue", qdedup,
+                    "--resolve", "q-2026-06-22-dupe", "--status", "ingested"])
+    check("衝突した queue_id は先頭を黙って裁定せず exit 4", code == 4)
+    check("どちらも pending のまま (誤裁定より未裁定が安全側)",
+          all(it["status"] == "pending" for it in gd.read_queue(qdedup)["items"]))
+
+    q = gd.read_queue(qdedup)
+    q["items"][0]["queue_id"] = "q-2026-06-22-uniq"
+    gd.write_json(qdedup, q)
+    code = gd.main(["queue", "--queue", qdedup,
+                    "--resolve", "q-2026-06-22-uniq", "--status", "ingested"])
+    check("⭕ 陽性対照: 一意な queue_id は従来どおり裁定できる",
+          code == 0 and gd.read_queue(qdedup)["items"][0]["status"] == "ingested")
+
     print("\n== mode (heightened) round-trip ==")
     code = gd.main(["mode", "--state", state, "--set-heightened",
                     "--reason", "fn-2026-test"])
