@@ -1,18 +1,25 @@
 # Native modules allowed to run install/build scripts. pnpm v10+ blocks
-# dependency build scripts by default; this allow-list lets better-sqlite3
-# compile its native binding. Moved here from package.json's "pnpm" field,
-# which pnpm v11 no longer reads (see https://pnpm.io/settings).
+# dependency build scripts by default. Moved here from package.json's "pnpm"
+# field, which pnpm v11 no longer reads (see https://pnpm.io/settings).
 #
 # Supply-chain posture (handover #6): keep this list MINIMAL — only packages
 # that genuinely need to run a build script at install time. Each entry is an
 # install script we explicitly trust to execute. Intentionally NOT listed:
+#   - better-sqlite3 (since 13.x) — ships N-API prebuilds inside the npm
+#     tarball (prebuilds/<platform>.node, 8 platforms) and has no install
+#     script. Its binding.gyp still exists, and pnpm 10.x adds an implicit
+#     `node-gyp rebuild` for any package that has one, so listing it here
+#     would START a native build that is not needed (measured 2026-09-18:
+#     on a Mac without the Xcode license accepted, `make` exits 69 and
+#     `pnpm install --frozen-lockfile` fails; without the entry the install
+#     takes ~1s and loads prebuilds/darwin-arm64.node). Up to 12.x the
+#     entry was required because prebuild-install ran as an install script.
 #   - @napi-rs/keyring / playwright — ship prebuilt platform binaries via
 #     optional deps; pnpm reports no build script for them, so no entry needed.
 #   - esbuild — has an install script but works from its prebuilt
 #     @esbuild/<platform> binary; left blocked (pnpm warns it is "ignored",
 #     which is expected) rather than widening the trusted-script surface.
-onlyBuiltDependencies:
-  - better-sqlite3
+onlyBuiltDependencies: []
 
 # Shared dev-tool versions, referenced via `"typescript": "catalog:"` etc. in
 # the root package.json. Bump here once.
