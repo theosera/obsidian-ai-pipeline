@@ -183,13 +183,34 @@ node -e '
 > 恒久化され、再生成は revoke / scope 変更時のみで済む。個人利用スコープなら審査
 > (verification) は不要で、同意画面に "unverified" 警告が出るだけ。
 
-### 2.3 Gmail ラベル
+### 2.3 Gmail ラベルと送信者許可リスト
 
 - `LLM-Sec-Report` (受信側フィルタで `[LLM-Sec-Weekly]` 件名に自動付与)
 - `LLM-Sec-Report/processed` (取込済マーカー / 本 workflow が付与)
 
 両方とも Gmail UI で事前に作成しておくこと (workflow は label ID 解決時に
 名前一致で探す。未作成だと初回実行が早期 fail する)。
+
+> 🔴 **ラベルは送信者の証明ではない。** 上のフィルタは**件名だけ**を見てラベルを
+> 付けるので、アドレスを知っていれば誰でも同じ件名で送って自動取込に入れる。
+> そのため fetcher は `LLM_SEC_ALLOWED_SENDERS` (必須 secret) と **DKIM 検証**で
+> 送信者を判定する。判定条件の全文は
+> [`llm-sec-report-consumption.md` §1 送信者認証](./llm-sec-report-consumption.md#送信者認証-必須--ラベルと件名は認証ではない)。
+
+**`LLM_SEC_ALLOWED_SENDERS` の書式** (カンマ区切りで複数可):
+
+```text
+reports@example.com            # 完全一致
+@example.com                   # ドメイン全体を許可
+reports@example.com,@other.example
+```
+
+Gmail フィルタ側にも `from:` 条件を足しておくことを推奨する (多層防御)。
+ただし**フィルタは信頼の根拠にしない** — 本判定は fetcher 側の `verifySender()`。
+
+> ⚠️ **この secret を登録するまで週次 cron は必ず失敗する** (fail-closed)。
+> 「未設定なら従来どおり動く」に倒すと、設定漏れが無言で「送信者未認証の取込」に
+> 戻ってしまうため、意図的に loud-fail させている。
 
 ## 3. GitHub Actions secrets
 
@@ -203,6 +224,7 @@ obsidian-ai-pipeline の **Settings → Secrets and variables → Actions** に
 | `GMAIL_CLIENT_ID` | ✅ | Google OAuth client ID |
 | `GMAIL_CLIENT_SECRET` | ✅ | Google OAuth client secret |
 | `GMAIL_REFRESH_TOKEN` | ✅ | 2.2 で取得した refresh_token |
+| `LLM_SEC_ALLOWED_SENDERS` | ✅ | 取込を許可する送信者 (カンマ区切り)。**未設定だと fetcher は起動時に落ちる** (§2.3) |
 | `LLM_SEC_LABEL_NAME` | ❌ | 既定 `LLM-Sec-Report`。違う名前を使う場合のみ上書き |
 | `LLM_SEC_PROCESSED_LABEL_NAME` | ❌ | 既定 `LLM-Sec-Report/processed` |
 | `LLM_SEC_MAX_RESULTS` | ❌ | 既定 10。1〜100 |

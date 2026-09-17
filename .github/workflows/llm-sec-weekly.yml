@@ -151,6 +151,11 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          # ★必須★ 取込を許可する送信者 (カンマ区切り / "a@b.com" or "@b.com")。
+          # 未設定だと fetcher は起動時に落ちる (fail-closed)。ラベルと件名は
+          # 受信側フィルタが件名から自動付与するため送信者の証明にならない
+          # (= 誰でもパイプラインに入れた)。DKIM 済み From へ判定を移している。
+          LLM_SEC_ALLOWED_SENDERS: ${{ secrets.LLM_SEC_ALLOWED_SENDERS }}
           # 既定で十分だが上書き可能 (任意 secrets)
           LLM_SEC_LABEL_NAME: ${{ secrets.LLM_SEC_LABEL_NAME }}
           LLM_SEC_PROCESSED_LABEL_NAME: ${{ secrets.LLM_SEC_PROCESSED_LABEL_NAME }}
@@ -344,6 +349,9 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          # phase 2 は送信者検証をしない (label 付与のみ) が、validateEnv を
+          # 両 phase で共通に保つため同じ env を渡す (既存の設計方針どおり)。
+          LLM_SEC_ALLOWED_SENDERS: ${{ secrets.LLM_SEC_ALLOWED_SENDERS }}
           LLM_SEC_LABEL_NAME: ${{ secrets.LLM_SEC_LABEL_NAME }}
           LLM_SEC_PROCESSED_LABEL_NAME: ${{ secrets.LLM_SEC_PROCESSED_LABEL_NAME }}
           LLM_SEC_MAX_RESULTS: ${{ secrets.LLM_SEC_MAX_RESULTS }}
