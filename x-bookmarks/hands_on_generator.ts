@@ -116,15 +116,44 @@ export function buildCorpus(rows: BookmarkRow[]): string {
  * 編集した人が誤って外すと、コードは無傷のまま防御だけが消える。ここで
  * **構造として強制**し、外れていたら生成させない (fail-closed)。
  */
-function assertCorpusIsFenced(tpl: string): void {
-  const open = tpl.indexOf(UNTRUSTED_OPEN_TAG);
-  const close = tpl.indexOf(UNTRUSTED_CLOSE_TAG);
-  const corpus = tpl.indexOf('{{corpus}}');
-  if (open === -1 || close === -1 || corpus === -1 || !(open < corpus && corpus < close)) {
+export function assertCorpusIsFenced(tpl: string): void {
+  // 「最初に一致した文字列」では足りない: テンプレートは規則の説明で同じタグ名に
+  // 言及する (行頭でない・backtick 内) ので、本物の開始タグを消しても説明文の
+  // 言及が `open < corpus` を満たしてしまう。⇒ 区切りは**行として単独で立つタグ**
+  // だけを数え、{{corpus}} の直近の対がそれで、かつ {{corpus}} が 1 つしか無い
+  // (fence 外の 2 つ目は下の replacePlaceholders が全置換してしまう) ことを要求する。
+  const fail = (why: string): never => {
     throw new Error(
-      `プロンプトテンプレートが壊れています: {{corpus}} が ${UNTRUSTED_OPEN_TAG} … ` +
-        `${UNTRUSTED_CLOSE_TAG} の内側にありません (${PROMPT_TEMPLATE_PATH})。\n` +
+      `プロンプトテンプレートが壊れています: ${why} (${PROMPT_TEMPLATE_PATH})。\n` +
         '  untrusted なポスト本文を fence 無しで渡すことになるため生成を中止しました。'
+    );
+  };
+  const lines = tpl.split('\n');
+  const isTagLine = (line: string, tag: string) => line.trim() === tag;
+  const corpusLines = lines
+    .map((line, i) => (line.includes('{{corpus}}') ? i : -1))
+    .filter(i => i !== -1);
+  const corpusCount = tpl.split('{{corpus}}').length - 1;
+  if (corpusCount !== 1 || corpusLines.length !== 1) {
+    return fail(`{{corpus}} は 1 箇所だけ許される (${corpusCount} 箇所)`);
+  }
+  const corpusLine = corpusLines[0];
+  // corpus より上で最も近い単独タグ行が開始タグ、下で最も近いものが終了タグであること。
+  // 間に別の単独タグ行が挟まれば、その対は corpus を囲んでいない。
+  let open = -1;
+  for (let i = corpusLine - 1; i >= 0; i--) {
+    if (isTagLine(lines[i], UNTRUSTED_CLOSE_TAG)) return fail(`{{corpus}} の直前に ${UNTRUSTED_CLOSE_TAG} が立っている`);
+    if (isTagLine(lines[i], UNTRUSTED_OPEN_TAG)) { open = i; break; }
+  }
+  let close = -1;
+  for (let i = corpusLine + 1; i < lines.length; i++) {
+    if (isTagLine(lines[i], UNTRUSTED_OPEN_TAG)) return fail(`{{corpus}} の直後に ${UNTRUSTED_OPEN_TAG} が立っている`);
+    if (isTagLine(lines[i], UNTRUSTED_CLOSE_TAG)) { close = i; break; }
+  }
+  if (open === -1 || close === -1) {
+    return fail(
+      `{{corpus}} が単独行の ${UNTRUSTED_OPEN_TAG} … ${UNTRUSTED_CLOSE_TAG} の内側にない` +
+        ' (説明文の中の言及は区切りとして数えない)'
     );
   }
 }
@@ -175,6 +204,13 @@ function folderSlug(folder: string): string {
  * cwd 隔離と `--safe-mode` は多層防御の残り 2 枚。設定探索を止めても、
  * 「モデルが何を書くか」自体は素材に影響される (= 出力汚染は残る。だから
  * プロンプト側の fence と併用する)。
+ *
+ * ⚠️ これらは Claude Code CLI の版に依存する (実測 2026-09-17: 2.1.27x の `--help` に
+ * `--safe-mode` / `--tools` / `--strict-mcp-config` があり、`--permission-mode` の
+ * choices に `manual` が含まれる。公開 CLI リファレンスはこれより古い)。古い CLI だと
+ * 引数解析で落ちる — しかも `--version` の疎通確認では検出できない (`--version` は
+ * 未知のフラグがあっても成功する: 実測)。⇒ `preflightClaudeCli` が `--help` の出力で
+ * **必要なフラグの実在を確かめてから**生成に進む (fail-closed)。
  */
 const CLAUDE_TEXT_ONLY_ARGS: readonly string[] = [
   '-p',
@@ -184,14 +220,51 @@ const CLAUDE_TEXT_ONLY_ARGS: readonly string[] = [
   '--permission-mode', 'manual',
 ];
 
-function preflightClaudeCli(bin: string): void {
-  // `claude --version` で疎通確認
+/**
+ * `claude --help` の出力に、隔離に使うフラグがすべて実在するかを見る。
+ * 返り値は**欠けているもの**の列挙 (空 = 揃っている)。純関数なのでテストは
+ * help テキストを直接渡せる。
+ */
+export function findMissingCliCapabilities(helpText: string): string[] {
+  const missing: string[] = [];
+  for (const flag of ['--safe-mode', '--tools', '--strict-mcp-config', '--permission-mode']) {
+    // 行頭の空白 + フラグ名 + (空白 / カンマ / 行末): `--tools` を `--allowedTools` で
+    // 誤って満たさないよう、単語境界ではなく「オプション欄の書式」で見る。
+    const re = new RegExp(`^\\s*${flag.replace(/[-]/g, '\\-')}(?:[\\s,<]|$)`, 'm');
+    if (!re.test(helpText)) missing.push(flag);
+  }
+  if (!missing.includes('--permission-mode')) {
+    // choices はフラグ行の続き (折り返し) に出る。`manual` が無い版では
+    // `--permission-mode manual` が引数解析で拒否される。
+    const idx = helpText.indexOf('--permission-mode');
+    const tail = helpText.slice(idx, idx + 600);
+    if (!/\bmanual\b/.test(tail)) missing.push('--permission-mode manual');
+  }
+  return missing;
+}
+
+export function preflightClaudeCli(bin: string): void {
+  // 1) `claude --version` で疎通確認
   const res = spawnSync(bin, ['--version'], { encoding: 'utf8' });
   if (res.error || res.status !== 0) {
     throw new Error(
       `claude CLI が見つかりません (${bin})。\n` +
         '  - Claude Code をインストール: https://claude.ai/code\n' +
         '  - OAuth サインイン: `claude`'
+    );
+  }
+  // 2) `claude --help` で隔離フラグの実在を確認 (fail-closed)。`--version` は未知の
+  //    フラグを黙って通すので、ここを飛ばすと古い CLI では生成時に引数解析で落ちる
+  //    か、最悪フラグが無視されて隔離されないまま走る。
+  const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
+  const helpText = `${help.stdout ?? ''}\n${help.stderr ?? ''}`;
+  const missing = findMissingCliCapabilities(helpText);
+  if (help.error || missing.length > 0) {
+    throw new Error(
+      `claude CLI (${bin} / ${(res.stdout ?? '').trim()}) が隔離に必要なフラグを持っていません: ` +
+        `${missing.join(', ') || '--help を取得できない'}。\n` +
+        '  Claude Code を更新してください (2.1.27x で実測済み)。フラグ無しでは第三者のポスト本文を\n' +
+        '  ツール付きのエージェントへ渡すことになるため生成を中止しました。'
     );
   }
 }
