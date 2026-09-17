@@ -43,7 +43,10 @@ label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed 
 1. `From` ヘッダからアドレスを取り出せること
 2. そのアドレスが `LLM_SEC_ALLOWED_SENDERS` に載っていること
    (`user@example.com` 完全一致、または `@example.com` でドメイン全体)
-3. `Authentication-Results` (無ければ `ARC-Authentication-Results`) が存在すること
+3. **先頭の** `Authentication-Results` が**受信側 Gmail のもの** (authserv-id =
+   `mx.google.com`) であること。送信者が付けた `Authentication-Results` (authserv-id が
+   違う / 受信側の結果より前に並ぶ) と `ARC-Authentication-Results` (チェーン未検証) は
+   **根拠にしない**
 4. その中に `dkim=pass` があり、署名ドメインが `From` のドメインと整合すること
    (完全一致、または `From` が署名ドメインのサブドメイン)
 
@@ -54,6 +57,9 @@ label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed 
 > **信頼境界の明示**: `Authentication-Results` を書くのは**受信側の Gmail**であり、
 > 本実装はそれを信頼する (= Gmail の受信箱までを信頼境界とする)。送信ドメインの
 > なりすまし自体をこのコードが検証しているわけではない。
+> ⚠️ ただし `Authentication-Results` は送信者も付けられるヘッダ (RFC 8601)。受信側 Gmail は
+> 自分の結果を**先頭に**付けるので、本実装は「先頭の 1 本」だけを読み、その authserv-id が
+> 受信側でなければ (= 送信者のヘッダが先頭に来ていれば) 拒否する。2 本目以降は読まない。
 
 ### 件名フォーマット
 

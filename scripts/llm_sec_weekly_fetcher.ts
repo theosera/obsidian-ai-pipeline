@@ -349,6 +349,14 @@ export function buildSourceRef(
 // **信頼境界の明示**: `Authentication-Results` を書くのは受信側の Gmail であり、
 // ここではそれを信頼する (= Gmail の受信箱までを信頼境界とする)。送信ドメインの
 // なりすまし自体を我々が検証しているわけではない。
+//
+// ⚠️ ただし `Authentication-Results` は**送信者も付けられる**ヘッダである (RFC 8601)。
+// 受信側 Gmail は自分の結果を**先頭に**付ける (authserv-id = `mx.google.com`)。
+// そこで信じるのは「**先頭の** Authentication-Results で、かつ authserv-id が受信側
+// のもの」だけ。送信者が `attacker.invalid; dkim=pass header.d=allowed.example`
+// を仕込んでも authserv-id が違うので読まないし、受信側の結果より前に並んでいれば
+// (= 先頭が受信側でなければ) 拒否する。ARC-Authentication-Results はチェーンを
+// 検証しない限り信頼できないので**見ない** (Codex review #152 P1)。
 
 /** 許可送信者の指定形式: `user@example.com` (完全一致) または `@example.com` (ドメイン全体)。 */
 const ALLOWED_SENDER_RE = /^(?:[^\s@]+)?@[^\s@]+\.[^\s@]+$/;
@@ -380,6 +388,50 @@ export function getHeader(message: gmail_v1.Schema$Message, name: string): strin
   const target = name.toLowerCase();
   const found = message.payload?.headers?.find(h => (h.name ?? '').toLowerCase() === target);
   return found?.value ?? null;
+}
+
+/** 同名ヘッダを**出現順に**すべて返す (Authentication-Results は複数付きうる)。 */
+export function getHeaders(message: gmail_v1.Schema$Message, name: string): string[] {
+  const target = name.toLowerCase();
+  return (message.payload?.headers ?? [])
+    .filter(h => (h.name ?? '').toLowerCase() === target)
+    .map(h => h.value ?? '');
+}
+
+/** 受信側 Gmail が Authentication-Results に名乗る authserv-id。 */
+export const RECEIVER_AUTHSERV_ID = 'mx.google.com';
+
+/**
+ * `Authentication-Results` の authserv-id (最初の `;` より前。RFC 8601 では
+ * version 番号が続くことがある: `mx.google.com 1; ...`) を小文字で返す。
+ */
+export function authservIdOf(authResults: string): string {
+  return authResults.split(';', 1)[0].trim().split(/\s+/, 1)[0].toLowerCase();
+}
+
+/**
+ * 受信側が書いた `Authentication-Results` だけを返す。
+ *
+ *   - 先頭の Authentication-Results を見る (受信側は自分の結果を先頭に付ける)
+ *   - その authserv-id が `receiver` でなければ null (= 送信者が仕込んだものが先頭)
+ *   - 2 本目以降は**読まない** (送信者が付けた可能性があるため)
+ *   - ARC-Authentication-Results は見ない (チェーン未検証)
+ */
+export function receiverAuthResults(
+  message: gmail_v1.Schema$Message,
+  receiver: string = RECEIVER_AUTHSERV_ID
+): { value: string | null; reason?: string } {
+  const all = getHeaders(message, 'Authentication-Results');
+  if (all.length === 0) return { value: null, reason: 'Authentication-Results ヘッダが無い' };
+  const first = all[0];
+  const id = authservIdOf(first);
+  if (id !== receiver.toLowerCase()) {
+    return {
+      value: null,
+      reason: `先頭の Authentication-Results が受信側 (${receiver}) のものでない (authserv-id=${id || '(空)'}) — 送信者が付けたヘッダの可能性`,
+    };
+  }
+  return { value: first };
 }
 
 /**
@@ -437,7 +489,8 @@ export type SenderVerdict =
  *
  *   1. From ヘッダからアドレスを取り出せる
  *   2. そのアドレスが許可リストに載っている
- *   3. Authentication-Results (無ければ ARC-...) が存在する
+ *   3. **先頭の** Authentication-Results が受信側 (authserv-id = `mx.google.com`) のもの
+ *      (送信者が付けた Authentication-Results / ARC は根拠にしない)
  *   4. その中に dkim=pass があり、署名ドメインが From ドメインと整合する
  *
  * ラベルと件名は**一切根拠にしない** (それが元の穴)。
@@ -453,12 +506,11 @@ export function verifySender(
   if (!isAllowedSender(from, allowedSenders)) {
     return { ok: false, reason: `許可されていない送信者: ${from}` };
   }
-  const authResults =
-    getHeader(message, 'Authentication-Results') ??
-    getHeader(message, 'ARC-Authentication-Results');
-  if (!authResults) {
-    return { ok: false, reason: `Authentication-Results ヘッダが無い (from=${from})` };
+  const ar = receiverAuthResults(message);
+  if (ar.value === null) {
+    return { ok: false, reason: `${ar.reason} (from=${from})` };
   }
+  const authResults = ar.value;
   const signed = dkimPassDomains(authResults);
   if (signed.size === 0) {
     return { ok: false, reason: `dkim=pass が無い (from=${from})` };

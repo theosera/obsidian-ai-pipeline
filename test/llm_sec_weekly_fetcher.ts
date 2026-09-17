@@ -43,6 +43,7 @@ import {
   extractEmailAddress,
   dkimPassDomains,
   verifySender,
+  authservIdOf,
   buildGmailQuery,
   GATE_SUBDIR,
   PERIOD_END_RE,
@@ -339,12 +340,89 @@ export async function run(): Promise<TestSuiteResult> {
     assert.match(v.ok === false ? v.reason : '', /整合しない/);
   });
 
-  t.test('verifySender: ARC-Authentication-Results もフォールバックとして見る', () => {
+  // ---- Codex review (#152 P1): Authentication-Results は送信者も付けられる。
+  //      信じるのは「先頭」かつ「authserv-id が受信側 (mx.google.com)」のものだけ。
+  t.test('verifySender: ARC-Authentication-Results はチェーン未検証なので根拠にしない (拒否)', () => {
     const v = verifySender(
       msgWith({
         From: 'reports@example.com',
         'ARC-Authentication-Results': 'i=1; mx.google.com; dkim=pass header.i=@example.com',
       }),
+      ALLOWED
+    );
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok ? '' : v.reason, /Authentication-Results ヘッダが無い/);
+  });
+
+  t.test('verifySender: 送信者が付けた Authentication-Results (authserv-id が受信側でない) は拒否', () => {
+    const v = verifySender(
+      msgWith({
+        From: 'reports@example.com',
+        'Authentication-Results': 'attacker.invalid; dkim=pass header.d=example.com',
+      }),
+      ALLOWED
+    );
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok ? '' : v.reason, /受信側 \(mx\.google\.com\) のものでない/);
+  });
+
+  t.test('verifySender: 送信者のヘッダが先頭で受信側の結果が 2 本目なら拒否 (先頭しか信じない)', () => {
+    const msg: gmail_v1.Schema$Message = {
+      payload: {
+        headers: [
+          { name: 'From', value: 'reports@example.com' },
+          { name: 'Authentication-Results', value: 'attacker.invalid; dkim=pass header.d=example.com' },
+          { name: 'Authentication-Results', value: GOOD_AUTH },
+        ],
+        mimeType: 'text/plain',
+        body: { data: base64url('body') },
+      },
+    };
+    const v = verifySender(msg, ALLOWED);
+    assert.strictEqual(v.ok, false);
+  });
+
+  t.test('verifySender: 受信側の結果が先頭なら、後ろに送信者のヘッダが並んでいても先頭だけで判定して通る', () => {
+    const msg: gmail_v1.Schema$Message = {
+      payload: {
+        headers: [
+          { name: 'From', value: 'reports@example.com' },
+          { name: 'Authentication-Results', value: GOOD_AUTH },
+          { name: 'Authentication-Results', value: 'attacker.invalid; dkim=pass header.d=evil.example' },
+        ],
+        mimeType: 'text/plain',
+        body: { data: base64url('body') },
+      },
+    };
+    const v = verifySender(msg, ALLOWED);
+    assert.strictEqual(v.ok, true);
+  });
+
+  t.test('verifySender: 受信側の結果が先頭でも dkim=pass が無ければ、2 本目の送信者ヘッダの pass では通らない', () => {
+    const msg: gmail_v1.Schema$Message = {
+      payload: {
+        headers: [
+          { name: 'From', value: 'reports@example.com' },
+          { name: 'Authentication-Results', value: 'mx.google.com; dkim=fail header.i=@example.com; spf=pass' },
+          { name: 'Authentication-Results', value: 'mx.google.com; dkim=pass header.i=@example.com' },
+        ],
+        mimeType: 'text/plain',
+        body: { data: base64url('body') },
+      },
+    };
+    const v = verifySender(msg, ALLOWED);
+    assert.strictEqual(v.ok, false);
+  });
+
+  t.test('authservIdOf: version 付き (`mx.google.com 1; ...`) でも authserv-id だけを取る', () => {
+    assert.strictEqual(authservIdOf('mx.google.com 1; dkim=pass header.i=@example.com'), 'mx.google.com');
+    assert.strictEqual(authservIdOf('MX.Google.com; spf=pass'), 'mx.google.com');
+    assert.strictEqual(authservIdOf('; dkim=pass'), '');
+  });
+
+  t.test('verifySender (陽性対照): 受信側の結果 1 本だけ = 従来どおり通る', () => {
+    const v = verifySender(
+      msgWith({ From: 'reports@example.com', 'Authentication-Results': GOOD_AUTH }),
       ALLOWED
     );
     assert.strictEqual(v.ok, true);
