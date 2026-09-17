@@ -14,15 +14,45 @@
   ■ 使い方 (配置と、同一性の確かめ方)
     正典は obsidian-ai-pipeline の CLAUDE.global.md。各マシンでは
     ~/.claude/CLAUDE.md がそこへの symlink であることを想定する:
-        cd "$(git rev-parse --show-toplevel)"   # 正典リポの checkout の【ルート】へ
-        test -f CLAUDE.global.md                # ⛔ 落ちたらここは正典ではない。止まる
+        cd "$(git rev-parse --show-toplevel)" &&
+        git remote get-url origin |
+          grep -Eq '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)theosera/obsidian-ai-pipeline(\.git)?/?$' ||
+          { echo '⛔ 正典 checkout ではない (確認: pwd と git remote get-url origin)'; false; } &&
+        test -f CLAUDE.global.md &&
         ln -s "$PWD/CLAUDE.global.md" ~/.claude/CLAUDE.md
-    ⚠️ このコマンドは正典リポの checkout の中で実行すること。写しのリポで
-       実行すると ~/.claude/CLAUDE.md がその写しを指す。
-    ⛔ test -f を飛ばさない。ln -s は存在しない対象でも成功するので、サブ
-       ディレクトリで実行すると dangling な symlink が黙って作られ、グローバル層が
-       1 行も読まれなくなる (実測 2026-09-07: docs/ から実行して rc=0・対象は不在)。
+    ⛔ && を外さない。⭐ ここでの && は【検査に link を従わせる】ためにある。
+       外すと前段が落ちても ln が走る (実測 2026-09-10: 別 owner の checkout で
+       remote 検査 rc=1・test -f rc=0・ln rc=0 ⇒ 写しを指す link が黙って作られた)。
+       ⚠️ 下の「⛔ 2 つを && で繋がない」は【確認】側の話で、ここと逆の要求。
+    ⚠️ 2 つの検査は別のことを見ている。⛔ 片方で代用しない。
+       remote URL = ここが正典リポか ／ test -f = ファイルが実在するか。
+    ⛔ test -f だけでは足りない。同名のファイルは写しのリポにも在る
+       (実測 2026-09-08: 写しでも正典でも rc=0 で区別できない)。
+    ⛔ remote URL だけでも足りない。ln -s は存在しない対象でも成功するので、
+       ルートに居ない状態で走らせると dangling な symlink が黙って作られ、
+       グローバル層が 1 行も読まれなくなる (実測 2026-09-07)。
+       ⇒ ⭐ dangling を防いでいるのは【test -f と連鎖】であって cd ではない。
+       1 行目の cd が防ぐのは「ルート外だと test -f が偽になって手順が使えない」
+       ことのほう。⛔ cd を省いても連鎖があれば ln には到達しない
+       (★ 上記 2026-09-07 の実測は【連鎖が無かった旧版】の話)。
+    ⛔ 黙って落ちる形にしない。⭐ 落ちたときに【止まった】と分かる必要がある。
+       素の grep -q は無出力なので、写しで止まっても画面には何も出ない。
+       ⚠️ ただし URL そのものは出さない。★ この手順は【写しのリポで実行される】
+       ことを前提にしており (それを止めるのが目的)、写しには private リポが
+       含まれる。⇒ 判定結果だけを出し、origin URL を画面やログへ残さない。
+       ⭐ 代わりに【自分で確かめる手段】を渡す。⇒ 何が拒否されたかは、案内された
+       コマンドを人が自分で叩けば分かる。⛔ 出力に載せて残すのとは別のこと。
+    ⛔ host を省いたパターンにしない。接尾辞だけを見ると、namespace を保った
+       別ホストのミラーが正典として通る (実測 2026-09-10: gitlab.com /
+       evil.example / mirror.example がいずれも PASS した)。
+    ⚠️ fork・別ホストのミラー・origin 名が違う checkout では remote 検査が落ちる。
+       ⭐ そのときは推測させず、正典 checkout の絶対パスを明示して置く。
+       ⛔ ただし fallback でも存在確認を飛ばさない (上と同じ dangling の穴):
+           CANON=/path/to/obsidian-ai-pipeline/CLAUDE.global.md
+           test -f "$CANON" && ln -s "$CANON" ~/.claude/CLAUDE.md
     ⚠️ cp で配置しない。コピーは正典が動いても何の signal も出さずに古くなる。
+    ⚠️ ln -s は既存の ~/.claude/CLAUDE.md を上書きしない (File exists で rc=1)。
+       ⛔ 逆に ln -sfn は黙って張り替える。⇒ 張り替える前に下の確認を通すこと。
 
     ⚠️ 他のリポにも同名の写しが置かれているが、同一である保証は無い。
        主張ではなく確認で扱うこと。⛔ 2 つを && で繋がない — 前段が偽なら
