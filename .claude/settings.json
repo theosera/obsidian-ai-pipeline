@@ -62,7 +62,6 @@
       "Bash(awk * .env*)",
       "Bash(sed * .env*)",
 
-      "Write(./.git/**)",
       "Edit(./.git/**)",
       "Bash(git remote set-url*)",
       "Bash(git config remote.*)"
