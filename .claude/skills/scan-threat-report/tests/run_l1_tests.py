@@ -162,5 +162,29 @@ try:
 finally:
     os.unlink(tmp)
 
+print("\n== concealment: ranges 外の Cf (U+061C) → category 分岐だけで検出 (#161) ==")
+# 上の concealment ケースの U+200B は INVISIBLE_RANGES で捕まるので、is_invisible() の
+# category 分岐 (Cf/Co/Cs) を無効にしても緑のまま。ranges 外の Cf 1 文字だけで固定する。
+p = os.path.join(FIX, "concealment_cf_outside_ranges.md")
+with open(p, encoding="utf-8") as f:
+    fixture_text = f.read()
+alm = chr(0x061C)  # ARABIC LETTER MARK (Cf)
+check("fixture に U+061C がちょうど 1 文字", fixture_text.count(alm) == 1)
+check("U+061C は INVISIBLE_RANGES の外",
+      not any(lo <= ord(alm) <= hi for lo, hi in st.INVISIBLE_RANGES))
+cf = report(p)
+check("契約・定型は正常 (別の理由で検出させない)",
+      not cf["structural"]["contract_violations"] and cf["structural"]["section_shape_ok"])
+# len(...) == 1 を先に置き、signal が 0 件のときも IndexError でなく FAIL として数える。
+check("signal は invisible-char がちょうど 1 件",
+      [s["kind"] for s in cf["signals"]] == ["invisible-char"], str(cf["signals"]))
+check("counts が完全一致", cf["counts"] == {"total": 1, "live": 1, "example": 0}, str(cf["counts"]))
+check("14 行目・live",
+      len(cf["signals"]) == 1 and cf["signals"][0]["line"] == 14 and cf["signals"][0]["live"] is True)
+check("preview が U+061C を示す",
+      len(cf["signals"]) == 1 and "U+061C" in cf["signals"][0]["preview"])
+check("flagged = True かつ l2_required = True", cf["flagged"] is True and cf["l2_required"] is True)
+check("U+061C を除くと signal 0", st.scan_text(fixture_text.replace(alm, "")) == [])
+
 print(f"\n{'='*52}\n結果: {'全テスト PASS 🎉' if failures == 0 else f'{failures} 件 FAIL'}")
 sys.exit(1 if failures else 0)
