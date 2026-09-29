@@ -17,6 +17,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCANNER = os.path.join(HERE, "..", "scripts", "scan-threat-report.py")
@@ -185,6 +186,19 @@ check("preview が U+061C を示す",
       len(cf["signals"]) == 1 and "U+061C" in cf["signals"][0]["preview"])
 check("flagged = True かつ l2_required = True", cf["flagged"] is True and cf["l2_required"] is True)
 check("U+061C を除くと signal 0", st.scan_text(fixture_text.replace(alm, "")) == [])
+
+print("\n== concealment: ranges 外の Co / Cs → category ごとに 1 文字ずつ検出 (#161) ==")
+# 1 行に並べると invisible-char は 1 件にまとまり、片方の category が外れても 1 件のまま。
+# 1 回の scan_text に 1 文字だけ渡す。Cs (surrogate) は UTF-8 で書けないので fixture にせず
+# 文字列で渡す (scan_file は errors="replace" で読むため、ファイル経由では届かない)。
+for cp, cat in ((0xE000, "Co"), (0xD800, "Cs")):
+    ch = chr(cp)
+    check(f"U+{cp:04X} は {cat} かつ INVISIBLE_RANGES の外",
+          unicodedata.category(ch) == cat
+          and not any(lo <= cp <= hi for lo, hi in st.INVISIBLE_RANGES))
+    sig = st.scan_text("A" + ch + "B")
+    check(f"U+{cp:04X} ({cat}) → invisible-char がちょうど 1 件",
+          [s["kind"] for s in sig] == ["invisible-char"], str(sig))
 
 print(f"\n{'='*52}\n結果: {'全テスト PASS 🎉' if failures == 0 else f'{failures} 件 FAIL'}")
 sys.exit(1 if failures else 0)
