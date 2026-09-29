@@ -147,6 +147,24 @@ check("low confidence でも blocked", r["verdict"] == "blocked",
       r["final_rule"])
 check("final_rule = l2-axis-concealment-reject",
       r["final_rule"] == "l2-axis-concealment-reject")
+# 確信度 3 段階すべてで同じ分岐に着き、quarantine へ振り分けられること (#161)。
+# low だけでは「medium/high は別の rule で止まる」形の回帰を捕まえられない。
+for conf in ("low", "medium", "high"):
+    doc = l2("concealment_reject_low.json")
+    doc["axes"]["concealment"]["confidence"] = conf
+    r = decide(l1_base(), doc)
+    check(f"{conf} → (blocked, l2-axis-concealment-reject, quarantine)",
+          (r["verdict"], r["final_rule"], r["routing"])
+          == ("blocked", "l2-axis-concealment-reject", "quarantine"),
+          f'{r["verdict"]}/{r["final_rule"]}/{r["routing"]}')
+# KSP は concealment 軸に永久適用不可: 証拠の signal が KSP に全一致しても解除しない。
+doc = l2("concealment_reject_low.json")
+doc["axes"]["concealment"]["evidence"] = [{"signal_id": 1}]
+r = decide(l1_base(signals=[sig("reader-imperative")]), doc, ksp=KSP_MATCHING)
+check("KSP 全一致でも解除しない → (blocked, l2-axis-concealment-reject, quarantine)",
+      (r["verdict"], r["final_rule"], r["routing"])
+      == ("blocked", "l2-axis-concealment-reject", "quarantine"),
+      f'{r["verdict"]}/{r["final_rule"]}/{r["routing"]}')
 
 print("\n== rule 5: reject ∧ high ∧ アンカー済み → blocked (自動確定) ==")
 r = decide(l1_base(signals=[sig("reader-imperative", ctx="prose", live=True)]),
