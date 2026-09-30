@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
-    "@googleapis/gmail": "^18.0.0",
+    "@googleapis/gmail": "^22.0.1",
     "@mozilla/readability": "^0.5.0",
     "@napi-rs/keyring": "^2.0.0",
     "better-sqlite3": "^13.0.3",
