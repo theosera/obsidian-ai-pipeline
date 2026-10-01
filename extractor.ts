@@ -39,21 +39,23 @@ export function extractAndConvert(html: string, url: string): ArticleData & { le
   const reader = new Readability(document);
   const article = reader.parse();
 
-  if (!article) {
+  if (!article || article.content == null) {
     throw new Error('Readability failed to parse the article.');
   }
 
   const markdownContent = turndownService.turndown(article.content);
 
+  // @mozilla/readability >= 0.6 types every field as `T | null | undefined`;
+  // ArticleData uses optional fields, so fold null into undefined here.
   return {
-    title: article.title,
+    title: article.title ?? undefined,
     date: formattedDate,
     content: markdownContent,
-    textContent: article.textContent,
-    byline: article.byline,
-    siteName: article.siteName,
-    length: article.length,
-    excerpt: article.excerpt,
+    textContent: article.textContent ?? undefined,
+    byline: article.byline ?? undefined,
+    siteName: article.siteName ?? undefined,
+    length: article.length ?? undefined,
+    excerpt: article.excerpt ?? undefined,
     url: url
   };
 }
