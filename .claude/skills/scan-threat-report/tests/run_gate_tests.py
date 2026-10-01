@@ -494,6 +494,30 @@ for fname, profile, l2_doc, expected in e2e:
     check(f"{fname} [{profile}] → {expected}", r["verdict"] == expected,
           f"actual={r['verdict']} rule={r['final_rule']}")
 
+print("\n== end-to-end: ranges 外の Cf (U+061C) → scan_file → decide (#161) ==")
+rep = st.scan_file(os.path.join(FIX, "concealment_cf_outside_ranges.md"))
+cf_sigs = rep["signals"]
+check("L1: invisible-char がちょうど 1 件", [s["kind"] for s in cf_sigs]
+      == ["invisible-char"], str(cf_sigs))
+# ハード隠蔽は L2・KSP・heightened より先に確定する。KSP ローダは隠蔽系 kind を
+# 拒否するが、decide() 自体も一致する KSP を渡されて解除しないことを固定する。
+ksp_cf = [{
+    "id": "ksp-test-cf", "signal_kind": "invisible-char",
+    "context_class": cf_sigs[0]["context_class"] if cf_sigs else "any",
+    "match": {"span_sha1": cf_sigs[0]["span_sha1"] if cf_sigs else ""},
+    "rationale": "テスト用", "added": "2026-10-01",
+}]
+for label, profile, l2_doc, ksp, heightened in (
+        ("ci", "ci", None, [], False),
+        ("interactive + 全軸 pass-high", "interactive", ALL_PASS, [], False),
+        ("interactive + KSP 全一致", "interactive", ALL_PASS, ksp_cf, False),
+        ("interactive + heightened", "interactive", ALL_PASS, [], True)):
+    r = gd.decide(rep, l2_doc, ksp, heightened, profile)
+    check(f"{label} → (blocked, l1-concealment:invisible-char, quarantine)",
+          (r["verdict"], r["final_rule"], r["routing"])
+          == ("blocked", "l1-concealment:invisible-char", "quarantine"),
+          f'{r["verdict"]}/{r["final_rule"]}/{r["routing"]}')
+
 print("\n== FN 回帰フィクスチャ (fn_regression/ 自動検出) ==")
 fn_files = sorted(f for f in (os.listdir(FN_FIX) if os.path.isdir(FN_FIX) else [])
                   if f.endswith(".md") and f != "README.md")
