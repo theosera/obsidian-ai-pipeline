@@ -25,7 +25,7 @@ onlyBuiltDependencies: []
 # the root package.json. Bump here once.
 # Keep '@types/node' in step with the Node major we run (ci.yml node-version
 # '24', package.json engines >=24). Newer majors type APIs Node 24 does not
-# have. Keep comments outside the catalog block (only `name: range` lines in it).
+# have.
 catalog:
   typescript: ^5.7.0
   '@types/node': ^24.19.1
