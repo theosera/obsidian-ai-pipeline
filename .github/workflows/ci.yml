@@ -135,3 +135,30 @@ jobs:
         # 最小 oxlint: バグ検出ルールのみ (no-floating-promises 等)。
         # 型情報ルールは oxlint-tsgolint (--type-aware) が担当。
         run: pnpm lint
+
+      - name: oxlint positive control (type-aware rules must fire)
+        # --type-aware (package.json) と options.typeAware (.oxlintrc.json) の両方が
+        # 外れると、type-aware ルールは黙って走らなくなり lint は緑のままになる。
+        # 既知の悪いファイルで 2 ルールが発火することを確かめる。悪いファイルを
+        # リポに置くとふだんの `pnpm lint` が赤になるので、この step の中で作って消す。
+        run: |
+          set -u
+          mkdir -p .lint-canary
+          cat > .lint-canary/canary.ts <<'TS'
+          async function work(): Promise<boolean> { return true; }
+          export function floating(): void {
+            work();
+          }
+          export function misused(): void {
+            if (work()) { return; }
+          }
+          TS
+          # Actions の shell は bash -e。赤を期待する呼び出しは if で包む。
+          if out=$(pnpm -s lint .lint-canary/canary.ts 2>&1); then rc=0; else rc=$?; fi
+          rm -rf .lint-canary
+          printf '%s\n' "$out"
+          [ "$rc" -ne 0 ] || { echo "::error::oxlint passed a known-bad file (rc=0)"; exit 1; }
+          for rule in no-floating-promises no-misused-promises; do
+            grep -q "typescript($rule)" <<<"$out" || { echo "::error::type-aware rule $rule did not fire"; exit 1; }
+          done
+          echo "positive control OK"

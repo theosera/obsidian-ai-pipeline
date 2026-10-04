@@ -147,6 +147,24 @@ check("low confidence でも blocked", r["verdict"] == "blocked",
       r["final_rule"])
 check("final_rule = l2-axis-concealment-reject",
       r["final_rule"] == "l2-axis-concealment-reject")
+# 確信度 3 段階すべてで同じ分岐に着き、quarantine へ振り分けられること (#161)。
+# low だけでは「medium/high は別の rule で止まる」形の回帰を捕まえられない。
+for conf in ("low", "medium", "high"):
+    doc = l2("concealment_reject_low.json")
+    doc["axes"]["concealment"]["confidence"] = conf
+    r = decide(l1_base(), doc)
+    check(f"{conf} → (blocked, l2-axis-concealment-reject, quarantine)",
+          (r["verdict"], r["final_rule"], r["routing"])
+          == ("blocked", "l2-axis-concealment-reject", "quarantine"),
+          f'{r["verdict"]}/{r["final_rule"]}/{r["routing"]}')
+# KSP は concealment 軸に永久適用不可: 証拠の signal が KSP に全一致しても解除しない。
+doc = l2("concealment_reject_low.json")
+doc["axes"]["concealment"]["evidence"] = [{"signal_id": 1}]
+r = decide(l1_base(signals=[sig("reader-imperative")]), doc, ksp=KSP_MATCHING)
+check("KSP 全一致でも解除しない → (blocked, l2-axis-concealment-reject, quarantine)",
+      (r["verdict"], r["final_rule"], r["routing"])
+      == ("blocked", "l2-axis-concealment-reject", "quarantine"),
+      f'{r["verdict"]}/{r["final_rule"]}/{r["routing"]}')
 
 print("\n== rule 5: reject ∧ high ∧ アンカー済み → blocked (自動確定) ==")
 r = decide(l1_base(signals=[sig("reader-imperative", ctx="prose", live=True)]),
@@ -475,6 +493,30 @@ for fname, profile, l2_doc, expected in e2e:
     r = gd.decide(rep, l2_doc, [], False, profile)
     check(f"{fname} [{profile}] → {expected}", r["verdict"] == expected,
           f"actual={r['verdict']} rule={r['final_rule']}")
+
+print("\n== end-to-end: ranges 外の Cf (U+061C) → scan_file → decide (#161) ==")
+rep = st.scan_file(os.path.join(FIX, "concealment_cf_outside_ranges.md"))
+cf_sigs = rep["signals"]
+check("L1: invisible-char がちょうど 1 件", [s["kind"] for s in cf_sigs]
+      == ["invisible-char"], str(cf_sigs))
+# ハード隠蔽は L2・KSP・heightened より先に確定する。KSP ローダは隠蔽系 kind を
+# 拒否するが、decide() 自体も一致する KSP を渡されて解除しないことを固定する。
+ksp_cf = [{
+    "id": "ksp-test-cf", "signal_kind": "invisible-char",
+    "context_class": cf_sigs[0]["context_class"] if cf_sigs else "any",
+    "match": {"span_sha1": cf_sigs[0]["span_sha1"] if cf_sigs else ""},
+    "rationale": "テスト用", "added": "2026-10-01",
+}]
+for label, profile, l2_doc, ksp, heightened in (
+        ("ci", "ci", None, [], False),
+        ("interactive + 全軸 pass-high", "interactive", ALL_PASS, [], False),
+        ("interactive + KSP 全一致", "interactive", ALL_PASS, ksp_cf, False),
+        ("interactive + heightened", "interactive", ALL_PASS, [], True)):
+    r = gd.decide(rep, l2_doc, ksp, heightened, profile)
+    check(f"{label} → (blocked, l1-concealment:invisible-char, quarantine)",
+          (r["verdict"], r["final_rule"], r["routing"])
+          == ("blocked", "l1-concealment:invisible-char", "quarantine"),
+          f'{r["verdict"]}/{r["final_rule"]}/{r["routing"]}')
 
 print("\n== FN 回帰フィクスチャ (fn_regression/ 自動検出) ==")
 fn_files = sorted(f for f in (os.listdir(FN_FIX) if os.path.isdir(FN_FIX) else [])
