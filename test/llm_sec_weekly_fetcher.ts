@@ -503,7 +503,7 @@ export async function run(): Promise<TestSuiteResult> {
 
   function gateFixture(): { rawPath: string; quarantineDir: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-gate-'));
-    const rawPath = path.join(dir, 'raw', '2026-06-08.md.txt');
+    const rawPath = path.join(dir, '_staging', '2026-06-08.md');
     fs.mkdirSync(path.dirname(rawPath), { recursive: true });
     fs.writeFileSync(rawPath, 'body', 'utf8');
     return { rawPath, quarantineDir: path.join(dir, '_quarantine') };
@@ -514,7 +514,7 @@ export async function run(): Promise<TestSuiteResult> {
     const gate: GateRunner = () => ({ verdict: 'clean', detail: '' });
     const out = gateAndRoute(rawPath, quarantineDir, gate);
     assert.deepStrictEqual(out, { action: 'ingest' });
-    assert.ok(fs.existsSync(rawPath), 'raw が残る');
+    assert.ok(fs.existsSync(rawPath), 'staging が残る');
     assert.strictEqual(fs.existsSync(quarantineDir), false);
   });
 
