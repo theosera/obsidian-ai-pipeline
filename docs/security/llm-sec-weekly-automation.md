@@ -50,7 +50,8 @@
                                                  ▼
                                   ┌─────────────────────────────┐
                                   │ Vault repo (private)        │
-                                  │   raw/<YYYY-MM-DD>.md       │
+                                  │   raw/<YYYY-MM-DD>.md.txt   │
+                                  │   (原文内容不変 / 非Markdown)│
                                   │   .threat_reports.json      │
                                   │   _index.md                 │
                                   │   _gate/decisions.jsonl     │
@@ -71,6 +72,12 @@
                                   └─────────────────────────────┘
 ```
 
+> 🔒 **raw 原文の実行防止 (F2)**: 週報本文は非信頼入力なので、Vaultには
+> `raw/<YYYY-MM-DD>.md` として保存しない。原文 bytes は変更せず、
+> `raw/<YYYY-MM-DD>.md.txt` として保存する。Obsidian/Dataview がコード fence を
+> Markdown として実行しないための拡張子境界で、必要なら `.txt` を外せば原文を
+> byte-for-byte で復元できる。legacy `.md` は本番 ingest 開始時に自動 migration
+> され、内容が異なる `.md` / `.md.txt` が併存した場合は fail-closed で停止する。
 > 🛡️ **2-phase 設計の意義 (self-healing)**: Gmail の `processed` ラベルは
 > **vault push が成功した後にしか付かない**。push が失敗 (deploy key 障害 /
 > network / conflict 等) すると Phase 2 step は GitHub Actions の
