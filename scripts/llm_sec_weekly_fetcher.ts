@@ -429,6 +429,26 @@ export function requireMaskedMailboxAddress(
   return address;
 }
 
+export interface MailboxStartupOps {
+  getProfileAddress: () => Promise<string | null | undefined>;
+  resolveLabel: (name: string) => Promise<void>;
+}
+
+/**
+ * 検索前の起動シーケンス。profile 検証/mask が成功するまでラベル解決にも進まない。
+ * caller はこの関数が resolve した後にだけ検索へ進む。
+ */
+export async function initializeMailboxBeforeSearch(
+  ops: MailboxStartupOps,
+  labelName: string,
+  processedLabelName: string
+): Promise<string> {
+  const mailboxAddress = requireMaskedMailboxAddress(await ops.getProfileAddress());
+  await ops.resolveLabel(labelName);
+  await ops.resolveLabel(processedLabelName);
+  return mailboxAddress;
+}
+
 /** ログ表示用に account address を決して含まない形へ置換する。 */
 export function redactAccountForLog(text: string, account: string): string {
   return account ? text.split(account).join('<self>') : text;
@@ -1338,16 +1358,21 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
 
   // 起動時の最初の認証処理でアカウント自身のアドレスを確定する。
   // 取得不能・形式不正なら、ラベル解決・検索・通常ログへ進む前に fail-closed。
-  const mailboxAddress = await withOAuthErrorHint(async () => {
-    const profile = await gm.users.getProfile({ userId: 'me' });
-    return requireMaskedMailboxAddress(profile.data.emailAddress ?? null);
-  });
-
-  // profile 検証と mask 登録が済んだ後に、必要ラベルの存在を確認する。
-  await withOAuthErrorHint(async () => {
-    await resolveLabelId(gm, env.labelName);
-    await resolveLabelId(gm, env.processedLabelName);
-  });
+  const mailboxAddress = await withOAuthErrorHint(() =>
+    initializeMailboxBeforeSearch(
+      {
+        getProfileAddress: async () => {
+          const profile = await gm.users.getProfile({ userId: 'me' });
+          return profile.data.emailAddress ?? null;
+        },
+        resolveLabel: async (name: string) => {
+          await resolveLabelId(gm, name);
+        },
+      },
+      env.labelName,
+      env.processedLabelName
+    )
+  );
 
   // F2: Obsidian 上で untrusted Markdown を実行可能な .md として残さない。
   // dry-run は読み取り専用なので migration も行わない。
