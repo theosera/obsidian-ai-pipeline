@@ -26,7 +26,11 @@ import { ThreatReportsDb } from '../threat-reports/db';
 import { ingestThreatReport, rebuildThreatReportsDbFromVault } from '../threat-reports/ingest';
 import { buildExportPayload } from '../threat-reports/json_export';
 import { renderAutoBlock, replaceAutoBlock } from '../threat-reports/index_writer';
-import { getThreatReportsBaseFolder } from '../threat-reports/config';
+import {
+  getThreatReportsBaseFolder,
+  getThreatReportsArchiveFolder,
+  THREAT_REPORT_ARCHIVE_SUFFIX,
+} from '../threat-reports/config';
 import { LEGACY_REPO_KEY } from '../threat-reports/repo_target';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
@@ -675,6 +679,8 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       assert.strictEqual(result.weekOf, '2026-05-25');
       assert.strictEqual(result.vulnerabilities, 2);
       assert.ok(result.archivedPath && fs.existsSync(result.archivedPath), 'raw archive 存在');
+      assert.ok(result.archivedPath?.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX), 'raw は .md.txt で保存');
+      assert.strictEqual(fs.readFileSync(result.archivedPath!, 'utf8'), SAMPLE_REPORT, '原文 bytes を変えない');
       assert.ok(fs.existsSync(result.jsonPath), 'JSON 存在');
       assert.ok(fs.existsSync(result.indexPath), 'index 存在');
 
@@ -848,9 +854,9 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     }
   });
 
-  runner.section('rebuildThreatReportsDbFromVault (raw/*.md → DB 復旧)');
+  runner.section('rebuildThreatReportsDbFromVault (raw/*.md.txt + legacy *.md → DB 復旧)');
 
-  await runner.testAsync('rebuild: raw/*.md から作り直し、孤児行を落とし human note は復元しない', async () => {
+  await runner.testAsync('rebuild: raw/*.md.txt から作り直し、孤児行を落とし human note は復元しない', async () => {
     const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
     const prevVault = process.env.VAULT_ROOT;
     setVaultRoot(tmpVault);
@@ -860,7 +866,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       fs.writeFileSync(tmpFile, SAMPLE_REPORT, 'utf8');
       const db = new ThreatReportsDb(':memory:');
 
-      // 1. 通常 ingest → raw/<week>.md がアーカイブされ、1 report + 2 vuln が入る
+      // 1. 通常 ingest → raw/<week>.md.txt がアーカイブされ、1 report + 2 vuln が入る
       const ing = await ingestThreatReport({ filePath: tmpFile, db, vaultRoot: tmpVault });
       assert.ok(ing.archivedPath && fs.existsSync(ing.archivedPath), 'raw archive 生成');
 
@@ -886,7 +892,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       });
       assert.strictEqual(db.listReports().length, 2, '再構築前: 実レポート + 孤児 = 2');
 
-      // 4. rebuild — raw/*.md だけを真実に作り直す
+      // 4. rebuild — raw/*.md.txt を正本に作り直す
       const res = await rebuildThreatReportsDbFromVault({ db, vaultRoot: tmpVault });
       assert.strictEqual(res.filesFound, 1, 'raw は 1 ファイル');
       assert.strictEqual(res.reportsRebuilt, 1, '1 レポート復元');
@@ -901,7 +907,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       // 再構築行は vault_path (raw アーカイブパス) を保持する
       // — null だと JSON の raw_md_path が切れて元レポートへのリンクが壊れる (Codex #82 P2)
       assert.ok(
-        rebuilt[0].vault_path && rebuilt[0].vault_path.endsWith('2026-05-25.md'),
+        rebuilt[0].vault_path && rebuilt[0].vault_path.endsWith('2026-05-25.md.txt'),
         `再構築でも vault_path を保持 (実際: ${rebuilt[0].vault_path})`
       );
 
