@@ -345,7 +345,7 @@ export function buildSourceRef(
 }
 
 // ---------------------------------------------------------------------------
-// 自分宛て送信の真正性確認 (PR #152 DKIM 経路の置換)
+// 自分宛て self-send 条件の確認 (PR #152 DKIM 経路の置換)
 // ---------------------------------------------------------------------------
 //
 // この週次取込は「同じ Gmail アカウントから同じ Gmail アカウントへ送った週報」だけを
@@ -360,12 +360,18 @@ export function buildSourceRef(
 //   3. message 単位で SENT system label の存在を確認する
 //   4. From と To の双方に Gmail profile address があることを再確認する
 //
-// SENT が付いていても、それだけで「本人が送った」ことの証明にはならない。
-// insert 経路でも SENT の付いた message を作れるため、通常の外部配送を通った証明でもない。
+// SENT と self From/To は、対象 mailbox への書込み権限下で作られた
+// self-send 条件の確認に使うもので、owner 本人が送ったことの証明ではない。
+// insert 経路でも SENT の付いた message を作れ、From/To も message header として
+// 与えられるため、通常の外部配送を通った証明としても扱わない。
 // この経路で信頼する境界は、対象 mailbox に insert/send できる OAuth client を含む
 // 正規の書込み権限そのもの。owner が許可した別アプリも trusted 側に入り、
 // その権限を持つ主体は条件を満たす message を正規に作れる。
 // 件名と user label も認証根拠にしない。
+//
+// Google 公式:
+// https://developers.google.com/workspace/gmail/api/guides/labels
+// https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/insert
 
 /** Gmail message payload から指定ヘッダの値を取り出す (名前は大文字小文字を無視)。 */
 export function getHeader(message: gmail_v1.Schema$Message, name: string): string | null {
@@ -464,8 +470,8 @@ export function redactAccountForLog(text: string, account: string): string {
  *   3. From が profile address と完全一致
  *   4. To のいずれかが profile address と完全一致
  *
- * SENT が付いていても、それだけで本人が送った証明にはならない。
- * insert/send できる OAuth client は SENT を含む条件を満たす message を作れるため、
+ * SENT と From/To は self-send 条件の確認であり、本人性の証明ではない。
+ * insert/send できる OAuth client はこれらの条件を満たす message を作れるため、
  * owner が許可した別アプリも含め、対象 mailbox への正規の書込み権限が trusted 側。
  *
  * user label / Subject / Authentication-Results / DKIM は送信者認証には使わない。
@@ -1043,7 +1049,7 @@ async function processMessage(
 ): Promise<FetcherOutcome> {
   const messageId = msg.id!;
   // ★ 本文に触れる前に self-sent provenance を検証する。検索条件は一次フィルタに
-  // 過ぎず、ここが本判定。SENT の存在だけでは本人性を証明しないため、From/To も照合する。
+  // 過ぎず、ここが本判定。ただし SENT + From/To は self-send 条件の確認であり、本人性の証明ではない。
   // terminal にはしない — mailbox/profile 側の一過性不整合を直せば再取込できる。
   const sender = verifySelfSentReport(msg, mailboxAddress);
   if (!sender.ok) {
