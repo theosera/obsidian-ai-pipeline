@@ -930,6 +930,62 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     }
   });
 
+  await runner.testAsync('F2: dataviewjs を含む原文も .md.txt に bytes 不変で保存する', async () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const report = SAMPLE_REPORT + '\n\n## 5. 出典\n\n' +
+        '以下は非信頼入力の例示。\n\n' +
+        '```dataviewjs\n' +
+        'dv.paragraph("must never execute from raw report archive");\n' +
+        '```\n';
+      const tmpFile = path.join(tmpVault, 'incoming.md');
+      fs.writeFileSync(tmpFile, report, 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      const res = await ingestThreatReport({ filePath: tmpFile, db, vaultRoot: tmpVault });
+      assert.ok(res.archivedPath, 'archive path');
+      assert.ok(res.archivedPath!.endsWith('.md.txt'), 'Obsidian Markdown note にしない');
+      assert.strictEqual(fs.readFileSync(res.archivedPath!, 'utf8'), report, '原文を一切書き換えない');
+      assert.strictEqual(fs.existsSync(res.archivedPath!.replace(/\.txt$/, '')), false, '実行対象 .md は生成しない');
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  await runner.testAsync('rebuild: legacy .md だけの Vault も互換読込できる', async () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const rawDir = path.join(tmpVault, getThreatReportsArchiveFolder());
+      fs.mkdirSync(rawDir, { recursive: true });
+      fs.writeFileSync(path.join(rawDir, '2026-05-25.md'), SAMPLE_REPORT, 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      const res = await rebuildThreatReportsDbFromVault({ db, vaultRoot: tmpVault });
+      assert.strictEqual(res.filesFound, 1);
+      assert.strictEqual(res.reportsRebuilt, 1);
+      assert.strictEqual(db.listReports().length, 1);
+      assert.ok(fs.existsSync(path.join(rawDir, '2026-05-25.md.txt')), 'legacy から inert archive を生成');
+      assert.strictEqual(
+        fs.readFileSync(path.join(rawDir, '2026-05-25.md.txt'), 'utf8'),
+        SAMPLE_REPORT,
+        'legacy 原文を bytes 不変で移行'
+      );
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
   await runner.testAsync('rebuild: raw が空なら DB も空に揃え JSON を再生成する', async () => {
     const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
     const prevVault = process.env.VAULT_ROOT;
