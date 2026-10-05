@@ -361,8 +361,10 @@ export function buildSourceRef(
 //   4. From と To の双方に Gmail profile address があることを再確認する
 //
 // SENT が付いていても、それだけで「本人が送った」ことの証明にはならない。
-// この経路で信頼する境界は、対象メールボックスへ正規に書き込める権限そのもの。
-// owner が許可したアプリを含め、その権限を持つ主体は条件を満たす message を作れる。
+// insert 経路でも SENT の付いた message を作れるため、通常の外部配送を通った証明でもない。
+// この経路で信頼する境界は、対象 mailbox に insert/send できる OAuth client を含む
+// 正規の書込み権限そのもの。owner が許可した別アプリも trusted 側に入り、
+// その権限を持つ主体は条件を満たす message を正規に作れる。
 // 件名と user label も認証根拠にしない。
 
 /** Gmail message payload から指定ヘッダの値を取り出す (名前は大文字小文字を無視)。 */
@@ -463,8 +465,8 @@ export function redactAccountForLog(text: string, account: string): string {
  *   4. To のいずれかが profile address と完全一致
  *
  * SENT が付いていても、それだけで本人が送った証明にはならない。
- * 対象メールボックスへ正規に書き込める権限を持つ主体は、この条件を満たす
- * message を作れる。したがって信頼境界は「メールボックスへの書込み権限」。
+ * insert/send できる OAuth client は SENT を含む条件を満たす message を作れるため、
+ * owner が許可した別アプリも含め、対象 mailbox への正規の書込み権限が trusted 側。
  *
  * user label / Subject / Authentication-Results / DKIM は送信者認証には使わない。
  * Subject は report 選別、frontmatter は content contract として別レイヤーで検証する。
