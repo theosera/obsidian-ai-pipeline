@@ -708,7 +708,7 @@ export async function run(): Promise<TestSuiteResult> {
   function fetcherEntry(overrides: Partial<Parameters<typeof appendQuarantineQueueEntry>[1]> = {}) {
     return {
       periodEnd: '2026-06-08',
-      file: '/tmp/_quarantine/2026-06-08.md',
+      file: '/tmp/_quarantine/2026-06-08.md.txt',
       sourceRef: 'gmail:t1',
       verdict: 'error',
       reason: 'L1 scanner 実行失敗: spawn python3 ENOENT',
@@ -798,7 +798,7 @@ export async function run(): Promise<TestSuiteResult> {
   function stagingFixture(rawContent: string | null): { stagedPath: string; rawPath: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-stage-'));
     const stagedPath = path.join(dir, '_staging', '2026-06-08.md');
-    const rawPath = path.join(dir, 'raw', '2026-06-08.md');
+    const rawPath = path.join(dir, 'raw', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(stagedPath), { recursive: true });
     fs.writeFileSync(stagedPath, 'new body', 'utf8');
     if (rawContent !== null) {
@@ -837,7 +837,7 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(out.action, 'quarantine');
     // 既存 archive は無傷 (以前は rawPath 自体が隔離先へ rename されていた)。
     assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), 'archived genuine report');
-    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')));
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md.txt')));
   });
 
   t.test('quarantineBody: 同名が既にあれば連番で退避 (先行の証拠を消さない)', () => {
