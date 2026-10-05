@@ -360,17 +360,10 @@ export function buildSourceRef(
 //   3. message 単位で SENT system label の存在を確認する
 //   4. From と To の双方に Gmail profile address があることを再確認する
 //
-// Gmail API 公式仕様では SENT は手動付与不可。ただし Gmail UI / messages.send /
-// drafts.send に加え、messages.insert で From に本人 address を含めた message にも
-// 自動付与される。messages.insert は配送せず mailbox へ直接挿入する API なので、
-// SENT は「外部配送を通った証明」ではない。
-// https://developers.google.com/workspace/gmail/api/guides/labels
-// https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/insert
-//
-// 信頼境界: Gmail account 自体と、その mailbox へ insert/send できる OAuth
-// credential は trusted。mailbox / OAuth が侵害された場合は attacker も self-From
-// insert で SENT 条件を満たせるので、本判定も破られる。そのケースは secret rotation /
-// Google account incident response の責務。件名と user label は認証根拠にしない。
+// SENT が付いていても、それだけで「本人が送った」ことの証明にはならない。
+// この経路で信頼する境界は、対象メールボックスへ正規に書き込める権限そのもの。
+// owner が許可したアプリを含め、その権限を持つ主体は条件を満たす message を作れる。
+// 件名と user label も認証根拠にしない。
 
 /** Gmail message payload から指定ヘッダの値を取り出す (名前は大文字小文字を無視)。 */
 export function getHeader(message: gmail_v1.Schema$Message, name: string): string | null {
@@ -421,6 +414,21 @@ export function addGitHubActionsMask(value: string): void {
   console.log(`::add-mask::${value}`);
 }
 
+/**
+ * 起動時の Gmail profile address を fail-closed で確定し、通常ログより先に mask 登録する。
+ * 取得不能・形式不正なら一切の operational log / 検索へ進まず throw する。
+ */
+export function requireMaskedMailboxAddress(
+  profileAddress: string | null | undefined
+): string {
+  const address = extractEmailAddress(profileAddress);
+  if (!address) {
+    throw new Error('Gmail profile から有効な email address を取得できませんでした (fail-closed)');
+  }
+  addGitHubActionsMask(address);
+  return address;
+}
+
 /** ログ表示用に account address を決して含まない形へ置換する。 */
 export function redactAccountForLog(text: string, account: string): string {
   return account ? text.split(account).join('<self>') : text;
@@ -434,10 +442,9 @@ export function redactAccountForLog(text: string, account: string): string {
  *   3. From が profile address と完全一致
  *   4. To のいずれかが profile address と完全一致
  *
- * Gmail API 仕様上、SENT は手動付与不可だが、messages.send / drafts.send /
- * Web UI だけでなく、messages.insert で From に本人アドレスを含めた場合にも
- * 自動付与される。したがって SENT は「SMTP 配送された証明」ではない。
- * 信頼境界は Gmail mailbox へ insert/send できる account/OAuth credential。
+ * SENT が付いていても、それだけで本人が送った証明にはならない。
+ * 対象メールボックスへ正規に書き込める権限を持つ主体は、この条件を満たす
+ * message を作れる。したがって信頼境界は「メールボックスへの書込み権限」。
  *
  * user label / Subject / Authentication-Results / DKIM は送信者認証には使わない。
  * Subject は report 選別、frontmatter は content contract として別レイヤーで検証する。
@@ -474,7 +481,7 @@ export function buildGmailQuery(
   mailboxAddress: string
 ): string {
   const account = extractEmailAddress(mailboxAddress);
-  if (!account) throw new Error(`Gmail profile address の形式が不正です: ${JSON.stringify(mailboxAddress)}`);
+  if (!account) throw new Error('Gmail profile address の形式が不正です');
   return (
     `label:${labelName} subject:"${SUBJECT_PREFIX}" -label:${processedLabelName}` +
     ` in:sent from:${account} to:${account}`
@@ -1003,7 +1010,7 @@ async function processMessage(
 ): Promise<FetcherOutcome> {
   const messageId = msg.id!;
   // ★ 本文に触れる前に self-sent provenance を検証する。検索条件は一次フィルタに
-  // 過ぎず、ここが本判定。SENT は Gmail が管理する system label で手動付与不可。
+  // 過ぎず、ここが本判定。SENT の存在だけでは本人性を証明しないため、From/To も照合する。
   // terminal にはしない — mailbox/profile 側の一過性不整合を直せば再取込できる。
   const sender = verifySelfSentReport(msg, mailboxAddress);
   if (!sender.ok) {
@@ -1324,14 +1331,9 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
     await resolveLabelId(gm, env.labelName);
     await resolveLabelId(gm, env.processedLabelName);
     const profile = await gm.users.getProfile({ userId: 'me' });
-    mailboxAddress = extractEmailAddress(profile.data.emailAddress ?? null);
-    // 公開 Actions log に profile address が出る前に mask を登録する。
-    // この callback 内では mask 登録より前に address を含むログを一切出さない。
-    if (mailboxAddress) addGitHubActionsMask(mailboxAddress);
+    // 取得不能・形式不正ならここで throw。検索や通常ログへ進む前に fail-closed。
+    mailboxAddress = requireMaskedMailboxAddress(profile.data.emailAddress ?? null);
   });
-  if (!mailboxAddress) {
-    throw new Error('Gmail profile から有効な emailAddress を取得できませんでした (fail-closed)');
-  }
 
   // F2: Obsidian 上で untrusted Markdown を実行可能な .md として残さない。
   // dry-run は読み取り専用なので migration も行わない。
