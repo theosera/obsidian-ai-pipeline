@@ -835,6 +835,34 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     assert.strictEqual(canonicalFileSource('/x/2026-05-25.md.txt'), 'file:2026-05-25.md');
   });
 
+  runner.test('無関係な inert 非regular file があれば legacy rename 前に fail-closed', () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const rawDir = path.join(tmpVault, getThreatReportsArchiveFolder());
+      fs.mkdirSync(rawDir, { recursive: true });
+      const legacyPath = path.join(rawDir, '2026-05-25.md');
+      const targetPath = path.join(rawDir, getThreatReportArchiveFilename('2026-05-25'));
+      fs.writeFileSync(legacyPath, SAMPLE_REPORT, 'utf8');
+      fs.mkdirSync(path.join(rawDir, '2026-06-01.md.txt'));
+
+      const db = new ThreatReportsDb(':memory:');
+      assert.throws(
+        () => migrateLegacyThreatReportArchives({ db, vaultRoot: tmpVault }),
+        /新形式 raw archive が regular file でない/
+      );
+      assert.strictEqual(fs.existsSync(legacyPath), true, 'preflight 失敗前なので legacy は未変更');
+      assert.strictEqual(fs.existsSync(targetPath), false, 'rename を1件も開始しない');
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
   runner.test('legacy/new が異なる内容なら fail-closed でどちらも変更しない', () => {
     const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
     const prevVault = process.env.VAULT_ROOT;
@@ -888,7 +916,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     }
   });
 
-  await runner.testAsync('F2: parser 契約違反でも legacy .md は parse 前に .md.txt へ移行', async () => {
+  await runner.testAsync('F2: parser 契約違反でも migration と JSON/index 同期を完了してから fail-closed', async () => {
     const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
     const prevVault = process.env.VAULT_ROOT;
     setVaultRoot(tmpVault);
@@ -898,15 +926,31 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       fs.mkdirSync(rawDir, { recursive: true });
       const legacyPath = path.join(rawDir, '2026-05-25.md');
       const newPath = path.join(rawDir, getThreatReportArchiveFilename('2026-05-25'));
-      fs.writeFileSync(legacyPath, '# invalid report without frontmatter', 'utf8');
+      const invalidBody = '# invalid report without frontmatter';
+      fs.writeFileSync(legacyPath, invalidBody, 'utf8');
       const db = new ThreatReportsDb(':memory:');
+      const legacyRel = path.relative(tmpVault, legacyPath).replace(/\\/g, '/');
+      db.upsertReport({
+        id: 'legacy-r1', source: 'file:2026-05-25.md', receivedAt: 'now', weekOf: '2026-05-25',
+        rawMarkdown: invalidBody, vaultPath: legacyRel,
+      });
+      db.upsertVulnerability({ reportId: 'legacy-r1', name: 'Legacy V', riskScore: 1.0 });
 
       await assert.rejects(
         ingestThreatReport({ filePath: legacyPath, db, vaultRoot: tmpVault }),
         ContractError
       );
       assert.strictEqual(fs.existsSync(legacyPath), false, '契約違反でも executable .md を残さない');
-      assert.strictEqual(fs.readFileSync(newPath, 'utf8'), '# invalid report without frontmatter');
+      assert.strictEqual(fs.readFileSync(newPath, 'utf8'), invalidBody);
+      assert.ok(db.getReport('legacy-r1')?.vault_path?.endsWith('2026-05-25.md.txt'));
+
+      const jsonPath = path.join(tmpVault, getThreatReportsBaseFolder(), '.threat_reports.json');
+      const payload = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      const legacyRow = payload.rows.find((r: { name?: string }) => r.name === 'Legacy V');
+      assert.ok(legacyRow, 'migration 後の DB view を JSON に再生成');
+      assert.ok(String(legacyRow.raw_md_path).endsWith('2026-05-25.md.txt'));
+      const indexPath = path.join(tmpVault, getThreatReportsBaseFolder(), '_index.md');
+      assert.ok(fs.readFileSync(indexPath, 'utf8').includes('raw/<YYYY-MM-DD>.md.txt'));
       db.close();
     } finally {
       if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
