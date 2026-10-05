@@ -23,10 +23,18 @@ import {
   ContractError,
 } from '../threat-reports/parser';
 import { ThreatReportsDb } from '../threat-reports/db';
-import { ingestThreatReport, rebuildThreatReportsDbFromVault } from '../threat-reports/ingest';
+import {
+  ingestThreatReport,
+  rebuildThreatReportsDbFromVault,
+  migrateLegacyThreatReportArchives,
+} from '../threat-reports/ingest';
 import { buildExportPayload } from '../threat-reports/json_export';
 import { renderAutoBlock, replaceAutoBlock } from '../threat-reports/index_writer';
-import { getThreatReportsBaseFolder } from '../threat-reports/config';
+import {
+  getThreatReportsBaseFolder,
+  getThreatReportsArchiveFolder,
+  getThreatReportArchiveFilename,
+} from '../threat-reports/config';
 import { LEGACY_REPO_KEY } from '../threat-reports/repo_target';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
@@ -675,6 +683,13 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       assert.strictEqual(result.weekOf, '2026-05-25');
       assert.strictEqual(result.vulnerabilities, 2);
       assert.ok(result.archivedPath && fs.existsSync(result.archivedPath), 'raw archive 存在');
+      assert.ok(result.archivedPath?.endsWith('.md.txt'), 'raw archive は Obsidian 非実行拡張子');
+      assert.strictEqual(fs.readFileSync(result.archivedPath!, 'utf8'), SAMPLE_REPORT, '原文 bytes は内容不変');
+      assert.strictEqual(
+        fs.existsSync(path.join(path.dirname(result.archivedPath!), '2026-05-25.md')),
+        false,
+        'untrusted Markdown を .md として残さない'
+      );
       assert.ok(fs.existsSync(result.jsonPath), 'JSON 存在');
       assert.ok(fs.existsSync(result.indexPath), 'index 存在');
 
@@ -702,6 +717,108 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       assert.ok(indexBody.includes('<!-- threat-reports:auto-block:start -->'));
       assert.ok(indexBody.includes('```dataviewjs'));
 
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  await runner.testAsync('F2: dataviewjs を含む原文も内容不変の .md.txt として保存し .md は作らない', async () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const executableLooking = SAMPLE_REPORT + [
+        '',
+        '## Appendix',
+        '',
+        '```dataviewjs',
+        'dv.paragraph("must remain inert as report evidence");',
+        '```',
+        '',
+      ].join('\n');
+      const tmpFile = path.join(tmpVault, 'incoming.md');
+      fs.writeFileSync(tmpFile, executableLooking, 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      const result = await ingestThreatReport({ filePath: tmpFile, db, vaultRoot: tmpVault });
+      assert.ok(result.archivedPath?.endsWith('.md.txt'));
+      assert.strictEqual(fs.readFileSync(result.archivedPath!, 'utf8'), executableLooking);
+      assert.strictEqual(
+        fs.existsSync(path.join(path.dirname(result.archivedPath!), '2026-05-25.md')),
+        false,
+        'Obsidian が Markdown として処理する legacy path は作らない'
+      );
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  runner.section('migrateLegacyThreatReportArchives (.md → .md.txt)');
+
+  runner.test('legacy raw を内容不変で rename し DB path だけ追随、人手 note/review は保持', () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const rawDir = path.join(tmpVault, getThreatReportsArchiveFolder());
+      fs.mkdirSync(rawDir, { recursive: true });
+      const legacyPath = path.join(rawDir, '2026-05-25.md');
+      const newPath = path.join(rawDir, getThreatReportArchiveFilename('2026-05-25'));
+      fs.writeFileSync(legacyPath, SAMPLE_REPORT, 'utf8');
+
+      const db = new ThreatReportsDb(':memory:');
+      const legacyRel = path.relative(tmpVault, legacyPath).replace(/\\/g, '/');
+      db.upsertReport({
+        id: 'r1', source: 'gmail:m1', receivedAt: 'now', weekOf: '2026-05-25',
+        rawMarkdown: SAMPLE_REPORT, vaultPath: legacyRel,
+      });
+      db.upsertVulnerability({ reportId: 'r1', name: 'V', riskScore: 8.0 });
+      db.setRelevanceNote('r1', 'V', REPO, '人手 note を保持');
+      db.markReportReviewed('r1', REPO, '2026-10-06T00:00:00Z');
+
+      const out = migrateLegacyThreatReportArchives({ db, vaultRoot: tmpVault });
+      assert.deepStrictEqual(out, { migrated: 1, deduplicated: 0, dbPathsUpdated: 1 });
+      assert.strictEqual(fs.existsSync(legacyPath), false);
+      assert.strictEqual(fs.readFileSync(newPath, 'utf8'), SAMPLE_REPORT);
+      assert.ok(db.getReport('r1')?.vault_path?.endsWith('2026-05-25.md.txt'));
+      assert.strictEqual(db.getRelevanceNote('r1', 'V', REPO), '人手 note を保持');
+      assert.strictEqual(db.isReportReviewed('r1', REPO), true);
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  runner.test('legacy/new が異なる内容なら fail-closed でどちらも変更しない', () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const rawDir = path.join(tmpVault, getThreatReportsArchiveFolder());
+      fs.mkdirSync(rawDir, { recursive: true });
+      const legacyPath = path.join(rawDir, '2026-05-25.md');
+      const newPath = path.join(rawDir, getThreatReportArchiveFilename('2026-05-25'));
+      fs.writeFileSync(legacyPath, 'legacy body', 'utf8');
+      fs.writeFileSync(newPath, 'new body differs', 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      assert.throws(
+        () => migrateLegacyThreatReportArchives({ db, vaultRoot: tmpVault }),
+        /legacy\/new raw archive conflict/
+      );
+      assert.strictEqual(fs.readFileSync(legacyPath, 'utf8'), 'legacy body');
+      assert.strictEqual(fs.readFileSync(newPath, 'utf8'), 'new body differs');
       db.close();
     } finally {
       if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
@@ -848,9 +965,9 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     }
   });
 
-  runner.section('rebuildThreatReportsDbFromVault (raw/*.md → DB 復旧)');
+  runner.section('rebuildThreatReportsDbFromVault (raw/*.md.txt → DB 復旧)');
 
-  await runner.testAsync('rebuild: raw/*.md から作り直し、孤児行を落とし human note は復元しない', async () => {
+  await runner.testAsync('rebuild: raw/*.md.txt から作り直し、孤児行を落とし human note は復元しない', async () => {
     const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
     const prevVault = process.env.VAULT_ROOT;
     setVaultRoot(tmpVault);
@@ -860,7 +977,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       fs.writeFileSync(tmpFile, SAMPLE_REPORT, 'utf8');
       const db = new ThreatReportsDb(':memory:');
 
-      // 1. 通常 ingest → raw/<week>.md がアーカイブされ、1 report + 2 vuln が入る
+      // 1. 通常 ingest → raw/<week>.md.txt がアーカイブされ、1 report + 2 vuln が入る
       const ing = await ingestThreatReport({ filePath: tmpFile, db, vaultRoot: tmpVault });
       assert.ok(ing.archivedPath && fs.existsSync(ing.archivedPath), 'raw archive 生成');
 
@@ -886,7 +1003,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       });
       assert.strictEqual(db.listReports().length, 2, '再構築前: 実レポート + 孤児 = 2');
 
-      // 4. rebuild — raw/*.md だけを真実に作り直す
+      // 4. rebuild — raw/*.md.txt だけを真実に作り直す
       const res = await rebuildThreatReportsDbFromVault({ db, vaultRoot: tmpVault });
       assert.strictEqual(res.filesFound, 1, 'raw は 1 ファイル');
       assert.strictEqual(res.reportsRebuilt, 1, '1 レポート復元');
@@ -901,7 +1018,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
       // 再構築行は vault_path (raw アーカイブパス) を保持する
       // — null だと JSON の raw_md_path が切れて元レポートへのリンクが壊れる (Codex #82 P2)
       assert.ok(
-        rebuilt[0].vault_path && rebuilt[0].vault_path.endsWith('2026-05-25.md'),
+        rebuilt[0].vault_path && rebuilt[0].vault_path.endsWith('2026-05-25.md.txt'),
         `再構築でも vault_path を保持 (実際: ${rebuilt[0].vault_path})`
       );
 
@@ -1018,14 +1135,14 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     const db = new ThreatReportsDb(':memory:');
     db.upsertReport({
       id: 'r1', source: 't', receivedAt: 'now',
-      weekOf: '2026-05-25', rawMarkdown: '', vaultPath: 'raw/2026-05-25.md',
+      weekOf: '2026-05-25', rawMarkdown: '', vaultPath: 'raw/2026-05-25.md.txt',
     });
     db.upsertVulnerability({ reportId: 'r1', name: 'A', riskScore: 8.0 });
     db.upsertVulnerability({ reportId: 'r1', name: 'B', riskScore: 6.0 });
     const payload = buildExportPayload({ db, vaultRoot: '/tmp', baseFolder: 'X' });
     assert.strictEqual(payload.rows.length, 2);
     assert.strictEqual(payload.rows[0].week_of, '2026-05-25');
-    assert.strictEqual(payload.rows[0].raw_md_path, 'raw/2026-05-25.md');
+    assert.strictEqual(payload.rows[0].raw_md_path, 'raw/2026-05-25.md.txt');
     db.close();
   });
 
@@ -1035,6 +1152,7 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     assert.ok(block.includes('<!-- threat-reports:auto-block:end -->'));
     assert.ok(block.includes('```dataviewjs'));
     assert.ok(block.includes('X/Y/.threat_reports.json'));
+    assert.ok(block.includes('raw/<YYYY-MM-DD>.md.txt'));
   });
 
   runner.test('replaceAutoBlock: ユーザー本文の前後を保護して中身だけ差し替え', () => {
