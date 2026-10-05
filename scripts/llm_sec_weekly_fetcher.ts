@@ -565,6 +565,13 @@ export function makeCliGateRunner(vaultRoot: string): GateRunner {
  * 同名が既にある場合 (同じ週を騙る別メールが続けて隔離された等) は連番を付ける。
  * 上書きすると先に隔離した証拠が消え、裁定できなくなるため。
  */
+export class QuarantineCapacityError extends Error {
+  constructor(filename: string) {
+    super(`quarantine collision が 100 件を超えたため上書きせず停止: ${filename}`);
+    this.name = 'QuarantineCapacityError';
+  }
+}
+
 export function quarantineBody(srcPath: string, quarantineDir: string): string {
   fs.mkdirSync(quarantineDir, { recursive: true });
   const srcBase = path.basename(srcPath);
@@ -579,7 +586,7 @@ export function quarantineBody(srcPath: string, quarantineDir: string): string {
   let dest = path.join(quarantineDir, inertBase);
   for (let n = 1; fs.existsSync(dest); n++) {
     if (n > 100) {
-      throw new Error(`quarantine collision が 100 件を超えたため上書きせず停止: ${inertBase}`);
+      throw new QuarantineCapacityError(inertBase);
     }
     dest = path.join(quarantineDir, `${stem}.${n}${suffix}`);
   }
@@ -1115,6 +1122,12 @@ async function processMessage(
       };
     }
   } catch (e) {
+    if (e instanceof QuarantineCapacityError) {
+      // quarantine 枯渇は一時的な1-message障害ではなく運用上のsystemic failure。
+      // gate 側が pending queue を書いた後でも、本 run 自体を失敗させれば vault push /
+      // processed label は行われず、Gmail 原本から次回やり直せる。staging も消さない。
+      throw e;
+    }
     removeIfExists(stagedPath);
     return {
       ...at,
