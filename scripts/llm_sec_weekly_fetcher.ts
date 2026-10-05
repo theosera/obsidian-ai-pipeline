@@ -570,7 +570,10 @@ export function quarantineBody(srcPath: string, quarantineDir: string): string {
   const suffix = '.md.txt';
   const stem = inertBase.slice(0, -suffix.length);
   let dest = path.join(quarantineDir, inertBase);
-  for (let n = 1; fs.existsSync(dest) && n <= 100; n++) {
+  for (let n = 1; fs.existsSync(dest); n++) {
+    if (n > 100) {
+      throw new Error(`quarantine collision が 100 件を超えたため上書きせず停止: ${inertBase}`);
+    }
     dest = path.join(quarantineDir, `${stem}.${n}${suffix}`);
   }
   fs.renameSync(srcPath, dest);
