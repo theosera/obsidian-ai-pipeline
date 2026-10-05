@@ -32,7 +32,7 @@ export function renderAutoBlock(args: RenderArgs): string {
     SENTINEL_START,
     '> このページは自動生成された脅威レポート横串インデックスです。',
     '> 表は列ヘッダクリックで昇順/降順ソートできます。',
-    '> 個別レポート原文は `raw/<YYYY-MM-DD>.md` に保存されています。',
+    '> 個別レポート原文は `raw/<YYYY-MM-DD>.md.txt` に保存されています。',
     '',
     '```dataviewjs',
     `const data = JSON.parse(await dv.io.load("${safeJsonPath}"));`,
