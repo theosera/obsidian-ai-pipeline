@@ -602,6 +602,17 @@ export class ThreatReportsDb {
   }
 
   /**
+   * Vault 内 source-of-truth のファイル名移行に伴い、path だけを限定更新する。
+   * report 本文・レビュー状態・per-repo note 等には触れない。
+   */
+  updateReportVaultPath(oldPath: string, newPath: string): number {
+    const info = this.db.prepare(
+      'UPDATE reports SET vault_path = ? WHERE vault_path = ?'
+    ).run(newPath, oldPath);
+    return info.changes;
+  }
+
+  /**
    * 指定リポジトリ (`repoKey`) について該当性レビュー未実施のレポートのみ。古い週順。
    * `report_repo_reviews` にそのリポの行が無いレポートが対象 (= リポごとに独立スキップ)。
    */
