@@ -1323,15 +1323,17 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
 
   const gm = buildGmailClient(env);
 
-  // ラベル自体の存在確認 + アカウント自身のアドレス取得。
-  // 最初の認証付き呼び出しでもあるため、OAuth refresh 失敗 (invalid_grant) は
-  // ここで実行可能なメッセージに翻訳される。
+  // 起動時の最初の認証処理でアカウント自身のアドレスを確定する。
+  // 取得不能・形式不正なら、ラベル解決・検索・通常ログへ進む前に fail-closed。
   const mailboxAddress = await withOAuthErrorHint(async () => {
+    const profile = await gm.users.getProfile({ userId: 'me' });
+    return requireMaskedMailboxAddress(profile.data.emailAddress ?? null);
+  });
+
+  // profile 検証と mask 登録が済んだ後に、必要ラベルの存在を確認する。
+  await withOAuthErrorHint(async () => {
     await resolveLabelId(gm, env.labelName);
     await resolveLabelId(gm, env.processedLabelName);
-    const profile = await gm.users.getProfile({ userId: 'me' });
-    // 取得不能・形式不正ならここで throw。検索や通常ログへ進む前に fail-closed。
-    return requireMaskedMailboxAddress(profile.data.emailAddress ?? null);
   });
 
   // F2: Obsidian 上で untrusted Markdown を実行可能な .md として残さない。
