@@ -1326,13 +1326,12 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
   // ラベル自体の存在確認 + アカウント自身のアドレス取得。
   // 最初の認証付き呼び出しでもあるため、OAuth refresh 失敗 (invalid_grant) は
   // ここで実行可能なメッセージに翻訳される。
-  let mailboxAddress: string | null = null;
-  await withOAuthErrorHint(async () => {
+  const mailboxAddress = await withOAuthErrorHint(async () => {
     await resolveLabelId(gm, env.labelName);
     await resolveLabelId(gm, env.processedLabelName);
     const profile = await gm.users.getProfile({ userId: 'me' });
     // 取得不能・形式不正ならここで throw。検索や通常ログへ進む前に fail-closed。
-    mailboxAddress = requireMaskedMailboxAddress(profile.data.emailAddress ?? null);
+    return requireMaskedMailboxAddress(profile.data.emailAddress ?? null);
   });
 
   // F2: Obsidian 上で untrusted Markdown を実行可能な .md として残さない。
