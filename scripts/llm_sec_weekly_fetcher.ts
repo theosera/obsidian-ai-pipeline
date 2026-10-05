@@ -408,7 +408,7 @@ export type SenderVerdict =
  * GitHub Actions の workflow command で機密値を mask 登録する。
  *
  * profile address は公開リポの Actions log に出してはいけないため、
- * users.getProfile() で取得した直後、検索クエリや検証ログより前に必ず呼ぶ。
+ * アカウント自身のアドレスを取得した直後、検索クエリや検証ログより前に必ず呼ぶ。
  */
 export function addGitHubActionsMask(value: string): void {
   console.log(`::add-mask::${value}`);
@@ -1323,7 +1323,7 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
 
   const gm = buildGmailClient(env);
 
-  // ラベル自体の存在確認 + Gmail profile address の取得。
+  // ラベル自体の存在確認 + アカウント自身のアドレス取得。
   // 最初の認証付き呼び出しでもあるため、OAuth refresh 失敗 (invalid_grant) は
   // ここで実行可能なメッセージに翻訳される。
   let mailboxAddress: string | null = null;
