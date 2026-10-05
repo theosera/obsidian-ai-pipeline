@@ -691,6 +691,10 @@ export function discardFailedPromotion(args: {
   try {
     quarantinedPath = quarantineBody(args.rawPath, args.quarantineDir);
   } catch (e) {
+    if (e instanceof QuarantineCapacityError) {
+      // capacity 枯渇時は raw 証拠を消さず run 全体を停止し、原本から再試行可能にする。
+      throw e;
+    }
     console.error(`::error::ingest 失敗本文の raw/ からの退避に失敗: ${errText(e)}`);
     removeIfExists(args.rawPath);
   }
@@ -1174,6 +1178,10 @@ async function processMessage(
     try {
       quarantinedPath = quarantineBody(stagedPath, quarantineDir);
     } catch (e) {
+      if (e instanceof QuarantineCapacityError) {
+        // capacity 枯渇時は staging 証拠を残したまま run 全体を fail-closed。
+        throw e;
+      }
       console.error(`::error::衝突本文の隔離に失敗: ${errText(e)}`);
       removeIfExists(stagedPath);
     }
