@@ -503,7 +503,7 @@ export async function run(): Promise<TestSuiteResult> {
 
   function gateFixture(): { rawPath: string; quarantineDir: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-gate-'));
-    const rawPath = path.join(dir, '_staging', '2026-06-08.md');
+    const rawPath = path.join(dir, '_staging', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(rawPath), { recursive: true });
     fs.writeFileSync(rawPath, 'body', 'utf8');
     return { rawPath, quarantineDir: path.join(dir, '_quarantine') };
@@ -797,7 +797,7 @@ export async function run(): Promise<TestSuiteResult> {
 
   function stagingFixture(rawContent: string | null): { stagedPath: string; rawPath: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-stage-'));
-    const stagedPath = path.join(dir, '_staging', '2026-06-08.md');
+    const stagedPath = path.join(dir, '_staging', '2026-06-08.md.txt');
     const rawPath = path.join(dir, 'raw', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(stagedPath), { recursive: true });
     fs.writeFileSync(stagedPath, 'new body', 'utf8');
@@ -847,6 +847,9 @@ export async function run(): Promise<TestSuiteResult> {
     fs.writeFileSync(stagedPath, 'second body', 'utf8');
     const second = quarantineBody(stagedPath, quarantineDir);
     assert.notStrictEqual(first, second);
+    assert.ok(first.endsWith('.md.txt'), '1件目も inert suffix');
+    assert.ok(second.endsWith('.md.txt'), '連番後も inert suffix');
+    assert.ok(second.endsWith('.1.md.txt'), '連番は拡張子の前へ入る');
     assert.strictEqual(fs.readFileSync(first, 'utf8'), 'new body');
     assert.strictEqual(fs.readFileSync(second, 'utf8'), 'second body');
   });
