@@ -19,7 +19,7 @@
  *        (隔離キューに pending の **thread** (`source_ref`) は裁定待ちとして skip。
  *        period_end 単位で skip すると、未来の週を騙る 1 通で以後その週の正規
  *        レポートを恒久的に塞げてしまう)
- *     5. untrusted 本文はまず `<vault>/<base>/_staging/<period_end>.md` に置く
+ *     5. untrusted 本文はまず `<vault>/<base>/_staging/<period_end>.md.txt` に置く
  *        (raw/ への昇格は clean 判定の後。隔離判定が既存 raw を消せない設計)
  *     6. **インジェクション・ゲート** (L0+L1 → gate_decision.py --profile=ci) を
  *        ingest 前に実行。non-clean (suspicious/blocked/エラー = fail-closed) は
