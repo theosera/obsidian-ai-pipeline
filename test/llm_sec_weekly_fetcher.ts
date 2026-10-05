@@ -45,6 +45,7 @@ import {
   verifySelfSentReport,
   addGitHubActionsMask,
   requireMaskedMailboxAddress,
+  initializeMailboxBeforeSearch,
   redactAccountForLog,
   buildGmailQuery,
   GATE_SUBDIR,
@@ -271,23 +272,37 @@ export async function run(): Promise<TestSuiteResult> {
     assert.deepStrictEqual(extractEmailAddresses(null), []);
   });
 
-  t.test('起動時: Gmail profile address が取得不能/不正なら検索・通常ログ前に fail-closed', () => {
-    const logs: string[] = [];
-    const origLog = console.log;
-    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
-    try {
-      assert.throws(
-        () => requireMaskedMailboxAddress(null),
-        /有効な email address を取得できませんでした/
-      );
-      assert.throws(
-        () => requireMaskedMailboxAddress('not-an-address'),
-        /有効な email address を取得できませんでした/
-      );
-    } finally {
-      console.log = origLog;
+  await t.testAsync('起動経路: Gmail profile address が取得不能/不正ならラベル・検索・通常ログ前に fail-closed', async () => {
+    for (const profileValue of [null, 'not-an-address']) {
+      let labelCalls = 0;
+      let searchCalls = 0;
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+      try {
+        await assert.rejects(
+          async () => {
+            const account = await initializeMailboxBeforeSearch(
+              {
+                getProfileAddress: async () => profileValue,
+                resolveLabel: async () => { labelCalls++; },
+              },
+              'LLM-Sec-Report',
+              'LLM-Sec-Report/processed'
+            );
+            // 実運用でも検索は startup helper の resolve 後にだけ到達する。
+            searchCalls++;
+            buildGmailQuery('LLM-Sec-Report', 'LLM-Sec-Report/processed', account);
+          },
+          /有効な email address を取得できませんでした/
+        );
+      } finally {
+        console.log = origLog;
+      }
+      assert.strictEqual(labelCalls, 0, 'profile fail ならラベル解決へ進まない');
+      assert.strictEqual(searchCalls, 0, 'profile fail なら検索へ進まない');
+      assert.deepStrictEqual(logs, [], 'profile fail なら mask/query/通常ログを一切出さない');
     }
-    assert.deepStrictEqual(logs, [], '取得不能/形式不正では mask/query/通常ログを一切出さない');
   });
 
   t.test('起動時: 有効な Gmail profile address は通常ログより先に mask 登録される', () => {
