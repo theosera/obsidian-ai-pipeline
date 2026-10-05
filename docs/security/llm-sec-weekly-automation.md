@@ -27,7 +27,7 @@
                           │   1. OAuth refresh                       │
                           │   2. Gmail API search                    │
                           │      (隔離キュー pending の週は skip)    │
-                          │   3. sanitize + raw md 保存              │
+                          │   3. sanitize + raw 原文を .md.txt 保存   │
                           │   4. インジェクション・ゲート            │
                           │      (L0+L1 → gate_decision.py ci)       │
                           │      non-clean → _quarantine/ 退避 +     │
@@ -50,7 +50,7 @@
                                                  ▼
                                   ┌─────────────────────────────┐
                                   │ Vault repo (private)        │
-                                  │   raw/<YYYY-MM-DD>.md       │
+                                  │   raw/<YYYY-MM-DD>.md.txt   │
                                   │   .threat_reports.json      │
                                   │   _index.md                 │
                                   │   _gate/decisions.jsonl     │
@@ -250,7 +250,7 @@ CLAUDE.md「Secrets / sensitive files」節の通り、これらは **絶対に�
    🔍 Gmail query: label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed in:sent from:<自分> to:<自分> (max 10)
    🔐 送信者検証: Gmail SENT system label + From/To=<自分> の self-send のみ取込
    📨 未処理 thread: N 件
-     🧪 [dry-run] 2026-05-25.md 書込と ingest と processed ラベル付与をスキップ
+     🧪 [dry-run] 2026-05-25.md.txt 書込とゲートと ingest と pending-labels.json への記録をスキップ
      ...
    📊 結果: ingested=N, skipped=0, error=0
    ```
