@@ -80,7 +80,13 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
   // F2: legacy raw/*.md 自体が input の場合、parser が拒否する本文でも
   // executable Markdown を Vault に残さない。本文は既に memory に読み込んで
   // あるので、契約パースより先に内容不変の .md.txt migration を行う。
-  migrateLegacyThreatReportArchives({ db, vaultRoot });
+  const migration = migrateLegacyThreatReportArchives({ db, vaultRoot });
+  if (migration.migrated || migration.deduplicated || migration.dbPathsUpdated) {
+    // parseReport() がこの後 ContractError で止まっても、既に変更した vault_path と
+    // 派生 JSON/index を食い違わせない。
+    exportThreatReportsJson({ db, vaultRoot });
+    regenerateIndexPage({ vaultRoot });
+  }
 
   const parsed = parseReport(markdown);
   const source = options.source ?? canonicalFileSource(filePath);
@@ -198,11 +204,26 @@ export function migrateLegacyThreatReportArchives(options?: {
     throw new Error(`raw archive dir が vault 外 (symlink?): ${rawDir}`);
   }
 
-  const legacyFiles = fs.readdirSync(rawDir)
+  const allEntries = fs.readdirSync(rawDir);
+  const legacyFiles = allEntries
     .filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name))
     .sort();
+  const existingInertFiles = allEntries
+    .filter((name) => /^\d{4}-\d{2}-\d{2}\.md\.txt$/.test(name))
+    .sort();
 
-  // 先に全件 preflight。途中まで rename してから conflict を見つける状態を作らない。
+  // 先に既存 inert archive を全件 preflight。legacy と無関係な .md.txt に
+  // symlink/非 regular file が混じっていても、1件も rename する前に停止する。
+  for (const file of existingInertFiles) {
+    const targetPath = path.join(rawDir, file);
+    const targetStat = fs.lstatSync(targetPath);
+    if (!targetStat.isFile() || targetStat.isSymbolicLink()) {
+      throw new Error(`新形式 raw archive が regular file でない: ${targetPath}`);
+    }
+  }
+
+  // legacy/new の内容 conflict も全件 preflight。途中まで rename してから
+  // conflict を見つける状態を作らない。
   for (const file of legacyFiles) {
     const legacyPath = path.join(rawDir, file);
     const targetPath = path.join(
@@ -214,10 +235,6 @@ export function migrateLegacyThreatReportArchives(options?: {
       throw new Error(`legacy raw archive が regular file でない: ${legacyPath}`);
     }
     if (fs.existsSync(targetPath)) {
-      const targetStat = fs.lstatSync(targetPath);
-      if (!targetStat.isFile() || targetStat.isSymbolicLink()) {
-        throw new Error(`新形式 raw archive が regular file でない: ${targetPath}`);
-      }
       if (!fs.readFileSync(legacyPath).equals(fs.readFileSync(targetPath))) {
         throw new Error(
           `legacy/new raw archive conflict (内容が異なるため移行停止): ${file} / ${path.basename(targetPath)}`
