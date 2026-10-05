@@ -7,7 +7,7 @@
  *   3. SQLite に report + vulnerabilities を upsert
  *   4. JSON エクスポート (Dataview 用)
  *   5. index ページ再生成 (sentinel block 差し替え)
- *   6. Vault に raw markdown をアーカイブ (オプション)
+ *   6. Vault に raw markdown 原文を inert text (`.md.txt`) としてアーカイブ (オプション)
  *
  * Gmail からのフェッチは **Claude Code 側 (このセッション)** が MCP 経由で
  * 行い、生 markdown をファイル化してからこの CLI を呼ぶ責務分担。
@@ -21,7 +21,12 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getVaultRoot } from '../config';
-import { getThreatReportsBaseFolder, getThreatReportsArchiveFolder } from './config';
+import {
+  getThreatReportsBaseFolder,
+  getThreatReportsArchiveFolder,
+  getThreatReportArchiveFilename,
+  THREAT_REPORT_ARCHIVE_SUFFIX,
+} from './config';
 import { resolveVaultPath, isInsideVaultRealpath } from '../storage';
 import { ThreatReportsDb, getDb } from './db';
 import { parseReport, ContractError } from './parser';
@@ -158,7 +163,7 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
 export interface RebuildResult {
   /** 走査した raw アーカイブディレクトリ (絶対パス) */
   rawDir: string;
-  /** 見つかった `.md` 件数 */
+  /** 見つかった raw report 件数 (`.md.txt` + legacy `.md`, 週単位で重複排除) */
   filesFound: number;
   /** 再構築できたレポート行数 */
   reportsRebuilt: number;
@@ -173,7 +178,9 @@ export interface RebuildResult {
 }
 
 /**
- * `raw/<week>.md` を唯一の真実として threat_reports DB を作り直す。
+ * `raw/<week>.md.txt` を正本として threat_reports DB を作り直す。
+ * 旧版の `raw/<week>.md` も移行互換のため読むが、同じ週に `.md.txt` があれば
+ * `.md.txt` を優先する。
  *
  * ヘッダコメントが長らく謳ってきた「壊れたら .md から再構築可能 (rebuildFromVault)」を
  * 実装したもの。破損退避 (`<file>.corrupted_*`) や手動 DB 削除のあとに、Vault に
@@ -204,9 +211,21 @@ export async function rebuildThreatReportsDbFromVault(options?: {
   //    raw が消えた孤児レポートもここで落ちる。
   for (const r of db.listReports()) db.deleteReport(r.id);
 
-  // 2. raw/*.md を列挙 (週順で安定させるためソート)。
+  // 2. raw archive を列挙 (週順で安定させるためソート)。
+  // 新形式 `.md.txt` を正本にし、同じ week の legacy `.md` は二重 ingest しない。
   const files = fs.existsSync(rawDir)
-    ? fs.readdirSync(rawDir).filter((f) => f.endsWith('.md')).sort()
+    ? (() => {
+        const names = fs.readdirSync(rawDir);
+        const byWeek = new Map<string, string>();
+        for (const file of names.filter(f => f.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX)).sort()) {
+          byWeek.set(file.slice(0, -THREAT_REPORT_ARCHIVE_SUFFIX.length), file);
+        }
+        for (const file of names.filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f)).sort()) {
+          const week = file.slice(0, -3);
+          if (!byWeek.has(week)) byWeek.set(week, file);
+        }
+        return [...byWeek.values()].sort();
+      })()
     : [];
 
   let reportsRebuilt = 0;
@@ -270,7 +289,12 @@ function generateReportId(source: string, weekOf: string): string {
 }
 
 /**
- * Vault に raw markdown を `<base>/raw/<YYYY-MM-DD>.md` として保存。
+ * Vault に raw markdown の**原文 bytes を変えず**
+ * `<base>/raw/<YYYY-MM-DD>.md.txt` として保存。
+ *
+ * `.md` にしないのは security scan F2 の境界: untrusted report に含まれる
+ * `dataviewjs` code fence を Obsidian が開いただけで実行しないようにするため。
+ * 本文の削除・伏字・書換えは行わず、拡張子だけで renderer から隔離する。
  *
  * 同名ファイルがあれば上書き (= 同じ週のレポートが parser 改良で再 ingest
  * されても 1 ファイルにまとまる)。
@@ -279,7 +303,7 @@ function archiveRawMarkdown(vaultRoot: string, weekOf: string, markdown: string)
   // 保存先が vault 配下に収まることを書込前に strict 検証する (resolveVaultPath の
   // Phase 4/5/6: `..` 拒否 + resolve 後プレフィックス + symlink realpath)。改竄された
   // archive-folder 設定や symlink フォルダ経由の vault 外書込への defense-in-depth。
-  const rel = path.join(getThreatReportsArchiveFolder(), `${weekOf}.md`);
+  const rel = path.join(getThreatReportsArchiveFolder(), getThreatReportArchiveFilename(weekOf));
   const safe = resolveVaultPath(rel);
   if (!safe.ok) {
     throw new Error(`raw markdown の保存先が安全でない: ${safe.reason}`);
