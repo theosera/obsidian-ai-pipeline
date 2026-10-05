@@ -20,46 +20,47 @@ Claude / Claude Code が**安全に** 消費するための運用契約。
 ### 検索条件 (必須)
 
 ```text
-label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed from:(<許可送信者>)
+label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed in:sent from:<自分> to:<自分>
 ```
 
 - `label:LLM-Sec-Report` — 受信側 Gmail filter により自動付与される
 - `subject:"[LLM-Sec-Weekly]"` — 件名 prefix で誤ラベルメールを弾く 2 重防御
 - `-label:LLM-Sec-Report/processed` — 既処理メールを除外
-- `from:(...)` — `LLM_SEC_ALLOWED_SENDERS` (カンマ区切り) から組み立てる**一次フィルタ**
+- `in:sent` / `from:<自分>` / `to:<自分>` — Gmail profile address から組み立てる一次フィルタ
 
-### 送信者認証 (必須 / ラベルと件名は認証ではない)
+### 送信元の真正性確認 (必須 / self-send 専用)
 
 > 🔴 **ラベルも件名も「誰が送ったか」の証明にはならない。**
-> 受信側フィルタは**件名から**ラベルを付けるので、この 2 つだけを条件にすると
-> 「アドレスを知っている人なら誰でも」自動取込パイプラインに入れる。取り込まれた
-> 本文は vault repo へ push され、`--analyze-threat-relevance` と `/sec-review` の
-> LLM / エージェント文脈に載る (= 恒久的な間接プロンプトインジェクション経路)。
+> 一方、この週次経路は「同じ Gmail アカウントから同じ Gmail アカウントへ送った
+> レポート」だけを扱う専用経路であり、外部送信者を許可する必要はない。
 
-判定は **DKIM 検証済みの `From`** で行う。`scripts/llm_sec_weekly_fetcher.ts` の
-`verifySender()` が、`from:` クエリとは独立に**メッセージ単位で**再検証する
-(クエリは検索構文の解釈に依存するため、単独では根拠にしない):
+`scripts/llm_sec_weekly_fetcher.ts` の `verifySelfSentReport()` が、
+検索クエリとは独立に **message 単位**で次を再検証する:
 
-1. `From` ヘッダからアドレスを取り出せること
-2. そのアドレスが `LLM_SEC_ALLOWED_SENDERS` に載っていること
-   (`user@example.com` 完全一致、または `@example.com` でドメイン全体)
-3. **先頭の** `Authentication-Results` が**受信側 Gmail のもの** (authserv-id =
-   `mx.google.com`) であること。送信者が付けた `Authentication-Results` (authserv-id が
-   違う / 受信側の結果より前に並ぶ) と `ARC-Authentication-Results` (チェーン未検証) は
-   **根拠にしない**
-4. その中に `dkim=pass` があり、署名ドメインが `From` のドメインと整合すること
-   (完全一致、または `From` が署名ドメインのサブドメイン)
+1. Gmail API `users.getProfile("me")` から primary address を取得できること
+2. message に Gmail system label `SENT` が付いていること
+3. `From` が profile address と完全一致すること
+4. `To` に profile address が含まれること
 
-**1 つでも欠けたら取り込まない** (fail-closed / `status: 'error'` で `processed`
-ラベルも付けない)。`LLM_SEC_ALLOWED_SENDERS` **未設定なら起動時に落ちる** —
-「未設定なら従来どおり通す」に倒すと設定漏れが無言で元の穴に戻るため。
+**1 つでも欠けたら取り込まない** (fail-closed / `status: 'error'` /
+`processed` ラベルも付けない)。
 
-> **信頼境界の明示**: `Authentication-Results` を書くのは**受信側の Gmail**であり、
-> 本実装はそれを信頼する (= Gmail の受信箱までを信頼境界とする)。送信ドメインの
-> なりすまし自体をこのコードが検証しているわけではない。
-> ⚠️ ただし `Authentication-Results` は送信者も付けられるヘッダ (RFC 8601)。受信側 Gmail は
-> 自分の結果を**先頭に**付けるので、本実装は「先頭の 1 本」だけを読み、その authserv-id が
-> 受信側でなければ (= 送信者のヘッダが先頭に来ていれば) 拒否する。2 本目以降は読まない。
+Google の Gmail API 仕様では `SENT` は手動付与不可で、Gmail UI、
+`messages.send`、`drafts.send` 等で実際に送信された message に自動付与される。
+そのため、外部送信者が `From` を偽装しただけではこの境界を通れない。
+
+- 公式仕様: https://developers.google.com/workspace/gmail/api/guides/labels
+
+> **信頼境界の明示**: Gmail account 自体と、その OAuth credential は trusted。
+> mailbox / OAuth credential が侵害された場合は本判定も破られるため、そのケースは
+> Google account incident response / token rotation の責務。
+>
+> `Authentication-Results` / DKIM はこの self-send 経路の認証根拠にしない。
+> 2026-10-06 の実測で、正規の自分宛て週報 8 通に DKIM pass が無く、
+> PR #152 の DKIM 必須判定が全件を誤拒否したためである。
+>
+> 将来、外部送信者からの週報を受け入れる要件が生じた場合は、この self-send
+> verifierを緩めず、別の明示的な sender-auth profile を新設する。
 
 ### 件名フォーマット
 
