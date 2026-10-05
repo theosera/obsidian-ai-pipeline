@@ -11,6 +11,23 @@ const DEFAULT_BASE = 'Permanent Note/10_Threat_Reports';
 const ARCHIVE_SUBDIR = 'raw';
 
 /**
+ * Untrusted Markdown は Obsidian に Markdown として解釈させない。
+ * 内容は一切変えず、拡張子だけ `.md.txt` にして source-of-truth を保持する。
+ */
+export const THREAT_REPORT_ARCHIVE_SUFFIX = '.md.txt';
+/** PR #181 以前の legacy archive。migration で `.md.txt` へ rename する。 */
+export const LEGACY_THREAT_REPORT_ARCHIVE_SUFFIX = '.md';
+
+export function getThreatReportArchiveFilename(weekOf: string): string {
+  return `${weekOf}${THREAT_REPORT_ARCHIVE_SUFFIX}`;
+}
+
+export function isThreatReportArchiveFilename(name: string): boolean {
+  return name.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX) ||
+    (name.endsWith(LEGACY_THREAT_REPORT_ARCHIVE_SUFFIX) && !name.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX));
+}
+
+/**
  * Vault 内の脅威レポート格納フォルダ (相対パス)。
  * `<vault>/<base>/_index.md` と `<vault>/<base>/.threat_reports.json` が住む場所。
  *
@@ -35,8 +52,10 @@ export function getThreatReportsBaseFolder(): string {
 }
 
 /**
- * raw markdown アーカイブの相対パス。
- * `<vault>/<base>/<archive>/<YYYY-MM-DD>.md` に 1 週 1 ファイルで保存される。
+ * raw Markdown payload の相対ディレクトリ。
+ * 原文 bytes はそのまま `<vault>/<base>/<archive>/<YYYY-MM-DD>.md.txt` に保存する。
+ * `.txt` 終端にすることで Obsidian/Dataview がレポート本文のコード fence を
+ * 実行対象 Markdown として解釈しない。内容の復元性は失わない。
  */
 export function getThreatReportsArchiveFolder(): string {
   return `${getThreatReportsBaseFolder()}/${ARCHIVE_SUBDIR}`;
