@@ -213,8 +213,13 @@ node -e '
 検索クエリにも `in:sent from:<自分> to:<自分>` を入れるが、これは一次フィルタ。
 本判定は `verifySelfSentReport()` が行う。
 
-Google Gmail API では `SENT` は手動付与不可で、Gmail UI / `messages.send` /
-`drafts.send` 等で実際に送信された message に自動付与される。
+profile address は `users.getProfile()` 直後に Actions の `::add-mask::` へ登録し、
+通常ログでは query / 検証結果を `<self>` 表記にして平文アドレスを残さない。
+
+Google Gmail API では `SENT` は手動付与不可だが、Gmail UI、`messages.send` /
+`drafts.send` に加え、`messages.insert` で `From` に本人アドレスを含めた message にも
+自動付与される。`messages.insert` は配送せず mailbox へ直接挿入するため、`SENT` は
+外部配送の証明ではなく、Gmail account/OAuth capability の境界として扱う。
 
 - 公式仕様: https://developers.google.com/workspace/gmail/api/guides/labels
 
