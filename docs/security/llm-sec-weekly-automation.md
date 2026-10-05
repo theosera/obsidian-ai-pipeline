@@ -216,14 +216,20 @@ node -e '
 本判定は message 単位で別に行う。アカウント自身のアドレスは通常ログより先に
 mask 登録し、通常ログでは `<self>` 表記にして平文アドレスを残さない。
 
-`SENT` が付いていても、それだけで owner 本人が送った証明にはならない。
-insert 経路でも `SENT` の付いた message を作れるため、通常の外部配送を通った証明としても扱わない。
+`SENT` と `From` / `To` は、この mailbox への書込み権限下で作られた
+self-send 条件の確認であり、owner 本人が送った証明にはならない。
+insert 経路でも `SENT` の付いた message を作れ、`From` / `To` も message header として
+与えられるため、通常の外部配送を通った証明としても扱わない。
 
 > **信頼境界**: この Gmail アカウントに insert/send できる OAuth client は、
 > このパイプライン以外の owner が許可したアプリも含めて trusted 側にある。
 > それらの client は、この判定を正規に通る message を作れる。
 > したがって、この経路が信頼する境界は「対象 Gmail アカウントへの正規の書込み権限」である。
 > その権限が不正利用・誤付与された場合は、本判定だけでは区別できない。
+>
+> **Google 公式出典**
+> - https://developers.google.com/workspace/gmail/api/guides/labels
+> - https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/insert
 
 > PR #152 の DKIM + `LLM_SEC_ALLOWED_SENDERS` は廃止する。2026-10-06 の
 > 実メール dry-run で、正規の自分宛て週報 8 通すべてに DKIM pass が無く、
