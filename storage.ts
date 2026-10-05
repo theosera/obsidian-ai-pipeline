@@ -61,8 +61,8 @@ function realpathWithinVault(absPath: string, vaultRoot: string): boolean {
  * Phase 6 と同じ判定を、検証後に確定した絶対パスへ再適用する (validate→execute 間に
  * symlink が差し替わる TOCTOU への defense-in-depth)。
  */
-export function isInsideVaultRealpath(absPath: string): boolean {
-  return realpathWithinVault(absPath, getVaultRoot());
+export function isInsideVaultRealpath(absPath: string, vaultRoot?: string): boolean {
+  return realpathWithinVault(absPath, vaultRoot ?? getVaultRoot());
 }
 
 /**
