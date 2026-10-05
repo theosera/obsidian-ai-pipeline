@@ -406,12 +406,32 @@ export type SenderVerdict =
   | { ok: false; reason: string };
 
 /**
+ * GitHub Actions の workflow command で機密値を mask 登録する。
+ *
+ * profile address は公開リポの Actions log に出してはいけないため、
+ * users.getProfile() で取得した直後、検索クエリや検証ログより前に必ず呼ぶ。
+ */
+export function addGitHubActionsMask(value: string): void {
+  console.log(`::add-mask::${value}`);
+}
+
+/** ログ表示用に account address を決して含まない形へ置換する。 */
+export function redactAccountForLog(text: string, account: string): string {
+  return account ? text.split(account).join('<self>') : text;
+}
+
+/**
  * self-sent 週報の message 単位検証。すべて満たさなければ拒否 (fail-closed)。
  *
  *   1. mailboxAddress が有効な profile address
  *   2. Gmail system label `SENT` が message に付いている
  *   3. From が profile address と完全一致
  *   4. To のいずれかが profile address と完全一致
+ *
+ * Gmail API 仕様上、SENT は手動付与不可だが、messages.send / drafts.send /
+ * Web UI だけでなく、messages.insert で From に本人アドレスを含めた場合にも
+ * 自動付与される。したがって SENT は「SMTP 配送された証明」ではない。
+ * 信頼境界は Gmail mailbox へ insert/send できる account/OAuth credential。
  *
  * user label / Subject / Authentication-Results / DKIM は送信者認証には使わない。
  * Subject は report 選別、frontmatter は content contract として別レイヤーで検証する。
@@ -422,18 +442,18 @@ export function verifySelfSentReport(
 ): SenderVerdict {
   const account = extractEmailAddress(mailboxAddress);
   if (!account) {
-    return { ok: false, reason: `Gmail profile address を解釈できない: ${JSON.stringify(mailboxAddress)}` };
+    return { ok: false, reason: 'Gmail profile address を解釈できない' };
   }
   if (!(message.labelIds ?? []).includes('SENT')) {
-    return { ok: false, reason: `Gmail system label SENT が無い (account=${account})` };
+    return { ok: false, reason: 'Gmail system label SENT が無い' };
   }
   const from = extractEmailAddress(getHeader(message, 'From'));
   if (from !== account) {
-    return { ok: false, reason: `From が Gmail profile と一致しない (from=${from ?? '(invalid)'} / account=${account})` };
+    return { ok: false, reason: 'From が Gmail profile と一致しない' };
   }
   const recipients = new Set(getHeaders(message, 'To').flatMap(extractEmailAddresses));
   if (!recipients.has(account)) {
-    return { ok: false, reason: `To に Gmail profile address が無い (account=${account})` };
+    return { ok: false, reason: 'To に Gmail profile address が無い' };
   }
   return { ok: true, from };
 }
@@ -573,7 +593,7 @@ export function gateAndRoute(
 export type PromoteResult = 'promoted' | 'identical' | 'conflict';
 
 /**
- * ゲート clean の本文を `raw/<period_end>.md` へ昇格する。
+ * ゲート clean の本文を `raw/<period_end>.md.txt` へ昇格する。
  *
  * 既存ファイルがある場合:
  *   - 内容が同一 → 何もしない (`identical`)。push 失敗で label が付かず次 cron が
@@ -1288,6 +1308,9 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
     await resolveLabelId(gm, env.processedLabelName);
     const profile = await gm.users.getProfile({ userId: 'me' });
     mailboxAddress = extractEmailAddress(profile.data.emailAddress ?? null);
+    // 公開 Actions log に profile address が出る前に mask を登録する。
+    // この callback 内では mask 登録より前に address を含むログを一切出さない。
+    if (mailboxAddress) addGitHubActionsMask(mailboxAddress);
   });
   if (!mailboxAddress) {
     throw new Error('Gmail profile から有効な emailAddress を取得できませんでした (fail-closed)');
@@ -1306,8 +1329,9 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
   }
 
   const query = buildGmailQuery(env.labelName, env.processedLabelName, mailboxAddress);
-  console.log(`🔍 Gmail query: ${query} (max ${env.maxResults})`);
-  console.log(`🔐 送信者検証: Gmail SENT system label + From/To=${mailboxAddress} の self-send のみ取込`);
+  // add-mask 済みでも、アプリ自身の通常ログには address を残さない defense-in-depth。
+  console.log(`🔍 Gmail query: ${redactAccountForLog(query, mailboxAddress)} (max ${env.maxResults})`);
+  console.log('🔐 送信者検証: Gmail SENT system label + From/To=<self> の self-send のみ取込');
   const { threads, truncated } = await listUnprocessedThreads(gm, query, env.maxResults);
   console.log(`📨 未処理 thread: ${threads.length} 件`);
   if (truncated) {
