@@ -31,42 +31,35 @@ label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed 
 ### 送信元の真正性確認 (必須 / self-send 専用)
 
 > 🔴 **ラベルも件名も「誰が送ったか」の証明にはならない。**
-> 一方、この週次経路は「同じ Gmail アカウントから同じ Gmail アカウントへ送った
-> レポート」だけを扱う専用経路であり、外部送信者を許可する必要はない。
+> この週次経路は自分宛ての週報だけを扱う専用経路であり、
+> 検索条件とは別に message 単位の検証を行う。
 
-`scripts/llm_sec_weekly_fetcher.ts` の `verifySelfSentReport()` が、
-検索クエリとは独立に **message 単位**で次を再検証する:
+判定条件:
 
-1. Gmail API `users.getProfile("me")` から primary address を取得できること
-2. message に Gmail system label `SENT` が付いていること
-3. `From` が profile address と完全一致すること
-4. `To` に profile address が含まれること
+1. 起動時にアカウント自身のアドレスを取得でき、形式も有効であること
+2. message に `SENT` system label が付いていること
+3. `From` がアカウント自身のアドレスと一致すること
+4. `To` にアカウント自身のアドレスが含まれること
 
-**1 つでも欠けたら取り込まない** (fail-closed / `status: 'error'` /
-`processed` ラベルも付けない)。
+起動時にアドレスを取得できない、または形式が不正な場合は、
+検索や通常ログへ進む前に fail-closed で停止する。
 
-Google の Gmail API 仕様では `SENT` は手動付与不可だが、次の message に
-自動付与される: Gmail Web UI、`messages.send` / `drafts.send`、および
-`messages.insert` で `From` に当該ユーザーのメールアドレスを含めた message。
-`messages.insert` は配送せず mailbox へ直接挿入する API なので、`SENT` は
-「SMTP/外部配送を実際に通った証明」ではない。
+**1 つでも欠けたら取り込まない**。`SENT` が付いていても、
+それだけで owner 本人が送った証明にはならない。
 
-- 公式仕様: https://developers.google.com/workspace/gmail/api/guides/labels
-- `messages.insert`: https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/insert
+> **信頼境界**: `SENT` と本人一致の `From` / `To` を満たしても、
+> それだけで「owner 本人が送った」ことの証明にはならない。
+> この Gmail アカウントへ正規に書き込める資格情報を持つ主体
+> （owner が許可したアプリを含む）は、この判定を通る message を作れる。
+> したがって、この経路が信頼する境界は「対象 Gmail アカウントへの書込み権限」である。
+> その権限が不正利用・誤付与された場合は、本判定だけでは区別できない。
 
-> **信頼境界の明示**: Gmail account 自体と、その mailbox へ message を
-> insert/send できる OAuth credential は trusted。mailbox / OAuth credential が
-> 侵害された場合、攻撃者は自己 From の insert により `SENT` 条件も満たせるため、
-> 本判定も破られる。そのケースは Google account incident response / token rotation
-> の責務。
->
 > `Authentication-Results` / DKIM はこの self-send 経路の認証根拠にしない。
 > 2026-10-06 の実測で、正規の自分宛て週報 8 通に DKIM pass が無く、
 > PR #152 の DKIM 必須判定が全件を誤拒否したためである。
 >
 > 将来、外部送信者からの週報を受け入れる要件が生じた場合は、この self-send
 > verifierを緩めず、別の明示的な sender-auth profile を新設する。
-
 ### 件名フォーマット
 
 ```text
