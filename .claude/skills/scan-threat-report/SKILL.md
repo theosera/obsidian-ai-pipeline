@@ -57,9 +57,9 @@ allowed-tools: Read
 
 ## 使い方
 
-- `/scan-threat-report <raw-report.md>` — Gmail 本文を保存した raw markdown
-- `/scan-threat-report <dir>` — `raw/` 配下の `*.md` を一括
-- `/sec-mode` フロー中に呼ばれたら、直前に取得した raw md を対象 (ingest 手前)
+- `/scan-threat-report <raw-report.md|raw-report.md.txt>` — Gmail 本文を保存した raw source
+- `/scan-threat-report <dir>` — 配下の `*.md` と inert archive `*.md.txt` を一括
+- `/sec-mode` フロー中に呼ばれたら、直前に取得した inert staging `.md.txt` を対象 (ingest 手前)
 
 ## レイヤ設計 (多層 / 単独で断定しない)
 
