@@ -84,12 +84,17 @@ export function isInsideVaultRealpath(absPath: string, vaultRoot?: string): bool
  * 「Inbox へ無言クランプ」が誤動作になる (モデルが要求したパスを黙って書き換えて
  * しまう) ため strict 版を直接使い、違反を人間に提示して拒否する。
  */
-export function resolveVaultPath(proposedRelative: string): VaultPathResult {
+export function resolveVaultPath(
+  proposedRelative: string,
+  explicitVaultRoot?: string
+): VaultPathResult {
   if (!proposedRelative || typeof proposedRelative !== 'string') {
     return { ok: false, reason: 'empty-or-non-string-path' };
   }
 
-  const vaultRoot = getVaultRoot();
+  // 呼び出し側が root を明示した場合は、その同じ root を lexical / realpath の
+  // 全フェーズで使う。省略時は従来どおり global Vault root。
+  const vaultRoot = path.resolve(explicitVaultRoot ?? getVaultRoot());
 
   // Phase 0: URLデコード（%2e%2e などのエンコード済みトラバーサル対策）
   let decoded: string;
