@@ -42,6 +42,8 @@ import {
   extractEmailAddress,
   extractEmailAddresses,
   verifySelfSentReport,
+  addGitHubActionsMask,
+  redactAccountForLog,
   buildGmailQuery,
   GATE_SUBDIR,
   PERIOD_END_RE,
@@ -265,6 +267,38 @@ export async function run(): Promise<TestSuiteResult> {
       ['weekly@example.com', 'other@example.net']
     );
     assert.deepStrictEqual(extractEmailAddresses(null), []);
+  });
+
+  t.test('addGitHubActionsMask: profile address を GitHub Actions mask として登録', () => {
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.join(' ')); };
+    try {
+      addGitHubActionsMask(ACCOUNT);
+    } finally {
+      console.log = origLog;
+    }
+    assert.deepStrictEqual(lines, [`::add-mask::${ACCOUNT}`]);
+  });
+
+  t.test('通常の Gmail query ログは profile address を含まない', () => {
+    const q = buildGmailQuery('LLM-Sec-Report', 'LLM-Sec-Report/processed', ACCOUNT);
+    const safe = `🔍 Gmail query: ${redactAccountForLog(q, ACCOUNT)} (max 10)`;
+    assert.ok(!safe.includes(ACCOUNT), 'profile address を平文ログへ出さない');
+    assert.ok(safe.includes('from:<self>'));
+    assert.ok(safe.includes('to:<self>'));
+  });
+
+  t.test('送信元検証の失敗理由にも profile address を含めない', () => {
+    const failures = [
+      verifySelfSentReport(msgWith({ From: ACCOUNT, To: ACCOUNT }, ['INBOX']), ACCOUNT),
+      verifySelfSentReport(msgWith({ From: 'attacker@example.net', To: ACCOUNT }, ['SENT']), ACCOUNT),
+      verifySelfSentReport(msgWith({ From: ACCOUNT, To: 'someone@example.net' }, ['SENT']), ACCOUNT),
+    ];
+    for (const v of failures) {
+      assert.strictEqual(v.ok, false);
+      assert.ok(!(v.ok ? '' : v.reason).includes(ACCOUNT), 'profile address を reason に埋め込まない');
+    }
   });
 
   t.test('verifySelfSentReport: SENT + From/To=profile なら DKIM 無しでも通る', () => {
