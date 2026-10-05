@@ -830,9 +830,54 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     }
   });
 
-  runner.test('canonicalFileSource: .md と .md.txt は同じ source identity', () => {
-    assert.strictEqual(canonicalFileSource('/x/2026-05-25.md'), 'file:2026-05-25.md');
-    assert.strictEqual(canonicalFileSource('/x/2026-05-25.md.txt'), 'file:2026-05-25.md');
+  runner.test('canonicalFileSource: date-named raw archive の suffix migration だけ identity を維持', () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    try {
+      const rawDir = path.join(tmpVault, getThreatReportsArchiveFolder());
+      const legacy = path.join(rawDir, '2026-05-25.md');
+      const inert = path.join(rawDir, '2026-05-25.md.txt');
+      assert.strictEqual(canonicalFileSource(legacy, tmpVault), 'file:2026-05-25.md');
+      assert.strictEqual(canonicalFileSource(inert, tmpVault), 'file:2026-05-25.md');
+
+      const externalMd = path.join(tmpVault, 'incoming', 'foo.md');
+      const externalTxt = path.join(tmpVault, 'incoming', 'foo.md.txt');
+      assert.strictEqual(canonicalFileSource(externalMd, tmpVault), 'file:foo.md');
+      assert.strictEqual(canonicalFileSource(externalTxt, tmpVault), 'file:foo.md.txt');
+
+      const nonDateRaw = path.join(rawDir, 'foo.md.txt');
+      assert.strictEqual(canonicalFileSource(nonDateRaw, tmpVault), 'file:foo.md.txt');
+    } finally {
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
+  runner.test('migration: 注入された vaultRoot を containment 判定にも使う', () => {
+    const injectedVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-injected-'));
+    const globalVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-global-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(globalVault);
+    process.env.VAULT_ROOT = globalVault;
+    try {
+      const rawDir = path.join(injectedVault, getThreatReportsArchiveFolder());
+      fs.mkdirSync(rawDir, { recursive: true });
+      const legacyPath = path.join(rawDir, '2026-05-25.md');
+      fs.writeFileSync(legacyPath, SAMPLE_REPORT, 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      const out = migrateLegacyThreatReportArchives({ db, vaultRoot: injectedVault });
+      assert.strictEqual(out.migrated, 1);
+      assert.strictEqual(fs.existsSync(legacyPath), false);
+      assert.strictEqual(
+        fs.existsSync(path.join(rawDir, getThreatReportArchiveFilename('2026-05-25'))),
+        true
+      );
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(injectedVault, { recursive: true, force: true });
+      fs.rmSync(globalVault, { recursive: true, force: true });
+    }
   });
 
   runner.test('無関係な inert 非regular file があれば legacy rename 前に fail-closed', () => {
