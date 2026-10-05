@@ -25,7 +25,7 @@
  *        ingest 前に実行。non-clean (suspicious/blocked/エラー = fail-closed) は
  *        staging を `_quarantine/` へ退避 + 隔離キュー登録し、**他 thread の処理は
  *        継続** (run 全体は fail させない。裁定は /sec-mode の隔離キュー review)
- *     7. (clean のみ) `raw/<period_end>.md` へ昇格してから
+ *     7. (clean のみ) `raw/<period_end>.md.txt` へ原文 bytes を変えずに昇格してから
  *        `ingestThreatReport()` を直接 import して実行。既存 raw と内容が違う
  *        場合は上書きせず隔離 (untrusted 入力に archive を消させない)
  *     8. **ラベルは付与しない**。成功 message と決定論的失敗 (terminal) の id を
@@ -82,7 +82,12 @@ import { fileURLToPath } from 'url';
 import { gmail, gmail_v1, auth as gmailAuth } from '@googleapis/gmail';
 import { setVaultRoot } from '../config';
 import { ingestThreatReport, ContractError } from '../threat-reports/ingest';
-import { getThreatReportsArchiveFolder, getThreatReportsBaseFolder } from '../threat-reports/config';
+import {
+  getThreatReportsArchiveFolder,
+  getThreatReportsBaseFolder,
+  getThreatReportArchiveFilename,
+  THREAT_REPORT_ARCHIVE_SUFFIX,
+} from '../threat-reports/config';
 import { closeDb } from '../threat-reports/db';
 
 // --- 公開定数 (テストから参照) ---
@@ -228,7 +233,7 @@ export function isSafeRawPath(rawPath: string, archiveDir: string): boolean {
   const resolved = path.resolve(rawPath);
   if (!resolved.startsWith(archiveRoot + path.sep)) return false;
   const rel = resolved.slice(archiveRoot.length + 1);
-  return !rel.includes(path.sep) && rel.endsWith('.md');
+  return !rel.includes(path.sep) && rel.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX);
 }
 
 /** Gmail message から取り出した本文と、その「代替表現」の有無。 */
@@ -564,7 +569,8 @@ export function gateAndRoute(
 export type PromoteResult = 'promoted' | 'identical' | 'conflict';
 
 /**
- * ゲート clean の本文を `raw/<period_end>.md` へ昇格する。
+ * ゲート clean の本文を `raw/<period_end>.md.txt` へ昇格する。
+ * 原文 bytes は変えず、拡張子だけで Obsidian/Dataview の実行対象から外す。
  *
  * 既存ファイルがある場合:
  *   - 内容が同一 → 何もしない (`identical`)。push 失敗で label が付かず次 cron が
@@ -1006,7 +1012,8 @@ async function processMessage(
     };
   }
   const archiveDir = path.join(vaultRoot, getThreatReportsArchiveFolder());
-  const rawPath = path.join(archiveDir, `${periodEnd}.md`);
+  const rawFilename = getThreatReportArchiveFilename(periodEnd);
+  const rawPath = path.join(archiveDir, rawFilename);
   if (!isSafeRawPath(rawPath, archiveDir)) {
     return {
       ...at,
@@ -1017,7 +1024,7 @@ async function processMessage(
     };
   }
   if (dryRun) {
-    console.log(`  🧪 [dry-run] ${periodEnd}.md 書込とゲートと ingest と pending-labels.json への記録をスキップ`);
+    console.log(`  🧪 [dry-run] ${rawFilename} 書込とゲートと ingest と pending-labels.json への記録をスキップ`);
     return { ...at, periodEnd, status: 'ingested' };
   }
   const baseDir = path.join(vaultRoot, getThreatReportsBaseFolder());
@@ -1093,13 +1100,13 @@ async function processMessage(
       file: quarantinedPath,
       sourceRef,
       verdict: 'conflict',
-      reason: `raw/${periodEnd}.md が既存で内容が異なる (上書きしない)`,
+      reason: `raw/${rawFilename} が既存で内容が異なる (上書きしない)`,
     });
     return {
       ...at,
       periodEnd,
       status: 'quarantined',
-      reason: `既存 raw/${periodEnd}.md と内容が異なるため上書きせず隔離 (人間の裁定待ち)`,
+      reason: `既存 raw/${rawFilename} と内容が異なるため上書きせず隔離 (人間の裁定待ち)`,
     };
   }
 
