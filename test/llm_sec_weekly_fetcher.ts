@@ -135,25 +135,29 @@ export async function run(): Promise<TestSuiteResult> {
 
   t.section('isSafeRawPath (path traversal 二重防御)');
 
-  t.test('archive 直下の <date>.md は OK', () => {
-    assert.strictEqual(isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.md`, ARCHIVE_DIR), true);
+  t.test('archive 直下の <date>.md.txt は OK', () => {
+    assert.strictEqual(isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.md.txt`, ARCHIVE_DIR), true);
+  });
+
+  t.test('legacy .md は最終 raw 保存先として拒否 (F2)', () => {
+    assert.strictEqual(isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.md`, ARCHIVE_DIR), false);
   });
 
   t.test('archive の親に書こうとすると NG', () => {
     assert.strictEqual(
-      isSafeRawPath(`${ARCHIVE_DIR}/../escape.md`, ARCHIVE_DIR),
+      isSafeRawPath(`${ARCHIVE_DIR}/../escape.md.txt`, ARCHIVE_DIR),
       false
     );
   });
 
   t.test('archive 配下のサブディレクトリは NG (フラット運用前提)', () => {
     assert.strictEqual(
-      isSafeRawPath(`${ARCHIVE_DIR}/sub/2026-05-25.md`, ARCHIVE_DIR),
+      isSafeRawPath(`${ARCHIVE_DIR}/sub/2026-05-25.md.txt`, ARCHIVE_DIR),
       false
     );
   });
 
-  t.test('.md 以外の拡張子は NG', () => {
+  t.test('.md.txt 以外の最終拡張子は NG', () => {
     assert.strictEqual(
       isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.sh`, ARCHIVE_DIR),
       false
@@ -465,7 +469,7 @@ export async function run(): Promise<TestSuiteResult> {
 
   function gateFixture(): { rawPath: string; quarantineDir: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-gate-'));
-    const rawPath = path.join(dir, 'raw', '2026-06-08.md');
+    const rawPath = path.join(dir, 'raw', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(rawPath), { recursive: true });
     fs.writeFileSync(rawPath, 'body', 'utf8');
     return { rawPath, quarantineDir: path.join(dir, '_quarantine') };
@@ -616,7 +620,7 @@ export async function run(): Promise<TestSuiteResult> {
   t.section('discardFailedPromotion (ingest 失敗時に raw/ を残さない)');
 
   function rawWith(vaultRoot: string, body: string): string {
-    const rawPath = path.join(vaultRoot, 'raw', '2026-06-08.md');
+    const rawPath = path.join(vaultRoot, 'raw', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(rawPath), { recursive: true });
     fs.writeFileSync(rawPath, body, 'utf8');
     return rawPath;
@@ -633,7 +637,7 @@ export async function run(): Promise<TestSuiteResult> {
     });
     assert.strictEqual(r, 'quarantined');
     assert.strictEqual(fs.existsSync(rawPath), false, 'raw/ に残ってはいけない');
-    assert.strictEqual(fs.readFileSync(path.join(quarantineDir, '2026-06-08.md'), 'utf8'), '不正な本文');
+    assert.strictEqual(fs.readFileSync(path.join(quarantineDir, '2026-06-08.md.txt'), 'utf8'), '不正な本文');
     const items = JSON.parse(fs.readFileSync(queuePath(vaultRoot), 'utf8')).items;
     assert.strictEqual(items.length, 1);
     assert.strictEqual(items[0].verdict, 'error');
