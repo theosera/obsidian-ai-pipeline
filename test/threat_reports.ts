@@ -827,6 +827,31 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     }
   });
 
+  await runner.testAsync('F2: legacy raw/<date>.md 自体を手動 ingest しても .md を残さない', async () => {
+    const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(tmpVault);
+    process.env.VAULT_ROOT = tmpVault;
+    try {
+      const rawDir = path.join(tmpVault, getThreatReportsArchiveFolder());
+      fs.mkdirSync(rawDir, { recursive: true });
+      const legacyPath = path.join(rawDir, '2026-05-25.md');
+      fs.writeFileSync(legacyPath, SAMPLE_REPORT, 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      const result = await ingestThreatReport({ filePath: legacyPath, db, vaultRoot: tmpVault });
+      const newPath = path.join(rawDir, getThreatReportArchiveFilename('2026-05-25'));
+      assert.strictEqual(fs.existsSync(legacyPath), false, 'legacy .md は ingest 中に移行される');
+      assert.strictEqual(fs.readFileSync(newPath, 'utf8'), SAMPLE_REPORT, '内容は完全一致');
+      assert.strictEqual(result.archivedPath, newPath, 'archive path は新形式');
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(tmpVault, { recursive: true, force: true });
+    }
+  });
+
   await runner.testAsync('ingestThreatReport: 同じ source+week は ID 一致で再取込しても行が増えない', async () => {
     const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
     const prevVault = process.env.VAULT_ROOT;
