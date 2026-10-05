@@ -183,7 +183,7 @@ node -e '
 > 恒久化され、再生成は revoke / scope 変更時のみで済む。個人利用スコープなら審査
 > (verification) は不要で、同意画面に "unverified" 警告が出るだけ。
 
-### 2.3 Gmail ラベルと送信者許可リスト
+### 2.3 Gmail ラベルと self-send 検証
 
 - `LLM-Sec-Report` (受信側フィルタで `[LLM-Sec-Weekly]` 件名に自動付与)
 - `LLM-Sec-Report/processed` (取込済マーカー / 本 workflow が付与)
@@ -191,26 +191,34 @@ node -e '
 両方とも Gmail UI で事前に作成しておくこと (workflow は label ID 解決時に
 名前一致で探す。未作成だと初回実行が早期 fail する)。
 
-> 🔴 **ラベルは送信者の証明ではない。** 上のフィルタは**件名だけ**を見てラベルを
-> 付けるので、アドレスを知っていれば誰でも同じ件名で送って自動取込に入れる。
-> そのため fetcher は `LLM_SEC_ALLOWED_SENDERS` (必須 secret) と **DKIM 検証**で
-> 送信者を判定する。判定条件の全文は
-> [`llm-sec-report-consumption.md` §1 送信者認証](./llm-sec-report-consumption.md#送信者認証-必須--ラベルと件名は認証ではない)。
+> 🔴 **ラベルと件名だけでは送信元の証明にならない。**
+> この週次経路は「同じ Gmail アカウントから同じ Gmail アカウントへ送った週報」
+> だけを扱う専用経路なので、fetcher は Gmail profile と `SENT` system label を
+> message 単位で再検証する。
 
-**`LLM_SEC_ALLOWED_SENDERS` の書式** (カンマ区切りで複数可):
+判定条件:
 
-```text
-reports@example.com            # 完全一致
-@example.com                   # ドメイン全体を許可
-reports@example.com,@other.example
-```
+1. `users.getProfile("me")` の primary address を取得
+2. message に Gmail system label `SENT` が付いている
+3. `From` が profile address と一致
+4. `To` に profile address が含まれる
 
-Gmail フィルタ側にも `from:` 条件を足しておくことを推奨する (多層防御)。
-ただし**フィルタは信頼の根拠にしない** — 本判定は fetcher 側の `verifySender()`。
+検索クエリにも `in:sent from:<自分> to:<自分>` を入れるが、これは一次フィルタ。
+本判定は `verifySelfSentReport()` が行う。
 
-> ⚠️ **この secret を登録するまで週次 cron は必ず失敗する** (fail-closed)。
-> 「未設定なら従来どおり動く」に倒すと、設定漏れが無言で「送信者未認証の取込」に
-> 戻ってしまうため、意図的に loud-fail させている。
+Google Gmail API では `SENT` は手動付与不可で、Gmail UI / `messages.send` /
+`drafts.send` 等で実際に送信された message に自動付与される。
+
+- 公式仕様: https://developers.google.com/workspace/gmail/api/guides/labels
+
+> **信頼境界**: Gmail account と OAuth credential 自体は trusted。
+> mailbox / OAuth が侵害された場合はこの境界も破られるので、その場合は
+> Google account incident response / token rotation を行う。
+>
+> PR #152 の DKIM + `LLM_SEC_ALLOWED_SENDERS` は廃止する。2026-10-06 の
+> 実メール dry-run で、正規の自分宛て週報 8 通すべてに DKIM pass が無く、
+> 正規入力を全件誤拒否することを確認したため。将来、外部送信者を受け付ける
+> 要件が生じた場合は self-send verifier を緩めず、別profileを新設する。
 
 ## 3. GitHub Actions secrets
 
@@ -224,7 +232,6 @@ obsidian-ai-pipeline の **Settings → Secrets and variables → Actions** に
 | `GMAIL_CLIENT_ID` | ✅ | Google OAuth client ID |
 | `GMAIL_CLIENT_SECRET` | ✅ | Google OAuth client secret |
 | `GMAIL_REFRESH_TOKEN` | ✅ | 2.2 で取得した refresh_token |
-| `LLM_SEC_ALLOWED_SENDERS` | ✅ | 取込を許可する送信者 (カンマ区切り)。**未設定だと fetcher は起動時に落ちる** (§2.3) |
 | `LLM_SEC_LABEL_NAME` | ❌ | 既定 `LLM-Sec-Report`。違う名前を使う場合のみ上書き |
 | `LLM_SEC_PROCESSED_LABEL_NAME` | ❌ | 既定 `LLM-Sec-Report/processed` |
 | `LLM_SEC_MAX_RESULTS` | ❌ | 既定 10。1〜100 |
@@ -240,7 +247,8 @@ CLAUDE.md「Secrets / sensitive files」節の通り、これらは **絶対に�
    行わないため安全な smoke test になる
 3. 想定ログ:
    ```
-   🔍 Gmail query: label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed (max 10)
+   🔍 Gmail query: label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed in:sent from:<自分> to:<自分> (max 10)
+   🔐 送信者検証: Gmail SENT system label + From/To=<自分> の self-send のみ取込
    📨 未処理 thread: N 件
      🧪 [dry-run] 2026-05-25.md 書込と ingest と processed ラベル付与をスキップ
      ...
