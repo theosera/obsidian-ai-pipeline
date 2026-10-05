@@ -89,7 +89,7 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
   }
 
   const parsed = parseReport(markdown);
-  const source = options.source ?? canonicalFileSource(filePath);
+  const source = options.source ?? canonicalFileSource(filePath, vaultRoot);
   // ID は (source + week_of) のハッシュ。同じ週次レポートを再 ingest しても同じ ID
   // になり upsert で衝突する → 重複行が増えない。
   const reportId = generateReportId(source, parsed.frontmatter.period_end);
@@ -200,7 +200,7 @@ export function migrateLegacyThreatReportArchives(options?: {
   if (!fs.existsSync(rawDir)) {
     return { migrated: 0, deduplicated: 0, dbPathsUpdated: 0 };
   }
-  if (!isInsideVaultRealpath(rawDir)) {
+  if (!isInsideVaultRealpath(rawDir, vaultRoot)) {
     throw new Error(`raw archive dir が vault 外 (symlink?): ${rawDir}`);
   }
 
@@ -388,9 +388,16 @@ export async function rebuildThreatReportsDbFromVault(options?: {
  * raw archive の拡張子移行で report identity を変えないため、`.md.txt` は
  * legacy `.md` と同じ file source identity に正規化する。
  */
-export function canonicalFileSource(filePath: string): string {
-  const base = path.basename(filePath);
-  const canonical = base.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX)
+export function canonicalFileSource(filePath: string, vaultRoot?: string): string {
+  const abs = path.resolve(filePath);
+  const base = path.basename(abs);
+  const root = vaultRoot ? path.resolve(vaultRoot) : null;
+  const rawDir = root ? path.resolve(root, getThreatReportsArchiveFolder()) : null;
+  const isDateNamedRawArchive =
+    rawDir !== null &&
+    path.dirname(abs) === rawDir &&
+    /^\d{4}-\d{2}-\d{2}\.md\.txt$/.test(base);
+  const canonical = isDateNamedRawArchive
     ? base.slice(0, -'.txt'.length)
     : base;
   return `file:${canonical}`;
@@ -433,7 +440,7 @@ function archiveRawMarkdown(vaultRoot: string, weekOf: string, markdown: string)
   const archiveDir = path.dirname(outPath);
   if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
   // mkdir 後に realpath を再検証 (validate→write 間の symlink 差し替え TOCTOU)。
-  if (!isInsideVaultRealpath(archiveDir)) {
+  if (!isInsideVaultRealpath(archiveDir, vaultRoot)) {
     throw new Error(`raw markdown の保存先 dir が vault 外 (symlink?): ${archiveDir}`);
   }
   const tmpPath = outPath + '.tmp';
