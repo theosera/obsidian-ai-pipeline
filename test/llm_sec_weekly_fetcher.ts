@@ -31,6 +31,7 @@ import {
   promoteStagedRaw,
   discardFailedPromotion,
   quarantineBody,
+  QuarantineCapacityError,
   extractBodyParts,
   extractSubject,
   selectReportMessages,
@@ -896,7 +897,7 @@ export async function run(): Promise<TestSuiteResult> {
     }
     assert.throws(
       () => quarantineBody(stagedPath, quarantineDir),
-      /quarantine collision が 100 件を超えた/
+      (err: unknown) => err instanceof QuarantineCapacityError
     );
     assert.ok(fs.existsSync(stagedPath), '退避元は残し、証拠を失わない');
     assert.strictEqual(
