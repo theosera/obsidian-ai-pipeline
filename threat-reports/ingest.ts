@@ -77,6 +77,12 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
 
   const db = options.db ?? getDb();
   const vaultRoot = options.vaultRoot ?? getVaultRoot();
+
+  // F2: 手動経路で legacy raw/*.md 自体を input にされた場合も、本文はすでに
+  // memory に読み込んであるのでここで安全拡張子へ移せる。自動 fetcher だけに
+  // 依存せず、ingest API 単体でも .md を Vault に残さない。
+  migrateLegacyThreatReportArchives({ db, vaultRoot });
+
   const source = options.source ?? `file:${path.basename(filePath)}`;
   // ID は (source + week_of) のハッシュ。同じ週次レポートを再 ingest しても同じ ID
   // になり upsert で衝突する → 重複行が増えない。
