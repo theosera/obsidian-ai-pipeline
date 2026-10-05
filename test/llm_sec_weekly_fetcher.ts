@@ -854,6 +854,26 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(fs.readFileSync(second, 'utf8'), 'second body');
   });
 
+  t.test('quarantineBody: 100 連番が埋まっていたら既存証拠を上書きせず fail-closed', () => {
+    const { stagedPath } = stagingFixture(null);
+    const quarantineDir = path.join(path.dirname(path.dirname(stagedPath)), '_quarantine');
+    fs.mkdirSync(quarantineDir, { recursive: true });
+    for (let n = 0; n <= 100; n++) {
+      const name = n === 0 ? '2026-06-08.md.txt' : `2026-06-08.${n}.md.txt`;
+      fs.writeFileSync(path.join(quarantineDir, name), `existing-${n}`, 'utf8');
+    }
+    assert.throws(
+      () => quarantineBody(stagedPath, quarantineDir),
+      /quarantine collision が 100 件を超えた/
+    );
+    assert.ok(fs.existsSync(stagedPath), '退避元は残し、証拠を失わない');
+    assert.strictEqual(
+      fs.readFileSync(path.join(quarantineDir, '2026-06-08.100.md.txt'), 'utf8'),
+      'existing-100',
+      '既存の100件目を上書きしない'
+    );
+  });
+
   // -------------------------------------------------------------------
   // 1 件の恒久エラーで run 全体を落とさない (sc-2 回帰)
   //
