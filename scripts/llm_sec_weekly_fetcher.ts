@@ -561,12 +561,17 @@ export function makeCliGateRunner(vaultRoot: string): GateRunner {
 export function quarantineBody(srcPath: string, quarantineDir: string): string {
   fs.mkdirSync(quarantineDir, { recursive: true });
   const srcBase = path.basename(srcPath);
-  // staging は .md だが、Vault 内の quarantine に executable Markdown を残さない。
-  // raw .md.txt の失敗時退避はそのまま .md.txt を維持する。
-  const base = srcBase.endsWith('.md') ? `${srcBase}.txt` : srcBase;
-  let dest = path.join(quarantineDir, base);
+  // Vault 内の quarantine に executable Markdown を残さない。
+  // legacy/staging .md は .md.txt へ変換し、重複連番も拡張子の前へ入れて
+  // `*.md.txt` 終端を常に維持する。
+  const inertBase = srcBase.endsWith('.md.txt')
+    ? srcBase
+    : srcBase.endsWith('.md') ? `${srcBase}.txt` : `${srcBase}.md.txt`;
+  const suffix = '.md.txt';
+  const stem = inertBase.slice(0, -suffix.length);
+  let dest = path.join(quarantineDir, inertBase);
   for (let n = 1; fs.existsSync(dest) && n <= 100; n++) {
-    dest = path.join(quarantineDir, `${base}.${n}`);
+    dest = path.join(quarantineDir, `${stem}.${n}${suffix}`);
   }
   fs.renameSync(srcPath, dest);
   return dest;
@@ -602,7 +607,7 @@ export function gateAndRoute(
 export type PromoteResult = 'promoted' | 'identical' | 'conflict';
 
 /**
- * ゲート clean の本文を `raw/<period_end>.md.txt` へ昇格する。
+ * inert staging `.md.txt` の本文を `raw/<period_end>.md.txt` へ昇格する。
  *
  * 既存ファイルがある場合:
  *   - 内容が同一 → 何もしない (`identical`)。push 失敗で label が付かず次 cron が
@@ -1066,7 +1071,7 @@ async function processMessage(
   // 同名の既存レポートを消し、workflow の `git add -f raw/` がその削除を stage
   // して push してしまう (メール 1 通で archive を破壊できる)。
   const stagingDir = path.join(baseDir, STAGING_SUBDIR);
-  const stagedPath = path.join(stagingDir, `${periodEnd}.md`);
+  const stagedPath = path.join(stagingDir, `${periodEnd}.md.txt`);
   fs.mkdirSync(stagingDir, { recursive: true });
   // 原子書込: tmp に書いて rename。部分書込状態をゲートが読み取らないように。
   const tmpPath = stagedPath + '.tmp';
