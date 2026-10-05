@@ -8,8 +8,9 @@
  * 2 フェーズ設計 (label-before-push 競合の解消):
  *   フェーズ 1 (`--phase=ingest`, default):
  *     1. Gmail OAuth refresh → access token
- *     2. `label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:.../processed`
- *        に該当する未処理 thread を最大 N 件取得
+ *     2. `label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:.../processed in:sent`
+ *        を基礎に、Gmail profile の自分自身を From/To に持つ未処理 thread を最大 N 件取得
+ *        (検索は一次フィルタ。各 message で SENT system label + From/To を再検証)
  *     3. thread 内で **Subject が `[LLM-Sec-Weekly]` で始まる message だけ**を
  *        対象に text/plain 本文を取り出し (Gmail 検索は thread 単位でヒットする
  *        ため、選別条件を message 単位に効かせ直さないと選別を通っていない本文を
@@ -333,55 +334,28 @@ export function buildSourceRef(
 }
 
 // ---------------------------------------------------------------------------
-// 送信者認証 (claude-security F3 / F6 / F12 / F13)
+// 自分宛て送信の真正性確認 (PR #152 DKIM 経路の置換)
 // ---------------------------------------------------------------------------
 //
-// 取込パイプラインに入る資格を「件名 + ラベル」で判定していた。ラベルは受信側
-// Gmail フィルタが**件名から**自動付与するので、実質「その件名で送れる者は誰でも
-// 入れる」状態だった。取り込まれた本文は vault repo に push され、
-// `--analyze-threat-relevance` と `/sec-review` の LLM / エージェント文脈に載る。
+// この週次取込は「同じ Gmail アカウントから同じ Gmail アカウントへ送った週報」だけを
+// ingest する専用経路。外部送信者を受け付ける汎用メール取込ではない。
 //
-// そこで判定を「**DKIM 検証済みの From**」へ移す:
-//   1. Gmail クエリに from: を足して取得段階で絞る (安価な一次フィルタ)
-//   2. メッセージ単位に From ヘッダと Authentication-Results を再検証する
-//      (クエリだけに頼らない。クエリは検索構文の解釈に依存するため)
+// PR #152 では DKIM + allow-list を送信者認証に使ったが、実際の ChatGPT→Gmail
+// self-send 8 通では Authentication-Results に DKIM 署名が無く、正規レポートを
+// 全件 fail-closed した。ここでは Gmail 自身が管理する system state を根拠にする:
 //
-// **信頼境界の明示**: `Authentication-Results` を書くのは受信側の Gmail であり、
-// ここではそれを信頼する (= Gmail の受信箱までを信頼境界とする)。送信ドメインの
-// なりすまし自体を我々が検証しているわけではない。
+//   1. Gmail profile の primary address を API から取得する (secret にはしない)
+//   2. 検索で in:sent + from:<me> + to:<me> に絞る (一次フィルタ)
+//   3. message 単位で SENT system label の存在を確認する
+//   4. From と To の双方に Gmail profile address があることを再確認する
 //
-// ⚠️ ただし `Authentication-Results` は**送信者も付けられる**ヘッダである (RFC 8601)。
-// 受信側 Gmail は自分の結果を**先頭に**付ける (authserv-id = `mx.google.com`)。
-// そこで信じるのは「**先頭の** Authentication-Results で、かつ authserv-id が受信側
-// のもの」だけ。送信者が `attacker.invalid; dkim=pass header.d=allowed.example`
-// を仕込んでも authserv-id が違うので読まないし、受信側の結果より前に並んでいれば
-// (= 先頭が受信側でなければ) 拒否する。ARC-Authentication-Results はチェーンを
-// 検証しない限り信頼できないので**見ない** (Codex review #152 P1)。
-
-/** 許可送信者の指定形式: `user@example.com` (完全一致) または `@example.com` (ドメイン全体)。 */
-const ALLOWED_SENDER_RE = /^(?:[^\s@]+)?@[^\s@]+\.[^\s@]+$/;
-
-/**
- * `LLM_SEC_ALLOWED_SENDERS` (カンマ区切り) を正規化する。
- *
- * 空 / 未設定は**呼び出し側で必須エラー**にする (fail-closed)。ここで空配列を
- * 返して「誰でも通す」に倒すと、設定漏れが無言で元の脆弱性に戻る。
- */
-export function parseAllowedSenders(raw: string | undefined): string[] {
-  const items = (raw ?? '')
-    .split(',')
-    .map(s => s.trim().toLowerCase())
-    .filter(s => s.length > 0);
-  const invalid = items.filter(s => !ALLOWED_SENDER_RE.test(s));
-  if (invalid.length > 0) {
-    throw new Error(
-      `LLM_SEC_ALLOWED_SENDERS の形式が不正です: ${JSON.stringify(invalid)}\n` +
-        '  期待する形式: "reports@example.com" (完全一致) または "@example.com" (ドメイン全体)。' +
-        ' カンマ区切りで複数指定できます。'
-    );
-  }
-  return items;
-}
+// Gmail API 公式仕様では SENT は手動付与不可で、Gmail UI / messages.send /
+// drafts.send 等で実際に送信された message に自動付与される。
+// https://developers.google.com/workspace/gmail/api/guides/labels
+//
+// 信頼境界: Gmail account 自体 (およびその OAuth credential) は trusted。
+// mailbox / OAuth が侵害された場合は本判定も破られるので、そのケースは secret rotation /
+// Google account incident response の責務。件名と user label は認証根拠にしない。
 
 /** Gmail message payload から指定ヘッダの値を取り出す (名前は大文字小文字を無視)。 */
 export function getHeader(message: gmail_v1.Schema$Message, name: string): string | null {
@@ -390,48 +364,12 @@ export function getHeader(message: gmail_v1.Schema$Message, name: string): strin
   return found?.value ?? null;
 }
 
-/** 同名ヘッダを**出現順に**すべて返す (Authentication-Results は複数付きうる)。 */
+/** 同名ヘッダを出現順にすべて返す。 */
 export function getHeaders(message: gmail_v1.Schema$Message, name: string): string[] {
   const target = name.toLowerCase();
   return (message.payload?.headers ?? [])
     .filter(h => (h.name ?? '').toLowerCase() === target)
     .map(h => h.value ?? '');
-}
-
-/** 受信側 Gmail が Authentication-Results に名乗る authserv-id。 */
-export const RECEIVER_AUTHSERV_ID = 'mx.google.com';
-
-/**
- * `Authentication-Results` の authserv-id (最初の `;` より前。RFC 8601 では
- * version 番号が続くことがある: `mx.google.com 1; ...`) を小文字で返す。
- */
-export function authservIdOf(authResults: string): string {
-  return authResults.split(';', 1)[0].trim().split(/\s+/, 1)[0].toLowerCase();
-}
-
-/**
- * 受信側が書いた `Authentication-Results` だけを返す。
- *
- *   - 先頭の Authentication-Results を見る (受信側は自分の結果を先頭に付ける)
- *   - その authserv-id が `receiver` でなければ null (= 送信者が仕込んだものが先頭)
- *   - 2 本目以降は**読まない** (送信者が付けた可能性があるため)
- *   - ARC-Authentication-Results は見ない (チェーン未検証)
- */
-export function receiverAuthResults(
-  message: gmail_v1.Schema$Message,
-  receiver: string = RECEIVER_AUTHSERV_ID
-): { value: string | null; reason?: string } {
-  const all = getHeaders(message, 'Authentication-Results');
-  if (all.length === 0) return { value: null, reason: 'Authentication-Results ヘッダが無い' };
-  const first = all[0];
-  const id = authservIdOf(first);
-  if (id !== receiver.toLowerCase()) {
-    return {
-      value: null,
-      reason: `先頭の Authentication-Results が受信側 (${receiver}) のものでない (authserv-id=${id || '(空)'}) — 送信者が付けたヘッダの可能性`,
-    };
-  }
-  return { value: first };
 }
 
 /**
@@ -445,39 +383,13 @@ export function extractEmailAddress(headerValue: string | null | undefined): str
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate) ? candidate : null;
 }
 
-/**
- * `Authentication-Results` から `dkim=pass` の `header.d` / `d=` ドメイン集合を返す。
- *
- * 例: `mx.google.com; dkim=pass header.i=@example.com; spf=pass ...`
- * `dkim=temperror` 等は当然含めない (pass だけを拾う)。
- */
-export function dkimPassDomains(authResults: string | null | undefined): Set<string> {
+/** To/Cc など複数 mailbox を含みうるヘッダから email address を抽出する。 */
+export function extractEmailAddresses(headerValue: string | null | undefined): string[] {
+  if (!headerValue) return [];
   const out = new Set<string>();
-  if (!authResults) return out;
-  // "dkim=pass" 以降、次の method (spf=/dmarc=/dkim=) までを 1 件分とみなす。
-  const re = /dkim=pass\b([\s\S]*?)(?=\b(?:dkim|spf|dmarc|arc)=|$)/gi;
-  for (const m of authResults.matchAll(re)) {
-    for (const d of m[1].matchAll(/(?:header\.i=@?|header\.d=|\bd=)([A-Za-z0-9.-]+)/gi)) {
-      out.add(d[1].toLowerCase().replace(/^@/, ''));
-    }
-  }
-  return out;
-}
-
-/** From アドレスが許可リストに載っているか (完全一致 or `@domain` サフィックス)。 */
-function isAllowedSender(from: string, allowed: readonly string[]): boolean {
-  return allowed.some(a => (a.startsWith('@') ? from.endsWith(a) : from === a));
-}
-
-/**
- * DKIM 署名ドメインが From ドメインと整合しているか (relaxed alignment)。
- * 完全一致、または From ドメインが署名ドメインのサブドメインなら整合とみなす。
- */
-function isDkimAligned(fromDomain: string, signedDomains: ReadonlySet<string>): boolean {
-  for (const d of signedDomains) {
-    if (fromDomain === d || fromDomain.endsWith(`.${d}`)) return true;
-  }
-  return false;
+  const re = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+  for (const m of headerValue.matchAll(re)) out.add(m[0].toLowerCase());
+  return [...out];
 }
 
 export type SenderVerdict =
@@ -485,57 +397,53 @@ export type SenderVerdict =
   | { ok: false; reason: string };
 
 /**
- * メッセージ単位の送信者検証。**すべて満たさなければ拒否** (fail-closed)。
+ * self-sent 週報の message 単位検証。すべて満たさなければ拒否 (fail-closed)。
  *
- *   1. From ヘッダからアドレスを取り出せる
- *   2. そのアドレスが許可リストに載っている
- *   3. **先頭の** Authentication-Results が受信側 (authserv-id = `mx.google.com`) のもの
- *      (送信者が付けた Authentication-Results / ARC は根拠にしない)
- *   4. その中に dkim=pass があり、署名ドメインが From ドメインと整合する
+ *   1. mailboxAddress が有効な profile address
+ *   2. Gmail system label `SENT` が message に付いている
+ *   3. From が profile address と完全一致
+ *   4. To のいずれかが profile address と完全一致
  *
- * ラベルと件名は**一切根拠にしない** (それが元の穴)。
+ * user label / Subject / Authentication-Results / DKIM は送信者認証には使わない。
+ * Subject は report 選別、frontmatter は content contract として別レイヤーで検証する。
  */
-export function verifySender(
+export function verifySelfSentReport(
   message: gmail_v1.Schema$Message,
-  allowedSenders: readonly string[]
+  mailboxAddress: string
 ): SenderVerdict {
+  const account = extractEmailAddress(mailboxAddress);
+  if (!account) {
+    return { ok: false, reason: `Gmail profile address を解釈できない: ${JSON.stringify(mailboxAddress)}` };
+  }
+  if (!(message.labelIds ?? []).includes('SENT')) {
+    return { ok: false, reason: `Gmail system label SENT が無い (account=${account})` };
+  }
   const from = extractEmailAddress(getHeader(message, 'From'));
-  if (!from) {
-    return { ok: false, reason: `From ヘッダを解釈できません: ${JSON.stringify(getHeader(message, 'From'))}` };
+  if (from !== account) {
+    return { ok: false, reason: `From が Gmail profile と一致しない (from=${from ?? '(invalid)'} / account=${account})` };
   }
-  if (!isAllowedSender(from, allowedSenders)) {
-    return { ok: false, reason: `許可されていない送信者: ${from}` };
-  }
-  const ar = receiverAuthResults(message);
-  if (ar.value === null) {
-    return { ok: false, reason: `${ar.reason} (from=${from})` };
-  }
-  const authResults = ar.value;
-  const signed = dkimPassDomains(authResults);
-  if (signed.size === 0) {
-    return { ok: false, reason: `dkim=pass が無い (from=${from})` };
-  }
-  const fromDomain = from.slice(from.indexOf('@') + 1);
-  if (!isDkimAligned(fromDomain, signed)) {
-    return {
-      ok: false,
-      reason: `DKIM 署名ドメインが From と整合しない (from=${from} / signed=${[...signed].join(',')})`,
-    };
+  const recipients = new Set(getHeaders(message, 'To').flatMap(extractEmailAddresses));
+  if (!recipients.has(account)) {
+    return { ok: false, reason: `To に Gmail profile address が無い (account=${account})` };
   }
   return { ok: true, from };
 }
 
 /**
- * Gmail 検索クエリを組み立てる。`from:` は**一次フィルタ**であって認証ではない
- * (検索構文の解釈に依存するため、`verifySender` が本判定を担う)。
+ * Gmail 検索クエリを組み立てる。検索は一次フィルタであって認証そのものではない。
+ * 本判定は verifySelfSentReport() が message.labelIds / From / To を再確認する。
  */
 export function buildGmailQuery(
   labelName: string,
   processedLabelName: string,
-  allowedSenders: readonly string[]
+  mailboxAddress: string
 ): string {
-  const from = `from:(${allowedSenders.join(' OR ')})`;
-  return `label:${labelName} subject:"${SUBJECT_PREFIX}" -label:${processedLabelName} ${from}`;
+  const account = extractEmailAddress(mailboxAddress);
+  if (!account) throw new Error(`Gmail profile address の形式が不正です: ${JSON.stringify(mailboxAddress)}`);
+  return (
+    `label:${labelName} subject:"${SUBJECT_PREFIX}" -label:${processedLabelName}` +
+    ` in:sent from:${account} to:${account}`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -843,8 +751,6 @@ interface ValidatedEnv {
   labelName: string;
   processedLabelName: string;
   maxResults: number;
-  /** 取込を許可する送信者。空にはならない (validateEnv が必須チェックする)。 */
-  allowedSenders: string[];
 }
 
 /**
@@ -864,23 +770,10 @@ function validateEnv(): ValidatedEnv {
     'GMAIL_CLIENT_SECRET',
     'GMAIL_REFRESH_TOKEN',
     'VAULT_ROOT',
-    // 送信者の許可リスト。**未設定なら起動時に落とす** (fail-closed)。
-    // 「未設定なら従来どおり誰でも通す」に倒すと、設定漏れが無言で
-    // 認証なしの取込 (= 元の脆弱性) に戻るため、loud-fail を選ぶ。
-    'LLM_SEC_ALLOWED_SENDERS',
   ] as const;
   const missing = required.filter(k => !envOrUndefined(k));
   if (missing.length > 0) {
-    throw new Error(
-      `必須環境変数が未設定です: ${missing.join(', ')}\n` +
-        '  LLM_SEC_ALLOWED_SENDERS は取込を許可する送信者 (カンマ区切り)。' +
-        ' 例: "reports@example.com" / "@example.com"。' +
-        ' 設定手順は docs/security/llm-sec-weekly-automation.md §2.3 を参照。'
-    );
-  }
-  const allowedSenders = parseAllowedSenders(envOrUndefined('LLM_SEC_ALLOWED_SENDERS'));
-  if (allowedSenders.length === 0) {
-    throw new Error('LLM_SEC_ALLOWED_SENDERS が空です (取込を許可する送信者を 1 件以上指定してください)。');
+    throw new Error(`必須環境変数が未設定です: ${missing.join(', ')}`);
   }
   const maxResultsRaw = envOrUndefined('LLM_SEC_MAX_RESULTS');
   let maxResults = DEFAULT_MAX_RESULTS;
@@ -901,7 +794,6 @@ function validateEnv(): ValidatedEnv {
     labelName: envOrUndefined('LLM_SEC_LABEL_NAME') ?? DEFAULT_LABEL,
     processedLabelName: envOrUndefined('LLM_SEC_PROCESSED_LABEL_NAME') ?? DEFAULT_PROCESSED_LABEL,
     maxResults,
-    allowedSenders,
   };
 }
 
@@ -1019,7 +911,7 @@ async function processThread(
   dryRun: boolean,
   gate: GateRunner,
   quarantinePendingRefs: ReadonlySet<string>,
-  allowedSenders: readonly string[],
+  mailboxAddress: string,
 ): Promise<FetcherOutcome[]> {
   // ガードは **thread の同一性** で判定する (period_end ではない — 未来の週を
   // 騙る隔離済みメールに正規レポートを塞がせないため)。API 呼び出しより前に
@@ -1048,7 +940,7 @@ async function processThread(
   const outcomes: FetcherOutcome[] = [];
   for (const msg of messages) {
     outcomes.push(
-      await processMessage(threadId, msg, messages.length, vaultRoot, dryRun, gate, allowedSenders));
+      await processMessage(threadId, msg, messages.length, vaultRoot, dryRun, gate, mailboxAddress));
   }
   return outcomes;
 }
@@ -1061,14 +953,13 @@ async function processMessage(
   vaultRoot: string,
   dryRun: boolean,
   gate: GateRunner,
-  allowedSenders: readonly string[],
+  mailboxAddress: string,
 ): Promise<FetcherOutcome> {
   const messageId = msg.id!;
-  // ★ 本文に触れる前に送信者を検証する。クエリの from: は一次フィルタに過ぎず、
-  // ここが本判定 (ラベル / 件名は根拠にしない)。terminal にはしない — 環境側
-  // (allow-list / DKIM) を直せば同じメールが再取込できるので、processed ラベルは
-  // 付けず次回 cron でも同じ理由で弾く (ループはしない — 通らない)。
-  const sender = verifySender(msg, allowedSenders);
+  // ★ 本文に触れる前に self-sent provenance を検証する。検索条件は一次フィルタに
+  // 過ぎず、ここが本判定。SENT は Gmail が管理する system label で手動付与不可。
+  // terminal にはしない — mailbox/profile 側の一過性不整合を直せば再取込できる。
+  const sender = verifySelfSentReport(msg, mailboxAddress);
   if (!sender.ok) {
     return {
       threadId,
@@ -1378,17 +1269,23 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
 
   const gm = buildGmailClient(env);
 
-  // ラベル自体の存在確認 (未作成だと検索結果が常に 0 になる罠を早期検知)。
+  // ラベル自体の存在確認 + Gmail profile address の取得。
   // 最初の認証付き呼び出しでもあるため、OAuth refresh 失敗 (invalid_grant) は
   // ここで実行可能なメッセージに翻訳される。
+  let mailboxAddress: string | null = null;
   await withOAuthErrorHint(async () => {
     await resolveLabelId(gm, env.labelName);
     await resolveLabelId(gm, env.processedLabelName);
+    const profile = await gm.users.getProfile({ userId: 'me' });
+    mailboxAddress = extractEmailAddress(profile.data.emailAddress ?? null);
   });
+  if (!mailboxAddress) {
+    throw new Error('Gmail profile から有効な emailAddress を取得できませんでした (fail-closed)');
+  }
 
-  const query = buildGmailQuery(env.labelName, env.processedLabelName, env.allowedSenders);
+  const query = buildGmailQuery(env.labelName, env.processedLabelName, mailboxAddress);
   console.log(`🔍 Gmail query: ${query} (max ${env.maxResults})`);
-  console.log(`🔐 送信者検証: ${env.allowedSenders.join(', ')} かつ dkim=pass のみ取込`);
+  console.log(`🔐 送信者検証: Gmail SENT system label + From/To=${mailboxAddress} の self-send のみ取込`);
   const { threads, truncated } = await listUnprocessedThreads(gm, query, env.maxResults);
   console.log(`📨 未処理 thread: ${threads.length} 件`);
   if (truncated) {
@@ -1407,7 +1304,7 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
   for (const t of threads) {
     if (!t.id) continue;
     outcomes.push(
-      ...(await processThread(gm, t.id, env.vaultRoot, dryRun, gate, quarantinePendingRefs, env.allowedSenders)));
+      ...(await processThread(gm, t.id, env.vaultRoot, dryRun, gate, quarantinePendingRefs, mailboxAddress)));
   }
 
   // WAL を main DB に統合してから commit させたいので明示クローズ。
