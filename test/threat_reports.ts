@@ -726,6 +726,45 @@ Inject Sample\tTest\tTest\t1.0（Impact 1 / Exploitability 1）\t未確認
     }
   });
 
+  await runner.testAsync('archiveRawMarkdown: global root と注入 root が違っても注入 root だけで検証・保存する', async () => {
+    const injectedVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-injected-'));
+    const globalVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-global-'));
+    const prevVault = process.env.VAULT_ROOT;
+    setVaultRoot(globalVault);
+    process.env.VAULT_ROOT = globalVault;
+    try {
+      const input = path.join(injectedVault, 'incoming.md');
+      fs.writeFileSync(input, SAMPLE_REPORT, 'utf8');
+      const db = new ThreatReportsDb(':memory:');
+
+      const result = await ingestThreatReport({
+        filePath: input,
+        db,
+        vaultRoot: injectedVault,
+        source: 'gmail:root-consistency-test',
+      });
+
+      assert.ok(result.archivedPath, 'archive path が返る');
+      assert.ok(
+        path.resolve(result.archivedPath!).startsWith(path.resolve(injectedVault) + path.sep),
+        'archive は注入 root 配下'
+      );
+      assert.strictEqual(fs.existsSync(result.archivedPath!), true);
+      const globalArchive = path.join(
+        globalVault,
+        getThreatReportsArchiveFolder(),
+        getThreatReportArchiveFilename('2026-05-25')
+      );
+      assert.strictEqual(fs.existsSync(globalArchive), false, 'global root には archive を作らない');
+      db.close();
+    } finally {
+      if (prevVault) { setVaultRoot(prevVault); process.env.VAULT_ROOT = prevVault; }
+      else { delete process.env.VAULT_ROOT; }
+      fs.rmSync(injectedVault, { recursive: true, force: true });
+      fs.rmSync(globalVault, { recursive: true, force: true });
+    }
+  });
+
   await runner.testAsync('F2: dataviewjs を含む原文も内容不変の .md.txt として保存し .md は作らない', async () => {
     const tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'threat-vault-'));
     const prevVault = process.env.VAULT_ROOT;
