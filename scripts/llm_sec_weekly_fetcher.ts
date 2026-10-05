@@ -358,12 +358,16 @@ export function buildSourceRef(
 //   3. message 単位で SENT system label の存在を確認する
 //   4. From と To の双方に Gmail profile address があることを再確認する
 //
-// Gmail API 公式仕様では SENT は手動付与不可で、Gmail UI / messages.send /
-// drafts.send 等で実際に送信された message に自動付与される。
+// Gmail API 公式仕様では SENT は手動付与不可。ただし Gmail UI / messages.send /
+// drafts.send に加え、messages.insert で From に本人 address を含めた message にも
+// 自動付与される。messages.insert は配送せず mailbox へ直接挿入する API なので、
+// SENT は「外部配送を通った証明」ではない。
 // https://developers.google.com/workspace/gmail/api/guides/labels
+// https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/insert
 //
-// 信頼境界: Gmail account 自体 (およびその OAuth credential) は trusted。
-// mailbox / OAuth が侵害された場合は本判定も破られるので、そのケースは secret rotation /
+// 信頼境界: Gmail account 自体と、その mailbox へ insert/send できる OAuth
+// credential は trusted。mailbox / OAuth が侵害された場合は attacker も self-From
+// insert で SENT 条件を満たせるので、本判定も破られる。そのケースは secret rotation /
 // Google account incident response の責務。件名と user label は認証根拠にしない。
 
 /** Gmail message payload から指定ヘッダの値を取り出す (名前は大文字小文字を無視)。 */
