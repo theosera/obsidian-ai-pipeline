@@ -1298,7 +1298,7 @@ function getPendingLabelsPath(): string {
 }
 
 /**
- * フェーズ 1: 未処理メールを取得 → vault に raw md / DB / JSON / index を書き出し
+ * フェーズ 1: 未処理メールを取得 → vault に inert raw source / DB / JSON / index を書き出し
  * → 成功 thread を pending-labels.json に積む。**ラベルは付与しない**。
  */
 export async function runIngestPhase(args: readonly string[]): Promise<number> {
