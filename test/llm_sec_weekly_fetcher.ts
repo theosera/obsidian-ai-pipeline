@@ -492,10 +492,10 @@ export async function run(): Promise<TestSuiteResult> {
       action: 'quarantine',
       verdict: 'suspicious',
       detail: 'final_rule=l1-multiline-demoted',
-      quarantinedPath: path.join(quarantineDir, '2026-06-08.md'),
+      quarantinedPath: path.join(quarantineDir, '2026-06-08.md.txt'),
     });
     assert.strictEqual(fs.existsSync(rawPath), false, 'raw は残らない');
-    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')), '隔離先へ移動');
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md.txt')), '隔離先へ移動');
   });
 
   t.test('blocked → 同様に隔離', () => {
@@ -503,7 +503,7 @@ export async function run(): Promise<TestSuiteResult> {
     const gate: GateRunner = () => ({ verdict: 'blocked', detail: 'final_rule=l0-contract' });
     const out = gateAndRoute(rawPath, quarantineDir, gate);
     assert.strictEqual(out.action, 'quarantine');
-    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')));
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md.txt')));
   });
 
   t.test('ゲート実行失敗 (verdict=error) は fail-closed で隔離 (素通りさせない)', () => {
