@@ -93,6 +93,8 @@ import {
   THREAT_REPORT_ARCHIVE_SUFFIX,
 } from '../threat-reports/config';
 import { closeDb } from '../threat-reports/db';
+import { exportThreatReportsJson } from '../threat-reports/json_export';
+import { regenerateIndexPage } from '../threat-reports/index_writer';
 
 // --- 公開定数 (テストから参照) ---
 export const PERIOD_END_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -558,7 +560,10 @@ export function makeCliGateRunner(vaultRoot: string): GateRunner {
  */
 export function quarantineBody(srcPath: string, quarantineDir: string): string {
   fs.mkdirSync(quarantineDir, { recursive: true });
-  const base = path.basename(srcPath);
+  const srcBase = path.basename(srcPath);
+  // staging は .md だが、Vault 内の quarantine に executable Markdown を残さない。
+  // raw .md.txt の失敗時退避はそのまま .md.txt を維持する。
+  const base = srcBase.endsWith('.md') ? `${srcBase}.txt` : srcBase;
   let dest = path.join(quarantineDir, base);
   for (let n = 1; fs.existsSync(dest) && n <= 100; n++) {
     dest = path.join(quarantineDir, `${base}.${n}`);
@@ -1329,6 +1334,10 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
         `🔒 legacy raw archive migration: renamed=${migration.migrated}, ` +
         `deduplicated=${migration.deduplicated}, db_paths=${migration.dbPathsUpdated}`
       );
+      // Gmail backlog が 0 件でも migration 自体が vault_path を変更するため、
+      // JSON/index をここで必ず再生成して stale raw link を残さない。
+      exportThreatReportsJson({ vaultRoot: env.vaultRoot });
+      regenerateIndexPage({ vaultRoot: env.vaultRoot });
     }
   }
 
