@@ -11,7 +11,7 @@ ChatGPT scheduled task (毎週月曜 8:00 JST)
   ↓ Gmail Connector
 Gmail: 件名 "[LLM-Sec-Weekly] YYYY-MM-DD" + ラベル LLM-Sec-Report
   ↓ Claude Code セッション (Gmail MCP) / CI fetcher
-Vault: <base>/raw/YYYY-MM-DD.md (frontmatter 付き原文を保存)
+Vault: <base>/raw/YYYY-MM-DD.md.txt (frontmatter 付き原文を bytes 不変で保存)
   ↓ ★ インジェクション・ゲート (L0+L1 scanner → gate_decision.py)
   │    clean 以外 → <base>/_quarantine/ へ退避 (同期除外) +
   │    <base>/_gate/quarantine_queue.json に登録して継続 (裁定は /sec-mode)
@@ -33,7 +33,7 @@ Vault: <base>/_index.md (sortable table view)
 
 `threat_reports.db` (と `x_bookmarks.db`) の **ディレクトリ**は既定で
 `<vault>/__skills/pipeline` だが、環境変数 `PIPELINE_DB_DIR` で上書きできる
-(未設定なら従来どおり)。`raw/*.md` / `.threat_reports.json` / `_index.md` は
+(未設定なら従来どおり)。`raw/*.md.txt` / `.threat_reports.json` / `_index.md` は
 これとは独立に vault (`<base>`) 側へ出力されるので、**DB だけ**移動できる。
 
 **動機**: vault を iCloud / クラウドファイル同期下に置くと、SQLite の
@@ -137,7 +137,7 @@ Claude Code は:
 
 1. Gmail MCP `search_threads` で `label:LLM-Sec-Report -label:LLM-Sec-Report/processed`
    を検索
-2. 各メールの本文を `<base>/raw/<frontmatter.period_end>.md` に保存
+2. 各メールの本文を `<base>/raw/<frontmatter.period_end>.md.txt` に原文のまま保存
 3. `pnpm start -- --ingest-threat-report=<path>` を実行
 4. 成功したら Gmail MCP `label_thread` で `LLM-Sec-Report/processed` を付与
 
@@ -150,7 +150,9 @@ pnpm start -- --ingest-threat-report=<path-to-md>
 - 指定ファイルの frontmatter + 本文をパース
 - SQLite に upsert (再 ingest は冪等、同じ source+week_of で行が増えない)
 - JSON エクスポート + index ページ再生成
-- 生 markdown は `<base>/raw/<week_of>.md` にもアーカイブ
+- 生 markdown 原文は `<base>/raw/<week_of>.md.txt` に bytes 不変でアーカイブ
+  - `.md.txt` は意図的: untrusted 本文中の `dataviewjs` 等を Obsidian の Markdown codeblock processor に実行させない
+  - 旧 `raw/<week_of>.md` は rebuild 時だけ互換読込し、新規生成しない
 
 終了コード:
 - `0`: 成功
@@ -242,6 +244,7 @@ frontmatter が欠けている or 値が想定外。ChatGPT 側の送信テン�
 
 ### 過去レポートを再パースしたい
 
-raw markdown は `<base>/raw/<week_of>.md` に残っているので、parser を改良
-した後に再 ingest すれば DB の vuln 行が新仕様で上書きされる
+raw 原文は `<base>/raw/<week_of>.md.txt` に残っているので、parser を改良
+した後に再 ingest すれば DB の vuln 行が新仕様で上書きされる。旧 `.md` も
+rebuild では互換読込するが、新規アーカイブは `.md.txt` のみ生成する
 (per-repo ノート `relevance_notes` は別テーブルなので、再 ingest でも人手判断は保護される)。
