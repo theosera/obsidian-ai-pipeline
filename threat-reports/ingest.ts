@@ -429,14 +429,11 @@ function archiveRawMarkdown(vaultRoot: string, weekOf: string, markdown: string)
   // Phase 4/5/6: `..` 拒否 + resolve 後プレフィックス + symlink realpath)。改竄された
   // archive-folder 設定や symlink フォルダ経由の vault 外書込への defense-in-depth。
   const rel = path.join(getThreatReportsArchiveFolder(), getThreatReportArchiveFilename(weekOf));
-  const safe = resolveVaultPath(rel);
+  const safe = resolveVaultPath(rel, vaultRoot);
   if (!safe.ok) {
     throw new Error(`raw markdown の保存先が安全でない: ${safe.reason}`);
   }
   const outPath = safe.absolute;
-  if (!outPath.startsWith(vaultRoot + path.sep)) {
-    throw new Error(`raw markdown の保存先が vault 外: ${outPath}`);
-  }
   const archiveDir = path.dirname(outPath);
   if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
   // mkdir 後に realpath を再検証 (validate→write 間の symlink 差し替え TOCTOU)。
