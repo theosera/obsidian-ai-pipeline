@@ -9,6 +9,12 @@ import path from 'path';
 
 const DEFAULT_BASE = 'Permanent Note/10_Threat_Reports';
 const ARCHIVE_SUBDIR = 'raw';
+/**
+ * Vault へ保存する原文は Markdown として実行させない。
+ * `.md.txt` にして bytes を一切変えず保存することで、Obsidian/Dataview の
+ * `dataviewjs` codeblock post processor の対象外にする (security scan F2)。
+ */
+export const THREAT_REPORT_ARCHIVE_SUFFIX = '.md.txt';
 
 /**
  * Vault 内の脅威レポート格納フォルダ (相対パス)。
@@ -34,10 +40,17 @@ export function getThreatReportsBaseFolder(): string {
   return normalized;
 }
 
-/**
- * raw markdown アーカイブの相対パス。
- * `<vault>/<base>/<archive>/<YYYY-MM-DD>.md` に 1 週 1 ファイルで保存される。
- */
+/** raw report archive の相対ディレクトリ。 */
 export function getThreatReportsArchiveFolder(): string {
   return `${getThreatReportsBaseFolder()}/${ARCHIVE_SUBDIR}`;
+}
+
+/**
+ * 1週分の raw report filename。
+ *
+ * `.md.txt` は意図的。原文は完全保存するが Markdown renderer / DataviewJS に
+ * 実行対象として渡さない。parser/rebuild は拡張子に依存せず本文を読む。
+ */
+export function getThreatReportArchiveFilename(weekOf: string): string {
+  return `${weekOf}${THREAT_REPORT_ARCHIVE_SUFFIX}`;
 }
