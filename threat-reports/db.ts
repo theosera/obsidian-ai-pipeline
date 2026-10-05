@@ -2,9 +2,9 @@
  * 週次 LLM 攻撃ベクター脅威レポート用 SQLite メタデータストア。
  *
  * 設計思想:
- *   - 生レポート (.md) が source of truth、本 DB は派生インデックス
+ *   - 生レポート payload (`raw/*.md.txt`) が source of truth、本 DB は派生インデックス
  *   - 用途: 横串検索 / リスクスコア順表示 / 過去レポートとの差分
- *   - 壊れたら raw/*.md から再構築できる:
+ *   - 壊れたら raw/*.md.txt から再構築できる:
  *     `ingest.ts::rebuildThreatReportsDbFromVault()`
  *     (CLI: `--rebuild-threat-reports-db`)。ただし ai_relevance_note /
  *     relevance_reviewed_at は raw に無い human 入力なので再構築では復元されない。
