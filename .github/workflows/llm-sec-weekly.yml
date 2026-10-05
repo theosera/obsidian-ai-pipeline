@@ -200,6 +200,20 @@ jobs:
           for rel in "${files[@]}"; do
             full="${VAULT_ROOT}/${rel}"
             [ -f "${full}" ] || continue
+
+            # legacy raw の .md -> .md.txt は「この run で新規取得した本文」ではない。
+            # HEAD に同名 legacy .md があり、現在の .md.txt と byte-identical な場合だけ
+            # migration-only と認定し、新規レポート用 invariant gate の対象外にする。
+            # 内容が 1 byte でも違えば通常どおり再チェックする。
+            if [[ "${rel}" == *.md.txt ]]; then
+              legacy_rel="${rel%.txt}"
+              if git -C "${VAULT_ROOT}" cat-file -e "HEAD:${legacy_rel}" 2>/dev/null \
+                  && cmp -s "${full}" <(git -C "${VAULT_ROOT}" show "HEAD:${legacy_rel}"); then
+                echo "ℹ️ inert migration only — new-report gate re-check skip: ${rel}"
+                continue
+              fi
+            fi
+
             # scanner の exit 1 は「signal あり」の正常系 (fetcher の
             # makeCliGateRunner と同じ扱い)。pipefail 下でパイプに直結すると
             # gate が clean (exit 0) でもパイプ全体が 1 になり、良性 signal を
