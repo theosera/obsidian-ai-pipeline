@@ -199,39 +199,36 @@ node -e '
 名前一致で探す。未作成だと初回実行が早期 fail する)。
 
 > 🔴 **ラベルと件名だけでは送信元の証明にならない。**
-> この週次経路は「同じ Gmail アカウントから同じ Gmail アカウントへ送った週報」
-> だけを扱う専用経路なので、fetcher は Gmail profile と `SENT` system label を
-> message 単位で再検証する。
+> この週次経路は自分宛ての週報だけを扱う専用経路であり、
+> 検索条件とは別に message 単位の検証を行う。
 
 判定条件:
 
-1. `users.getProfile("me")` の primary address を取得
-2. message に Gmail system label `SENT` が付いている
-3. `From` が profile address と一致
-4. `To` に profile address が含まれる
+1. 起動時にアカウント自身のアドレスを取得でき、形式も有効であること
+2. message に `SENT` system label が付いていること
+3. `From` がアカウント自身のアドレスと一致すること
+4. `To` にアカウント自身のアドレスが含まれること
+
+起動時にアドレスを取得できない、または形式が不正な場合は、
+検索や通常ログへ進む前に fail-closed で停止する。
 
 検索クエリにも `in:sent from:<自分> to:<自分>` を入れるが、これは一次フィルタ。
-本判定は `verifySelfSentReport()` が行う。
+本判定は message 単位で別に行う。アカウント自身のアドレスは通常ログより先に
+mask 登録し、通常ログでは `<self>` 表記にして平文アドレスを残さない。
 
-profile address は `users.getProfile()` 直後に Actions の `::add-mask::` へ登録し、
-通常ログでは query / 検証結果を `<self>` 表記にして平文アドレスを残さない。
+`SENT` が付いていても、それだけで owner 本人が送った証明にはならない。
 
-Google Gmail API では `SENT` は手動付与不可だが、Gmail UI、`messages.send` /
-`drafts.send` に加え、`messages.insert` で `From` に本人アドレスを含めた message にも
-自動付与される。`messages.insert` は配送せず mailbox へ直接挿入するため、`SENT` は
-外部配送の証明ではなく、Gmail account/OAuth capability の境界として扱う。
+> **信頼境界**: `SENT` と本人一致の `From` / `To` を満たしても、
+> それだけで「owner 本人が送った」ことの証明にはならない。
+> この Gmail アカウントへ正規に書き込める資格情報を持つ主体
+> （owner が許可したアプリを含む）は、この判定を通る message を作れる。
+> したがって、この経路が信頼する境界は「対象 Gmail アカウントへの書込み権限」である。
+> その権限が不正利用・誤付与された場合は、本判定だけでは区別できない。
 
-- 公式仕様: https://developers.google.com/workspace/gmail/api/guides/labels
-
-> **信頼境界**: Gmail account と OAuth credential 自体は trusted。
-> mailbox / OAuth が侵害された場合はこの境界も破られるので、その場合は
-> Google account incident response / token rotation を行う。
->
 > PR #152 の DKIM + `LLM_SEC_ALLOWED_SENDERS` は廃止する。2026-10-06 の
 > 実メール dry-run で、正規の自分宛て週報 8 通すべてに DKIM pass が無く、
 > 正規入力を全件誤拒否することを確認したため。将来、外部送信者を受け付ける
 > 要件が生じた場合は self-send verifier を緩めず、別profileを新設する。
-
 ## 3. GitHub Actions secrets
 
 obsidian-ai-pipeline の **Settings → Secrets and variables → Actions** に
