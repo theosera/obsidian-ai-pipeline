@@ -738,6 +738,32 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(promoteStagedRaw(staged, rawPath), 'promoted');
   });
 
+  t.test('discardFailedPromotion: quarantine capacity 枯渇では raw 証拠を消さず例外伝播', () => {
+    const vaultRoot = vaultWithQueue(null);
+    const rawPath = rawWith(vaultRoot, '不正な本文');
+    const quarantineDir = path.join(vaultRoot, '_quarantine');
+    fs.mkdirSync(quarantineDir, { recursive: true });
+    for (let n = 0; n <= 100; n++) {
+      const name = n === 0 ? '2026-06-08.md.txt' : `2026-06-08.${n}.md.txt`;
+      fs.writeFileSync(path.join(quarantineDir, name), `existing-${n}`, 'utf8');
+    }
+
+    assert.throws(
+      () => discardFailedPromotion({
+        promotion: 'promoted',
+        rawPath,
+        quarantineDir,
+        queuePath: queuePath(vaultRoot),
+        periodEnd: '2026-06-08',
+        sourceRef: 'gmail:t1',
+        reason: '契約違反: テスト',
+      }),
+      (err: unknown) => err instanceof QuarantineCapacityError
+    );
+    assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), '不正な本文', 'raw 証拠を保持');
+    assert.strictEqual(fs.existsSync(queuePath(vaultRoot)), false, '証拠 path 未確定の queue を作らない');
+  });
+
   t.test('identical は【この run の産物ではない】ので触らない', () => {
     const vaultRoot = vaultWithQueue(null);
     const rawPath = rawWith(vaultRoot, '既存の正しい本文');
