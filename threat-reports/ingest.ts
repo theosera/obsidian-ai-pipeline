@@ -7,10 +7,10 @@
  *   3. SQLite に report + vulnerabilities を upsert
  *   4. JSON エクスポート (Dataview 用)
  *   5. index ページ再生成 (sentinel block 差し替え)
- *   6. Vault に raw markdown をアーカイブ (オプション)
+ *   6. Vault に raw Markdown payload を非実行拡張子 (`.md.txt`) でアーカイブ (オプション)
  *
  * Gmail からのフェッチは **Claude Code 側 (このセッション)** が MCP 経由で
- * 行い、生 markdown をファイル化してからこの CLI を呼ぶ責務分担。
+ * 行い、生 Markdown payload をファイル化してからこの CLI を呼ぶ責務分担。
  *
  * 理由: Node ランタイム (`pnpm start`) は MCP に接続できない (MCP は IDE/Claude
  * Code 側のみで提供される)。CLI はファイル入力に専念し、Gmail 連携は別レイヤー
@@ -21,7 +21,13 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getVaultRoot } from '../config';
-import { getThreatReportsBaseFolder, getThreatReportsArchiveFolder } from './config';
+import {
+  getThreatReportsBaseFolder,
+  getThreatReportsArchiveFolder,
+  getThreatReportArchiveFilename,
+  THREAT_REPORT_ARCHIVE_SUFFIX,
+  LEGACY_THREAT_REPORT_ARCHIVE_SUFFIX,
+} from './config';
 import { resolveVaultPath, isInsideVaultRealpath } from '../storage';
 import { ThreatReportsDb, getDb } from './db';
 import { parseReport, ContractError } from './parser';
@@ -37,7 +43,7 @@ export interface IngestOptions {
   vaultRoot?: string;
   /**
    * Vault アーカイブを行うかどうか。デフォルト true。
-   * false なら DB と JSON / index のみ更新 (生 markdown は Vault に書かない)。
+   * false なら DB と JSON / index のみ更新 (生 Markdown payload は Vault に書かない)。
    */
   archive?: boolean;
   /**
@@ -155,10 +161,91 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
   };
 }
 
+export interface RawArchiveMigrationResult {
+  /** legacy `.md` から `.md.txt` へ rename した件数。 */
+  migrated: number;
+  /** 既に同一内容の `.md.txt` があり legacy 側だけ削除した件数。 */
+  deduplicated: number;
+  /** reports.vault_path を新しい拡張子へ追随させた行数。 */
+  dbPathsUpdated: number;
+}
+
+/**
+ * PR #181 より前の `raw/<week>.md` を `raw/<week>.md.txt` へ安全に移行する。
+ *
+ * - 本文 bytes は変更しない。拡張子だけを変えるので完全に可逆。
+ * - `.md` と `.md.txt` が両方存在し、内容が違う場合は何も変更せず fail-closed。
+ * - symlink / 非 regular file は拒否する。
+ * - DB は `vault_path` だけを限定更新し、人手 note / review 状態には触れない。
+ */
+export function migrateLegacyThreatReportArchives(options?: {
+  db?: ThreatReportsDb;
+  vaultRoot?: string;
+}): RawArchiveMigrationResult {
+  const db = options?.db ?? getDb();
+  const vaultRoot = options?.vaultRoot ?? getVaultRoot();
+  const rawDir = path.join(vaultRoot, getThreatReportsArchiveFolder());
+  if (!fs.existsSync(rawDir)) {
+    return { migrated: 0, deduplicated: 0, dbPathsUpdated: 0 };
+  }
+  if (!isInsideVaultRealpath(rawDir)) {
+    throw new Error(`raw archive dir が vault 外 (symlink?): ${rawDir}`);
+  }
+
+  const legacyFiles = fs.readdirSync(rawDir)
+    .filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name))
+    .sort();
+
+  // 先に全件 preflight。途中まで rename してから conflict を見つける状態を作らない。
+  for (const file of legacyFiles) {
+    const legacyPath = path.join(rawDir, file);
+    const targetPath = path.join(
+      rawDir,
+      file.slice(0, -LEGACY_THREAT_REPORT_ARCHIVE_SUFFIX.length) + THREAT_REPORT_ARCHIVE_SUFFIX
+    );
+    const legacyStat = fs.lstatSync(legacyPath);
+    if (!legacyStat.isFile() || legacyStat.isSymbolicLink()) {
+      throw new Error(`legacy raw archive が regular file でない: ${legacyPath}`);
+    }
+    if (fs.existsSync(targetPath)) {
+      const targetStat = fs.lstatSync(targetPath);
+      if (!targetStat.isFile() || targetStat.isSymbolicLink()) {
+        throw new Error(`新形式 raw archive が regular file でない: ${targetPath}`);
+      }
+      if (!fs.readFileSync(legacyPath).equals(fs.readFileSync(targetPath))) {
+        throw new Error(
+          `legacy/new raw archive conflict (内容が異なるため移行停止): ${file} / ${path.basename(targetPath)}`
+        );
+      }
+    }
+  }
+
+  let migrated = 0;
+  let deduplicated = 0;
+  let dbPathsUpdated = 0;
+  for (const file of legacyFiles) {
+    const legacyPath = path.join(rawDir, file);
+    const targetName =
+      file.slice(0, -LEGACY_THREAT_REPORT_ARCHIVE_SUFFIX.length) + THREAT_REPORT_ARCHIVE_SUFFIX;
+    const targetPath = path.join(rawDir, targetName);
+    if (fs.existsSync(targetPath)) {
+      fs.unlinkSync(legacyPath);
+      deduplicated++;
+    } else {
+      fs.renameSync(legacyPath, targetPath);
+      migrated++;
+    }
+    const oldRel = path.relative(vaultRoot, legacyPath).replace(/\\/g, '/');
+    const newRel = path.relative(vaultRoot, targetPath).replace(/\\/g, '/');
+    dbPathsUpdated += db.updateReportVaultPath(oldRel, newRel);
+  }
+  return { migrated, deduplicated, dbPathsUpdated };
+}
+
 export interface RebuildResult {
   /** 走査した raw アーカイブディレクトリ (絶対パス) */
   rawDir: string;
-  /** 見つかった `.md` 件数 */
+  /** 見つかった raw source (`.md.txt`) 件数 */
   filesFound: number;
   /** 再構築できたレポート行数 */
   reportsRebuilt: number;
@@ -173,9 +260,10 @@ export interface RebuildResult {
 }
 
 /**
- * `raw/<week>.md` を唯一の真実として threat_reports DB を作り直す。
+ * `raw/<week>.md.txt` を唯一の真実として threat_reports DB を作り直す。
+ * legacy `raw/<week>.md` が残っていれば、最初に内容不変の rename migration を行う。
  *
- * ヘッダコメントが長らく謳ってきた「壊れたら .md から再構築可能 (rebuildFromVault)」を
+ * ヘッダコメントが長らく謳ってきた「壊れたら raw source から再構築可能 (rebuildFromVault)」を
  * 実装したもの。破損退避 (`<file>.corrupted_*`) や手動 DB 削除のあとに、Vault に
  * 残る生 markdown から派生インデックスを復元する**明示的な復旧コマンド**。
  *
@@ -199,14 +287,17 @@ export async function rebuildThreatReportsDbFromVault(options?: {
   const vaultRoot = options?.vaultRoot ?? getVaultRoot();
   const rawDir = path.join(vaultRoot, getThreatReportsArchiveFolder());
 
+  // 0. legacy `.md` を非実行拡張子へ移す。DB を消す前に path 追随まで済ませる。
+  migrateLegacyThreatReportArchives({ db, vaultRoot });
+
   // 1. 既存行を全削除。reports を消すと vulnerabilities / implementation_checks は
-  //    ON DELETE CASCADE で連動削除される。raw/*.md だけを真実として作り直すため、
+  //    ON DELETE CASCADE で連動削除される。raw/*.md.txt だけを真実として作り直すため、
   //    raw が消えた孤児レポートもここで落ちる。
   for (const r of db.listReports()) db.deleteReport(r.id);
 
-  // 2. raw/*.md を列挙 (週順で安定させるためソート)。
+  // 2. raw/*.md.txt を列挙 (週順で安定させるためソート)。
   const files = fs.existsSync(rawDir)
-    ? fs.readdirSync(rawDir).filter((f) => f.endsWith('.md')).sort()
+    ? fs.readdirSync(rawDir).filter((f) => f.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX)).sort()
     : [];
 
   let reportsRebuilt = 0;
@@ -218,7 +309,7 @@ export async function rebuildThreatReportsDbFromVault(options?: {
   //    ingestThreatReport は archive 実行時のみ reports.vault_path を埋めるため、
   //    archive=false にすると再構築行の vault_path が null になり JSON の
   //    raw_md_path も null = 元レポートへのリンクが切れる (Codex #82 P2)。
-  //    raw/<week>.md への書き戻しは tmp→rename の冪等上書き (内容は ingest 冒頭で
+  //    raw/<week>.md.txt への書き戻しは tmp→rename の冪等上書き (内容は ingest 冒頭で
   //    メモリ読込済みなので同一パスでも安全) で、archive パスを正しく記録する。
   //    1 ファイルの契約違反 (ContractError) / I/O 失敗で全体を止めず、その 1 件だけ
   //    skip して残りを復元する (部分復旧 > 全失敗)。
@@ -270,7 +361,9 @@ function generateReportId(source: string, weekOf: string): string {
 }
 
 /**
- * Vault に raw markdown を `<base>/raw/<YYYY-MM-DD>.md` として保存。
+ * Vault に raw Markdown payload を `<base>/raw/<YYYY-MM-DD>.md.txt` として保存。
+ * 内容は 1 byte も変更しない。Obsidian/Dataview に Markdown として実行させないため、
+ * 最終拡張子だけ `.txt` にする。
  *
  * 同名ファイルがあれば上書き (= 同じ週のレポートが parser 改良で再 ingest
  * されても 1 ファイルにまとまる)。
@@ -279,7 +372,7 @@ function archiveRawMarkdown(vaultRoot: string, weekOf: string, markdown: string)
   // 保存先が vault 配下に収まることを書込前に strict 検証する (resolveVaultPath の
   // Phase 4/5/6: `..` 拒否 + resolve 後プレフィックス + symlink realpath)。改竄された
   // archive-folder 設定や symlink フォルダ経由の vault 外書込への defense-in-depth。
-  const rel = path.join(getThreatReportsArchiveFolder(), `${weekOf}.md`);
+  const rel = path.join(getThreatReportsArchiveFolder(), getThreatReportArchiveFilename(weekOf));
   const safe = resolveVaultPath(rel);
   if (!safe.ok) {
     throw new Error(`raw markdown の保存先が安全でない: ${safe.reason}`);
