@@ -43,6 +43,7 @@ import {
   extractEmailAddresses,
   verifySelfSentReport,
   addGitHubActionsMask,
+  requireMaskedMailboxAddress,
   redactAccountForLog,
   buildGmailQuery,
   GATE_SUBDIR,
@@ -267,6 +268,37 @@ export async function run(): Promise<TestSuiteResult> {
       ['weekly@example.com', 'other@example.net']
     );
     assert.deepStrictEqual(extractEmailAddresses(null), []);
+  });
+
+  t.test('起動時: Gmail profile address が取得不能/不正なら検索・通常ログ前に fail-closed', () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      assert.throws(
+        () => requireMaskedMailboxAddress(null),
+        /有効な email address を取得できませんでした/
+      );
+      assert.throws(
+        () => requireMaskedMailboxAddress('not-an-address'),
+        /有効な email address を取得できませんでした/
+      );
+    } finally {
+      console.log = origLog;
+    }
+    assert.deepStrictEqual(logs, [], '取得不能/形式不正では mask/query/通常ログを一切出さない');
+  });
+
+  t.test('起動時: 有効な Gmail profile address は通常ログより先に mask 登録される', () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      assert.strictEqual(requireMaskedMailboxAddress(ACCOUNT), ACCOUNT);
+    } finally {
+      console.log = origLog;
+    }
+    assert.deepStrictEqual(logs, [`::add-mask::${ACCOUNT}`]);
   });
 
   t.test('addGitHubActionsMask: profile address を GitHub Actions mask として登録', () => {
