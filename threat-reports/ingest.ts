@@ -73,17 +73,17 @@ export async function ingestThreatReport(options: IngestOptions): Promise<Ingest
     throw new Error(`脅威レポートファイルが見つかりません: ${filePath}`);
   }
   const markdown = fs.readFileSync(filePath, 'utf8');
-  const parsed = parseReport(markdown);
 
   const db = options.db ?? getDb();
   const vaultRoot = options.vaultRoot ?? getVaultRoot();
 
-  // F2: 手動経路で legacy raw/*.md 自体を input にされた場合も、本文はすでに
-  // memory に読み込んであるのでここで安全拡張子へ移せる。自動 fetcher だけに
-  // 依存せず、ingest API 単体でも .md を Vault に残さない。
+  // F2: legacy raw/*.md 自体が input の場合、parser が拒否する本文でも
+  // executable Markdown を Vault に残さない。本文は既に memory に読み込んで
+  // あるので、契約パースより先に内容不変の .md.txt migration を行う。
   migrateLegacyThreatReportArchives({ db, vaultRoot });
 
-  const source = options.source ?? `file:${path.basename(filePath)}`;
+  const parsed = parseReport(markdown);
+  const source = options.source ?? canonicalFileSource(filePath);
   // ID は (source + week_of) のハッシュ。同じ週次レポートを再 ingest しても同じ ID
   // になり upsert で衝突する → 重複行が増えない。
   const reportId = generateReportId(source, parsed.frontmatter.period_end);
@@ -228,7 +228,6 @@ export function migrateLegacyThreatReportArchives(options?: {
 
   let migrated = 0;
   let deduplicated = 0;
-  let dbPathsUpdated = 0;
   for (const file of legacyFiles) {
     const legacyPath = path.join(rawDir, file);
     const targetName =
@@ -241,6 +240,22 @@ export function migrateLegacyThreatReportArchives(options?: {
       fs.renameSync(legacyPath, targetPath);
       migrated++;
     }
+  }
+
+  // DB 更新が rename 後に失敗しても、次回は既存 .md.txt を列挙して stale path を
+  // 修復できるよう reconciliation を独立して行う。これにより migration は retry-safe。
+  let dbPathsUpdated = 0;
+  const inertFiles = fs.readdirSync(rawDir)
+    .filter((name) => /^\d{4}-\d{2}-\d{2}\.md\.txt$/.test(name))
+    .sort();
+  for (const file of inertFiles) {
+    const targetPath = path.join(rawDir, file);
+    const targetStat = fs.lstatSync(targetPath);
+    if (!targetStat.isFile() || targetStat.isSymbolicLink()) {
+      throw new Error(`新形式 raw archive が regular file でない: ${targetPath}`);
+    }
+    const legacyName = file.slice(0, -'.txt'.length);
+    const legacyPath = path.join(rawDir, legacyName);
     const oldRel = path.relative(vaultRoot, legacyPath).replace(/\\/g, '/');
     const newRel = path.relative(vaultRoot, targetPath).replace(/\\/g, '/');
     dbPathsUpdated += db.updateReportVaultPath(oldRel, newRel);
@@ -325,7 +340,6 @@ export async function rebuildThreatReportsDbFromVault(options?: {
         filePath: path.join(rawDir, file),
         db,
         vaultRoot,
-        source: `file:${file}`,
       });
       reportsRebuilt += 1;
       vulnerabilities += res.vulnerabilities;
@@ -351,6 +365,18 @@ export async function rebuildThreatReportsDbFromVault(options?: {
     jsonPath,
     indexPath,
   };
+}
+
+/**
+ * raw archive の拡張子移行で report identity を変えないため、`.md.txt` は
+ * legacy `.md` と同じ file source identity に正規化する。
+ */
+export function canonicalFileSource(filePath: string): string {
+  const base = path.basename(filePath);
+  const canonical = base.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX)
+    ? base.slice(0, -'.txt'.length)
+    : base;
+  return `file:${canonical}`;
 }
 
 /**
