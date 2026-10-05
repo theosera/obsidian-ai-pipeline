@@ -45,15 +45,20 @@ label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed 
 **1 つでも欠けたら取り込まない** (fail-closed / `status: 'error'` /
 `processed` ラベルも付けない)。
 
-Google の Gmail API 仕様では `SENT` は手動付与不可で、Gmail UI、
-`messages.send`、`drafts.send` 等で実際に送信された message に自動付与される。
-そのため、外部送信者が `From` を偽装しただけではこの境界を通れない。
+Google の Gmail API 仕様では `SENT` は手動付与不可だが、次の message に
+自動付与される: Gmail Web UI、`messages.send` / `drafts.send`、および
+`messages.insert` で `From` に当該ユーザーのメールアドレスを含めた message。
+`messages.insert` は配送せず mailbox へ直接挿入する API なので、`SENT` は
+「SMTP/外部配送を実際に通った証明」ではない。
 
 - 公式仕様: https://developers.google.com/workspace/gmail/api/guides/labels
+- `messages.insert`: https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/insert
 
-> **信頼境界の明示**: Gmail account 自体と、その OAuth credential は trusted。
-> mailbox / OAuth credential が侵害された場合は本判定も破られるため、そのケースは
-> Google account incident response / token rotation の責務。
+> **信頼境界の明示**: Gmail account 自体と、その mailbox へ message を
+> insert/send できる OAuth credential は trusted。mailbox / OAuth credential が
+> 侵害された場合、攻撃者は自己 From の insert により `SENT` 条件も満たせるため、
+> 本判定も破られる。そのケースは Google account incident response / token rotation
+> の責務。
 >
 > `Authentication-Results` / DKIM はこの self-send 経路の認証根拠にしない。
 > 2026-10-06 の実測で、正規の自分宛て週報 8 通に DKIM pass が無く、
