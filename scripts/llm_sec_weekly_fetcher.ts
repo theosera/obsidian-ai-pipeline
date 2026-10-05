@@ -25,7 +25,7 @@
  *        ingest 前に実行。non-clean (suspicious/blocked/エラー = fail-closed) は
  *        staging を `_quarantine/` へ退避 + 隔離キュー登録し、**他 thread の処理は
  *        継続** (run 全体は fail させない。裁定は /sec-mode の隔離キュー review)
- *     7. (clean のみ) `raw/<period_end>.md` へ昇格してから
+ *     7. (clean のみ) `raw/<period_end>.md.txt` へ昇格してから
  *        `ingestThreatReport()` を直接 import して実行。既存 raw と内容が違う
  *        場合は上書きせず隔離 (untrusted 入力に archive を消させない)
  *     8. **ラベルは付与しない**。成功 message と決定論的失敗 (terminal) の id を
@@ -81,8 +81,17 @@ import { fileURLToPath } from 'url';
 // gmail() の auth 引数で TS2769 になるので、必ず同じ bundle から取る。
 import { gmail, gmail_v1, auth as gmailAuth } from '@googleapis/gmail';
 import { setVaultRoot } from '../config';
-import { ingestThreatReport, ContractError } from '../threat-reports/ingest';
-import { getThreatReportsArchiveFolder, getThreatReportsBaseFolder } from '../threat-reports/config';
+import {
+  ingestThreatReport,
+  migrateLegacyThreatReportArchives,
+  ContractError,
+} from '../threat-reports/ingest';
+import {
+  getThreatReportsArchiveFolder,
+  getThreatReportsBaseFolder,
+  getThreatReportArchiveFilename,
+  THREAT_REPORT_ARCHIVE_SUFFIX,
+} from '../threat-reports/config';
 import { closeDb } from '../threat-reports/db';
 
 // --- 公開定数 (テストから参照) ---
@@ -228,7 +237,7 @@ export function isSafeRawPath(rawPath: string, archiveDir: string): boolean {
   const resolved = path.resolve(rawPath);
   if (!resolved.startsWith(archiveRoot + path.sep)) return false;
   const rel = resolved.slice(archiveRoot.length + 1);
-  return !rel.includes(path.sep) && rel.endsWith('.md');
+  return !rel.includes(path.sep) && rel.endsWith(THREAT_REPORT_ARCHIVE_SUFFIX);
 }
 
 /** Gmail message から取り出した本文と、その「代替表現」の有無。 */
@@ -1006,7 +1015,8 @@ async function processMessage(
     };
   }
   const archiveDir = path.join(vaultRoot, getThreatReportsArchiveFolder());
-  const rawPath = path.join(archiveDir, `${periodEnd}.md`);
+  const rawFilename = getThreatReportArchiveFilename(periodEnd);
+  const rawPath = path.join(archiveDir, rawFilename);
   if (!isSafeRawPath(rawPath, archiveDir)) {
     return {
       ...at,
@@ -1017,7 +1027,7 @@ async function processMessage(
     };
   }
   if (dryRun) {
-    console.log(`  🧪 [dry-run] ${periodEnd}.md 書込とゲートと ingest と pending-labels.json への記録をスキップ`);
+    console.log(`  🧪 [dry-run] ${rawFilename} 書込とゲートと ingest と pending-labels.json への記録をスキップ`);
     return { ...at, periodEnd, status: 'ingested' };
   }
   const baseDir = path.join(vaultRoot, getThreatReportsBaseFolder());
@@ -1093,13 +1103,13 @@ async function processMessage(
       file: quarantinedPath,
       sourceRef,
       verdict: 'conflict',
-      reason: `raw/${periodEnd}.md が既存で内容が異なる (上書きしない)`,
+      reason: `raw/${rawFilename} が既存で内容が異なる (上書きしない)`,
     });
     return {
       ...at,
       periodEnd,
       status: 'quarantined',
-      reason: `既存 raw/${periodEnd}.md と内容が異なるため上書きせず隔離 (人間の裁定待ち)`,
+      reason: `既存 raw/${rawFilename} と内容が異なるため上書きせず隔離 (人間の裁定待ち)`,
     };
   }
 
@@ -1281,6 +1291,18 @@ export async function runIngestPhase(args: readonly string[]): Promise<number> {
   });
   if (!mailboxAddress) {
     throw new Error('Gmail profile から有効な emailAddress を取得できませんでした (fail-closed)');
+  }
+
+  // F2: Obsidian 上で untrusted Markdown を実行可能な .md として残さない。
+  // dry-run は読み取り専用なので migration も行わない。
+  if (!dryRun) {
+    const migration = migrateLegacyThreatReportArchives({ vaultRoot: env.vaultRoot });
+    if (migration.migrated || migration.deduplicated || migration.dbPathsUpdated) {
+      console.log(
+        `🔒 legacy raw archive migration: renamed=${migration.migrated}, ` +
+        `deduplicated=${migration.deduplicated}, db_paths=${migration.dbPathsUpdated}`
+      );
+    }
   }
 
   const query = buildGmailQuery(env.labelName, env.processedLabelName, mailboxAddress);
