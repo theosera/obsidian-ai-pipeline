@@ -28,7 +28,7 @@ label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed 
 - `-label:LLM-Sec-Report/processed` — 既処理メールを除外
 - `in:sent` / `from:<自分>` / `to:<自分>` — Gmail profile address から組み立てる一次フィルタ
 
-### 送信元の真正性確認 (必須 / self-send 専用)
+### self-send 条件の確認 (必須 / self-send 専用)
 
 > 🔴 **ラベルも件名も「誰が送ったか」の証明にはならない。**
 > この週次経路は自分宛ての週報だけを扱う専用経路であり、
@@ -44,15 +44,21 @@ label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed 
 起動時にアドレスを取得できない、または形式が不正な場合は、
 検索や通常ログへ進む前に fail-closed で停止する。
 
-**1 つでも欠けたら取り込まない**。ただし `SENT` が付いていても、
-それだけで owner 本人が送った証明にはならない。insert 経路でも `SENT` の付いた
-message を作れるため、通常の外部配送を通った証明としても扱わない。
+**1 つでも欠けたら取り込まない**。ただし `SENT` と `From` / `To` は、
+この mailbox への書込み権限下で作られた self-send 条件の確認であり、
+owner 本人が送った証明にはならない。insert 経路でも `SENT` の付いた message を作れ、
+`From` / `To` も message header として与えられるため、通常の外部配送を通った
+証明としても扱わない。
 
 > **信頼境界**: この Gmail アカウントに insert/send できる OAuth client は、
 > このパイプライン以外の owner が許可したアプリも含めて trusted 側にある。
 > それらの client は、この判定を正規に通る message を作れる。
 > したがって、この経路が信頼する境界は「対象 Gmail アカウントへの正規の書込み権限」である。
 > その権限が不正利用・誤付与された場合は、本判定だけでは区別できない。
+>
+> **Google 公式出典**
+> - https://developers.google.com/workspace/gmail/api/guides/labels
+> - https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/insert
 
 > `Authentication-Results` / DKIM はこの self-send 経路の認証根拠にしない。
 > 2026-10-06 の実測で、正規の自分宛て週報 8 通に DKIM pass が無く、
