@@ -27,7 +27,7 @@
                           │   1. OAuth refresh                       │
                           │   2. Gmail API search                    │
                           │      (隔離キュー pending の週は skip)    │
-                          │   3. sanitize + raw md 保存              │
+                          │   3. sanitize + inert .md.txt 保存       │
                           │   4. インジェクション・ゲート            │
                           │      (L0+L1 → gate_decision.py ci)       │
                           │      non-clean → _quarantine/ 退避 +     │
