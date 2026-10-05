@@ -51,7 +51,11 @@ import {
   type GateRunner,
   type PendingLabel,
 } from '../scripts/llm_sec_weekly_fetcher';
-import { getThreatReportsBaseFolder } from '../threat-reports/config';
+import {
+  getThreatReportsBaseFolder,
+  getThreatReportArchiveFilename,
+  THREAT_REPORT_ARCHIVE_SUFFIX,
+} from '../threat-reports/config';
 import type { gmail_v1 } from '@googleapis/gmail';
 
 const ARCHIVE_DIR = '/tmp/vault/Permanent Note/10_Threat_Reports/raw';
@@ -135,8 +139,11 @@ export async function run(): Promise<TestSuiteResult> {
 
   t.section('isSafeRawPath (path traversal 二重防御)');
 
-  t.test('archive 直下の <date>.md は OK', () => {
-    assert.strictEqual(isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.md`, ARCHIVE_DIR), true);
+  t.test('archive 直下の <date>.md.txt は OK', () => {
+    assert.strictEqual(
+      isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25${THREAT_REPORT_ARCHIVE_SUFFIX}`, ARCHIVE_DIR),
+      true
+    );
   });
 
   t.test('archive の親に書こうとすると NG', () => {
@@ -148,16 +155,27 @@ export async function run(): Promise<TestSuiteResult> {
 
   t.test('archive 配下のサブディレクトリは NG (フラット運用前提)', () => {
     assert.strictEqual(
-      isSafeRawPath(`${ARCHIVE_DIR}/sub/2026-05-25.md`, ARCHIVE_DIR),
+      isSafeRawPath(`${ARCHIVE_DIR}/sub/2026-05-25${THREAT_REPORT_ARCHIVE_SUFFIX}`, ARCHIVE_DIR),
       false
     );
   });
 
-  t.test('.md 以外の拡張子は NG', () => {
+  t.test('.md.txt 以外の拡張子は NG', () => {
     assert.strictEqual(
       isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.sh`, ARCHIVE_DIR),
       false
     );
+  });
+
+  t.test('legacy .md は新規 raw 昇格先として拒否する (F2 回帰)', () => {
+    assert.strictEqual(
+      isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.md`, ARCHIVE_DIR),
+      false
+    );
+  });
+
+  t.test('raw archive filename は .md.txt で固定', () => {
+    assert.strictEqual(getThreatReportArchiveFilename('2026-05-25'), '2026-05-25.md.txt');
   });
 
   t.section('extractPlainTextBody (Gmail multipart 走査)');
@@ -465,7 +483,7 @@ export async function run(): Promise<TestSuiteResult> {
 
   function gateFixture(): { rawPath: string; quarantineDir: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-gate-'));
-    const rawPath = path.join(dir, 'raw', '2026-06-08.md');
+    const rawPath = path.join(dir, 'raw', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(rawPath), { recursive: true });
     fs.writeFileSync(rawPath, 'body', 'utf8');
     return { rawPath, quarantineDir: path.join(dir, '_quarantine') };
@@ -616,7 +634,7 @@ export async function run(): Promise<TestSuiteResult> {
   t.section('discardFailedPromotion (ingest 失敗時に raw/ を残さない)');
 
   function rawWith(vaultRoot: string, body: string): string {
-    const rawPath = path.join(vaultRoot, 'raw', '2026-06-08.md');
+    const rawPath = path.join(vaultRoot, 'raw', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(rawPath), { recursive: true });
     fs.writeFileSync(rawPath, body, 'utf8');
     return rawPath;
