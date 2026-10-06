@@ -61,8 +61,8 @@ function realpathWithinVault(absPath: string, vaultRoot: string): boolean {
  * Phase 6 と同じ判定を、検証後に確定した絶対パスへ再適用する (validate→execute 間に
  * symlink が差し替わる TOCTOU への defense-in-depth)。
  */
-export function isInsideVaultRealpath(absPath: string): boolean {
-  return realpathWithinVault(absPath, getVaultRoot());
+export function isInsideVaultRealpath(absPath: string, vaultRoot?: string): boolean {
+  return realpathWithinVault(absPath, vaultRoot ?? getVaultRoot());
 }
 
 /**
@@ -84,12 +84,17 @@ export function isInsideVaultRealpath(absPath: string): boolean {
  * 「Inbox へ無言クランプ」が誤動作になる (モデルが要求したパスを黙って書き換えて
  * しまう) ため strict 版を直接使い、違反を人間に提示して拒否する。
  */
-export function resolveVaultPath(proposedRelative: string): VaultPathResult {
+export function resolveVaultPath(
+  proposedRelative: string,
+  explicitVaultRoot?: string
+): VaultPathResult {
   if (!proposedRelative || typeof proposedRelative !== 'string') {
     return { ok: false, reason: 'empty-or-non-string-path' };
   }
 
-  const vaultRoot = getVaultRoot();
+  // 呼び出し側が root を明示した場合は、その同じ root を lexical / realpath の
+  // 全フェーズで使う。省略時は従来どおり global Vault root。
+  const vaultRoot = path.resolve(explicitVaultRoot ?? getVaultRoot());
 
   // Phase 0: URLデコード（%2e%2e などのエンコード済みトラバーサル対策）
   let decoded: string;

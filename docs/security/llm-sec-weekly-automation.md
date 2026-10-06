@@ -27,7 +27,7 @@
                           │   1. OAuth refresh                       │
                           │   2. Gmail API search                    │
                           │      (隔離キュー pending の週は skip)    │
-                          │   3. sanitize + raw md 保存              │
+                          │   3. sanitize + inert .md.txt 保存       │
                           │   4. インジェクション・ゲート            │
                           │      (L0+L1 → gate_decision.py ci)       │
                           │      non-clean → _quarantine/ 退避 +     │
@@ -50,7 +50,8 @@
                                                  ▼
                                   ┌─────────────────────────────┐
                                   │ Vault repo (private)        │
-                                  │   raw/<YYYY-MM-DD>.md       │
+                                  │   raw/<YYYY-MM-DD>.md.txt   │
+                                  │   (原文内容不変 / 非Markdown)│
                                   │   .threat_reports.json      │
                                   │   _index.md                 │
                                   │   _gate/decisions.jsonl     │
@@ -71,6 +72,12 @@
                                   └─────────────────────────────┘
 ```
 
+> 🔒 **raw 原文の実行防止 (F2)**: 週報本文は非信頼入力なので、Vaultには
+> `raw/<YYYY-MM-DD>.md` として保存しない。原文 bytes は変更せず、
+> `raw/<YYYY-MM-DD>.md.txt` として保存する。Obsidian/Dataview がコード fence を
+> Markdown として実行しないための拡張子境界で、必要なら `.txt` を外せば原文を
+> byte-for-byte で復元できる。legacy `.md` は本番 ingest 開始時に自動 migration
+> され、内容が異なる `.md` / `.md.txt` が併存した場合は fail-closed で停止する。
 > 🛡️ **2-phase 設計の意義 (self-healing)**: Gmail の `processed` ラベルは
 > **vault push が成功した後にしか付かない**。push が失敗 (deploy key 障害 /
 > network / conflict 等) すると Phase 2 step は GitHub Actions の
@@ -183,7 +190,7 @@ node -e '
 > 恒久化され、再生成は revoke / scope 変更時のみで済む。個人利用スコープなら審査
 > (verification) は不要で、同意画面に "unverified" 警告が出るだけ。
 
-### 2.3 Gmail ラベルと送信者許可リスト
+### 2.3 Gmail ラベルと self-send 検証
 
 - `LLM-Sec-Report` (受信側フィルタで `[LLM-Sec-Weekly]` 件名に自動付与)
 - `LLM-Sec-Report/processed` (取込済マーカー / 本 workflow が付与)
@@ -191,27 +198,43 @@ node -e '
 両方とも Gmail UI で事前に作成しておくこと (workflow は label ID 解決時に
 名前一致で探す。未作成だと初回実行が早期 fail する)。
 
-> 🔴 **ラベルは送信者の証明ではない。** 上のフィルタは**件名だけ**を見てラベルを
-> 付けるので、アドレスを知っていれば誰でも同じ件名で送って自動取込に入れる。
-> そのため fetcher は `LLM_SEC_ALLOWED_SENDERS` (必須 secret) と **DKIM 検証**で
-> 送信者を判定する。判定条件の全文は
-> [`llm-sec-report-consumption.md` §1 送信者認証](./llm-sec-report-consumption.md#送信者認証-必須--ラベルと件名は認証ではない)。
+> 🔴 **ラベルと件名だけでは送信元の証明にならない。**
+> この週次経路は自分宛ての週報だけを扱う専用経路であり、
+> 検索条件とは別に message 単位の検証を行う。
 
-**`LLM_SEC_ALLOWED_SENDERS` の書式** (カンマ区切りで複数可):
+判定条件:
 
-```text
-reports@example.com            # 完全一致
-@example.com                   # ドメイン全体を許可
-reports@example.com,@other.example
-```
+1. 起動時にアカウント自身のアドレスを取得でき、形式も有効であること
+2. message に `SENT` system label が付いていること
+3. `From` がアカウント自身のアドレスと一致すること
+4. `To` にアカウント自身のアドレスが含まれること
 
-Gmail フィルタ側にも `from:` 条件を足しておくことを推奨する (多層防御)。
-ただし**フィルタは信頼の根拠にしない** — 本判定は fetcher 側の `verifySender()`。
+起動時にアドレスを取得できない、または形式が不正な場合は、
+検索や通常ログへ進む前に fail-closed で停止する。
 
-> ⚠️ **この secret を登録するまで週次 cron は必ず失敗する** (fail-closed)。
-> 「未設定なら従来どおり動く」に倒すと、設定漏れが無言で「送信者未認証の取込」に
-> 戻ってしまうため、意図的に loud-fail させている。
+検索クエリにも `in:sent from:<自分> to:<自分>` を入れるが、これは一次フィルタ。
+本判定は message 単位で別に行う。アカウント自身のアドレスは通常ログより先に
+mask 登録し、通常ログでは `<self>` 表記にして平文アドレスを残さない。
 
+`SENT` と `From` / `To` は、この mailbox への書込み権限下で作られた
+self-send 条件の確認であり、owner 本人が送った証明にはならない。
+insert 経路でも `SENT` の付いた message を作れ、`From` / `To` も message header として
+与えられるため、通常の外部配送を通った証明としても扱わない。
+
+> **信頼境界**: この Gmail アカウントに insert/send できる OAuth client は、
+> このパイプライン以外の owner が許可したアプリも含めて trusted 側にある。
+> それらの client は、この判定を正規に通る message を作れる。
+> したがって、この経路が信頼する境界は「対象 Gmail アカウントへの正規の書込み権限」である。
+> その権限が不正利用・誤付与された場合は、本判定だけでは区別できない。
+>
+> **Google 公式出典**
+> - https://developers.google.com/workspace/gmail/api/guides/labels
+> - https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/insert
+
+> PR #152 の DKIM + `LLM_SEC_ALLOWED_SENDERS` は廃止する。2026-10-06 の
+> 実メール dry-run で、正規の自分宛て週報 8 通すべてに DKIM pass が無く、
+> 正規入力を全件誤拒否することを確認したため。将来、外部送信者を受け付ける
+> 要件が生じた場合は self-send verifier を緩めず、別profileを新設する。
 ## 3. GitHub Actions secrets
 
 obsidian-ai-pipeline の **Settings → Secrets and variables → Actions** に
@@ -224,7 +247,6 @@ obsidian-ai-pipeline の **Settings → Secrets and variables → Actions** に
 | `GMAIL_CLIENT_ID` | ✅ | Google OAuth client ID |
 | `GMAIL_CLIENT_SECRET` | ✅ | Google OAuth client secret |
 | `GMAIL_REFRESH_TOKEN` | ✅ | 2.2 で取得した refresh_token |
-| `LLM_SEC_ALLOWED_SENDERS` | ✅ | 取込を許可する送信者 (カンマ区切り)。**未設定だと fetcher は起動時に落ちる** (§2.3) |
 | `LLM_SEC_LABEL_NAME` | ❌ | 既定 `LLM-Sec-Report`。違う名前を使う場合のみ上書き |
 | `LLM_SEC_PROCESSED_LABEL_NAME` | ❌ | 既定 `LLM-Sec-Report/processed` |
 | `LLM_SEC_MAX_RESULTS` | ❌ | 既定 10。1〜100 |
@@ -240,7 +262,8 @@ CLAUDE.md「Secrets / sensitive files」節の通り、これらは **絶対に�
    行わないため安全な smoke test になる
 3. 想定ログ:
    ```
-   🔍 Gmail query: label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed (max 10)
+   🔍 Gmail query: label:LLM-Sec-Report subject:"[LLM-Sec-Weekly]" -label:LLM-Sec-Report/processed in:sent from:<自分> to:<自分> (max 10)
+   🔐 送信者検証: Gmail SENT system label + From/To=<自分> の self-send のみ取込
    📨 未処理 thread: N 件
      🧪 [dry-run] 2026-05-25.md 書込と ingest と processed ラベル付与をスキップ
      ...

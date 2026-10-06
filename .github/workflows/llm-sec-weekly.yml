@@ -151,11 +151,9 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          # ★必須★ 取込を許可する送信者 (カンマ区切り / "a@b.com" or "@b.com")。
-          # 未設定だと fetcher は起動時に落ちる (fail-closed)。ラベルと件名は
-          # 受信側フィルタが件名から自動付与するため送信者の証明にならない
-          # (= 誰でもパイプラインに入れた)。DKIM 済み From へ判定を移している。
-          LLM_SEC_ALLOWED_SENDERS: ${{ secrets.LLM_SEC_ALLOWED_SENDERS }}
+          # Gmail profile + SENT system label + self From/To は、
+          # この mailbox への書込み権限下で作られた self-send 条件の確認に使う。
+          # owner 本人が送ったことの証明ではない。追加 sender secret は不要。
           # 既定で十分だが上書き可能 (任意 secrets)
           LLM_SEC_LABEL_NAME: ${{ secrets.LLM_SEC_LABEL_NAME }}
           LLM_SEC_PROCESSED_LABEL_NAME: ${{ secrets.LLM_SEC_PROCESSED_LABEL_NAME }}
@@ -203,6 +201,20 @@ jobs:
           for rel in "${files[@]}"; do
             full="${VAULT_ROOT}/${rel}"
             [ -f "${full}" ] || continue
+
+            # legacy raw の .md -> .md.txt は「この run で新規取得した本文」ではない。
+            # HEAD に同名 legacy .md があり、現在の .md.txt と byte-identical な場合だけ
+            # migration-only と認定し、新規レポート用 invariant gate の対象外にする。
+            # 内容が 1 byte でも違えば通常どおり再チェックする。
+            if [[ "${rel}" == *.md.txt ]]; then
+              legacy_rel="${rel%.txt}"
+              if git -C "${VAULT_ROOT}" cat-file -e "HEAD:${legacy_rel}" 2>/dev/null \
+                  && cmp -s "${full}" <(git -C "${VAULT_ROOT}" show "HEAD:${legacy_rel}"); then
+                echo "ℹ️ inert migration only — new-report gate re-check skip: ${rel}"
+                continue
+              fi
+            fi
+
             # scanner の exit 1 は「signal あり」の正常系 (fetcher の
             # makeCliGateRunner と同じ扱い)。pipefail 下でパイプに直結すると
             # gate が clean (exit 0) でもパイプ全体が 1 になり、良性 signal を
@@ -349,9 +361,7 @@ jobs:
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          # phase 2 は送信者検証をしない (label 付与のみ) が、validateEnv を
-          # 両 phase で共通に保つため同じ env を渡す (既存の設計方針どおり)。
-          LLM_SEC_ALLOWED_SENDERS: ${{ secrets.LLM_SEC_ALLOWED_SENDERS }}
+          # phase 2 は label 付与のみ。sender secret は使用しない。
           LLM_SEC_LABEL_NAME: ${{ secrets.LLM_SEC_LABEL_NAME }}
           LLM_SEC_PROCESSED_LABEL_NAME: ${{ secrets.LLM_SEC_PROCESSED_LABEL_NAME }}
           LLM_SEC_MAX_RESULTS: ${{ secrets.LLM_SEC_MAX_RESULTS }}

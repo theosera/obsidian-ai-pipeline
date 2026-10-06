@@ -2,9 +2,9 @@
  * 週次 LLM 攻撃ベクター脅威レポート用 SQLite メタデータストア。
  *
  * 設計思想:
- *   - 生レポート (.md) が source of truth、本 DB は派生インデックス
+ *   - 生レポート payload (`raw/*.md.txt`) が source of truth、本 DB は派生インデックス
  *   - 用途: 横串検索 / リスクスコア順表示 / 過去レポートとの差分
- *   - 壊れたら raw/*.md から再構築できる:
+ *   - 壊れたら raw/*.md.txt から再構築できる:
  *     `ingest.ts::rebuildThreatReportsDbFromVault()`
  *     (CLI: `--rebuild-threat-reports-db`)。ただし ai_relevance_note /
  *     relevance_reviewed_at は raw に無い human 入力なので再構築では復元されない。
@@ -599,6 +599,17 @@ export class ThreatReportsDb {
 
   listReports(): ReportRow[] {
     return this.db.prepare('SELECT * FROM reports ORDER BY week_of DESC, received_at DESC').all() as ReportRow[];
+  }
+
+  /**
+   * Vault 内 source-of-truth のファイル名移行に伴い、path だけを限定更新する。
+   * report 本文・レビュー状態・per-repo note 等には触れない。
+   */
+  updateReportVaultPath(oldPath: string, newPath: string): number {
+    const info = this.db.prepare(
+      'UPDATE reports SET vault_path = ? WHERE vault_path = ?'
+    ).run(newPath, oldPath);
+    return info.changes;
   }
 
   /**

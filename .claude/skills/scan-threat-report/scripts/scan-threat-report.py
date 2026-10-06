@@ -431,10 +431,11 @@ def scan_file(path):
 
 
 def collect_targets(arg):
-    """arg がディレクトリなら配下の *.md を、ファイルならそれ自身を対象として返す。"""
+    """arg がディレクトリなら配下の *.md / *.md.txt を、ファイルならそれ自身を対象として返す。"""
     if os.path.isdir(arg):
         return sorted(os.path.join(r, fn)
-                      for r, _, fs in os.walk(arg) for fn in fs if fn.endswith(".md"))
+                      for r, _, fs in os.walk(arg)
+                      for fn in fs if fn.endswith(".md") or fn.endswith(".md.txt"))
     return [arg]
 
 
@@ -470,11 +471,11 @@ def main():
     args = [a for a in sys.argv[1:] if a != "--json"]
     as_json = "--json" in sys.argv
     if len(args) != 1:
-        print("usage: scan-threat-report.py [--json] <report.md|dir>", file=sys.stderr)
+        print("usage: scan-threat-report.py [--json] <report.md|report.md.txt|dir>", file=sys.stderr)
         return 2
     targets = collect_targets(args[0])
     if not targets:
-        print(f"⚠️  対象 .md が見つからない: {args[0]}", file=sys.stderr)
+        print(f"⚠️  対象 .md / .md.txt が見つからない: {args[0]}", file=sys.stderr)
         return 2
 
     reports, any_signal = [], False

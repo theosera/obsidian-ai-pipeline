@@ -200,5 +200,18 @@ for cp, cat in ((0xE000, "Co"), (0xD800, "Cs")):
     check(f"U+{cp:04X} ({cat}) → invisible-char がちょうど 1 件",
           [s["kind"] for s in sig] == ["invisible-char"], str(sig))
 
+print("\n== directory scan: .md / .md.txt の両方を列挙 ==")
+with tempfile.TemporaryDirectory() as d:
+    md = os.path.join(d, "a.md")
+    inert = os.path.join(d, "b.md.txt")
+    other = os.path.join(d, "c.txt")
+    for p in (md, inert, other):
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("x")
+    targets = st.collect_targets(d)
+    check("legacy .md を含む", md in targets, str(targets))
+    check("inert .md.txt を含む", inert in targets, str(targets))
+    check("通常 .txt は含まない", other not in targets, str(targets))
+
 print(f"\n{'='*52}\n結果: {'全テスト PASS 🎉' if failures == 0 else f'{failures} 件 FAIL'}")
 sys.exit(1 if failures else 0)

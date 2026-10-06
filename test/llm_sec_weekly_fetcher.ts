@@ -31,6 +31,7 @@ import {
   promoteStagedRaw,
   discardFailedPromotion,
   quarantineBody,
+  QuarantineCapacityError,
   extractBodyParts,
   extractSubject,
   selectReportMessages,
@@ -38,12 +39,14 @@ import {
   threadSourceRef,
   isPeriodEndTooFarInFuture,
   printSummary,
-  parseAllowedSenders,
   getHeader,
   extractEmailAddress,
-  dkimPassDomains,
-  verifySender,
-  authservIdOf,
+  extractEmailAddresses,
+  verifySelfSentReport,
+  addGitHubActionsMask,
+  requireMaskedMailboxAddress,
+  initializeMailboxBeforeSearch,
+  redactAccountForLog,
   buildGmailQuery,
   GATE_SUBDIR,
   PERIOD_END_RE,
@@ -137,25 +140,29 @@ export async function run(): Promise<TestSuiteResult> {
 
   t.section('isSafeRawPath (path traversal 二重防御)');
 
-  t.test('archive 直下の <date>.md は OK', () => {
-    assert.strictEqual(isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.md`, ARCHIVE_DIR), true);
+  t.test('archive 直下の <date>.md.txt は OK', () => {
+    assert.strictEqual(isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.md.txt`, ARCHIVE_DIR), true);
+  });
+
+  t.test('legacy .md は最終 raw 保存先として拒否 (F2)', () => {
+    assert.strictEqual(isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.md`, ARCHIVE_DIR), false);
   });
 
   t.test('archive の親に書こうとすると NG', () => {
     assert.strictEqual(
-      isSafeRawPath(`${ARCHIVE_DIR}/../escape.md`, ARCHIVE_DIR),
+      isSafeRawPath(`${ARCHIVE_DIR}/../escape.md.txt`, ARCHIVE_DIR),
       false
     );
   });
 
   t.test('archive 配下のサブディレクトリは NG (フラット運用前提)', () => {
     assert.strictEqual(
-      isSafeRawPath(`${ARCHIVE_DIR}/sub/2026-05-25.md`, ARCHIVE_DIR),
+      isSafeRawPath(`${ARCHIVE_DIR}/sub/2026-05-25.md.txt`, ARCHIVE_DIR),
       false
     );
   });
 
-  t.test('.md 以外の拡張子は NG', () => {
+  t.test('.md.txt 以外の最終拡張子は NG', () => {
     assert.strictEqual(
       isSafeRawPath(`${ARCHIVE_DIR}/2026-05-25.sh`, ARCHIVE_DIR),
       false
@@ -224,11 +231,15 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(extractPlainTextBody(msg), 'deep plain');
   });
 
-  t.section('送信者認証 (claude-security F3 / F6 / F12 / F13)');
+  t.section('self-sent Gmail provenance (PR #152 DKIM 置換)');
 
-  /** ヘッダ付き message を組む小ヘルパー。 */
-  function msgWith(headers: Record<string, string>): gmail_v1.Schema$Message {
+  /** ヘッダ + system label 付き message を組む小ヘルパー。 */
+  function msgWith(
+    headers: Record<string, string>,
+    labelIds: string[] = []
+  ): gmail_v1.Schema$Message {
     return {
+      labelIds,
       payload: {
         headers: Object.entries(headers).map(([name, value]) => ({ name, value })),
         mimeType: 'text/plain',
@@ -237,211 +248,170 @@ export async function run(): Promise<TestSuiteResult> {
     };
   }
 
-  const ALLOWED = ['reports@example.com', '@trusted.example'];
-  const GOOD_AUTH = 'mx.google.com; dkim=pass header.i=@example.com; spf=pass smtp.mailfrom=example.com';
-
-  t.test('parseAllowedSenders: カンマ区切りを正規化 (trim / 小文字化)', () => {
-    assert.deepStrictEqual(
-      parseAllowedSenders(' Reports@Example.com , @Trusted.Example '),
-      ['reports@example.com', '@trusted.example']
-    );
-  });
-
-  t.test('parseAllowedSenders: 未設定 / 空文字は空配列 (呼び出し側で必須エラー)', () => {
-    assert.deepStrictEqual(parseAllowedSenders(undefined), []);
-    assert.deepStrictEqual(parseAllowedSenders(''), []);
-  });
-
-  t.test('parseAllowedSenders: 形式不正は throw (無言で通さない)', () => {
-    assert.throws(() => parseAllowedSenders('not-an-address'), /形式が不正/);
-    assert.throws(() => parseAllowedSenders('reports@example.com, bare'), /形式が不正/);
-  });
+  const ACCOUNT = 'weekly@example.com';
 
   t.test('getHeader: ヘッダ名は大文字小文字を無視', () => {
-    const msg = msgWith({ 'From': 'a@b.example', 'Authentication-Results': GOOD_AUTH });
-    assert.strictEqual(getHeader(msg, 'from'), 'a@b.example');
-    assert.strictEqual(getHeader(msg, 'AUTHENTICATION-RESULTS'), GOOD_AUTH);
+    const msg = msgWith({ From: ACCOUNT, To: ACCOUNT }, ['SENT']);
+    assert.strictEqual(getHeader(msg, 'from'), ACCOUNT);
+    assert.strictEqual(getHeader(msg, 'TO'), ACCOUNT);
     assert.strictEqual(getHeader(msg, 'X-Missing'), null);
   });
 
   t.test('extractEmailAddress: 表示名付き / 素のアドレス両方', () => {
-    assert.strictEqual(extractEmailAddress('Weekly Bot <Reports@Example.com>'), 'reports@example.com');
-    assert.strictEqual(extractEmailAddress('reports@example.com'), 'reports@example.com');
+    assert.strictEqual(extractEmailAddress('Weekly Bot <Weekly@Example.com>'), ACCOUNT);
+    assert.strictEqual(extractEmailAddress('weekly@example.com'), ACCOUNT);
     assert.strictEqual(extractEmailAddress('not an address'), null);
     assert.strictEqual(extractEmailAddress(null), null);
   });
 
-  t.test('dkimPassDomains: pass のドメインだけを拾う', () => {
+  t.test('extractEmailAddresses: To の複数 recipient を正規化して抽出', () => {
     assert.deepStrictEqual(
-      [...dkimPassDomains('mx.google.com; dkim=pass header.i=@example.com; spf=pass')],
-      ['example.com']
+      extractEmailAddresses('Weekly <weekly@example.com>, Other Person <Other@Example.net>'),
+      ['weekly@example.com', 'other@example.net']
     );
-    assert.deepStrictEqual(
-      [...dkimPassDomains('mx.google.com; dkim=fail header.i=@evil.example')],
-      []
-    );
+    assert.deepStrictEqual(extractEmailAddresses(null), []);
   });
 
-  t.test('dkimPassDomains: fail と pass が混在しても fail 側は拾わない', () => {
-    const hdr = 'mx.google.com; dkim=fail header.i=@evil.example; dkim=pass header.d=example.com';
-    assert.deepStrictEqual([...dkimPassDomains(hdr)], ['example.com']);
+  await t.testAsync('起動経路: Gmail profile address が取得不能/不正ならラベル・検索・通常ログ前に fail-closed', async () => {
+    for (const profileValue of [null, 'not-an-address']) {
+      let labelCalls = 0;
+      let searchCalls = 0;
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+      try {
+        await assert.rejects(
+          async () => {
+            const account = await initializeMailboxBeforeSearch(
+              {
+                getProfileAddress: async () => profileValue,
+                resolveLabel: async () => { labelCalls++; },
+              },
+              'LLM-Sec-Report',
+              'LLM-Sec-Report/processed'
+            );
+            // 実運用でも検索は startup helper の resolve 後にだけ到達する。
+            searchCalls++;
+            buildGmailQuery('LLM-Sec-Report', 'LLM-Sec-Report/processed', account);
+          },
+          /有効な email address を取得できませんでした/
+        );
+      } finally {
+        console.log = origLog;
+      }
+      assert.strictEqual(labelCalls, 0, 'profile fail ならラベル解決へ進まない');
+      assert.strictEqual(searchCalls, 0, 'profile fail なら検索へ進まない');
+      assert.deepStrictEqual(logs, [], 'profile fail なら mask/query/通常ログを一切出さない');
+    }
   });
 
-  t.test('verifySender: 許可送信者 + dkim=pass + ドメイン整合なら通る', () => {
-    const v = verifySender(msgWith({ From: 'Bot <reports@example.com>', 'Authentication-Results': GOOD_AUTH }), ALLOWED);
-    assert.strictEqual(v.ok, true);
+  t.test('起動時: 有効な Gmail profile address は通常ログより先に mask 登録される', () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(' ')); };
+    try {
+      assert.strictEqual(requireMaskedMailboxAddress(ACCOUNT), ACCOUNT);
+    } finally {
+      console.log = origLog;
+    }
+    assert.deepStrictEqual(logs, [`::add-mask::${ACCOUNT}`]);
   });
 
-  t.test('verifySender: @domain 指定はサブドメインでなく完全なサフィックス一致', () => {
-    const v = verifySender(
-      msgWith({
-        From: 'weekly@trusted.example',
-        'Authentication-Results': 'mx.google.com; dkim=pass header.d=trusted.example',
-      }),
-      ALLOWED
-    );
-    assert.strictEqual(v.ok, true);
+  t.test('addGitHubActionsMask: profile address を GitHub Actions mask として登録', () => {
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.join(' ')); };
+    try {
+      addGitHubActionsMask(ACCOUNT);
+    } finally {
+      console.log = origLog;
+    }
+    assert.deepStrictEqual(lines, [`::add-mask::${ACCOUNT}`]);
   });
 
-  t.test('verifySender: 許可リスト外の送信者は拒否 (件名・ラベルは根拠にしない)', () => {
-    const v = verifySender(
-      msgWith({ From: 'attacker@evil.example', 'Authentication-Results': 'mx.google.com; dkim=pass header.d=evil.example' }),
-      ALLOWED
-    );
-    assert.strictEqual(v.ok, false);
-    assert.match(v.ok === false ? v.reason : '', /許可されていない送信者/);
+  t.test('通常の Gmail query ログは profile address を含まない', () => {
+    const q = buildGmailQuery('LLM-Sec-Report', 'LLM-Sec-Report/processed', ACCOUNT);
+    const safe = `🔍 Gmail query: ${redactAccountForLog(q, ACCOUNT)} (max 10)`;
+    assert.ok(!safe.includes(ACCOUNT), 'profile address を平文ログへ出さない');
+    assert.ok(safe.includes('from:<self>'));
+    assert.ok(safe.includes('to:<self>'));
   });
 
-  t.test('verifySender: Authentication-Results が無ければ拒否 (fail-closed)', () => {
-    const v = verifySender(msgWith({ From: 'reports@example.com' }), ALLOWED);
-    assert.strictEqual(v.ok, false);
-    assert.match(v.ok === false ? v.reason : '', /Authentication-Results/);
+  t.test('送信元検証の失敗理由にも profile address を含めない', () => {
+    const failures = [
+      verifySelfSentReport(msgWith({ From: ACCOUNT, To: ACCOUNT }, ['INBOX']), ACCOUNT),
+      verifySelfSentReport(msgWith({ From: 'attacker@example.net', To: ACCOUNT }, ['SENT']), ACCOUNT),
+      verifySelfSentReport(msgWith({ From: ACCOUNT, To: 'someone@example.net' }, ['SENT']), ACCOUNT),
+    ];
+    for (const v of failures) {
+      assert.strictEqual(v.ok, false);
+      assert.ok(!(v.ok ? '' : v.reason).includes(ACCOUNT), 'profile address を reason に埋め込まない');
+    }
   });
 
-  t.test('verifySender: dkim=fail なら拒否', () => {
-    const v = verifySender(
-      msgWith({ From: 'reports@example.com', 'Authentication-Results': 'mx.google.com; dkim=fail header.i=@example.com' }),
-      ALLOWED
-    );
-    assert.strictEqual(v.ok, false);
-    assert.match(v.ok === false ? v.reason : '', /dkim=pass が無い/);
-  });
-
-  t.test('verifySender: From を偽装しても DKIM 署名ドメインが合わなければ拒否', () => {
-    // 許可送信者を名乗るが、実際に署名しているのは攻撃者ドメイン
-    const v = verifySender(
-      msgWith({
-        From: 'reports@example.com',
-        'Authentication-Results': 'mx.google.com; dkim=pass header.d=evil.example',
-      }),
-      ALLOWED
-    );
-    assert.strictEqual(v.ok, false);
-    assert.match(v.ok === false ? v.reason : '', /整合しない/);
-  });
-
-  // ---- Codex review (#152 P1): Authentication-Results は送信者も付けられる。
-  //      信じるのは「先頭」かつ「authserv-id が受信側 (mx.google.com)」のものだけ。
-  t.test('verifySender: ARC-Authentication-Results はチェーン未検証なので根拠にしない (拒否)', () => {
-    const v = verifySender(
-      msgWith({
-        From: 'reports@example.com',
-        'ARC-Authentication-Results': 'i=1; mx.google.com; dkim=pass header.i=@example.com',
-      }),
-      ALLOWED
-    );
-    assert.strictEqual(v.ok, false);
-    assert.match(v.ok ? '' : v.reason, /Authentication-Results ヘッダが無い/);
-  });
-
-  t.test('verifySender: 送信者が付けた Authentication-Results (authserv-id が受信側でない) は拒否', () => {
-    const v = verifySender(
-      msgWith({
-        From: 'reports@example.com',
-        'Authentication-Results': 'attacker.invalid; dkim=pass header.d=example.com',
-      }),
-      ALLOWED
-    );
-    assert.strictEqual(v.ok, false);
-    assert.match(v.ok ? '' : v.reason, /受信側 \(mx\.google\.com\) のものでない/);
-  });
-
-  t.test('verifySender: 送信者のヘッダが先頭で受信側の結果が 2 本目なら拒否 (先頭しか信じない)', () => {
-    const msg: gmail_v1.Schema$Message = {
-      payload: {
-        headers: [
-          { name: 'From', value: 'reports@example.com' },
-          { name: 'Authentication-Results', value: 'attacker.invalid; dkim=pass header.d=example.com' },
-          { name: 'Authentication-Results', value: GOOD_AUTH },
-        ],
-        mimeType: 'text/plain',
-        body: { data: base64url('body') },
-      },
-    };
-    const v = verifySender(msg, ALLOWED);
-    assert.strictEqual(v.ok, false);
-  });
-
-  t.test('verifySender: 受信側の結果が先頭なら、後ろに送信者のヘッダが並んでいても先頭だけで判定して通る', () => {
-    const msg: gmail_v1.Schema$Message = {
-      payload: {
-        headers: [
-          { name: 'From', value: 'reports@example.com' },
-          { name: 'Authentication-Results', value: GOOD_AUTH },
-          { name: 'Authentication-Results', value: 'attacker.invalid; dkim=pass header.d=evil.example' },
-        ],
-        mimeType: 'text/plain',
-        body: { data: base64url('body') },
-      },
-    };
-    const v = verifySender(msg, ALLOWED);
-    assert.strictEqual(v.ok, true);
-  });
-
-  t.test('verifySender: 受信側の結果が先頭でも dkim=pass が無ければ、2 本目の送信者ヘッダの pass では通らない', () => {
-    const msg: gmail_v1.Schema$Message = {
-      payload: {
-        headers: [
-          { name: 'From', value: 'reports@example.com' },
-          { name: 'Authentication-Results', value: 'mx.google.com; dkim=fail header.i=@example.com; spf=pass' },
-          { name: 'Authentication-Results', value: 'mx.google.com; dkim=pass header.i=@example.com' },
-        ],
-        mimeType: 'text/plain',
-        body: { data: base64url('body') },
-      },
-    };
-    const v = verifySender(msg, ALLOWED);
-    assert.strictEqual(v.ok, false);
-  });
-
-  t.test('authservIdOf: version 付き (`mx.google.com 1; ...`) でも authserv-id だけを取る', () => {
-    assert.strictEqual(authservIdOf('mx.google.com 1; dkim=pass header.i=@example.com'), 'mx.google.com');
-    assert.strictEqual(authservIdOf('MX.Google.com; spf=pass'), 'mx.google.com');
-    assert.strictEqual(authservIdOf('; dkim=pass'), '');
-  });
-
-  t.test('verifySender (陽性対照): 受信側の結果 1 本だけ = 従来どおり通る', () => {
-    const v = verifySender(
-      msgWith({ From: 'reports@example.com', 'Authentication-Results': GOOD_AUTH }),
-      ALLOWED
+  t.test('verifySelfSentReport: SENT + From/To=profile なら DKIM 無しでも通る', () => {
+    const v = verifySelfSentReport(
+      msgWith({ From: `Weekly Bot <${ACCOUNT}>`, To: ACCOUNT }, ['SENT', 'INBOX']),
+      ACCOUNT
     );
     assert.strictEqual(v.ok, true);
   });
 
-  t.test('verifySender: From ヘッダ自体が無ければ拒否', () => {
-    const v = verifySender(msgWith({ 'Authentication-Results': GOOD_AUTH }), ALLOWED);
+  t.test('verifySelfSentReport: SENT が無ければ From/To が一致しても拒否', () => {
+    const v = verifySelfSentReport(msgWith({ From: ACCOUNT, To: ACCOUNT }, ['INBOX']), ACCOUNT);
     assert.strictEqual(v.ok, false);
-    assert.match(v.ok === false ? v.reason : '', /From ヘッダ/);
+    assert.match(v.ok ? '' : v.reason, /SENT/);
   });
 
-  t.test('buildGmailQuery: from: 句が入り、既存の 3 条件も維持される', () => {
-    const q = buildGmailQuery('LLM-Sec-Report', 'LLM-Sec-Report/processed', ALLOWED);
+  t.test('verifySelfSentReport: SENT があっても From が profile と違えば拒否', () => {
+    const v = verifySelfSentReport(
+      msgWith({ From: 'attacker@example.net', To: ACCOUNT }, ['SENT']),
+      ACCOUNT
+    );
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok ? '' : v.reason, /From が Gmail profile と一致しない/);
+  });
+
+  t.test('verifySelfSentReport: SENT があっても To が self でなければ拒否', () => {
+    const v = verifySelfSentReport(
+      msgWith({ From: ACCOUNT, To: 'someone@example.net' }, ['SENT']),
+      ACCOUNT
+    );
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok ? '' : v.reason, /To に Gmail profile address が無い/);
+  });
+
+  t.test('verifySelfSentReport: To に複数宛先があっても self が含まれれば通る', () => {
+    const v = verifySelfSentReport(
+      msgWith({ From: ACCOUNT, To: `Other <other@example.net>, Self <${ACCOUNT}>` }, ['SENT']),
+      ACCOUNT
+    );
+    assert.strictEqual(v.ok, true);
+  });
+
+  t.test('verifySelfSentReport: profile address が不正なら fail-closed', () => {
+    const v = verifySelfSentReport(
+      msgWith({ From: ACCOUNT, To: ACCOUNT }, ['SENT']),
+      'not-an-address'
+    );
+    assert.strictEqual(v.ok, false);
+    assert.match(v.ok ? '' : v.reason, /profile address/);
+  });
+
+  t.test('buildGmailQuery: SENT/self-send 条件と既存の 3 条件を維持', () => {
+    const q = buildGmailQuery('LLM-Sec-Report', 'LLM-Sec-Report/processed', ACCOUNT);
     assert.ok(q.includes('label:LLM-Sec-Report'), 'label 条件');
     assert.ok(q.includes('subject:"[LLM-Sec-Weekly]"'), 'subject 条件');
     assert.ok(q.includes('-label:LLM-Sec-Report/processed'), 'processed 除外');
-    assert.ok(
-      q.includes('from:(reports@example.com OR @trusted.example)'),
-      'from: 句が OR で入る'
+    assert.ok(q.includes('in:sent'), 'SENT 条件');
+    assert.ok(q.includes(`from:${ACCOUNT}`), 'From self 条件');
+    assert.ok(q.includes(`to:${ACCOUNT}`), 'To self 条件');
+  });
+
+  t.test('buildGmailQuery: profile address が不正なら throw', () => {
+    assert.throws(
+      () => buildGmailQuery('LLM-Sec-Report', 'LLM-Sec-Report/processed', 'bad'),
+      /profile address の形式が不正/
     );
   });
 
@@ -581,7 +551,7 @@ export async function run(): Promise<TestSuiteResult> {
 
   function gateFixture(): { rawPath: string; quarantineDir: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-gate-'));
-    const rawPath = path.join(dir, 'raw', '2026-06-08.md');
+    const rawPath = path.join(dir, '_staging', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(rawPath), { recursive: true });
     fs.writeFileSync(rawPath, 'body', 'utf8');
     return { rawPath, quarantineDir: path.join(dir, '_quarantine') };
@@ -592,7 +562,7 @@ export async function run(): Promise<TestSuiteResult> {
     const gate: GateRunner = () => ({ verdict: 'clean', detail: '' });
     const out = gateAndRoute(rawPath, quarantineDir, gate);
     assert.deepStrictEqual(out, { action: 'ingest' });
-    assert.ok(fs.existsSync(rawPath), 'raw が残る');
+    assert.ok(fs.existsSync(rawPath), 'staging が残る');
     assert.strictEqual(fs.existsSync(quarantineDir), false);
   });
 
@@ -604,10 +574,10 @@ export async function run(): Promise<TestSuiteResult> {
       action: 'quarantine',
       verdict: 'suspicious',
       detail: 'final_rule=l1-multiline-demoted',
-      quarantinedPath: path.join(quarantineDir, '2026-06-08.md'),
+      quarantinedPath: path.join(quarantineDir, '2026-06-08.md.txt'),
     });
     assert.strictEqual(fs.existsSync(rawPath), false, 'raw は残らない');
-    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')), '隔離先へ移動');
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md.txt')), '隔離先へ移動');
   });
 
   t.test('blocked → 同様に隔離', () => {
@@ -615,7 +585,7 @@ export async function run(): Promise<TestSuiteResult> {
     const gate: GateRunner = () => ({ verdict: 'blocked', detail: 'final_rule=l0-contract' });
     const out = gateAndRoute(rawPath, quarantineDir, gate);
     assert.strictEqual(out.action, 'quarantine');
-    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')));
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md.txt')));
   });
 
   t.test('ゲート実行失敗 (verdict=error) は fail-closed で隔離 (素通りさせない)', () => {
@@ -732,7 +702,7 @@ export async function run(): Promise<TestSuiteResult> {
   t.section('discardFailedPromotion (ingest 失敗時に raw/ を残さない)');
 
   function rawWith(vaultRoot: string, body: string): string {
-    const rawPath = path.join(vaultRoot, 'raw', '2026-06-08.md');
+    const rawPath = path.join(vaultRoot, 'raw', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(rawPath), { recursive: true });
     fs.writeFileSync(rawPath, body, 'utf8');
     return rawPath;
@@ -749,7 +719,7 @@ export async function run(): Promise<TestSuiteResult> {
     });
     assert.strictEqual(r, 'quarantined');
     assert.strictEqual(fs.existsSync(rawPath), false, 'raw/ に残ってはいけない');
-    assert.strictEqual(fs.readFileSync(path.join(quarantineDir, '2026-06-08.md'), 'utf8'), '不正な本文');
+    assert.strictEqual(fs.readFileSync(path.join(quarantineDir, '2026-06-08.md.txt'), 'utf8'), '不正な本文');
     const items = JSON.parse(fs.readFileSync(queuePath(vaultRoot), 'utf8')).items;
     assert.strictEqual(items.length, 1);
     assert.strictEqual(items[0].verdict, 'error');
@@ -766,6 +736,32 @@ export async function run(): Promise<TestSuiteResult> {
     const staged = path.join(vaultRoot, 'staged.md');
     fs.writeFileSync(staged, '訂正版の本文', 'utf8');
     assert.strictEqual(promoteStagedRaw(staged, rawPath), 'promoted');
+  });
+
+  t.test('discardFailedPromotion: quarantine capacity 枯渇では raw 証拠を消さず例外伝播', () => {
+    const vaultRoot = vaultWithQueue(null);
+    const rawPath = rawWith(vaultRoot, '不正な本文');
+    const quarantineDir = path.join(vaultRoot, '_quarantine');
+    fs.mkdirSync(quarantineDir, { recursive: true });
+    for (let n = 0; n <= 100; n++) {
+      const name = n === 0 ? '2026-06-08.md.txt' : `2026-06-08.${n}.md.txt`;
+      fs.writeFileSync(path.join(quarantineDir, name), `existing-${n}`, 'utf8');
+    }
+
+    assert.throws(
+      () => discardFailedPromotion({
+        promotion: 'promoted',
+        rawPath,
+        quarantineDir,
+        queuePath: queuePath(vaultRoot),
+        periodEnd: '2026-06-08',
+        sourceRef: 'gmail:t1',
+        reason: '契約違反: テスト',
+      }),
+      (err: unknown) => err instanceof QuarantineCapacityError
+    );
+    assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), '不正な本文', 'raw 証拠を保持');
+    assert.strictEqual(fs.existsSync(queuePath(vaultRoot)), false, '証拠 path 未確定の queue を作らない');
   });
 
   t.test('identical は【この run の産物ではない】ので触らない', () => {
@@ -786,7 +782,7 @@ export async function run(): Promise<TestSuiteResult> {
   function fetcherEntry(overrides: Partial<Parameters<typeof appendQuarantineQueueEntry>[1]> = {}) {
     return {
       periodEnd: '2026-06-08',
-      file: '/tmp/_quarantine/2026-06-08.md',
+      file: '/tmp/_quarantine/2026-06-08.md.txt',
       sourceRef: 'gmail:t1',
       verdict: 'error',
       reason: 'L1 scanner 実行失敗: spawn python3 ENOENT',
@@ -875,8 +871,8 @@ export async function run(): Promise<TestSuiteResult> {
 
   function stagingFixture(rawContent: string | null): { stagedPath: string; rawPath: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-stage-'));
-    const stagedPath = path.join(dir, '_staging', '2026-06-08.md');
-    const rawPath = path.join(dir, 'raw', '2026-06-08.md');
+    const stagedPath = path.join(dir, '_staging', '2026-06-08.md.txt');
+    const rawPath = path.join(dir, 'raw', '2026-06-08.md.txt');
     fs.mkdirSync(path.dirname(stagedPath), { recursive: true });
     fs.writeFileSync(stagedPath, 'new body', 'utf8');
     if (rawContent !== null) {
@@ -915,7 +911,7 @@ export async function run(): Promise<TestSuiteResult> {
     assert.strictEqual(out.action, 'quarantine');
     // 既存 archive は無傷 (以前は rawPath 自体が隔離先へ rename されていた)。
     assert.strictEqual(fs.readFileSync(rawPath, 'utf8'), 'archived genuine report');
-    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md')));
+    assert.ok(fs.existsSync(path.join(quarantineDir, '2026-06-08.md.txt')));
   });
 
   t.test('quarantineBody: 同名が既にあれば連番で退避 (先行の証拠を消さない)', () => {
@@ -925,8 +921,31 @@ export async function run(): Promise<TestSuiteResult> {
     fs.writeFileSync(stagedPath, 'second body', 'utf8');
     const second = quarantineBody(stagedPath, quarantineDir);
     assert.notStrictEqual(first, second);
+    assert.ok(first.endsWith('.md.txt'), '1件目も inert suffix');
+    assert.ok(second.endsWith('.md.txt'), '連番後も inert suffix');
+    assert.ok(second.endsWith('.1.md.txt'), '連番は拡張子の前へ入る');
     assert.strictEqual(fs.readFileSync(first, 'utf8'), 'new body');
     assert.strictEqual(fs.readFileSync(second, 'utf8'), 'second body');
+  });
+
+  t.test('quarantineBody: 100 連番が埋まっていたら既存証拠を上書きせず fail-closed', () => {
+    const { stagedPath } = stagingFixture(null);
+    const quarantineDir = path.join(path.dirname(path.dirname(stagedPath)), '_quarantine');
+    fs.mkdirSync(quarantineDir, { recursive: true });
+    for (let n = 0; n <= 100; n++) {
+      const name = n === 0 ? '2026-06-08.md.txt' : `2026-06-08.${n}.md.txt`;
+      fs.writeFileSync(path.join(quarantineDir, name), `existing-${n}`, 'utf8');
+    }
+    assert.throws(
+      () => quarantineBody(stagedPath, quarantineDir),
+      (err: unknown) => err instanceof QuarantineCapacityError
+    );
+    assert.ok(fs.existsSync(stagedPath), '退避元は残し、証拠を失わない');
+    assert.strictEqual(
+      fs.readFileSync(path.join(quarantineDir, '2026-06-08.100.md.txt'), 'utf8'),
+      'existing-100',
+      '既存の100件目を上書きしない'
+    );
   });
 
   // -------------------------------------------------------------------
