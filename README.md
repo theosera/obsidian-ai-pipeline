@@ -72,7 +72,7 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
 
 | ツール | バージョン |
 |---|---|
-| Node.js | v24+ |
+| Node.js | v24.15+（24.x）または v26+（v25 は非対応: jsdom の engines に合わせる） |
 | pnpm | v9+ （推奨: v10、`packageManager` で固定） |
 | tsx | `pnpm install` で自動インストール |
 | Playwright Chromium | `pnpm exec playwright install chromium` |
