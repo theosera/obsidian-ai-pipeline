@@ -28,5 +28,5 @@ onlyBuiltDependencies: []
 # have.
 catalog:
   typescript: ^7.0.2
-  '@types/node': ^24.19.1
+  '@types/node': ^25.9.9
   tsx: ^4.23.15
