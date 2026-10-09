@@ -43,3 +43,7 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # Runtime is Node 24; when moving the Node major, bump the @types/node major by hand with it.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
