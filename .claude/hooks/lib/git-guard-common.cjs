@@ -1,0 +1,897 @@
+'use strict';
+/**
+ * PreToolUse(Bash) の git ガード 3 本（block-secret-git / block-git-add-all /
+ * block-secret-egress）が共有する、コマンドの読み取りの部品。
+ *
+ * コマンド文字列を正規表現 1 本で当てるのでなく、シェルの語に分けて（引用符・`\`・
+ * 空の引用符を戻して）から、git の呼び出しごとに global option と subcommand を分ける。
+ * `$(…)`・`` `…` ``・`<(…)` の中と、シェルに流すヒアドキュメントの本文も、コマンドとして読む。
+ * 読みきれない形（変数や置換で作られた語・知らない global option・文字列でシェルに渡した
+ * git など）は problems に入れ、各 hook は fail-closed で拒む。
+ *
+ * 3 本の hook は同じ読みを使う（片方だけ古くなると、hook ごとに見える形が食い違うため）。
+ */
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+
+function readStdin() {
+  try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
+}
+
+function deny(reason) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  }));
+  process.exit(0);
+}
+
+// 入力の JSON から、コマンドと「そのコマンドが走る場所」を取る。
+// 場所は入力の `cwd` を優先する（Bash の作業の場所は呼び出しをまたいで残るので、
+// CLAUDE_PROJECT_DIR と違うことがある）。
+function readInput(guardLabel) {
+  let j;
+  try {
+    j = JSON.parse(readStdin() || '{}');
+  } catch {
+    deny(`hook 入力を解釈できませんでした (fail-closed)。${guardLabel}を通せないため実行をブロックします。`);
+  }
+  const cmd = (j && j.tool_input && typeof j.tool_input.command === 'string') ? j.tool_input.command : '';
+  const inputCwd = (j && typeof j.cwd === 'string' && j.cwd !== '') ? j.cwd : null;
+  const baseDir = inputCwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  return { cmd, baseDir };
+}
+
+// ---------------------------------------------------------------------------
+// シェルの語への分け方
+// ---------------------------------------------------------------------------
+
+const MAX_DEPTH = 16;
+// 変数や置換の所に置く印（実行するまで中身が決まらない）。
+const DYN = '\u0000';
+
+// `$…` / `` `…` `` を 1 つ読む。置換の中のコマンドは out.cmds に積む。
+function scanExpansion(src, i, out, depth) {
+  const n = src.length;
+  if (src[i] === '`') {
+    let j = i + 1;
+    let inner = '';
+    while (j < n && src[j] !== '`') {
+      if (src[j] === '\\' && j + 1 < n) {
+        const e = src[j + 1];
+        inner += (e === '`' || e === '\\' || e === '$') ? e : src[j] + e;
+        j += 2;
+        continue;
+      }
+      inner += src[j];
+      j++;
+    }
+    if (j >= n) { out.errors.push('閉じていない `…`'); return { end: n, dynamic: true }; }
+    parseSeq(inner, 0, out, depth + 1, false);
+    return { end: j + 1, dynamic: true };
+  }
+  const c1 = src[i + 1];
+  if (c1 === '(') {
+    if (src[i + 2] === '(') {
+      // $(( 算術 ))。中の $(…) は実行されるので読む。
+      let j = i + 3;
+      let d = 0;
+      while (j < n) {
+        if (src[j] === '(') d++;
+        else if (src[j] === ')') {
+          if (d === 0 && src[j + 1] === ')') break;
+          d--;
+        }
+        j++;
+      }
+      if (j >= n) { out.errors.push('閉じていない $(( … ))'); return { end: n, dynamic: true }; }
+      scanSubsts(src.slice(i + 3, j), out, depth + 1);
+      return { end: j + 2, dynamic: true };
+    }
+    const close = parseSeq(src, i + 2, out, depth + 1, true);
+    if (close >= n) { out.errors.push('閉じていない $( … )'); return { end: n, dynamic: true }; }
+    return { end: close + 1, dynamic: true };
+  }
+  if (c1 === '{') {
+    let j = i + 2;
+    let d = 0;
+    while (j < n) {
+      const ch = src[j];
+      if (ch === '\\') { j += 2; continue; }
+      if (ch === "'") {
+        const q = src.indexOf("'", j + 1);
+        if (q < 0) { j = n; break; }
+        j = q + 1;
+        continue;
+      }
+      if (ch === '{') d++;
+      else if (ch === '}') {
+        if (d === 0) break;
+        d--;
+      }
+      j++;
+    }
+    if (j >= n) { out.errors.push('閉じていない ${ … }'); return { end: n, dynamic: true }; }
+    scanSubsts(src.slice(i + 2, j), out, depth + 1);
+    return { end: j + 1, dynamic: true };
+  }
+  if (c1 === "'") {
+    // $'…'（escape を解く文字列）。中身は実行されないが、語の文字は決めない。
+    let j = i + 2;
+    while (j < n && src[j] !== "'") {
+      if (src[j] === '\\') j++;
+      j++;
+    }
+    if (j >= n) { out.errors.push("閉じていない $'…'"); return { end: n, dynamic: true }; }
+    return { end: j + 1, dynamic: true };
+  }
+  if (c1 === '"') return { end: i + 1, dynamic: true }; // $"…": 続く "…" は呼び出し側が読む
+  if (c1 !== undefined && /[A-Za-z_]/.test(c1)) {
+    let j = i + 1;
+    while (j < n && /[A-Za-z0-9_]/.test(src[j])) j++;
+    return { end: j, dynamic: true };
+  }
+  if (c1 !== undefined && /[0-9@*#?$!-]/.test(c1)) return { end: i + 2, dynamic: true };
+  return { end: i + 1, dynamic: false, literal: '$' };
+}
+
+// 文字列の中の置換（`$(…)`・`` `…` ``・`${…}`）だけを拾って読む（ヒアドキュメントの本文など）。
+function scanSubsts(text, out, depth) {
+  let k = 0;
+  while (k < text.length) {
+    const ch = text[k];
+    if (ch === '\\') { k += 2; continue; }
+    if (ch === '$' || ch === '`') {
+      k = scanExpansion(text, k, out, depth).end;
+      continue;
+    }
+    k++;
+  }
+}
+
+// src[start..] を読み、コマンドを out.cmds に積む。stopAtParen のときは、対応の取れない
+// `)` の位置を返す（`$(…)`・`<(…)` の中身を読むため）。読み終えたら src.length を返す。
+function parseSeq(src, start, out, depth, stopAtParen) {
+  const n = src.length;
+  if (depth > MAX_DEPTH) { out.errors.push('入れ子が深すぎる'); return n; }
+  let i = start;
+  let words = [];
+  let cur = null;
+  let parenDepth = 0;
+  let redirNext = null;
+  let redirs = [];
+  let piped = false;
+  const heredocs = [];
+
+  const startWord = () => {
+    if (!cur) cur = { text: '', dynamic: false, quoted: false, start: i };
+  };
+  const endWord = () => {
+    if (!cur) return;
+    cur.raw = src.slice(cur.start, i);
+    if (redirNext) {
+      redirs.push({ op: redirNext, word: cur });
+      redirNext = null;
+    } else {
+      words.push(cur);
+    }
+    cur = null;
+  };
+  const endCmd = () => {
+    endWord();
+    redirNext = null;
+    if (words.length || redirs.length) {
+      const c = { words, redirs, piped, heredocBodies: [] };
+      out.cmds.push(c);
+      for (const h of heredocs) if (!h.cmd) h.cmd = c;
+    }
+    words = [];
+    redirs = [];
+    piped = false;
+  };
+  const appendExpansion = (r) => {
+    if (r.dynamic) { cur.dynamic = true; cur.text += DYN; } else { cur.text += r.literal || ''; }
+  };
+
+  while (i < n) {
+    const c = src[i];
+    if (c === '\\') {
+      if (src[i + 1] === '\n') { i += 2; continue; }
+      startWord();
+      cur.quoted = true;
+      if (i + 1 < n) { cur.text += src[i + 1]; i += 2; } else { i++; }
+      continue;
+    }
+    if (c === "'") {
+      startWord();
+      cur.quoted = true;
+      const j = src.indexOf("'", i + 1);
+      if (j < 0) { out.errors.push("閉じていない '…'"); return n; }
+      cur.text += src.slice(i + 1, j);
+      i = j + 1;
+      continue;
+    }
+    if (c === '"') {
+      startWord();
+      cur.quoted = true;
+      i++;
+      while (i < n && src[i] !== '"') {
+        const d = src[i];
+        if (d === '\\' && i + 1 < n) {
+          const e = src[i + 1];
+          if (e !== '\n') cur.text += ('"\\$`'.includes(e)) ? e : d + e;
+          i += 2;
+          continue;
+        }
+        if (d === '$' || d === '`') {
+          const r = scanExpansion(src, i, out, depth);
+          appendExpansion(r);
+          i = r.end;
+          continue;
+        }
+        cur.text += d;
+        i++;
+      }
+      if (i >= n) { out.errors.push('閉じていない "…"'); return n; }
+      i++;
+      continue;
+    }
+    if (c === '$' || c === '`') {
+      startWord();
+      const r = scanExpansion(src, i, out, depth);
+      appendExpansion(r);
+      i = r.end;
+      continue;
+    }
+    if (c === '#' && !cur) {
+      const j = src.indexOf('\n', i);
+      i = j < 0 ? n : j;
+      continue;
+    }
+    if (c === '\n') {
+      endCmd();
+      i++;
+      // 改行の後にヒアドキュメントの本文が来る。
+      while (heredocs.length) {
+        const h = heredocs.shift();
+        const bodyStart = i;
+        let bodyEnd = n;
+        while (i < n) {
+          const j = src.indexOf('\n', i);
+          const lineEnd = j < 0 ? n : j;
+          let line = src.slice(i, lineEnd);
+          if (h.strip) line = line.replace(/^\t+/, '');
+          if (line === h.delim) {
+            bodyEnd = i;
+            i = j < 0 ? n : j + 1;
+            break;
+          }
+          i = j < 0 ? n : j + 1;
+        }
+        const body = src.slice(bodyStart, Math.min(bodyEnd, n));
+        if (!h.quoted) scanSubsts(body, out, depth + 1);
+        if (h.cmd) h.cmd.heredocBodies.push({ body, quoted: h.quoted });
+      }
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r') {
+      endWord();
+      i++;
+      continue;
+    }
+    if (c === ';' || c === '|' || (c === '&' && src[i + 1] !== '>')) {
+      const isPipe = c === '|' && src[i + 1] !== '|';
+      endCmd();
+      piped = isPipe;
+      if ((c === ';' || c === '|' || c === '&') && src[i + 1] === c) i += 2;
+      else if (c === '|' && src[i + 1] === '&') i += 2;
+      else i++;
+      continue;
+    }
+    if (c === '(') {
+      endCmd();
+      parenDepth++;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      if (parenDepth === 0 && stopAtParen) {
+        endCmd();
+        return i;
+      }
+      endCmd();
+      if (parenDepth > 0) parenDepth--;
+      i++;
+      continue;
+    }
+    if (c === '<' || c === '>' || c === '&') {
+      if ((c === '<' || c === '>') && src[i + 1] === '(') {
+        // プロセス置換 <( … ) / >( … )
+        startWord();
+        const close = parseSeq(src, i + 2, out, depth + 1, true);
+        if (close >= n) { out.errors.push('閉じていない <( … )'); return n; }
+        cur.dynamic = true;
+        cur.text += DYN;
+        i = close + 1;
+        continue;
+      }
+      // fd の番号（2> など）は語にしない。
+      if (cur && !cur.quoted && !cur.dynamic && /^\d+$/.test(cur.text)) cur = null;
+      else endWord();
+      if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
+        // ヒアドキュメント: 区切りの語を読み、本文は次の改行の後で読む。
+        i += 2;
+        let strip = false;
+        if (src[i] === '-') { strip = true; i++; }
+        while (src[i] === ' ' || src[i] === '\t') i++;
+        let delim = '';
+        let quoted = false;
+        while (i < n && !/[\s;&|<>()]/.test(src[i])) {
+          const d = src[i];
+          if (d === "'" || d === '"') {
+            const j = src.indexOf(d, i + 1);
+            if (j < 0) { out.errors.push('閉じていないヒアドキュメントの区切り'); return n; }
+            delim += src.slice(i + 1, j);
+            quoted = true;
+            i = j + 1;
+            continue;
+          }
+          if (d === '\\') { delim += src[i + 1] || ''; quoted = true; i += 2; continue; }
+          delim += d;
+          i++;
+        }
+        if (!delim) { out.errors.push('ヒアドキュメントの区切りが無い'); return n; }
+        heredocs.push({ delim, strip, quoted, cmd: null });
+        continue;
+      }
+      // ほかのリダイレクト（> >> < <> >| >& <& &> &>> <<<）: 次の語は対象。
+      let j = i;
+      while (j < n && '<>&|'.includes(src[j]) && j - i < 3) j++;
+      redirNext = src.slice(i, j);
+      i = j;
+      continue;
+    }
+    startWord();
+    cur.text += c;
+    i++;
+  }
+  endCmd();
+  return n;
+}
+
+function parseShell(src) {
+  const out = { cmds: [], errors: [] };
+  parseSeq(src, 0, out, 0, false);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// コマンドの名前（ラッパーを外す）
+// ---------------------------------------------------------------------------
+
+const RESERVED = new Set(['!', '{', '}', 'then', 'else', 'elif', 'fi', 'do', 'done', 'if', 'while', 'until']);
+const isAssignWord = (w) => /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(w.raw);
+const assignName = (w) => w.raw.split('=')[0].replace(/\+$/, '');
+
+const WRAPPERS = {
+  command: (rest) => {
+    let k = 0;
+    while (k < rest.length && /^-[pvV]+$/.test(rest[k].text)) {
+      if (/[vV]/.test(rest[k].text)) return -1; // command -v は実行しない
+      k++;
+    }
+    return k;
+  },
+  builtin: () => 0,
+  exec: (rest) => {
+    let k = 0;
+    while (k < rest.length && rest[k].text.startsWith('-')) {
+      if (rest[k].text === '-a') k++;
+      k++;
+    }
+    return k;
+  },
+  nohup: () => 0,
+  time: (rest) => {
+    let k = 0;
+    while (k < rest.length && rest[k].text === '-p') k++;
+    return k;
+  },
+  nice: (rest) => {
+    let k = 0;
+    while (k < rest.length && rest[k].text.startsWith('-')) {
+      if (rest[k].text === '-n') k++;
+      k++;
+    }
+    return k;
+  },
+  stdbuf: (rest) => {
+    let k = 0;
+    while (k < rest.length && rest[k].text.startsWith('-')) {
+      if (/^-[ioe]$/.test(rest[k].text)) k++;
+      k++;
+    }
+    return k;
+  },
+  timeout: (rest) => {
+    let k = 0;
+    while (k < rest.length && rest[k].text.startsWith('-')) {
+      if (/^-[sk]$/.test(rest[k].text)) k++;
+      k++;
+    }
+    return k + 1; // DURATION
+  },
+  caffeinate: (rest) => {
+    let k = 0;
+    while (k < rest.length && rest[k].text.startsWith('-')) {
+      if (/^-[tw]$/.test(rest[k].text)) k++;
+      k++;
+    }
+    return k;
+  },
+  sudo: (rest, info) => {
+    let k = 0;
+    while (k < rest.length && rest[k].text.startsWith('-')) {
+      const t = rest[k].text;
+      if (t === '--') { k++; break; }
+      if (/^-[ugCDhprtTU]$/.test(t)) {
+        if (t === '-D') info.cdLike = true;
+        k++;
+      } else if (/^--chdir=/.test(t) || /^-D./.test(t)) {
+        info.cdLike = true;
+      }
+      k++;
+    }
+    return k;
+  },
+  doas: (rest) => {
+    let k = 0;
+    while (k < rest.length && rest[k].text.startsWith('-')) {
+      if (/^-[uC]$/.test(rest[k].text)) k++;
+      k++;
+    }
+    return k;
+  },
+  env: (rest, info) => {
+    let k = 0;
+    while (k < rest.length) {
+      const t = rest[k].text;
+      if (t === '--') { k++; break; }
+      if (['-', '-i', '--ignore-environment', '-0', '--null', '-v', '--debug'].includes(t)) { k++; continue; }
+      if (t === '-u' || t === '--unset' || t === '-P') { k += 2; continue; }
+      if (/^--unset=/.test(t) || /^-u./.test(t)) { k++; continue; }
+      if (t === '-C' || t === '--chdir') { info.cdLike = true; k += 2; continue; }
+      if (/^--chdir=/.test(t) || /^-C./.test(t)) { info.cdLike = true; k++; continue; }
+      if (t === '-S' || t === '--split-string') { info.splitString = true; k += 2; continue; }
+      if (/^--split-string=/.test(t) || /^-S./.test(t)) { info.splitString = true; k++; continue; }
+      if (t.startsWith('-')) { k++; continue; }
+      break;
+    }
+    return k;
+  },
+  xargs: (rest, info) => {
+    info.incomplete = true; // 引数の一部が標準入力から来る
+    let k = 0;
+    while (k < rest.length && rest[k].text.startsWith('-')) {
+      const t = rest[k].text;
+      if (t === '--') { k++; break; }
+      if (/^-[adEILnPs]$/.test(t)) k++;
+      k++;
+    }
+    return k;
+  },
+};
+
+// 1 つのコマンドの語から、実際に走るコマンドの名前と引数を取る。
+function resolveCommand(words) {
+  const info = {
+    name: null, nameWord: null, args: [], assigns: [], assignRaws: [],
+    cdLike: false, incomplete: false, nonExec: false, dynamicName: false, splitString: false,
+  };
+  let k = 0;
+  for (;;) {
+    while (k < words.length && !words[k].quoted && !words[k].dynamic && RESERVED.has(words[k].text)) k++;
+    while (k < words.length && isAssignWord(words[k])) {
+      info.assigns.push(assignName(words[k]));
+      info.assignRaws.push(words[k].raw);
+      k++;
+    }
+    if (k >= words.length) return info;
+    const w = words[k];
+    if (w.dynamic) {
+      info.dynamicName = true;
+      info.nameWord = w;
+      info.args = words.slice(k + 1);
+      return info;
+    }
+    const base = path.posix.basename(w.text);
+    const rest = words.slice(k + 1);
+    const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, base) ? WRAPPERS[base] : null;
+    if (wrapper) {
+      const r = wrapper(rest, info);
+      if (r < 0) { info.nonExec = true; info.name = base; return info; }
+      k = k + 1 + r;
+      continue;
+    }
+    info.name = base;
+    info.nameWord = w;
+    info.args = rest;
+    return info;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// git の呼び出し
+// ---------------------------------------------------------------------------
+
+// subcommand の前に置ける git の global option（git 2.54 の `git --help`）。
+const GIT_FLAG_OPTS = new Set([
+  '-p', '--paginate', '-P', '--no-pager', '--no-replace-objects', '--no-lazy-fetch',
+  '--no-optional-locks', '--no-advice', '--bare', '--literal-pathspecs', '--glob-pathspecs',
+  '--noglob-pathspecs', '--icase-pathspecs',
+]);
+// 値を次の語か `=` の後に取る option。
+const GIT_VALUE_OPTS = new Set(['--git-dir', '--work-tree', '--namespace', '--config-env', '--attr-source']);
+// これだけで終わる（subcommand を走らせない）option。
+const GIT_TERMINAL_OPTS = new Set(['-v', '--version', '-h', '--help', '--html-path', '--man-path', '--info-path', '--exec-path']);
+
+// 読むだけの subcommand（index・ref・作業木を書かない）。
+const READ_ONLY_SUBS = new Set([
+  'status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'cat-file', 'describe',
+  'shortlog', 'blame', 'grep', 'merge-base', 'rev-list', 'for-each-ref', 'show-ref', 'name-rev',
+  'count-objects', 'var', 'version', 'help', 'check-ignore', 'check-attr', 'cherry', 'whatchanged',
+  'diff-tree', 'diff-index', 'diff-files',
+]);
+
+// git の builtin（git 2.54 の `git --list-cmds=builtins`）。alias はこれらの名前を上書きできない。
+const BUILTIN_SUBS = new Set((
+  'add am annotate apply archive backfill bisect blame branch bugreport bundle cat-file check-attr ' +
+  'check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone ' +
+  'column commit commit-graph commit-tree config count-objects credential credential-cache ' +
+  'credential-store describe diagnose diff diff-files diff-index diff-pairs diff-tree difftool ' +
+  'fast-export fast-import fetch fetch-pack fmt-merge-msg for-each-ref for-each-repo format-patch fsck ' +
+  'fsck-objects gc get-tar-commit-id grep hash-object help history hook index-pack init init-db ' +
+  'interpret-trailers last-modified log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge ' +
+  'merge-base merge-file merge-index merge-ours merge-recursive merge-recursive-ours ' +
+  'merge-recursive-theirs merge-subtree merge-tree mktag mktree multi-pack-index mv name-rev notes ' +
+  'pack-objects pack-redundant pack-refs patch-id pickaxe prune prune-packed pull push range-diff ' +
+  'read-tree rebase receive-pack reflog refs remote repack replace replay repo rerere reset restore ' +
+  'rev-list rev-parse revert rm send-pack shortlog show show-branch show-index show-ref ' +
+  'sparse-checkout stage stash status switch symbolic-ref tag unpack-file unpack-objects update-index ' +
+  'update-ref update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag ' +
+  'version whatchanged worktree write-tree'
+).split(' '));
+
+// 変数や置換で作られたコマンドの名前が、git を作っているかもしれない目印の subcommand。
+const RISKY_SUBS = new Set([
+  'add', 'stage', 'rm', 'mv', 'commit', 'commit-tree', 'mktree', 'update-ref', 'update-index',
+  'read-tree', 'apply', 'checkout', 'restore', 'reset', 'stash', 'merge', 'cherry-pick', 'revert',
+  'am', 'push', 'remote', 'config',
+]);
+
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish']);
+const CD_LIKE = new Set(['cd', 'pushd', 'popd']);
+const EXPORT_LIKE = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
+
+// commit や add と同じコマンドの git に付けてよい `-c` / `--config-env` の鍵（短い allowlist）。
+// 設定の中には、git に別のプログラムを走らせるものがある。そのため、ここに無い鍵は
+// commit や add と同じコマンドでは検査できないとして拒む。足すときは、表示や名前だけを
+// 変える鍵に限る。
+const CONFIG_KEY_ALLOW = [/^core\.quotepath$/, /^color\./, /^advice\./, /^user\.name$/, /^user\.email$/];
+const configKey = (v) => v.split('=')[0].toLowerCase();
+const configKeyAllowed = (v) => CONFIG_KEY_ALLOW.some((re) => re.test(configKey(v)));
+const STAGING_OR_COMMIT = new Set(['commit', 'add', 'stage']);
+
+// `git` の語（`digit` などの中の文字は数えない）。
+const hasGitText = (s) => /(^|[^a-z])git([^a-z]|$)/i.test(s);
+
+// git の後の語を、global option と subcommand と引数に分ける。
+function parseGit(args) {
+  const g = {
+    sub: null, args: [], cdirs: [], configs: [], configEnvs: [], gitDir: false, workTree: false,
+    dynamicOpt: false, terminal: false, problems: [],
+  };
+  let k = 0;
+  while (k < args.length) {
+    const w = args[k];
+    const t = w.text;
+    if (w.dynamic) {
+      g.problems.push('git の global option か subcommand が変数や置換で作られていて、読みきれない');
+      return g;
+    }
+    if (!t.startsWith('-')) break;
+    if (t === '-C' || t === '-c') {
+      const v = args[k + 1];
+      if (!v) { g.problems.push(`git の ${t} に値が無い`); return g; }
+      if (v.dynamic) g.dynamicOpt = true;
+      if (t === '-C') g.cdirs.push(v.text); else g.configs.push(v.text);
+      k += 2;
+      continue;
+    }
+    if (GIT_FLAG_OPTS.has(t)) { k++; continue; }
+    if (GIT_TERMINAL_OPTS.has(t)) { g.terminal = true; return g; }
+    const eq = t.indexOf('=');
+    const name = eq < 0 ? t : t.slice(0, eq);
+    if (GIT_VALUE_OPTS.has(name) || (name === '--exec-path' && eq >= 0) || (name === '--list-cmds' && eq >= 0)) {
+      let value;
+      if (eq >= 0) { value = t.slice(eq + 1); k++; } else {
+        const v = args[k + 1];
+        if (!v) { g.problems.push(`git の ${t} に値が無い`); return g; }
+        if (v.dynamic) g.dynamicOpt = true;
+        value = v.text;
+        k += 2;
+      }
+      if (name === '--git-dir') g.gitDir = true;
+      if (name === '--work-tree') g.workTree = true;
+      if (name === '--config-env') g.configEnvs.push(value);
+      if (name === '--list-cmds') { g.terminal = true; return g; }
+      continue;
+    }
+    g.problems.push(`git の知らない global option（${t}）が subcommand の前にある`);
+    return g;
+  }
+  if (k >= args.length) return g;
+  g.sub = args[k].text;
+  g.args = args.slice(k + 1);
+  return g;
+}
+
+// コマンド全体を読み、git の呼び出しと「読みきれない形」を返す。
+function inspect(cmd) {
+  const res = {
+    gits: [], problems: [], cdLike: false, gitEnvNames: [], cmdCount: 0,
+  };
+  const normalized = cmd.replace(/['"\\]/g, '');
+  const gitContext = hasGitText(normalized);
+  const parsed = parseShell(cmd);
+  if (parsed.errors.length && gitContext) {
+    res.problems.push(`コマンドの引用符や括弧が閉じていない（${parsed.errors[0]}）`);
+  }
+  const assignRawsAll = [];
+  const queue = parsed.cmds.map((c) => ({ c, origin: 'top' }));
+  const resolved = [];
+  for (let qi = 0; qi < queue.length; qi++) {
+    const { c } = queue[qi];
+    const info = resolveCommand(c.words);
+    resolved.push({ c, info });
+    assignRawsAll.push(...info.assignRaws);
+  }
+  // 代入の値に git の語がある（`G=git` のように、後で変数からコマンドを作りうる）。
+  const gitInAssign = assignRawsAll.some((raw) => hasGitText(raw.slice(raw.indexOf('=') + 1)));
+
+  const visit = (c, info, depth) => {
+    if (depth > MAX_DEPTH) { res.problems.push('入れ子が深すぎる'); return; }
+    if (info.cdLike) res.cdLike = true;
+    for (const a of info.assigns) if (/^GIT_/.test(a) && !res.gitEnvNames.includes(a)) res.gitEnvNames.push(a);
+    if (info.dynamicName) {
+      const first = info.args[0];
+      if (hasGitText(info.nameWord.raw) || gitInAssign || (first && !first.dynamic && RISKY_SUBS.has(first.text))) {
+        res.problems.push('コマンドの名前が変数や置換で作られていて、git かどうかを決められない');
+      }
+      return;
+    }
+    if (info.splitString && c.words.some((w) => hasGitText(w.raw))) {
+      res.problems.push('env -S の文字列に入れた git は、中身を検査できない');
+    }
+    if (!info.name || info.nonExec) return;
+    const name = info.name;
+    if (CD_LIKE.has(name)) res.cdLike = true;
+    if (EXPORT_LIKE.has(name)) {
+      for (const w of info.args) {
+        const nm = w.text.split('=')[0];
+        if (/^GIT_/.test(nm)) res.gitEnvNames.push(nm);
+      }
+    }
+    if (SHELLS.has(name)) {
+      const ci = info.args.findIndex((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w.text) || w.text === '--command');
+      if (ci >= 0) {
+        const script = info.args[ci + 1];
+        if (script && (hasGitText(script.raw) || (script.dynamic && gitContext))) {
+          res.problems.push(`${name} -c の文字列に入れた git は、中身を検査できない`);
+        }
+      } else {
+        // 標準入力（ヒアドキュメント・here-string・パイプ）から読むシェル。
+        const reads = info.args.every((w) => w.text.startsWith('-'));
+        if (reads) {
+          for (const h of c.heredocBodies) {
+            const inner = parseShell(h.body);
+            if (inner.errors.length && hasGitText(h.body)) {
+              res.problems.push(`${name} に流すヒアドキュメントを読みきれない`);
+            }
+            for (const ic of inner.cmds) visit(ic, resolveCommand(ic.words), depth + 1);
+          }
+          for (const r of c.redirs) {
+            if (r.op === '<<<' && hasGitText(r.word.raw)) {
+              if (r.word.dynamic) res.problems.push(`${name} に流す文字列の git は、中身を検査できない`);
+              else {
+                const inner = parseShell(r.word.text);
+                for (const ic of inner.cmds) visit(ic, resolveCommand(ic.words), depth + 1);
+              }
+            }
+          }
+          if (c.piped && gitContext) {
+            res.problems.push(`パイプで ${name} に流したコマンドは、中身を検査できない`);
+          }
+        }
+      }
+      return;
+    }
+    if (name === 'eval') {
+      if (info.args.some((w) => hasGitText(w.raw) || (w.dynamic && gitContext))) {
+        res.problems.push('eval に渡した git は、中身を検査できない');
+      }
+      return;
+    }
+    if (name === 'find') {
+      for (let k = 0; k < info.args.length; k++) {
+        if (/^-(exec|execdir|ok|okdir)$/.test(info.args[k].text)) {
+          let e = k + 1;
+          while (e < info.args.length && info.args[e].text !== ';' && info.args[e].text !== '+') e++;
+          const sub = resolveCommand(info.args.slice(k + 1, e));
+          sub.incomplete = true;
+          visit({ words: info.args.slice(k + 1, e), redirs: [], piped: false, heredocBodies: [] }, sub, depth + 1);
+          k = e;
+        }
+      }
+      return;
+    }
+    if (name !== 'git') return;
+    const g = parseGit(info.args);
+    if (g.problems.length) { res.problems.push(...g.problems); return; }
+    if (g.dynamicOpt && !(g.sub && READ_ONLY_SUBS.has(g.sub))) {
+      res.problems.push('git の -C / -c などの値が変数や置換で作られていて、読みきれない');
+      return;
+    }
+    const aliasCfg = g.configs.concat(g.configEnvs).find((v) => /^(alias\.|include\.|includeif\.)/i.test(v));
+    if (aliasCfg) {
+      res.problems.push(`git の -c / --config-env で alias や include を足す形は、中身を検査できない（${aliasCfg.split('=')[0]}）`);
+      return;
+    }
+    g.incomplete = info.incomplete;
+    res.gits.push(g);
+  };
+
+  for (const { c, info } of resolved) visit(c, info, 0);
+  res.cmdCount = resolved.length;
+
+  // commit や add と同じコマンドでは、どの git の `-c` / `--config-env` も allowlist の鍵に限る。
+  if (res.gits.some((g) => STAGING_OR_COMMIT.has(g.sub))) {
+    for (const g of res.gits) {
+      const cfgs = g.configs.concat(g.configEnvs);
+      if (cfgs.some((v) => v.includes(DYN))) {
+        res.problems.push('commit や add と同じコマンドの git の -c / --config-env の値が変数や置換で作られていて、読みきれない');
+        break;
+      }
+      const bad = cfgs.find((v) => !configKeyAllowed(v));
+      if (bad) {
+        res.problems.push(
+          `commit や add と同じコマンドの git の -c / --config-env の鍵（${configKey(bad)}）は、allowlist の外なので検査できない` +
+          '（使える鍵: core.quotepath・color.*・advice.*・user.name・user.email）',
+        );
+        break;
+      }
+    }
+  }
+  return res;
+}
+
+function problemMessage(problems, guardLabel) {
+  return `git のコマンドを${guardLabel}で検査できない形のためブロックしました (fail-closed): ${problems[0]}。\n` +
+    'git は `git <subcommand> …` の形でそのまま書き、変数・置換・文字列のシェルを通さずに実行してください。';
+}
+
+// subcommand が builtin でないとき、それが alias なら拒む（alias の中身は検査できない）。
+function aliasProblem(g, baseDir) {
+  if (!g.sub || BUILTIN_SUBS.has(g.sub)) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(g.sub)) return `git の subcommand の形を読めない（${g.sub}）`;
+  if (g.gitDir || g.workTree) return `--git-dir / --work-tree を付けた builtin でない subcommand（${g.sub}）は検査できない`;
+  const dir = resolveDir(baseDir, g.cdirs);
+  try {
+    execFileSync('git', ['config', '--get', `alias.${g.sub}`], { cwd: dir, stdio: ['ignore', 'ignore', 'ignore'] });
+    return `git の alias（${g.sub}）は、中身を検査できない`;
+  } catch (e) {
+    if (e && e.status === 1) return null;
+    return `git の alias かどうかを確かめられない（${g.sub}・${dir}）`;
+  }
+}
+
+// `git -C a -C b` は a からの b。
+function resolveDir(baseDir, cdirs) {
+  return cdirs.reduce((d, c) => path.resolve(d, c), baseDir);
+}
+
+// ---------------------------------------------------------------------------
+// git commit の引数（git 2.54 の `git commit -h`）
+// ---------------------------------------------------------------------------
+
+const COMMIT_SHORT_VALUE = new Set(['F', 'm', 'c', 'C', 't', 'U']);
+const COMMIT_SHORT_ATTACHED = new Set(['S', 'u']); // 値は束の残り（無くてもよい）
+const COMMIT_SHORT_FLAGS = new Set(['q', 'v', 's', 'e', 'a', 'i', 'p', 'o', 'n', 'z']);
+// v = 値を取る（`--x=v` か `--x v`）・o = 値は `=` でだけ・f = 値を取らない。
+// n = `--no-` を付けた形もある。
+const COMMIT_LONG = {
+  quiet: 'fn', verbose: 'fn', file: 'vn', author: 'vn', date: 'vn', message: 'vn', 'reedit-message': 'vn',
+  'reuse-message': 'vn', fixup: 'vn', squash: 'vn', 'reset-author': 'fn', trailer: 'vn', signoff: 'fn',
+  template: 'vn', edit: 'fn', cleanup: 'vn', status: 'fn', 'gpg-sign': 'on', all: 'fn', include: 'fn',
+  interactive: 'fn', patch: 'fn', unified: 'v', 'inter-hunk-context': 'v', only: 'fn', 'no-verify': 'f',
+  verify: 'f', 'dry-run': 'fn', short: 'fn', branch: 'fn', 'ahead-behind': 'fn', porcelain: 'fn',
+  long: 'fn', null: 'fn', amend: 'fn', 'no-post-rewrite': 'f', 'post-rewrite': 'f',
+  'allow-empty': 'fn', 'allow-empty-message': 'fn', // -h に出ない（隠し）が受ける
+  'untracked-files': 'on', 'pathspec-from-file': 'vn', 'pathspec-file-nul': 'fn',
+};
+const COMMIT_LONG_NAMES = Object.keys(COMMIT_LONG).concat(
+  Object.keys(COMMIT_LONG).filter((k) => COMMIT_LONG[k].includes('n')).map((k) => `no-${k}`),
+);
+
+function resolveCommitLong(name) {
+  if (COMMIT_LONG_NAMES.includes(name)) return name;
+  const c = COMMIT_LONG_NAMES.filter((k) => k.startsWith(name));
+  return c.length === 1 ? c[0] : null;
+}
+
+// git commit の語を読む: commit のときに stage する option・pathspec・読みきれない語。
+function parseCommitArgs(words) {
+  const r = { all: false, patch: false, fromFile: false, dynamic: false, unknown: [], pathspecs: [] };
+  let k = 0;
+  let afterDD = false;
+  while (k < words.length) {
+    const w = words[k];
+    const t = w.text;
+    if (afterDD) {
+      if (w.dynamic) r.dynamic = true; else r.pathspecs.push(t);
+      k++;
+      continue;
+    }
+    if (w.dynamic) { r.dynamic = true; k++; continue; }
+    if (t === '--') { afterDD = true; k++; continue; }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const nm = eq < 0 ? t.slice(2) : t.slice(2, eq);
+      const full = resolveCommitLong(nm);
+      if (!full) { r.unknown.push(t); k++; continue; }
+      const base = full.startsWith('no-') && !COMMIT_LONG[full] ? full.slice(3) : full;
+      const kind = COMMIT_LONG[base] || 'f';
+      if (full === 'all') r.all = true;
+      if (full === 'patch' || full === 'interactive') r.patch = true;
+      if (full === 'pathspec-from-file') r.fromFile = true;
+      if (kind.startsWith('v') && !full.startsWith('no-') && eq < 0) { k += 2; continue; }
+      k++;
+      continue;
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      for (let p = 1; p < t.length; p++) {
+        const ch = t[p];
+        if (COMMIT_SHORT_VALUE.has(ch)) {
+          if (p === t.length - 1) k++; // 値は次の語
+          break;
+        }
+        if (COMMIT_SHORT_ATTACHED.has(ch)) break;
+        if (ch === 'a') r.all = true;
+        if (ch === 'p') r.patch = true;
+        if (!COMMIT_SHORT_FLAGS.has(ch)) { r.unknown.push(t); break; }
+      }
+      k++;
+      continue;
+    }
+    r.pathspecs.push(t);
+    k++;
+  }
+  return r;
+}
+
+module.exports = {
+  DYN,
+  deny,
+  readInput,
+  parseShell,
+  inspect,
+  problemMessage,
+  aliasProblem,
+  resolveDir,
+  parseCommitArgs,
+  READ_ONLY_SUBS,
+};

@@ -17,12 +17,23 @@
  *   (B) 古典的 exfil 形: `gh gist` / 非 origin への push / reverse shell /
  *       ローカルファイルの upload / 秘密ファイル読取 + ネットワーク送信。
  * 通常の `curl https://api...` (GET) や named remote への `git push` は通す。
+ * git の形は、下の正規表現に加えて lib/git-guard-common.cjs（git ガード 3 本で共有する
+ * コマンドの読み取り）で git の呼び出しごとにも見る。
  */
-const fs = require('node:fs');
-
-function readStdin() {
-  try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
+let guard;
+try {
+  guard = require('./lib/git-guard-common.cjs');
+} catch {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。egress ガードを通せないため実行をブロックします。',
+    },
+  }));
+  process.exit(0);
 }
+const { deny } = guard;
 
 // (A) リテラル秘密。`$GITHUB_TOKEN` 等の env 参照は値ではないので **当たらない**
 // (値クラスに `$` を含めない / 代入値が `$` 始まりなら除外)。ops-logging の mask()
@@ -73,24 +84,7 @@ const NET_VERB_RE = /\b(curl|wget|nc|ncat|scp|sftp|rsync|telnet)\b|\bgh\s+gist\b
 // .env.example はテンプレートなので秘密ファイル扱いしない。
 const isExampleOnly = (cmd) => /\.env\.example\b/i.test(cmd) && !/\.env(\b|\.)(?!example)/i.test(cmd);
 
-function deny(reason) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  }));
-  process.exit(0);
-}
-
-let cmd = '';
-try {
-  const j = JSON.parse(readStdin() || '{}');
-  cmd = (j.tool_input && j.tool_input.command) || '';
-} catch {
-  deny('hook 入力を解釈できませんでした (fail-closed)。egress ガードを通せないため実行をブロックします。');
-}
+const { cmd } = guard.readInput('egress ガード');
 if (!cmd) process.exit(0);
 
 if (SECRET_LITERALS.some((re) => re.test(cmd))) {
@@ -114,6 +108,26 @@ if (!isExampleOnly(cmd) && SECRET_FILE_RE.test(cmd) && NET_VERB_RE.test(cmd)) {
     '秘密ファイル (.env / *token*.json / *.key 等) の読取とネットワーク送信が同一コマンドに含まれています。\n' +
     '秘密の外部送信を防ぐためブロックしました (egress guard)。',
   );
+}
+
+// git の形を、git の呼び出しごとにも見る（global option や引用符を挟んだ形も同じに読む）。
+const insp = guard.inspect(cmd);
+if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'egress ガード'));
+const URL_ARG_RE = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)/;
+for (const g of insp.gits) {
+  const a = g.args.map((w) => w.text);
+  const firstWord = a.find((x) => !x.startsWith('-'));
+  const remoteWrite = g.sub === 'remote' && (firstWord === 'add' || firstWord === 'set-url');
+  const urlKey = g.sub === 'config' ? a.findIndex((x) => /^remote\..+\.url$/i.test(x)) : -1;
+  const configWrite = urlKey >= 0 && a.slice(urlKey + 1).some((x) => !x.startsWith('-'));
+  const pushUrl = g.sub === 'push' && a.some((x) => URL_ARG_RE.test(x));
+  if (remoteWrite || configWrite || pushUrl) {
+    deny(
+      '外向き送信 (gist / 非 origin への push / reverse shell / ローカルファイル upload 等) を検出しました。\n' +
+      'スクショ型インジェクションによる秘密持ち出しを防ぐためブロックしました (egress guard)。' +
+      '正当な操作なら内容を確認のうえ手動で実行してください。',
+    );
+  }
 }
 
 process.exit(0);
