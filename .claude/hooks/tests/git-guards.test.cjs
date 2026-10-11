@@ -77,6 +77,10 @@ const CASES = [
   { id: 'N45', expect: 'allow', cmd: 'git status # ; git commit -a -m x' },
   // v3.4 の陰性対照（算術の `((…<<…))` の後の行の読むだけの git は通す）
   { id: 'N46', expect: 'allow', cmd: '((x = 1 << 2))\ngit status' },
+  // v3.5 の陰性対照（括弧の中のヒアドキュメント ／ 古い書き方の算術 ／ git の無い閉じないヒアドキュメント）
+  { id: 'N49', expect: 'allow', cmd: "( cat <<'EOF'\nnotes\nEOF\n)" },
+  { id: 'N50', expect: 'allow', cmd: 'echo $[1 + 2] && git status' },
+  { id: 'N51', expect: 'allow', cmd: 'cat <<EOF\nhello' },
 
   // --- commit と同じコマンドでは、読むだけの git 以外を拒む -------------------------
   { id: 'A01', expect: 'deny', cmd: 'git update-index --add --cacheinfo 100644,e69de29bb2d1d6434b8b29ae775ad8c2e48c5391,.env && git commit -m x' },
@@ -188,9 +192,17 @@ const CASES = [
   { id: 'W03', expect: 'deny', cwd: 'alias', project: 'alias', cmd: 'arch -arm64 git ci -m x' },
   // v3.3: 語の途中の `(` の後の `#`（zsh では普通の文字・コメントでない）
   { id: 'Q06', expect: 'deny', cmd: 'ls a(#b); git commit -a -m x' },
-  // v3.4: 算術の `((…<<…))` の `<<` をヒアドキュメントと読まない（後ろに区切りの行を置く形も）
+  // v3.4（v3.5 で算術の読み方を直した）: 算術の `((…<<…))` の `<<` をヒアドキュメントと読まない（後ろに区切りの行を置く形も）
   { id: 'Q07', expect: 'deny', cmd: '((x = 1 << 2))\ngit commit -a -m x' },
   { id: 'Q08', expect: 'deny', cmd: '((x = 1 << 2))\ngit commit -a -m x\n2' },
+  // v3.5: 括弧の中のヒアドキュメントの本文をコードとして読まない（本文の引用符が後ろの行と対にならない）
+  { id: 'Q15', expect: 'deny', cmd: "( cat <<'EOF'\nit's\nEOF\n)\ngit commit -a -m x\necho '" },
+  { id: 'Q16', expect: 'deny', cmd: "( cat <<'EOF'\nit's\nEOF\n)\ngit add -A\necho '" },
+  // v3.5: `for ((…))` と `$[…]` の `<<` もシフト（後ろに区切りの行を置く形）
+  { id: 'Q17', expect: 'deny', cmd: 'for ((i = 1 << 2; i < 9; i++)); do :; done\ngit commit -a -m x\n2' },
+  { id: 'Q18', expect: 'deny', cmd: 'echo $[1 << 2]\ngit commit -a -m x\n2]' },
+  // v3.5.1: 終わりの語の無いヒアドキュメントの本文に書き込む git（読めない形として拒む・UH1 だけが押さえる）
+  { id: 'Q19', expect: 'deny', cmd: 'cat <<EOF\ngit commit -a -m x' },
 
   // --- 読みきれない形 ----------------------------------------------------------------
   { id: 'P01', expect: 'deny', cmd: 'git commit -m "unterminated' },

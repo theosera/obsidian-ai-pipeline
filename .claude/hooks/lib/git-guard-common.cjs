@@ -103,6 +103,22 @@ function scanExpansion(src, i, out, depth) {
     if (close >= n) { out.errors.push('閉じていない $( … )'); return { end: n, dynamic: true }; }
     return { end: close + 1, dynamic: true };
   }
+  if (c1 === '[') {
+    // $[ … ]（古い書き方の算術・v3.5）。中の置換だけを読む（`<<` はシフトでヒアドキュメントではない）。
+    let j = i + 2;
+    let d = 0;
+    while (j < n) {
+      if (src[j] === '[') d++;
+      else if (src[j] === ']') {
+        if (d === 0) break;
+        d--;
+      }
+      j++;
+    }
+    if (j >= n) { out.errors.push('閉じていない $[ … ]'); return { end: n, dynamic: true }; }
+    scanSubsts(src.slice(i + 2, j), out, depth + 1);
+    return { end: j + 1, dynamic: true };
+  }
   if (c1 === '{') {
     let j = i + 2;
     let d = 0;
@@ -144,6 +160,28 @@ function scanExpansion(src, i, out, depth) {
   }
   if (c1 !== undefined && /[0-9@*#?$!-]/.test(c1)) return { end: i + 2, dynamic: true };
   return { end: i + 1, dynamic: false, literal: '$' };
+}
+
+// `((` の後（j）から、算術の終わりの `))` の位置を返す。シェルと同じく、深さ 0 の `)` の直後が `)` のときだけ算術。
+// そうでない（入れ子のサブシェル）か閉じていなければ -1（v3.5）。
+function arithEnd(src, j) {
+  let d = 0;
+  for (let k = j; k < src.length; k++) {
+    const ch = src[k];
+    if (ch === '\\') { k++; continue; }
+    if (ch === "'" || ch === '"') {
+      const q = src.indexOf(ch, k + 1);
+      if (q < 0) return -1;
+      k = q;
+      continue;
+    }
+    if (ch === '(') d++;
+    else if (ch === ')') {
+      if (d === 0) return src[k + 1] === ')' ? k : -1;
+      d--;
+    }
+  }
+  return -1;
 }
 
 // 文字列の中の置換（`$(…)`・`` `…` ``・`${…}`）だけを拾って読む（ヒアドキュメントの本文など）。
@@ -281,6 +319,8 @@ function parseSeq(src, start, out, depth, stopAtParen) {
           }
           i = j < 0 ? n : j + 1;
         }
+        // 終わりの語が見つからない（v3.5）。読み違えた始まりなら、後ろの行を読み飛ばしている。
+        if (bodyEnd === n) out.errors.push('ヒアドキュメントの終わりの語が無い');
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
         if (!h.quoted) scanSubsts(body, out, depth + 1);
         if (h.cmd) h.cmd.heredocBodies.push({ body, quoted: h.quoted });
@@ -303,6 +343,16 @@ function parseSeq(src, start, out, depth, stopAtParen) {
       continue;
     }
     if (c === '(') {
+      // コマンドの頭か `for` の後の `((…))` は算術（v3.5）。シェルと同じく対の `))` まで生の文字として読み、
+      // 中の置換だけを読む（`<<` はシフトでヒアドキュメントではない）。対にならなければサブシェルとして読む。
+      if (src[i + 1] === '(' && !cur && (words.length === 0 || (words.length === 1 && !words[0].quoted && words[0].text === 'for'))) {
+        const end = arithEnd(src, i + 2);
+        if (end >= 0) {
+          scanSubsts(src.slice(i + 2, end), out, depth + 1);
+          i = end + 2;
+          continue;
+        }
+      }
       endCmd();
       parenDepth++;
       i++;
@@ -332,9 +382,7 @@ function parseSeq(src, start, out, depth, stopAtParen) {
       // fd の番号（2> など）は語にしない。
       if (cur && !cur.quoted && !cur.dynamic && /^\d+$/.test(cur.text)) cur = null;
       else endWord();
-      // 括弧の中の `<<` はヒアドキュメントにしない（v3.4）。算術の `((…))` ではシフトで、
-      // ヒアドキュメントと読むと次の行から先を本文として読み飛ばす。演算子として読み、次の行も読む。
-      if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<' && parenDepth === 0) {
+      if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
         // ヒアドキュメント: 区切りの語を読み、本文は次の改行の後で読む。
         i += 2;
         let strip = false;
