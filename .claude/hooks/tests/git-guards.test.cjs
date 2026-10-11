@@ -62,6 +62,19 @@ const CASES = [
   { id: 'N34', expect: 'allow', cmd: 'git -c color.ui=never status && git commit -m x' },
   { id: 'N35', expect: 'allow', cmd: 'git -c core.fsmonitor=/usr/bin/true status' },
   { id: 'N36', expect: 'allow', cmd: 'git -c Advice.detachedHead=false add a.txt' },
+  // v3 の陰性対照
+  { id: 'N37', expect: 'allow', cmd: 'git --icase-pathspecs ls-files' },
+  { id: 'N38', expect: 'allow', cmd: 'grep -rn git .' },
+  { id: 'N39', expect: 'allow', cmd: 'which git' },
+  { id: 'N40', expect: 'allow', cmd: 'arch -arm64 git status' },
+  { id: 'N41', expect: 'allow', cmd: 'echo a\r' },
+  { id: 'N42', expect: 'allow', cmd: 'echo ' + '${'.repeat(30) + 'x' + '}'.repeat(30) },
+  // v3.1 の陰性対照（git の無いヒアドキュメントの区切りに FF）
+  { id: 'N43', expect: 'allow', cmd: 'cat <<EOF\f\nhello\nEOF\n' },
+  // v3.2 の陰性対照（包んだ git の後が名前の形の語で、alias でない）
+  { id: 'N44', expect: 'allow', cmd: 'grep -rn git src' },
+  // v3.3 の陰性対照（空白の後の `#` は今までどおりコメント・中の `;` の後の git は読まない）
+  { id: 'N45', expect: 'allow', cmd: 'git status # ; git commit -a -m x' },
 
   // --- commit と同じコマンドでは、読むだけの git 以外を拒む -------------------------
   { id: 'A01', expect: 'deny', cmd: 'git update-index --add --cacheinfo 100644,e69de29bb2d1d6434b8b29ae775ad8c2e48c5391,.env && git commit -m x' },
@@ -153,6 +166,26 @@ const CASES = [
   { id: 'K04', expect: 'deny', cmd: 'git -c core.fsmonitor=/usr/bin/true commit -m x' },
   { id: 'K05', expect: 'deny', cmd: 'git -c core.pager=cat add a.txt' },
   { id: 'K06', expect: 'deny', cmd: 'git -c "$K" status && git commit -m x' },
+
+  // --- v3: CR・pathspec の当て方・包んだ git・深い入れ子 ---------------------------------
+  { id: 'Q01', expect: 'deny', cmd: 'git status\r#; git commit -a -m x' },
+  { id: 'Q02', expect: 'deny', cmd: 'git log -1\r' },
+  { id: 'PS01', expect: 'deny', cmd: 'git --icase-pathspecs commit -o -m x -- a.txt' },
+  { id: 'PS02', expect: 'deny', cmd: 'git --literal-pathspecs add a.txt' },
+  { id: 'PS03', expect: 'deny', cmd: 'git --icase-pathspecs stage a.txt' },
+  { id: 'W01', expect: 'deny', cmd: 'arch -arm64 git commit -a -m x' },
+  { id: 'W02', expect: 'deny', cmd: 'function f { git commit -a -m x; }; f' },
+  { id: 'DP01', expect: 'deny', cmd: 'git log -1 ' + '${'.repeat(30) + 'x' + '}'.repeat(30) },
+  { id: 'DP02', expect: 'deny', cmd: 'git log -1 ' + '${'.repeat(12000) + 'x' + '}'.repeat(12000) },
+  // v3.1: ヒアドキュメントの区切りの語に FF・NBSP（bash では区切りの語の文字）
+  { id: 'Q03', expect: 'deny', cmd: 'cat <<EOF\f\nEOF\f\ngit commit -a -m x\nEOF\n' },
+  { id: 'Q04', expect: 'deny', cmd: 'cat <<EOF \nEOF \ngit commit -a -m x\nEOF\n' },
+  // v3.1: 行末が CRLF のヒアドキュメント（走査の席の訂正の形・CR1 と区切りの直しの両方が拒む）
+  { id: 'Q05', expect: 'deny', cmd: 'cat <<EOF\r\nEOF\r\ngit commit -a -m x\nEOF\n' },
+  // v3.2: 包んだ git の subcommand が alias（alias のリポの `ci` = commit・直接の形は F03）
+  { id: 'W03', expect: 'deny', cwd: 'alias', project: 'alias', cmd: 'arch -arm64 git ci -m x' },
+  // v3.3: 語の途中の `(` の後の `#`（zsh では普通の文字・コメントでない）
+  { id: 'Q06', expect: 'deny', cmd: 'ls a(#b); git commit -a -m x' },
 
   // --- 読みきれない形 ----------------------------------------------------------------
   { id: 'P01', expect: 'deny', cmd: 'git commit -m "unterminated' },

@@ -34,6 +34,11 @@ function deny(reason) {
 // 場所は入力の `cwd` を優先する（Bash の作業の場所は呼び出しをまたいで残るので、
 // CLAUDE_PROJECT_DIR と違うことがある）。
 function readInput(guardLabel) {
+  // ここから後で例外が起きて hook が落ちると、Claude Code はコマンドを止めない（fail-open）。
+  // 落ちる代わりに拒む（v3）。
+  process.on('uncaughtException', (e) => {
+    deny(`${guardLabel}がコマンドを読む途中で例外が起きました（${(e && e.name) || 'Error'}）(fail-closed)。実行をブロックします。`);
+  });
   let j;
   try {
     j = JSON.parse(readStdin() || '{}');
@@ -57,6 +62,8 @@ const DYN = '\u0000';
 // `$…` / `` `…` `` を 1 つ読む。置換の中のコマンドは out.cmds に積む。
 function scanExpansion(src, i, out, depth) {
   const n = src.length;
+  // `${…}` と `$((…))` の入れ子は parseSeq を通らずに呼び合うので、ここでも深さを見る（v3）。
+  if (depth > MAX_DEPTH) { out.errors.push('入れ子が深すぎる'); return { end: n, dynamic: true }; }
   if (src[i] === '`') {
     let j = i + 1;
     let inner = '';
@@ -247,7 +254,9 @@ function parseSeq(src, start, out, depth, stopAtParen) {
       i = r.end;
       continue;
     }
-    if (c === '#' && !cur) {
+    // `#` をコメントと読むのは、入力の先頭か空白・改行・`;`・`&`・`|` の後だけ（v3.3）。
+    // zsh では語の途中の `(` の後の `#` は普通の文字なので、ここで読み飛ばすとシェルとずれる。
+    if (c === '#' && !cur && (i === start || /[ \t\n;&|]/.test(src[i - 1]))) {
       const j = src.indexOf('\n', i);
       i = j < 0 ? n : j;
       continue;
@@ -278,7 +287,8 @@ function parseSeq(src, start, out, depth, stopAtParen) {
       }
       continue;
     }
-    if (c === ' ' || c === '\t' || c === '\r') {
+    // CR（\r）は bash / zsh と同じく語の文字として扱う（区切りにしない・v3）。
+    if (c === ' ' || c === '\t') {
       endWord();
       i++;
       continue;
@@ -330,7 +340,9 @@ function parseSeq(src, start, out, depth, stopAtParen) {
         while (src[i] === ' ' || src[i] === '\t') i++;
         let delim = '';
         let quoted = false;
-        while (i < n && !/[\s;&|<>()]/.test(src[i])) {
+        // 区切りの語は bash と同じく、空白・タブ・改行と演算子の文字だけで切る（v3.1）。
+        // JS の \s で切ると FF・VT・NBSP なども切れ目になり、本文の終わりの行が bash と食い違う。
+        while (i < n && !/[ \t\n;&|<>()]/.test(src[i])) {
           const d = src[i];
           if (d === "'" || d === '"') {
             const j = src.indexOf(d, i + 1);
@@ -534,6 +546,8 @@ const GIT_FLAG_OPTS = new Set([
   '--no-optional-locks', '--no-advice', '--bare', '--literal-pathspecs', '--glob-pathspecs',
   '--noglob-pathspecs', '--icase-pathspecs',
 ]);
+// pathspec の当て方を変える global option（v3: commit・add・stage と同じコマンドでは拒む）。
+const PATHSPEC_FLAG_OPTS = new Set(['--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs']);
 // 値を次の語か `=` の後に取る option。
 const GIT_VALUE_OPTS = new Set(['--git-dir', '--work-tree', '--namespace', '--config-env', '--attr-source']);
 // これだけで終わる（subcommand を走らせない）option。
@@ -593,7 +607,7 @@ const hasGitText = (s) => /(^|[^a-z])git([^a-z]|$)/i.test(s);
 function parseGit(args) {
   const g = {
     sub: null, args: [], cdirs: [], configs: [], configEnvs: [], gitDir: false, workTree: false,
-    dynamicOpt: false, terminal: false, problems: [],
+    dynamicOpt: false, terminal: false, problems: [], pathspecFlags: [],
   };
   let k = 0;
   while (k < args.length) {
@@ -612,7 +626,11 @@ function parseGit(args) {
       k += 2;
       continue;
     }
-    if (GIT_FLAG_OPTS.has(t)) { k++; continue; }
+    if (GIT_FLAG_OPTS.has(t)) {
+      if (PATHSPEC_FLAG_OPTS.has(t)) g.pathspecFlags.push(t);
+      k++;
+      continue;
+    }
     if (GIT_TERMINAL_OPTS.has(t)) { g.terminal = true; return g; }
     const eq = t.indexOf('=');
     const name = eq < 0 ? t : t.slice(0, eq);
@@ -647,6 +665,10 @@ function inspect(cmd) {
   };
   const normalized = cmd.replace(/['"\\]/g, '');
   const gitContext = hasGitText(normalized);
+  // CR（\r）を含むコマンドは、シェルと同じに語へ分けられる保証が無い（v3・fail-closed）。
+  if (cmd.includes('\r') && gitContext) {
+    res.problems.push('コマンドに CR（\\r）があり、シェルと同じに語へ分けられる保証が無い');
+  }
   const parsed = parseShell(cmd);
   if (parsed.errors.length && gitContext) {
     res.problems.push(`コマンドの引用符や括弧が閉じていない（${parsed.errors[0]}）`);
@@ -739,7 +761,26 @@ function inspect(cmd) {
       }
       return;
     }
-    if (name !== 'git') return;
+    if (name !== 'git') {
+      // git 以外の名前で包んで git を走らせる形（`arch -arm64 git commit …` など・v3）。
+      // `git` の語の後が書き込む側の subcommand（または読みきれない語の後に目印の subcommand）
+      // のときだけ、git のコマンドとして読む（`grep -rn git .` や `which git` は止めない）。
+      const gi = info.args.findIndex((w) => !w.dynamic && path.posix.basename(w.text) === 'git');
+      if (gi >= 0) {
+        const tail = info.args.slice(gi);
+        const tg = parseGit(tail.slice(1));
+        // v3.2: builtin でなくても名前の形の subcommand（alias かもしれない）なら git として読み、
+        // 直接の git と同じく secret-git の alias の確かめに回す（`grep -rn git .` の `.` は名前の形でない）。
+        const writes = tg.sub && !tg.terminal && !READ_ONLY_SUBS.has(tg.sub) &&
+          (BUILTIN_SUBS.has(tg.sub) || /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(tg.sub));
+        const unclear = tg.problems.length && tail.some((w) => !w.dynamic && RISKY_SUBS.has(w.text));
+        if (writes || unclear) {
+          // 引数はコマンドの文字に全部出ているので、xargs と違い incomplete にはしない。
+          visit({ words: tail, redirs: [], piped: false, heredocBodies: [] }, resolveCommand(tail), depth + 1);
+        }
+      }
+      return;
+    }
     const g = parseGit(info.args);
     if (g.problems.length) { res.problems.push(...g.problems); return; }
     if (g.dynamicOpt && !(g.sub && READ_ONLY_SUBS.has(g.sub))) {
@@ -760,6 +801,11 @@ function inspect(cmd) {
 
   // commit や add と同じコマンドでは、どの git の `-c` / `--config-env` も allowlist の鍵に限る。
   if (res.gits.some((g) => STAGING_OR_COMMIT.has(g.sub))) {
+    // pathspec の当て方を変える global option は、検査（ls-files など）と当て方がそろう保証が無い（v3）。
+    const psf = res.gits.find((g) => g.pathspecFlags.length);
+    if (psf) {
+      res.problems.push(`commit や add と同じコマンドの git に、pathspec の当て方を変える global option（${psf.pathspecFlags[0]}）がある`);
+    }
     for (const g of res.gits) {
       const cfgs = g.configs.concat(g.configEnvs);
       if (cfgs.some((v) => v.includes(DYN))) {
