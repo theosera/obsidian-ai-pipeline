@@ -75,6 +75,8 @@ const CASES = [
   { id: 'N44', expect: 'allow', cmd: 'grep -rn git src' },
   // v3.3 の陰性対照（空白の後の `#` は今までどおりコメント・中の `;` の後の git は読まない）
   { id: 'N45', expect: 'allow', cmd: 'git status # ; git commit -a -m x' },
+  // v3.4 の陰性対照（算術の `((…<<…))` の後の行の読むだけの git は通す）
+  { id: 'N46', expect: 'allow', cmd: '((x = 1 << 2))\ngit status' },
 
   // --- commit と同じコマンドでは、読むだけの git 以外を拒む -------------------------
   { id: 'A01', expect: 'deny', cmd: 'git update-index --add --cacheinfo 100644,e69de29bb2d1d6434b8b29ae775ad8c2e48c5391,.env && git commit -m x' },
@@ -186,6 +188,9 @@ const CASES = [
   { id: 'W03', expect: 'deny', cwd: 'alias', project: 'alias', cmd: 'arch -arm64 git ci -m x' },
   // v3.3: 語の途中の `(` の後の `#`（zsh では普通の文字・コメントでない）
   { id: 'Q06', expect: 'deny', cmd: 'ls a(#b); git commit -a -m x' },
+  // v3.4: 算術の `((…<<…))` の `<<` をヒアドキュメントと読まない（後ろに区切りの行を置く形も）
+  { id: 'Q07', expect: 'deny', cmd: '((x = 1 << 2))\ngit commit -a -m x' },
+  { id: 'Q08', expect: 'deny', cmd: '((x = 1 << 2))\ngit commit -a -m x\n2' },
 
   // --- 読みきれない形 ----------------------------------------------------------------
   { id: 'P01', expect: 'deny', cmd: 'git commit -m "unterminated' },

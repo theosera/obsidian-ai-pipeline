@@ -332,7 +332,9 @@ function parseSeq(src, start, out, depth, stopAtParen) {
       // fd の番号（2> など）は語にしない。
       if (cur && !cur.quoted && !cur.dynamic && /^\d+$/.test(cur.text)) cur = null;
       else endWord();
-      if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
+      // 括弧の中の `<<` はヒアドキュメントにしない（v3.4）。算術の `((…))` ではシフトで、
+      // ヒアドキュメントと読むと次の行から先を本文として読み飛ばす。演算子として読み、次の行も読む。
+      if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<' && parenDepth === 0) {
         // ヒアドキュメント: 区切りの語を読み、本文は次の改行の後で読む。
         i += 2;
         let strip = false;
