@@ -961,7 +961,7 @@ const BUILTIN_SUBS = new Set((
 const RISKY_SUBS = new Set([
   'add', 'stage', 'rm', 'mv', 'commit', 'commit-tree', 'mktree', 'update-ref', 'update-index',
   'read-tree', 'apply', 'checkout', 'restore', 'reset', 'stash', 'merge', 'cherry-pick', 'revert',
-  'am', 'push', 'remote', 'config',
+  'am', 'push', 'send-pack', 'http-push', 'remote', 'config',
 ]);
 
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish']);
@@ -1044,24 +1044,80 @@ function parseGit(args) {
   return g;
 }
 
-/** Recognize shells reading stdin, including -s arguments and explicit stdin device paths. */
-function shellReadsStdin(args) {
+/** Locate shell source using option arity, preserving subsequent positional arguments as data. */
+function shellInvocation(args, name) {
+  const scripts = [];
+  let commandMode = false;
   let stdin = false;
-  let afterDD = false;
-  for (let k = 0; k < args.length; k++) {
+  let unknown = false;
+  let k = 0;
+  const fishLong = {
+    command: 'c', 'init-command': 'C', features: 'f', debug: 'd', 'debug-output': 'o',
+    'debug-stack-frames': 'D', profile: 'p', 'profile-startup': 'p', interactive: 'i',
+    login: 'l', 'no-config': 'N', 'no-execute': 'n', 'print-rusage-self': 'r',
+    'print-debug-categories': 'r', private: 'P', help: 'h', version: 'v',
+  };
+  const fishValue = (ch, value) => {
+    if (!value || value.dynamicMaySplit) unknown = true;
+    if (ch === 'c') commandMode = true;
+    if ('cC'.includes(ch) && value) scripts.push(value);
+  };
+  for (; k < args.length; k++) {
     const w = args[k];
     const t = w.text;
-    if (w.dynamic) return stdin;
-    if (!afterDD && t === '--') { afterDD = true; continue; }
-    if (!afterDD && t !== '-' && /^[+-]/.test(t)) {
-      if (/^-[A-Za-z]*s[A-Za-z]*$/.test(t)) stdin = true;
-      if (['-o', '+o', '-O', '+O', '--rcfile', '--init-file', '--emulate'].includes(t)) k++;
+    if (t === '--' || t === '-') { k++; break; }
+    if (w.dynamicMaySplit || (w.dynamic && !/^[+-]/.test(t))) { unknown = true; break; }
+    if (!/^[+-]/.test(t) || (name === 'fish' && t[0] === '+')) break;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const option = t.slice(2, eq < 0 ? undefined : eq);
+      if (name === 'fish') {
+        const names = Object.keys(fishLong);
+        const matches = names.includes(option) ? [option] : names.filter((n) => n.startsWith(option));
+        if (matches.length !== 1) { unknown = true; continue; }
+        const ch = fishLong[matches[0]];
+        if ('cCdofpD'.includes(ch)) fishValue(ch, eq < 0 ? args[++k] : { ...w, text: t.slice(eq + 1) });
+        else if (eq >= 0) unknown = true;
+      } else if (['rcfile', 'init-file', 'emulate'].includes(option)) {
+        const value = eq < 0 ? args[++k] : { ...w, text: t.slice(eq + 1) };
+        if (!value || value.dynamicMaySplit) unknown = true;
+      } else if (!['debugger', 'dump-po-strings', 'dump-strings', 'help', 'login', 'noediting',
+        'noprofile', 'norc', 'posix', 'restricted', 'verbose', 'version'].includes(option) || eq >= 0) unknown = true;
       continue;
     }
-    if (stdin) return true; // -s: positional words are script arguments
-    return t === '-' || ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '/proc/thread-self/fd/0'].includes(path.posix.normalize(t));
+    for (let p = 1; p < t.length; p++) {
+      const ch = t[p];
+      if (!/[A-Za-z]/.test(ch)) { unknown = true; break; }
+      if (name === 'fish') {
+        if ('cCdofpD'.includes(ch)) {
+          const attached = t.slice(p + 1);
+          const value = attached ? { ...w, text: attached } : args[++k];
+          fishValue(ch, value);
+          if (attached && value.dynamic && !value.text.replaceAll(DYN, '')) unknown = true;
+          break;
+        }
+        if (!'hPilNnv'.includes(ch)) unknown = true;
+      } else if (ch === 'o' || ch === 'O') {
+        // -o / -O take an optional option name; attached text is that name, not more flags.
+        if (p + 1 === t.length && args[k + 1] && !/^[+-]/.test(args[k + 1].text)) {
+          if (args[++k].dynamic) unknown = true;
+        }
+        break;
+      } else if (t[0] === '-') {
+        if (ch === 'c') commandMode = true;
+        if (ch === 's') stdin = true;
+      }
+    }
   }
-  return true;
+  if (name !== 'fish' && commandMode) {
+    if (args[k]) scripts.push(args[k]);
+    else unknown = true;
+  }
+  const operand = args[k];
+  const readsStdin = !commandMode && (stdin || !operand || (!operand.dynamic &&
+    (operand.text === '-' || ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '/proc/thread-self/fd/0']
+      .includes(path.posix.normalize(operand.text)))));
+  return { scripts, commandMode, readsStdin, unknown };
 }
 
 /** Detect Git text that a shell can expose after tokenization, without executing its input. */
@@ -1146,6 +1202,7 @@ function inspect(cmd) {
       if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
     }
     const cdBefore = state.cd || info.cdLike;
+    const shell = SHELLS.has(info.name) ? shellInvocation(info.args, info.name) : null;
     const invocation = {
       order: res.invocations.length, name: info.name, nameWord: info.nameWord, args: info.args,
       words: c.words, redirs: c.redirs, heredocBodies: c.heredocBodies, scope: c.scope, incomplete: info.incomplete,
@@ -1159,8 +1216,8 @@ function inspect(cmd) {
       unknownContextBefore: state.unknownContext,
       pipelineParticipant: (c.effects || []).some((e) => e.pipeline),
       unsafeGroupSetup: (c.effects || []).some((e) => e.unsafeSetup),
-      shellReadsStdin: SHELLS.has(info.name) &&
-        !info.args.some((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w.text) || w.text === '--command') && shellReadsStdin(info.args),
+      shellScripts: shell ? shell.scripts : [], shellCommandMode: shell ? shell.commandMode : false,
+      shellSourceUnknown: shell ? shell.unknown : false, shellReadsStdin: shell ? shell.readsStdin : false,
     };
     res.invocations.push(invocation);
     if (info.cdLike) res.cdLike = true;
@@ -1216,15 +1273,16 @@ function inspect(cmd) {
     if (SHELLS.has(name)) {
       const inputGit = c.heredocBodies.some((h) => shellInputHasGit(h.body)) ||
         c.redirs.some((r) => r.op === '<<<' && wordHasGit(r.word));
-      const ci = info.args.findIndex((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w.text) || w.text === '--command');
-      if (ci >= 0) {
-        const script = info.args[ci + 1];
-        if (inputGit || (script && (wordHasGit(script) || (script.dynamic && gitContext)))) {
-          res.problems.push(`${name} -c の文字列に入れた git は、中身を検査できない`);
-        }
-      } else {
+      if (shell.unknown && (gitContext || inputGit)) {
+        res.problems.push(`${name} の option や source の位置を読みきれず、git の実行を検査できない`);
+        return;
+      }
+      if ((shell.commandMode && inputGit) || shell.scripts.some((script) => wordHasGit(script) || (script.dynamic && gitContext))) {
+        res.problems.push(`${name} に渡す source 文字列の git は、中身を検査できない`);
+      }
+      if (!shell.commandMode) {
         // 標準入力（ヒアドキュメント・here-string・パイプ）から読むシェル。
-        const reads = shellReadsStdin(info.args);
+        const reads = shell.readsStdin;
         if (reads) {
           for (const h of c.heredocBodies) {
             const inner = parseShell(h.body);
@@ -1237,7 +1295,7 @@ function inspect(cmd) {
             for (const ic of inner.cmds) visit(ic, resolveCommand(ic.words), depth + 1);
           }
           for (const r of c.redirs) {
-            if (r.op === '<<<' && wordHasGit(r.word)) {
+            if (r.op === '<<<' && (wordHasGit(r.word) || (r.word.dynamic && gitContext))) {
               if (r.word.dynamic) res.problems.push(`${name} に流す文字列の git は、中身を検査できない`);
               else {
                 const inner = parseShell(r.word.text);

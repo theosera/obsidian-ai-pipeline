@@ -195,7 +195,8 @@ for (const g of gits) {
 }
 
 // 対象のリポ・index・設定を変える変数だけを、その変数が作用する git に対して拒む。
-// GIT_EDITOR / GIT_AUTHOR_DATE / GIT_PAGER などでは staged 検査の対象は変わらない。
+// GIT_EDITOR / GIT_AUTHOR_DATE などでは staged 検査の対象は変わらない。
+// helper を選ぶ変数は、commit 前にその helper を呼べる読取コマンドも後段で調べる。
 /** Return whether a Git environment variable redirects inspection state or changes pathspec matching. */
 const changesGitTarget = (n) => /^(?:GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|EXEC_PATH|(?:LITERAL|GLOB|NOGLOB|ICASE)_PATHSPECS)|GIT_CONFIG(?:_.*)?)$/.test(n);
 const envWriter = gits.find((g) => writesRepo(g) && g.gitEnvNames.some(changesGitTarget));
@@ -206,12 +207,109 @@ if (envWriter) {
   );
 }
 
+/** Resolve unique prefixes of the file-sourced pathspec options without inspecting their file data. */
+function usesFilePathspec(args) {
+  const options = ['--pathspec-from-file', '--pathspec-file-nul'];
+  for (const word of args) {
+    if (word.text === '--') break;
+    const option = word.text.split('=')[0];
+    if (option.startsWith('--') && options.filter((name) => name.startsWith(option)).length === 1) return true;
+  }
+  return false;
+}
+
+/** Detect whether an external-diff command may execute, honoring explicit disable flags. */
+function externalDiffCanRun(g) {
+  if (!['diff', 'diff-index', 'diff-files', 'diff-tree', 'log', 'show', 'whatchanged', 'rev-list'].includes(g.sub)) return false;
+  let enabled = g.sub === 'diff';
+  let unknown = false;
+  // Required diff values may themselves look like flags. Optional values are attached only.
+  const diffValues = [
+    '--stat-width', '--stat-name-width', '--stat-graph-width', '--stat-count', '--ws-error-highlight',
+    '--src-prefix', '--dst-prefix', '--line-prefix', '--inter-hunk-context', '--output-indicator-new',
+    '--output-indicator-old', '--output-indicator-context', '--ignore-matching-lines', '--diff-algorithm',
+    '--anchored', '--word-diff-regex', '--color-moved-ws', '--rotate-to', '--skip-to', '--find-object',
+    '--diff-filter', '--max-depth', '--output',
+  ];
+  const optionalDiffValues = [
+    '--unified', '--dirstat', '--dirstat-by-file', '--stat', '--abbrev', '--color', '--break-rewrites',
+    '--find-renames', '--find-copies', '--word-diff', '--color-words', '--color-moved', '--relative',
+    '--ignore-submodules', '--submodule',
+  ];
+  const revisionValues = new Set([
+    '--grep', '--grep-reflog', '--author', '--committer', '--encoding', '--date', '--max-count', '--skip',
+    '--max-age', '--min-age', '--since', '--since-as-filter', '--after', '--before', '--until', '--default',
+  ]);
+  const revision = ['log', 'show', 'whatchanged', 'rev-list'].includes(g.sub);
+  for (let k = 0; k < g.args.length; k++) {
+    const word = g.args[k];
+    const text = word.text;
+    if (text === '--') break;
+    const eq = text.indexOf('=');
+    const option = eq < 0 ? text : text.slice(0, eq);
+    const diffMatches = option.startsWith('--') ? [...diffValues, ...optionalDiffValues].filter((name) => name.startsWith(option)) : [];
+    const requiredLong = diffValues.includes(option) || (diffMatches.length === 1 && diffValues.includes(diffMatches[0])) ||
+      (revision && revisionValues.has(option));
+    // Short diff bundles stop at their first value; B/M/C/U/X take only an attached optional value.
+    let requiredShort = false;
+    let attachedShortValue = false;
+    if (/^-[^-]/.test(text)) {
+      for (let j = 1; j < text.length; j++) {
+        if ('GSIOl'.includes(text[j]) || (revision && 'nL'.includes(text[j]))) {
+          requiredShort = j === text.length - 1;
+          attachedShortValue = !requiredShort;
+          break;
+        }
+        if ('BMCUX'.includes(text[j])) { attachedShortValue = j < text.length - 1; break; }
+      }
+    }
+    if ((requiredLong && eq < 0) || requiredShort) {
+      const value = g.args[++k];
+      if (!value || (value.dynamic && value.dynamicMaySplit !== false) || (word.dynamic && word.dynamicMaySplit !== false)) unknown = true;
+      continue;
+    }
+    // An attached scalar value cannot introduce another argument, including format/pattern text.
+    if (word.dynamic) {
+      if (word.dynamicMaySplit !== false || (!attachedShortValue &&
+          (eq < 0 || !(requiredLong || optionalDiffValues.includes(option) ||
+          (revision && ['--format', '--pretty'].includes(option)))))) unknown = true;
+      continue;
+    }
+    if (option.startsWith('--ext') && '--ext-diff'.startsWith(option)) enabled = true;
+    if (option.startsWith('--no-ext') && '--no-ext-diff'.startsWith(option)) enabled = false;
+  }
+  return unknown || enabled;
+}
+
+/** Determine pager use from the invocation's global flags and known paginated commands. */
+function pagerCanRun(g, invocation) {
+  let enabled = ['diff', 'log', 'show', 'blame', 'shortlog', 'grep', 'whatchanged', 'reflog'].includes(g.sub);
+  if (g.sub === 'branch' && readOnlyMode(g) && !g.args.some((w) => w.text === '--show-current')) enabled = true;
+  const globals = invocation.args.slice(0, invocation.args.length - g.args.length - 1);
+  const values = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--attr-source']);
+  for (let k = 0; k < globals.length; k++) {
+    const word = globals[k];
+    if (values.has(word.text)) { k++; continue; }
+    if (word.text === '-p' || word.text === '--paginate') enabled = true;
+    if (word.text === '-P' || word.text === '--no-pager') enabled = false;
+  }
+  return enabled;
+}
+
+/** Identify command-selecting environment variables on calls that may launch those helpers. */
+function helperVariable(g, invocation) {
+  if (g.terminal) return null;
+  if (g.gitEnvNames.includes('GIT_EXTERNAL_DIFF') && externalDiffCanRun(g)) return 'GIT_EXTERNAL_DIFF';
+  if (g.gitEnvNames.includes('GIT_PAGER') && pagerCanRun(g, invocation)) return 'GIT_PAGER';
+  return null;
+}
+
 // ① `git add <paths>` / `git stage <paths>` — 明示パス引数を検査（同じコマンドの add はすべて）。
 const addGits = gits.filter((g) => g.sub === 'add' || g.sub === 'stage');
 for (const g of addGits) {
   const words = g.args.map((w) => w.text);
   // 追加パスが stdin 側にある形は本フックから検査できない → 検査不能として拒否する。
-  if (words.some((a) => /^--pathspec-(from-file|file-nul)\b/.test(a))) {
+  if (usesFilePathspec(g.args)) {
     deny(
       '`git add --pathspec-from-file` / `--pathspec-file-nul` は追加パスが stdin 側にあり、\n' +
       'secret ガードから検査できません（検査不能なのでブロック）。追加するファイルをコマンドラインに列挙してください。',
@@ -260,6 +358,16 @@ if (commits.length) {
     deny('commit より前のコマンドの実行順を検査できないためブロックしました (fail-closed)。');
   }
   const beforeCommit = insp.invocations.filter((invocation) => invocation.order <= commit.invocationOrder);
+  for (const g of gits.filter((git) => git.invocationOrder <= commit.invocationOrder)) {
+    const invocation = insp.invocations.find((entry) => entry.order === g.invocationOrder);
+    const variable = invocation && helperVariable(g, invocation);
+    if (variable) {
+      deny(
+        `commit 前の git に環境変数 ${variable} を設定しています。外部 helper が検査後の index を書き換えうるためブロックしました (fail-closed)。\n` +
+        'helper を無効にするか、読取コマンドと commit を別々のコマンドとして実行してください。',
+      );
+    }
+  }
   const redirect = beforeCommit.find((invocation) => invocation.redirs.some(writesViaRedirection));
   if (redirect) {
     deny('commit の実行前に出力リダイレクトがあります。検査後に index などを書き換えうるためブロックしました。リダイレクトと commit は別々のコマンドとして実行してください。');

@@ -220,9 +220,11 @@ function pushRepository(words) {
 function writesDestinationConfig(words) {
   const valueOpts = ['file', 'blob', 'type', 'default', 'value', 'url', 'comment'];
   const operands = [];
+  const operandWords = [];
   let read = false;
   let afterDD = false;
   let actionSeen = false;
+  let rename = false;
   for (let k = 0; k < words.length; k++) {
     const t = words[k].text;
     if (!afterDD && t === '--') { afterDD = true; continue; }
@@ -233,6 +235,7 @@ function writesDestinationConfig(words) {
         if (eq < 0) k++;
         continue;
       }
+      if (name.startsWith('ren') && 'rename-section'.startsWith(name)) rename = true;
       if (/^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|--list|--unset(?:-all)?|--remove-section)$/.test(t)) read = true;
       continue;
     }
@@ -243,19 +246,32 @@ function writesDestinationConfig(words) {
     }
     if (!afterDD && !actionSeen && ['get', 'list', 'unset', 'remove-section', 'set', 'rename-section', 'edit'].includes(t)) {
       actionSeen = true;
+      rename = t === 'rename-section';
       read = ['get', 'list', 'unset', 'remove-section'].includes(t);
       continue;
     }
     operands.push(t);
+    operandWords.push(words[k]);
     // config は key 以降を value / value-pattern として扱う（--get という値もある）。
     afterDD = true;
   }
-  return !read && operands.length > 1 && destinationConfig(operands[0]);
+  return !read && operands.length > 1 && (rename ?
+    operandWords[1].dynamic || destinationSection(operands[1]) : destinationConfig(operands[0]));
+}
+
+/** Identify section names whose renamed contents can activate a destination or transport override. */
+function destinationSection(section) {
+  return /^(?:remote(?:\..+)?|branch\..+|url\..+|include|includeif\..+|core)$/i.test(section);
+}
+
+/** Identify Git transport commands that can replace the executable used for a push. */
+function transportConfig(key) {
+  return /^(?:core\.sshcommand|core\.gitproxy)$/i.test(key);
 }
 
 /** Identify configuration keys that can change a push's repository or URL rewrite. */
 function destinationConfig(key) {
-  return REMOTE_URL_KEY_RE.test(key) ||
+  return REMOTE_URL_KEY_RE.test(key) || transportConfig(key) ||
     /^include\.path$/i.test(key) || /^includeif\..+\.path$/i.test(key) ||
     /^url\..+\.(?:insteadof|pushinsteadof)$/i.test(key) ||
     /^(?:remote\.pushdefault|branch\..+\.(?:remote|pushremote))$/i.test(key);
@@ -432,6 +448,21 @@ function networkInvocation(invocation) {
     (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
 }
 
+/** Detect SSH sessions that can consume stdin, skipping option values and excluding explicit -n/-f. */
+function sshReadsInput(invocation) {
+  const valueOptions = 'bcDEeFIiJLlmOopQRSWw';
+  for (let k = 0; k < invocation.args.length; k++) {
+    const t = invocation.args[k].text;
+    if (t === '--') return Boolean(invocation.args[k + 1]);
+    if (!t.startsWith('-')) return true; // first positional argument is the remote destination
+    for (let p = 1; p < t.length; p++) {
+      if (t[p] === 'n' || t[p] === 'f' || t[p] === 'G') return false;
+      if (valueOptions.includes(t[p])) { if (p === t.length - 1) k++; break; }
+    }
+  }
+  return false;
+}
+
 /** Fail closed for an unresolved executable when its arguments identify a possible upload. */
 function dynamicNetworkShape(invocation) {
   return invocation.dynamicName && (curlReadsUpload(invocation.args, invocation.incomplete) || wgetReadsUpload(invocation.args) ||
@@ -491,27 +522,6 @@ function reverseShell(invocation) {
   return false;
 }
 
-/** Locate shell -c source before a script-file operand, including an attached source value. */
-function shellCommandSource(args) {
-  for (let k = 0; k < args.length; k++) {
-    const t = args[k].text;
-    if (t === '--' || !/^[+-]/.test(t)) return null;
-    if (t === '--command') return args[k + 1] || null;
-    if (t.startsWith('--')) {
-      if (['--rcfile', '--init-file', '--emulate'].includes(t)) k++;
-      continue;
-    }
-    if (/^-[oO]$/.test(t)) { if (args[k + 1] && !args[k + 1].text.startsWith('-')) k++; continue; }
-    if (!t.startsWith('-')) continue;
-    const ci = t.indexOf('c', 1);
-    if (ci >= 0) {
-      const attached = t.slice(ci + 1);
-      return attached && /[^A-Za-z]/.test(attached) ? { text: attached } : args[k + 1] || null;
-    }
-  }
-  return null;
-}
-
 /** Quote a known argument solely for the parser; the resulting source is never executed. */
 function parserLiteral(text) {
   return "'" + text.replace(/'/g, "'\\''") + "'";
@@ -551,9 +561,11 @@ function collectNetworkInvocations(inspection, depth = 0) {
       for (const script of invocation.splitWords) result.push(...collectNetworkInvocations(envSplitInspection(invocation, script), depth + 1));
     }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
-      const script = shellCommandSource(invocation.args);
-      if (script) scripts.push(script);
-      else if (invocation.shellReadsStdin) {
+      if (invocation.shellCommandMode && invocation.shellSourceUnknown) {
+        deny('シェルの command mode の source が option の境界から確定できず、egress ガードで検査できません (fail-closed)。');
+      }
+      scripts.push(...invocation.shellScripts);
+      if (!invocation.shellCommandMode && invocation.shellReadsStdin) {
         scripts.push(...invocation.redirs.filter((redir) => redir.op === '<<<').map((redir) => redir.word));
       }
     } else if (invocation.name === 'eval') {
@@ -573,11 +585,17 @@ function parsedExfil(invocation) {
   if (['nc', 'ncat'].includes(invocation.name)) return reverseShell(invocation);
   // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.
   if (invocation.name === 'sftp') return sftpSession(invocation.args);
-  if (['scp', 'rsync'].includes(invocation.name)) return remoteCopyDestination(invocation);
+  if (['scp', 'rsync'].includes(invocation.name)) return invocation.incomplete || remoteCopyDestination(invocation);
   return false;
 }
 
 const invocations = collectNetworkInvocations(insp);
+// Reapply the same literal inventory after shell quote/escape concatenation; never expand variables.
+const parsedWords = insp.invocations.concat(invocations).flatMap((invocation) =>
+  invocation.words.concat(invocation.redirs.map((redir) => redir.word)));
+if (parsedWords.some((word) => SECRET_LITERALS.some((pattern) => pattern.test(word.text)))) {
+  deny('シェルの引用符・escape を戻した引数にリテラルの秘密 (token / key / client secret 等) が含まれています (egress guard)。');
+}
 if (invocations.some(parsedExfil) || invocations.some(dynamicNetworkShape) || invocations.some(opaqueLauncherNetwork)) {
   deny('シェルの引用符・escape を戻した実行コマンドに、外向き送信 (gist / reverse shell / ローカルファイル upload 等) を検出しました (egress guard)。');
 }
@@ -590,14 +608,25 @@ if (SECRET_FILE_RE.test(withoutTemplateTokens(secretEvidence)) &&
     invocations.some((invocation) => networkInvocation(invocation) || invocation.dynamicName || invocation.launcherUnknown)) {
   deny('秘密ファイルの読取と、シェルの引用符・escape を戻したネットワーク送信コマンドが同一コマンドに含まれています (egress guard)。');
 }
+// SSH identity/config options are authentication input; only local file readers/input redirects identify upload.
+const sshReadEvidence = invocations.flatMap((invocation) => {
+  const readsFiles = ['cat', 'head', 'tail', 'base64', 'xxd'].includes(invocation.name);
+  return (readsFiles ? invocation.args : []).concat(invocation.redirs
+    .filter((redir) => ['<', '<>'].includes(redir.op)).map((redir) => redir.word))
+    .map((word) => word.text.replace(/(^|\/)\.env\.example$/i, '$1'));
+}).join('\n');
+if (SECRET_FILE_RE.test(sshReadEvidence) &&
+    invocations.some((invocation) => invocation.name === 'ssh' && sshReadsInput(invocation))) {
+  deny('秘密ファイルの読取と SSH セッションが同一コマンドに含まれ、SSH の stdin に秘密を送る可能性があります (egress guard)。');
+}
 
 for (const g of insp.gits) {
   const a = g.args.map((w) => w.text);
   const firstWord = a.find((x) => !x.startsWith('-'));
   const remoteWrite = g.sub === 'remote' && (firstWord === 'add' || firstWord === 'set-url');
   const configWrite = g.sub === 'config' && writesDestinationConfig(g.args);
-  if (g.sub === 'send-pack') {
-    deny('git send-pack は履歴を直接送る plumbing command で、egress ガードの検査対象外です。送信をブロックします (fail-closed)。');
+  if (['send-pack', 'http-push'].includes(g.sub)) {
+    deny(`git ${g.sub} は履歴を直接送る plumbing command で、egress ガードの検査対象外です。送信をブロックします (fail-closed)。`);
   }
   if (g.sub === 'push' && g.incomplete) {
     deny('xargs / find などの入力から git push に追加される引数は、egress ガードで宛先を確かめられません (fail-closed)。');
@@ -606,9 +635,10 @@ for (const g of insp.gits) {
   const repo = push && push.repository;
   const unknownPushDestination = g.sub === 'push' && (push.indeterminate || (repo && repo.dynamic) ||
     g.configEnvs.some((config) => destinationConfig(config.split('=')[0])) ||
-    g.gitEnvNames.some((name) => /^GIT_CONFIG(?:_|$)/.test(name)));
+    g.configs.some((config) => transportConfig(config.split('=')[0])) ||
+    g.gitEnvNames.some((name) => /^GIT_CONFIG(?:_|$)/.test(name) || /^GIT_(?:SSH(?:_COMMAND)?|PROXY_COMMAND)$/.test(name)));
   if (unknownPushDestination) {
-    deny('git push の宛先が変数・置換や --config-env / GIT_CONFIG 環境変数で作られていて、egress ガードで確かめられません (fail-closed)。');
+    deny('git push の宛先や transport command が変数・置換や config / GIT_CONFIG / GIT_SSH / GIT_PROXY_COMMAND の override で作られていて、egress ガードで確かめられません (fail-closed)。');
   }
   const pushUrl = g.sub === 'push' && (a.some((x) => URL_ARG_RE.test(x)) ||
     (repo && destinationArg(repo.text)) || g.configs.some(externalConfig));

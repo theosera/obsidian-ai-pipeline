@@ -106,6 +106,57 @@ if (/core\.hooksPath\s*=/i.test(cmd) || /git\s+config\b[^;&|]*\bcore\.hooksPath\
   deny('`core.hooksPath` の変更は禁止です（リポジトリの committed hook を丸ごと無効化するため / CLAUDE.md）。');
 }
 
+/** Read reconstructed config operands while preserving getters and consumed option values. */
+function changesHooksPath(g) {
+  if (g.configs.concat(g.configEnvs).some((value) => value.split('=')[0].toLowerCase() === 'core.hookspath')) return true;
+  if (g.sub !== 'config' || g.terminal) return false;
+  const valueOptions = ['file', 'blob', 'type', 'default', 'value', 'url', 'comment'];
+  const readOptions = ['get', 'get-all', 'get-regexp', 'get-urlmatch', 'get-color', 'get-colorbool', 'list'];
+  const writeOptions = ['add', 'replace-all', 'unset', 'unset-all', 'rename-section', 'remove-section', 'edit'];
+  const actions = new Set(['get', 'list', 'set', 'unset', 'rename-section', 'remove-section', 'edit']);
+  const operands = [];
+  let action = null;
+  let read = false;
+  let afterDD = false;
+  for (let k = 0; k < g.args.length; k++) {
+    const word = g.args[k];
+    const t = word.text;
+    if (!afterDD && t === '--') { afterDD = true; continue; }
+    if (!afterDD && (t === '--help' || t === '-h')) return false;
+    if (!afterDD && t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = t.slice(2, eq < 0 ? undefined : eq);
+      const known = valueOptions.concat(readOptions, writeOptions);
+      const matches = known.includes(name) ? [name] : known.filter((option) => option.startsWith(name));
+      if (matches.length === 1) {
+        if (valueOptions.includes(matches[0])) { if (eq < 0) k++; }
+        else { action = matches[0]; read = readOptions.includes(action); }
+      }
+      continue;
+    }
+    if (!afterDD && t.startsWith('-')) {
+      if (t === '-l') { action = 'list'; read = true; }
+      else if (t === '-e') action = 'edit';
+      else if (/^-[z]*[fbt]$/.test(t)) k++;
+      continue;
+    }
+    if (!afterDD && !action && actions.has(t)) { action = t; read = t === 'get' || t === 'list'; continue; }
+    operands.push(word);
+    afterDD = true; // A value such as "--get" after the key remains data.
+  }
+  if (read) return false;
+  if (action === 'edit') return true; // An editor can change the hook path without inspectable operands.
+  if (action === 'rename-section' || action === 'remove-section') {
+    return operands.some((word) => word.dynamic || /^core$/i.test(word.text));
+  }
+  const key = operands[0];
+  const writes = operands.length > 1 || ['set', 'add', 'replace-all', 'unset', 'unset-all'].includes(action);
+  return writes && key && (key.dynamic || /^core\.hookspath$/i.test(key.text));
+}
+for (const g of insp.gits) {
+  if (changesHooksPath(g)) deny('`core.hooksPath` を変更・削除しうる git config は禁止です（committed hook の無効化を防止 / CLAUDE.md）。読取の getter を使ってください。');
+}
+
 // `git add` / `git stage` の blanket 形を禁止: -A / --all（`--al` 等の省略形含む）/ 単独の "." "./"
 // ".." "*" ":/" ":(top)" "$PWD" / リポジトリ root の絶対パス（複合短縮フラグ -Av 等も A を含めば対象）。
 // root は CLAUDE_PROJECT_DIR に加えて、コマンドが走る場所（入力の cwd と `-C`）も見る。
