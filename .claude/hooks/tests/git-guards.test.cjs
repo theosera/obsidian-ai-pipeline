@@ -35,7 +35,8 @@ const CASES = [
   { id: 'N07', expect: 'allow', cmd: 'H=$(git rev-parse HEAD); echo "$H"' },
   { id: 'N08', expect: 'allow', cmd: 'git commit -m x && git show --stat HEAD | head -5' },
   { id: 'N09', expect: 'allow', cmd: 'echo "git commit -a"' },
-  { id: 'N10', expect: 'allow', cmd: "cat > notes.txt <<'EOF'\ngit add .env && git commit -a -m x\nEOF" },
+  // v3.5.3: 今の main の検査と和をとったので、main と同じく本文の文字にも当たって拒む（N45 も同じ）
+  { id: 'N10', expect: 'deny', cmd: "cat > notes.txt <<'EOF'\ngit add .env && git commit -a -m x\nEOF" },
   { id: 'N11', expect: 'allow', cmd: 'grep -rn "git commit -a" docs/ | head' },
   { id: 'N12', expect: 'allow', cmd: 'git -c core.quotepath=false status' },
   { id: 'N13', expect: 'allow', cmd: 'GIT_PAGER=cat git log -1' },
@@ -74,7 +75,8 @@ const CASES = [
   // v3.2 の陰性対照（包んだ git の後が名前の形の語で、alias でない）
   { id: 'N44', expect: 'allow', cmd: 'grep -rn git src' },
   // v3.3 の陰性対照（空白の後の `#` は今までどおりコメント・中の `;` の後の git は読まない）
-  { id: 'N45', expect: 'allow', cmd: 'git status # ; git commit -a -m x' },
+  // v3.5.3: 今の main の検査と和をとったので、main と同じくコメントの中の commit -a にも当たって拒む
+  { id: 'N45', expect: 'deny', cmd: 'git status # ; git commit -a -m x' },
   // v3.4 の陰性対照（算術の `((…<<…))` の後の行の読むだけの git は通す）
   { id: 'N46', expect: 'allow', cmd: '((x = 1 << 2))\ngit status' },
   // v3.5 の陰性対照（括弧の中のヒアドキュメント ／ 古い書き方の算術 ／ git の無い閉じないヒアドキュメント）
@@ -219,6 +221,8 @@ const CASES = [
   { id: 'Q27', expect: 'deny', cmd: 'if ((x = 1 << 2)); then :; fi\ngit commit -a -m x\n2' },
   // v3.5.2: `$(…)` の中で開き、本文より前に閉じたヒアドキュメント（読めない形として拒む）
   { id: 'Q28', expect: 'deny', cmd: "echo $(cat <<'EOF')\nit's\nEOF\ngit commit -a -m x\necho '" },
+  // v3.5.3: 今の main の add-all の検査だけが拒む形（文字列の中の add -A・main と同じ拒み）
+  { id: 'Q29', expect: 'deny', cmd: "echo 'git add -A'" },
 
   // --- 読みきれない形 ----------------------------------------------------------------
   { id: 'P01', expect: 'deny', cmd: 'git commit -m "unterminated' },
