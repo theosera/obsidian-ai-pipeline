@@ -114,13 +114,124 @@ if (!isExampleOnly(cmd) && SECRET_FILE_RE.test(cmd) && NET_VERB_RE.test(cmd)) {
 const insp = guard.inspect(cmd);
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'egress ガード'));
 const URL_ARG_RE = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)/;
+// Git は最初の `:` より前に `/` が無い宛先を scp 形と読む。`./a:b` はローカル。
+const SCP_ARG_RE = /^[^/:]+:/;
+const REMOTE_URL_KEY_RE = /^remote\..+\.(?:url|pushurl)$/i;
+/** Return whether a repository argument uses a network URL or Git's scp syntax. */
+function destinationArg(value) {
+  return URL_ARG_RE.test(value) || (!/^file:\/\//i.test(value) && SCP_ARG_RE.test(value));
+}
+
+/**
+ * Locate the push repository without mistaking a refspec (`HEAD:main`) for scp.
+ * Skip option values and honor --repo, including attached values and abbreviations.
+ */
+function pushRepository(words) {
+  let positional;
+  let explicit;
+  let afterDD = false;
+  let indeterminate = false;
+  const valueOpts = ['repo', 'receive-pack', 'exec', 'recurse-submodules', 'push-option'];
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    const t = w.text;
+    if (!positional && w.dynamic && w.dynamicMaySplit !== false) indeterminate = true;
+    if (!afterDD && t === '--') { afterDD = true; continue; }
+    if (!afterDD && t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = t.slice(2, eq < 0 ? undefined : eq);
+      const matches = valueOpts.filter((option) => option.startsWith(name));
+      if (matches.length === 1) {
+        const value = eq < 0 ? words[++k] : { text: t.slice(eq + 1), dynamic: w.dynamic };
+        if (!positional && eq < 0 && value && value.dynamic && value.dynamicMaySplit !== false) indeterminate = true;
+        if (matches[0] === 'repo') explicit = value;
+      } else if (!positional && w.dynamic) indeterminate = true;
+      continue;
+    }
+    if (!afterDD && t.startsWith('-')) {
+      // -o と、前に値を取らない short option を束ねた形 (`-vo value`)。
+      if (/^-[vqdnfu46]*o/.test(t)) {
+        if (/^-[vqdnfu46]*o$/.test(t)) {
+          const value = words[++k];
+          if (!positional && value && value.dynamic && value.dynamicMaySplit !== false) indeterminate = true;
+        }
+      } else if (!positional && w.dynamic) indeterminate = true;
+      continue;
+    }
+    if (!afterDD && !positional && w.dynamic) indeterminate = true;
+    if (!positional) positional = w;
+  }
+  // --repo は位置引数の repository が無い時だけ使われる。
+  return { repository: positional || explicit, indeterminate };
+}
+
+/** Distinguish config writes from getters without treating an option value as an action. */
+function writesRemoteUrl(words) {
+  const valueOpts = ['file', 'blob', 'type', 'default', 'value', 'url', 'comment'];
+  const operands = [];
+  let read = false;
+  let afterDD = false;
+  let actionSeen = false;
+  for (let k = 0; k < words.length; k++) {
+    const t = words[k].text;
+    if (!afterDD && t === '--') { afterDD = true; continue; }
+    if (!afterDD && t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = t.slice(2, eq < 0 ? undefined : eq);
+      if (valueOpts.some((option) => option.startsWith(name))) {
+        if (eq < 0) k++;
+        continue;
+      }
+      if (/^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|--list|--unset(?:-all)?|--remove-section)$/.test(t)) read = true;
+      continue;
+    }
+    if (!afterDD && t.startsWith('-')) {
+      if (/^-[z]*[fbt]$/.test(t)) k++;
+      if (t === '-l') read = true;
+      continue;
+    }
+    if (!afterDD && !actionSeen && ['get', 'list', 'unset', 'remove-section', 'set', 'rename-section', 'edit'].includes(t)) {
+      actionSeen = true;
+      read = ['get', 'list', 'unset', 'remove-section'].includes(t);
+      continue;
+    }
+    operands.push(t);
+    // config は key 以降を value / value-pattern として扱う（--get という値もある）。
+    afterDD = true;
+  }
+  return !read && operands.length > 1 && REMOTE_URL_KEY_RE.test(operands[0]);
+}
+
+/** Identify configuration keys that can change a push's repository or URL rewrite. */
+function destinationConfig(key) {
+  return REMOTE_URL_KEY_RE.test(key) ||
+    /^url\..+\.(?:insteadof|pushinsteadof)$/i.test(key) ||
+    /^(?:remote\.pushdefault|branch\..+\.(?:remote|pushremote))$/i.test(key);
+}
+/** Check a literal -c override, including the URL base stored in rewrite keys. */
+function externalConfig(config) {
+  const eq = config.indexOf('=');
+  const key = eq < 0 ? config : config.slice(0, eq);
+  if (!destinationConfig(key)) return false;
+  const rewrite = /^url\.(.+)\.(?:insteadof|pushinsteadof)$/i.exec(key);
+  return destinationArg(rewrite ? rewrite[1] : eq < 0 ? '' : config.slice(eq + 1));
+}
+
 for (const g of insp.gits) {
   const a = g.args.map((w) => w.text);
   const firstWord = a.find((x) => !x.startsWith('-'));
   const remoteWrite = g.sub === 'remote' && (firstWord === 'add' || firstWord === 'set-url');
-  const urlKey = g.sub === 'config' ? a.findIndex((x) => /^remote\..+\.url$/i.test(x)) : -1;
-  const configWrite = urlKey >= 0 && a.slice(urlKey + 1).some((x) => !x.startsWith('-'));
-  const pushUrl = g.sub === 'push' && a.some((x) => URL_ARG_RE.test(x));
+  const configWrite = g.sub === 'config' && writesRemoteUrl(g.args);
+  const push = g.sub === 'push' ? pushRepository(g.args) : null;
+  const repo = push && push.repository;
+  const unknownPushDestination = g.sub === 'push' && (push.indeterminate || (repo && repo.dynamic) ||
+    g.configEnvs.some((config) => destinationConfig(config.split('=')[0])) ||
+    g.gitEnvNames.some((name) => /^GIT_CONFIG(?:_|$)/.test(name)));
+  if (unknownPushDestination) {
+    deny('git push の宛先が変数・置換や --config-env / GIT_CONFIG 環境変数で作られていて、egress ガードで確かめられません (fail-closed)。');
+  }
+  const pushUrl = g.sub === 'push' && (a.some((x) => URL_ARG_RE.test(x)) ||
+    (repo && destinationArg(repo.text)) || g.configs.some(externalConfig));
   if (remoteWrite || configWrite || pushUrl) {
     deny(
       '外向き送信 (gist / 非 origin への push / reverse shell / ローカルファイル upload 等) を検出しました。\n' +

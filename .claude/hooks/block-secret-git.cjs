@@ -57,8 +57,87 @@ if (!cmd) process.exit(0);
 const insp = guard.inspect(cmd);
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'secret ガード'));
 const gits = insp.gits;
-// 読むだけでない git（index・ref・作業木を書きうるもの）。
-const writesRepo = (g) => g.sub && !g.terminal && !guard.READ_ONLY_SUBS.has(g.sub);
+/**
+ * config / branch / remote の、引数で決まる読取 action を判定する。
+ * 知っている読取 action / option の組合せだけ通し、書込 option や option にも
+ * 展開されうる動的な語が交じる場合は書込側に残す（commit 前の状態を保証するため）。
+ * @param {object} g inspect が返す git の呼び出し。
+ * @returns {boolean} index・ref・作業木・設定を書き換えないと判断できるか。
+ */
+function readOnlyMode(g) {
+  // unquoted expansion や "$@" は追加の action / option を作れる。古い metadata も安全と決めつけない。
+  if (g.incomplete || g.args.some((w) => w.dynamic && w.dynamicMaySplit !== false)) return false;
+  let args = g.args;
+  let reader = false;
+  const values = new Set();
+  let flags;
+  if (g.sub === 'config') {
+    flags = new Set([
+      '--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l',
+      '--get-color', '--get-colorbool', '--global', '--system', '--local', '--worktree',
+      '--includes', '--no-includes', '--show-origin', '--show-scope', '--name-only',
+      '--null', '-z', '--bool', '--int', '--bool-or-int', '--bool-or-str', '--path',
+      '--expiry-date', '--no-type', '--fixed-value', '--all', '--regexp',
+    ]);
+    for (const v of ['--file', '-f', '--blob', '-b', '--type', '-t', '--default', '--value']) values.add(v);
+  } else if (g.sub === 'branch') {
+    flags = new Set([
+      '--list', '-l', '--show-current', '--all', '-a', '--remotes', '-r',
+      '--verbose', '-v', '-vv', '--quiet', '-q', '--no-color', '--column', '--no-column',
+      '--color', '--abbrev', '--no-abbrev', '--ignore-case', '-i', '--omit-empty',
+    ]);
+    for (const v of ['--format', '--sort', '--contains', '--no-contains', '--merged', '--no-merged', '--points-at']) values.add(v);
+  } else if (g.sub === 'remote') {
+    // remote の action は option でなく最初の位置引数。get-url と show は設定を変えない。
+    const rest = args.slice();
+    while (rest.length && ['-v', '--verbose'].includes(rest[0].text) && !rest[0].dynamic) rest.shift();
+    if (!rest.length) return true;
+    if (rest[0].dynamic || !['get-url', 'show'].includes(rest[0].text)) return false;
+    const action = rest.shift().text;
+    args = rest;
+    flags = new Set(action === 'get-url' ? ['--push', '--all'] : ['-n']);
+    reader = true;
+  } else return false;
+
+  let positional = 0;
+  let endOptions = false;
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k];
+    const t = w.text;
+    if (endOptions) { positional++; continue; }
+    if (w.dynamic) return false;
+    if (t === '--') { endOptions = true; continue; }
+    if (!t.startsWith('-')) {
+      if (g.sub === 'config' && !reader && positional === 0 && ['get', 'list'].includes(t)) reader = true;
+      else positional++;
+      continue;
+    }
+    const eq = t.indexOf('=');
+    const option = eq < 0 ? t : t.slice(0, eq);
+    if (values.has(option)) {
+      if (eq < 0) {
+        const optional = g.sub === 'branch' && ['--contains', '--no-contains', '--merged', '--no-merged'].includes(option);
+        const value = args[k + 1];
+        // branch の filter は値なしなら HEAD。次の action option を値として飛ばさない。
+        if (!optional || (value && !value.text.startsWith('-'))) {
+          if (!value || (optional && value.dynamic) || (g.sub === 'branch' && value.text.startsWith('-'))) return false;
+          k++;
+        }
+      }
+      if (g.sub === 'branch' && ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at'].includes(option)) reader = true;
+      continue;
+    }
+    if (g.sub === 'branch' && eq >= 0 && ['--abbrev', '--color', '--column'].includes(option)) continue;
+    if (!flags.has(t)) return false;
+    if (g.sub === 'config' && /^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|--list|-l)$/.test(t)) reader = true;
+    if (g.sub === 'branch' && ['--list', '-l', '--show-current'].includes(t)) reader = true;
+  }
+  // branch の引数なし / 表示 option だけの形は一覧。裸の名前は branch 作成。
+  return reader || (g.sub === 'branch' && positional === 0);
+}
+// 読むだけでない git（index・ref・作業木・設定を書きうるもの）。
+/** Return whether this invocation may change state used by the pre-commit inspection. */
+const writesRepo = (g) => g.sub && !g.terminal && !guard.READ_ONLY_SUBS.has(g.sub) && !readOnlyMode(g);
 
 // builtin でない subcommand が alias なら拒む（alias の中身は検査できない）。
 for (const g of gits) {
@@ -76,10 +155,14 @@ for (const g of gits) {
   }
 }
 
-// GIT_DIR / GIT_INDEX_FILE / GIT_CONFIG_* などは、検査する対象のリポや index を変える。
-if (insp.gitEnvNames.length && gits.some(writesRepo)) {
+// 対象のリポ・index・設定を変える変数だけを、その変数が作用する git に対して拒む。
+// GIT_EDITOR / GIT_AUTHOR_DATE / GIT_PAGER などでは staged 検査の対象は変わらない。
+/** Return whether a Git environment variable redirects inspection state or changes pathspec matching. */
+const changesGitTarget = (n) => /^(?:GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|EXEC_PATH|(?:LITERAL|GLOB|NOGLOB|ICASE)_PATHSPECS)|GIT_CONFIG(?:_.*)?)$/.test(n);
+const envWriter = gits.find((g) => writesRepo(g) && g.gitEnvNames.some(changesGitTarget));
+if (envWriter) {
   deny(
-    `環境変数 ${insp.gitEnvNames[0]} を、読むだけでない git と同じコマンドで設定しています。\n` +
+    `環境変数 ${envWriter.gitEnvNames.find(changesGitTarget)} を、読むだけでない git に設定しています。\n` +
     'secret ガードが検査する対象のリポや index を決めきれないためブロックしました (fail-closed)。環境変数を付けずに実行してください。',
   );
 }
@@ -128,7 +211,7 @@ if (commits.length) {
     );
   }
   // 検査対象は **そのコマンドが commit するリポ**。場所を変えるコマンドの後ではそれを決めきれない。
-  if (insp.cdLike) {
+  if (commits.some((g) => g.cdLikeBefore)) {
     deny(
       '`cd` / `pushd` などで場所を変えてから `git commit` する形は、staged 検査の対象リポを決めきれないため\n' +
       'ブロックしました (fail-closed)。`git -C <dir> commit …` の形で対象リポを明示してください。',
