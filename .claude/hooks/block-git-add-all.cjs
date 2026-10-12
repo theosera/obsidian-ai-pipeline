@@ -37,6 +37,15 @@ if (/(^|\s)--no-verify(\s|=|$)/.test(cmd)) {
 const insp = guard.inspect(cmd);
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'git ガード'));
 
+// shell の引用・escape を戻した語でも見る（--no-'verify' なども同じ option）。
+for (const g of insp.gits) {
+  const noVerify = g.sub === 'commit' ? guard.parseCommitArgs(g.args).noVerify :
+    g.args.some((w) => /^--no-verify(?:=|$)/.test(w.text));
+  if (noVerify) {
+    deny('`--no-verify` は禁止です（commit / secret-scan hook をバイパスしない / CLAUDE.md）。フックを通して実行してください。');
+  }
+}
+
 // `-n` が `--no-verify` の短縮形になるのは **`git commit` だけ**。
 // `git push -n` は `--dry-run`、`git merge -n` は diffstat 抑制で、どちらも hook を
 // バイパスしない (git の help で確認)。`grep -n` / `tail -n` / `git add -n` も同様に無関係。

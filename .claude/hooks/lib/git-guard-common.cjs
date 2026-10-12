@@ -640,11 +640,27 @@ const WRAPPERS = {
   },
   xargs: (rest, info) => {
     info.incomplete = true; // 引数の一部が標準入力から来る
+    const required = ['arg-file', 'delimiter', 'max-args', 'max-chars', 'max-procs', 'process-slot-var'];
+    const optional = ['eof', 'replace', 'max-lines'];
+    const flags = ['null', 'open-tty', 'interactive', 'no-run-if-empty', 'show-limits', 'verbose', 'version', 'help', 'exit'];
+    const longNames = required.concat(optional, flags);
     let k = 0;
     while (k < rest.length && rest[k].text.startsWith('-')) {
       const t = rest[k].text;
       if (t === '--') { k++; break; }
-      if (/^-[adEILnPs]$/.test(t)) k++;
+      if (t.startsWith('--')) {
+        const eq = t.indexOf('=');
+        const name = t.slice(2, eq < 0 ? undefined : eq);
+        const matches = longNames.includes(name) ? [name] : longNames.filter((n) => n.startsWith(name));
+        // optional long values only attach with '='; a separate word is the command.
+        if (matches.length === 1 && required.includes(matches[0]) && eq < 0) k++;
+      } else {
+        // A required short value consumes the rest of its bundle, or the next word.
+        for (let p = 1; p < t.length; p++) {
+          if ('adEIJLnPRsS'.includes(t[p])) { if (p === t.length - 1) k++; break; }
+          if ('eil'.includes(t[p])) break; // optional short values attach only
+        }
+      }
       k++;
     }
     return k;
@@ -822,6 +838,32 @@ function parseGit(args) {
   return g;
 }
 
+/** Recognize shells reading stdin, including -s arguments and explicit stdin device paths. */
+function shellReadsStdin(args) {
+  let stdin = false;
+  let afterDD = false;
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k];
+    const t = w.text;
+    if (w.dynamic) return stdin;
+    if (!afterDD && t === '--') { afterDD = true; continue; }
+    if (!afterDD && t !== '-' && /^[+-]/.test(t)) {
+      if (/^-[A-Za-z]*s[A-Za-z]*$/.test(t)) stdin = true;
+      if (['-o', '+o', '-O', '+O', '--rcfile', '--init-file', '--emulate'].includes(t)) k++;
+      continue;
+    }
+    if (stdin) return true; // -s: positional words are script arguments
+    return t === '-' || ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '/proc/thread-self/fd/0'].includes(path.posix.normalize(t));
+  }
+  return true;
+}
+
+/** Detect Git text that a shell can expose after tokenization, without executing its input. */
+function shellInputHasGit(source) {
+  return hasGitText(source.replace(/['"\\]/g, '')) ||
+    parseShell(source).cmds.some((c) => c.words.some(wordHasGit));
+}
+
 /** Inspect executable Git invocations, associating preceding scope changes with each invocation. */
 function inspect(cmd) {
   const res = {
@@ -899,20 +941,22 @@ function inspect(cmd) {
     }
     // unset は && / || の分岐で実行されないことがあるので、永続状態からは消さない。
     if (SHELLS.has(name)) {
+      const inputGit = c.heredocBodies.some((h) => shellInputHasGit(h.body)) ||
+        c.redirs.some((r) => r.op === '<<<' && wordHasGit(r.word));
       const ci = info.args.findIndex((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w.text) || w.text === '--command');
       if (ci >= 0) {
         const script = info.args[ci + 1];
-        if (script && (wordHasGit(script) || (script.dynamic && gitContext))) {
+        if (inputGit || (script && (wordHasGit(script) || (script.dynamic && gitContext)))) {
           res.problems.push(`${name} -c の文字列に入れた git は、中身を検査できない`);
         }
       } else {
         // 標準入力（ヒアドキュメント・here-string・パイプ）から読むシェル。
-        const reads = info.args.every((w) => w.text.startsWith('-'));
+        const reads = shellReadsStdin(info.args);
         if (reads) {
           for (const h of c.heredocBodies) {
             const inner = parseShell(h.body);
             seedScope(inner.scope, env, cdBefore);
-            if (inner.errors.length && hasGitText(h.body)) {
+            if (inner.errors.length && shellInputHasGit(h.body)) {
               res.problems.push(`${name} に流すヒアドキュメントを読みきれない`);
             }
             for (const ic of inner.cmds) visit(ic, resolveCommand(ic.words), depth + 1);
@@ -931,6 +975,8 @@ function inspect(cmd) {
           if (c.piped && gitContext) {
             res.problems.push(`パイプで ${name} に流したコマンドは、中身を検査できない`);
           }
+        } else if (inputGit) {
+          res.problems.push(`${name} の script 引数が標準入力を読むか確かめられず、入力に git がある`);
         }
       }
       return;
@@ -970,10 +1016,12 @@ function inspect(cmd) {
           (BUILTIN_SUBS.has(tg.sub) || /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(tg.sub));
         const unclear = tg.problems.length && tail.some((w) => !w.dynamic && RISKY_SUBS.has(w.text));
         if (writes || unclear) {
-          // 引数はコマンドの文字に全部出ているので、xargs と違い incomplete にはしない。
+          // 外側が xargs / find なら、未知 wrapper を外しても追加引数の不確定性を保つ。
           const scope = { parent: null };
           seedScope(scope, env, cdBefore);
-          visit({ words: tail, redirs: [], piped: false, heredocBodies: [], scope }, resolveCommand(tail), depth + 1);
+          const sub = resolveCommand(tail);
+          sub.incomplete = info.incomplete || sub.incomplete;
+          visit({ words: tail, redirs: [], piped: false, heredocBodies: [], scope }, sub, depth + 1);
         }
       }
       return;
@@ -1082,7 +1130,7 @@ function resolveCommitLong(name) {
 
 /** Identify commit-time staging and pathspecs while accepting single-word dynamic option values. */
 function parseCommitArgs(words) {
-  const r = { all: false, patch: false, fromFile: false, dynamic: false, unknown: [], pathspecs: [] };
+  const r = { all: false, patch: false, fromFile: false, noVerify: false, dynamic: false, unknown: [], pathspecs: [] };
   let k = 0;
   let afterDD = false;
   while (k < words.length) {
@@ -1108,6 +1156,7 @@ function parseCommitArgs(words) {
       if (full === 'all') r.all = true;
       if (full === 'patch' || full === 'interactive') r.patch = true;
       if (full === 'pathspec-from-file') r.fromFile = true;
+      if (full === 'no-verify') r.noVerify = true;
       const takesValue = !full.startsWith('no-') && (kind.startsWith('v') || kind.startsWith('o'));
       if (w.dynamic && !takesValue) r.dynamic = true;
       if (kind.startsWith('v') && !full.startsWith('no-') && eq < 0) {
@@ -1131,6 +1180,7 @@ function parseCommitArgs(words) {
         if (COMMIT_SHORT_ATTACHED.has(ch)) break;
         if (ch === 'a') r.all = true;
         if (ch === 'p') r.patch = true;
+        if (ch === 'n') r.noVerify = true;
         if (!COMMIT_SHORT_FLAGS.has(ch)) { r.unknown.push(t); break; }
       }
       k++;

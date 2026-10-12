@@ -165,8 +165,8 @@ function pushRepository(words) {
   return { repository: positional || explicit, indeterminate };
 }
 
-/** Distinguish config writes from getters without treating an option value as an action. */
-function writesRemoteUrl(words) {
+/** Distinguish destination-config writes from getters without treating option values as actions. */
+function writesDestinationConfig(words) {
   const valueOpts = ['file', 'blob', 'type', 'default', 'value', 'url', 'comment'];
   const operands = [];
   let read = false;
@@ -199,7 +199,7 @@ function writesRemoteUrl(words) {
     // config は key 以降を value / value-pattern として扱う（--get という値もある）。
     afterDD = true;
   }
-  return !read && operands.length > 1 && REMOTE_URL_KEY_RE.test(operands[0]);
+  return !read && operands.length > 1 && destinationConfig(operands[0]);
 }
 
 /** Identify configuration keys that can change a push's repository or URL rewrite. */
@@ -221,7 +221,10 @@ for (const g of insp.gits) {
   const a = g.args.map((w) => w.text);
   const firstWord = a.find((x) => !x.startsWith('-'));
   const remoteWrite = g.sub === 'remote' && (firstWord === 'add' || firstWord === 'set-url');
-  const configWrite = g.sub === 'config' && writesRemoteUrl(g.args);
+  const configWrite = g.sub === 'config' && writesDestinationConfig(g.args);
+  if (g.sub === 'push' && g.incomplete) {
+    deny('xargs / find などの入力から git push に追加される引数は、egress ガードで宛先を確かめられません (fail-closed)。');
+  }
   const push = g.sub === 'push' ? pushRepository(g.args) : null;
   const repo = push && push.repository;
   const unknownPushDestination = g.sub === 'push' && (push.indeterminate || (repo && repo.dynamic) ||
