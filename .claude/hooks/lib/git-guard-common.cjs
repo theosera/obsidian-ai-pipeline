@@ -45,6 +45,11 @@ function readInput(guardLabel) {
   } catch {
     deny(`hook 入力を解釈できませんでした (fail-closed)。${guardLabel}を通せないため実行をブロックします。`);
   }
+  // JSON がオブジェクトでない入力（null・配列・数・文字列・真偽）は読めないので拒む（v3.5.4）。
+  // main は null を拒んでいた（j.tool_input の TypeError を catch して拒む）。
+  if (j === null || typeof j !== 'object' || Array.isArray(j)) {
+    deny(`hook 入力が JSON のオブジェクトではありません (fail-closed)。${guardLabel}を通せないため実行をブロックします。`);
+  }
   const cmd = (j && j.tool_input && typeof j.tool_input.command === 'string') ? j.tool_input.command : '';
   const inputCwd = (j && typeof j.cwd === 'string' && j.cwd !== '') ? j.cwd : null;
   const baseDir = inputCwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();

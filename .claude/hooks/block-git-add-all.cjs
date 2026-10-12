@@ -77,7 +77,7 @@ for (const g of insp.gits) {
 }
 
 // v3.5.3: 今の main（ae10261）の同じ検査を、コマンドの文字の全体にもう一度当てる（和をとる）。
-// 上の読み方が取りこぼしても、今の main より緩めないため。ブロックの中は main の文字のまま（行も同じ）。
+// 上の読み方が取りこぼしても、今の main より緩めないため。ブロックの中は main の文字のまま（空行のほかは main の行と同じ）。
 const RECHECK_AS_MAIN = true;
 if (RECHECK_AS_MAIN) {
 // `git` と subcommand の間には global option (`-c k=v` / `-C <dir>` / `--git-dir=…`) を

@@ -87,6 +87,8 @@ const CASES = [
   { id: 'N52', expect: 'allow', cmd: 'git status \\\n  --short' },
   { id: 'N53', expect: 'allow', cmd: 'if (( f & (1 << 2) )); then\n  git status\nfi' },
   { id: 'N54', expect: 'allow', cmd: "time ( cat <<'EOF'\nnotes\nEOF\n) && git status" },
+  // v3.5.4 の陰性対照（空のオブジェクトの hook 入力は、今までどおりコマンドが無いものとして通す・main と同じ）
+  { id: 'N55', expect: 'allow', stdin: '{}', cmd: '' },
 
   // --- commit と同じコマンドでは、読むだけの git 以外を拒む -------------------------
   { id: 'A01', expect: 'deny', cmd: 'git update-index --add --cacheinfo 100644,e69de29bb2d1d6434b8b29ae775ad8c2e48c5391,.env && git commit -m x' },
@@ -223,6 +225,9 @@ const CASES = [
   { id: 'Q28', expect: 'deny', cmd: "echo $(cat <<'EOF')\nit's\nEOF\ngit commit -a -m x\necho '" },
   // v3.5.3: 今の main の add-all の検査だけが拒む形（文字列の中の add -A・main と同じ拒み）
   { id: 'Q29', expect: 'deny', cmd: "echo 'git add -A'" },
+  // v3.5.4: JSON がオブジェクトでない hook 入力は拒む（null は main も拒む・配列は main が通す）
+  { id: 'Q30', expect: 'deny', stdin: 'null', cmd: '' },
+  { id: 'Q31', expect: 'deny', stdin: '[]', cmd: '' },
 
   // --- 読みきれない形 ----------------------------------------------------------------
   { id: 'P01', expect: 'deny', cmd: 'git commit -m "unterminated' },
@@ -301,7 +306,8 @@ function runCase(hooksDir, c, repos, stopAtFirstDeny = false) {
   const command = fill(c.cmd);
   const cwd = repos.dirs[c.cwd || 'clean'];
   const project = repos.dirs[c.project || 'clean'];
-  const input = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd });
+  // case に stdin があれば、hook 入力としてそのまま渡す（v3.5.4・JSON がオブジェクトでない入力の試験）。
+  const input = c.stdin !== undefined ? c.stdin : JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd });
   const denied = [];
   const broken = [];
   for (const h of HOOKS) {

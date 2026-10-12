@@ -223,7 +223,8 @@ for (const g of commits) {
 }
 
 // v3.5.3: 今の main（ae10261）の同じ検査を、コマンドの文字の全体にもう一度当てる（和をとる）。
-// 上の読み方が取りこぼしても、今の main より緩めないため。ブロックの中は main の文字のまま（行も同じ）。
+// 上の読み方が取りこぼしても、今の main より緩めないため。ブロックの中は main の文字のまま（空行と、頭の
+// `require('node:path')` の 1 行のほかは main の行と同じ）。
 // main の「git の文字が無ければ exit」はブロックの条件にした。SECRET_RE と isSecret は上の同じもの（main と同じ文字）。
 const RECHECK_AS_MAIN = true;
 if (RECHECK_AS_MAIN && /\bgit\b/.test(cmd)) {
