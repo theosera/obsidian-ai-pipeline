@@ -59,6 +59,19 @@ const MAX_DEPTH = 16;
 // 変数や置換の所に置く印（実行するまで中身が決まらない）。
 const DYN = '\u0000';
 
+// 行の継続（`\` と改行）を続けて飛ばした先の位置。シェルは字句に分ける前に継続を消すので、
+// `((`・`<<` の間に挟まっても 1 つの字句として読む（v3.5.2）。
+function skipLC(src, k) {
+  while (src[k] === '\\' && src[k + 1] === '\n') k += 2;
+  return k;
+}
+// src[k] から 1 つ以上の行の継続を挟んで ch が続くか（v3.5.2）。
+const joinedByLC = (src, k, ch) => src[k] === '\\' && src[k + 1] === '\n' && src[skipLC(src, k)] === ch;
+
+// コマンドの位置を変えない予約語。この後の `((` は算術、`(` はサブシェル（v3.5.2）。
+const CMD_LEAD = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'while', 'until', 'do', 'time']);
+const atCmdPos = (words) => words.every((w) => !w.quoted && !w.dynamic && CMD_LEAD.has(w.text));
+
 // `$…` / `` `…` `` を 1 つ読む。置換の中のコマンドは out.cmds に積む。
 function scanExpansion(src, i, out, depth) {
   const n = src.length;
@@ -80,6 +93,11 @@ function scanExpansion(src, i, out, depth) {
     if (j >= n) { out.errors.push('閉じていない `…`'); return { end: n, dynamic: true }; }
     parseSeq(inner, 0, out, depth + 1, false);
     return { end: j + 1, dynamic: true };
+  }
+  // `$` の直後の行の継続: シェルは継続を消してから `$(`・`${`・`$[`・`$'`・`$name` と読む（v3.5.2）。
+  if (src[i + 1] === '\\' && src[i + 2] === '\n') {
+    out.errors.push('$ の直後に行の継続がある');
+    return { end: i + 1, dynamic: true };
   }
   const c1 = src[i + 1];
   if (c1 === '(') {
@@ -207,6 +225,8 @@ function parseSeq(src, start, out, depth, stopAtParen) {
   let words = [];
   let cur = null;
   let parenDepth = 0;
+  // 開いている括弧の種類（'sub' = コマンドの位置のサブシェル・'other' = それ以外・v3.5.2）。
+  const parenKinds = [];
   let redirNext = null;
   let redirs = [];
   let piped = false;
@@ -307,6 +327,7 @@ function parseSeq(src, start, out, depth, stopAtParen) {
         const h = heredocs.shift();
         const bodyStart = i;
         let bodyEnd = n;
+        let lcLine = false;
         while (i < n) {
           const j = src.indexOf('\n', i);
           const lineEnd = j < 0 ? n : j;
@@ -317,10 +338,13 @@ function parseSeq(src, start, out, depth, stopAtParen) {
             i = j < 0 ? n : j + 1;
             break;
           }
+          // 引用符の無い本文の行末の `\`: シェルは次の行とつなぐので、終わりの語の行の見え方が変わる（v3.5.2）。
+          if (!h.quoted && line.endsWith('\\')) lcLine = true;
           i = j < 0 ? n : j + 1;
         }
         // 終わりの語が見つからない（v3.5）。読み違えた始まりなら、後ろの行を読み飛ばしている。
         if (bodyEnd === n) out.errors.push('ヒアドキュメントの終わりの語が無い');
+        if (lcLine) out.errors.push('引用符の無いヒアドキュメントの本文の行末に \\ がある');
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
         if (!h.quoted) scanSubsts(body, out, depth + 1);
         if (h.cmd) h.cmd.heredocBodies.push({ body, quoted: h.quoted });
@@ -343,9 +367,13 @@ function parseSeq(src, start, out, depth, stopAtParen) {
       continue;
     }
     if (c === '(') {
-      // コマンドの頭か `for` の後の `((…))` は算術（v3.5）。シェルと同じく対の `))` まで生の文字として読み、
-      // 中の置換だけを読む（`<<` はシフトでヒアドキュメントではない）。対にならなければサブシェルとして読む。
-      if (src[i + 1] === '(' && !cur && (words.length === 0 || (words.length === 1 && !words[0].quoted && words[0].text === 'for'))) {
+      // `(` と `(` の間の行の継続: シェルは `((` と読む（v3.5.2）。
+      if (joinedByLC(src, i + 1, '(')) out.errors.push('( と ( の間に行の継続がある');
+      // コマンドの頭（予約語の後を含む・v3.5.2）か `for` の後の `((…))` は算術（v3.5）。シェルと同じく対の `))` まで
+      // 生の文字として読み、中の置換だけを読む（`<<` はシフトでヒアドキュメントではない）。対にならなければ括弧として読む。
+      const atCmd = !cur && atCmdPos(words);
+      const arithAt = atCmd || (!cur && words.length === 1 && !words[0].quoted && words[0].text === 'for');
+      if (src[i + 1] === '(' && arithAt) {
         const end = arithEnd(src, i + 2);
         if (end >= 0) {
           scanSubsts(src.slice(i + 2, end), out, depth + 1);
@@ -353,6 +381,9 @@ function parseSeq(src, start, out, depth, stopAtParen) {
           continue;
         }
       }
+      // サブシェルとみるのは、コマンドの位置の `(`（`((` でない）だけ（v3.5.2）。語の後の `(`（zsh の glob など）や
+      // 算術にならなかった `((` の外側の中では、`<<` がヒアドキュメントかをシェルと同じに決められない。
+      parenKinds.push(atCmd && src[i + 1] !== '(' ? 'sub' : 'other');
       endCmd();
       parenDepth++;
       i++;
@@ -360,15 +391,19 @@ function parseSeq(src, start, out, depth, stopAtParen) {
     }
     if (c === ')') {
       if (parenDepth === 0 && stopAtParen) {
+        // 本文を読む前に `$(…)`・`<(…)` が閉じたヒアドキュメント（v3.5.2）。シェルによっては括弧の外の行を本文にする。
+        if (heredocs.length) out.errors.push('本文より前に括弧が閉じたヒアドキュメント');
         endCmd();
         return i;
       }
       endCmd();
-      if (parenDepth > 0) parenDepth--;
+      if (parenDepth > 0) { parenDepth--; parenKinds.pop(); }
       i++;
       continue;
     }
     if (c === '<' || c === '>' || c === '&') {
+      // `<` と `<` の間の行の継続: シェルは `<<` と読む（v3.5.2）。
+      if (c === '<' && joinedByLC(src, i + 1, '<')) out.errors.push('< と < の間に行の継続がある');
       if ((c === '<' || c === '>') && src[i + 1] === '(') {
         // プロセス置換 <( … ) / >( … )
         startWord();
@@ -408,6 +443,8 @@ function parseSeq(src, start, out, depth, stopAtParen) {
         }
         if (!delim) { out.errors.push('ヒアドキュメントの区切りが無い'); return n; }
         heredocs.push({ delim, strip, quoted, cmd: null });
+        // サブシェルと決められない括弧の中のヒアドキュメント（v3.5.2）。
+        if (parenKinds.some((k) => k !== 'sub')) out.errors.push('サブシェルと決められない括弧の中のヒアドキュメント');
         continue;
       }
       // ほかのリダイレクト（> >> < <> >| >& <& &> &>> <<<）: 次の語は対象。

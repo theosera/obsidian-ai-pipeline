@@ -81,6 +81,10 @@ const CASES = [
   { id: 'N49', expect: 'allow', cmd: "( cat <<'EOF'\nnotes\nEOF\n)" },
   { id: 'N50', expect: 'allow', cmd: 'echo $[1 + 2] && git status' },
   { id: 'N51', expect: 'allow', cmd: 'cat <<EOF\nhello' },
+  // v3.5.2 の陰性対照（空白の後の普通の行の継続 ／ 予約語の後の算術の `<<` ／ 予約語の後のサブシェルの中のヒアドキュメント）
+  { id: 'N52', expect: 'allow', cmd: 'git status \\\n  --short' },
+  { id: 'N53', expect: 'allow', cmd: 'if (( f & (1 << 2) )); then\n  git status\nfi' },
+  { id: 'N54', expect: 'allow', cmd: "time ( cat <<'EOF'\nnotes\nEOF\n) && git status" },
 
   // --- commit と同じコマンドでは、読むだけの git 以外を拒む -------------------------
   { id: 'A01', expect: 'deny', cmd: 'git update-index --add --cacheinfo 100644,e69de29bb2d1d6434b8b29ae775ad8c2e48c5391,.env && git commit -m x' },
@@ -203,6 +207,18 @@ const CASES = [
   { id: 'Q18', expect: 'deny', cmd: 'echo $[1 << 2]\ngit commit -a -m x\n2]' },
   // v3.5.1: 終わりの語の無いヒアドキュメントの本文に書き込む git（読めない形として拒む・UH1 だけが押さえる）
   { id: 'Q19', expect: 'deny', cmd: 'cat <<EOF\ngit commit -a -m x' },
+  // v3.5.2: 行の継続（`\` と改行）を挟んだ `((`・`<<`・`$(`、引用符の無い本文の行末の `\`（シェルは継続を消してから読む）
+  { id: 'Q20', expect: 'deny', cmd: 'git status; (\\\n(x = 1 << 2))\ngit commit -a -m x\n2' },
+  { id: 'Q21', expect: 'deny', cmd: '((x = 1 << 2)\\\n)\ngit commit -a -m x\n2' },
+  { id: 'Q22', expect: 'deny', cmd: 'echo "$\\\n(git commit -a -m x)"' },
+  { id: 'Q23', expect: 'deny', cmd: "cat <\\\n<'EOF'\nit's\nEOF\ngit commit -a -m x\necho '" },
+  { id: 'Q24', expect: 'deny', cmd: "cat <<EOF\nfoo\\\nEOF\nit's\nEOF\ngit commit -a -m x\necho '" },
+  // v3.5.2: サブシェルと決められない括弧（語の後の `(`・算術にならなかった `((`）の中のヒアドキュメントと、予約語の後の `((`
+  { id: 'Q25', expect: 'deny', cmd: 'echo (x << 2)\ngit commit -a -m x\n2' },
+  { id: 'Q26', expect: 'deny', cmd: '((x = ${y:-)} << 2))\ngit commit -a -m x\n2' },
+  { id: 'Q27', expect: 'deny', cmd: 'if ((x = 1 << 2)); then :; fi\ngit commit -a -m x\n2' },
+  // v3.5.2: `$(…)` の中で開き、本文より前に閉じたヒアドキュメント（読めない形として拒む）
+  { id: 'Q28', expect: 'deny', cmd: "echo $(cat <<'EOF')\nit's\nEOF\ngit commit -a -m x\necho '" },
 
   // --- 読みきれない形 ----------------------------------------------------------------
   { id: 'P01', expect: 'deny', cmd: 'git commit -m "unterminated' },
