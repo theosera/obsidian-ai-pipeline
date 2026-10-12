@@ -217,6 +217,13 @@ for (const g of addGits) {
       'secret ガードから検査できません（検査不能なのでブロック）。追加するファイルをコマンドラインに列挙してください。',
     );
   }
+  const magic = words.find((a) => a.startsWith(':'));
+  if (magic) {
+    deny(
+      `git add / stage の pathspec magic（${magic}）は、secret 名や対象範囲の解釈を変えるため検査できません (fail-closed)。\n` +
+      'pathspec magic を使わず、追加するファイルを相対パスまたは絶対パスで列挙してください。',
+    );
+  }
   const bad = words.filter((a) => a && !a.startsWith('-')).filter(isSecret);
   if (bad.length) {
     deny(

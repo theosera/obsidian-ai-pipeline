@@ -38,10 +38,52 @@ if (/(^|\s)--no-verify(\s|=|$)/.test(cmd)) {
 const insp = guard.inspect(cmd);
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'git ガード'));
 
+/** Match no-verify and its guarded long-option prefixes, while leaving no-verbose intact. */
+function isNoVerifyOption(text) {
+  const option = text.split('=')[0];
+  return option.length >= '--no-ver'.length && '--no-verify'.startsWith(option);
+}
+
+/**
+ * Find no-verify options in non-commit calls without confusing known push/merge/config values with flags.
+ * Required option values stay values even when quoted text begins with --no-veri; -- ends options.
+ * Other subcommands retain conservative checking where no option-value grammar is available.
+ */
+function hasNoVerifyOption(g) {
+  const longValues = g.sub === 'push' ? ['repo', 'receive-pack', 'exec', 'recurse-submodules', 'push-option']
+    : g.sub === 'merge' ? ['message', 'file', 'strategy', 'strategy-option', 'cleanup', 'into-name']
+      : g.sub === 'config' ? ['default'] : [];
+  const shortValues = g.sub === 'push' ? 'o' : g.sub === 'merge' ? 'mFsX' : '';
+  for (let k = 0; k < g.args.length; k++) {
+    const text = g.args[k].text;
+    if (text === '--') break;
+    if (isNoVerifyOption(text)) return true;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = longValues.filter((option) => option.startsWith(name));
+      if (eq < 0 && (longValues.includes(name) || matches.length === 1)) k++;
+      continue;
+    }
+    if (text.startsWith('-')) {
+      for (let p = 1; p < text.length; p++) {
+        // merge -S consumes an optional attached key, so later letters are not short flags.
+        if (g.sub === 'merge' && text[p] === 'S') break;
+        if (shortValues.includes(text[p])) {
+          if (p === text.length - 1) k++;
+          break;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 // shell の引用・escape を戻した語でも見る（--no-'verify' なども同じ option）。
+// 読取 subcommand の検索文字列等は hook 回避 option ではない。既存の raw 判定は上に残す。
 for (const g of insp.gits) {
   const noVerify = g.sub === 'commit' ? guard.parseCommitArgs(g.args).noVerify :
-    g.args.some((w) => /^--no-verify(?:=|$)/.test(w.text));
+    !guard.READ_ONLY_SUBS.has(g.sub) && hasNoVerifyOption(g);
   if (noVerify) {
     deny('`--no-verify` は禁止です（commit / secret-scan hook をバイパスしない / CLAUDE.md）。フックを通して実行してください。');
   }

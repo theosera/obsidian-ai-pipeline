@@ -81,10 +81,59 @@ const EXFIL_SHAPES = [
 // (CLAUDE.md「secret-pattern 4 系統を 1 PR で同時更新」)。
 const SECRET_FILE_RE = /(\.env(\.|\b)|x_tokens\.json|pkce_state\.json|pipeline_config\.json|credentials[^/\s]*\.json|service-account[^/\s]*\.json|[^/\s]*token[^/\s]*\.json|\.pem\b|\.key\b|id_(rsa|ed25519)\b|secrets\.(json|ya?ml)\b|(^|[\s'"/=])secrets\/)/i;
 const NET_VERB_RE = /\b(curl|wget|nc|ncat|scp|sftp|rsync|telnet)\b|\bgh\s+gist\b/i;
-// .env.example はテンプレートなので秘密ファイル扱いしない。
-/** Exempt only exact template filenames when no other .env filename is present. */
-const isExampleOnly = (cmd) => /\.env\.example(?=$|[\s'";&|<>()])/i.test(cmd) &&
-  !/\.env(?!(?:\.example)(?=$|[\s'";&|<>()]))(?:\.|\b)/i.test(cmd);
+/** Remove exact template basename evidence while retaining every other secret family's markers. */
+function withoutTemplateTokens(evidence) {
+  const parsed = guard.parseShell(evidence);
+  const ranges = [];
+  const sourceWords = parsed.cmds.flatMap((command) => command.words.concat(command.redirs.map((redir) => redir.word)))
+    .filter((word) => evidence.slice(word.start, word.start + word.raw.length) === word.raw);
+  const markers = (source, offset) => {
+    for (const match of source.matchAll(/(^|[^A-Za-z0-9_.-])(\.env\.example)(?=$|[^A-Za-z0-9_.-])/gi)) {
+      const start = offset + match.index + match[1].length;
+      ranges.push({ start, end: start + match[2].length });
+    }
+  };
+  for (const command of parsed.cmds) {
+    for (const word of command.words.concat(command.redirs.map((redir) => redir.word))) {
+      const filename = word.text.startsWith('@') ? word.text.slice(1) : word.text;
+      const assignment = /^[A-Za-z_][A-Za-z0-9_]*\+?=(.*)$/.exec(filename);
+      const templateFilename = /(^|\/)\.env\.example$/i.test(assignment ? assignment[1] : filename);
+      const index = command.words.indexOf(word);
+      const previous = index > 0 ? command.words[index - 1].text : '';
+      const headerData = command.words.slice(0, index).some((entry) => /(^|\/)curl$/.test(entry.text)) &&
+        ['-H', '--header', '--proxy-header'].includes(previous);
+      if (word.dynamic || (!templateFilename && !headerData)) continue;
+      const start = word.start;
+      const end = start + word.raw.length;
+      // Nested sources can use relative offsets. Remove only a matching whole word in this source.
+      if (evidence.slice(start, end) !== word.raw ||
+          (start > 0 && !/[\s;&|<>()]/.test(evidence[start - 1])) ||
+          (end < evidence.length && !/[\s;&|<>()]/.test(evidence[end]))) continue;
+      if (headerData) { markers(word.raw, start); continue; }
+      // Keep path prefixes: a template filename must not hide a secrets/ or key-name marker.
+      const literal = word.raw.toLowerCase().indexOf('.env.example', word.raw.lastIndexOf('/') + 1);
+      if (literal >= 0) ranges.push({ start: start + literal, end: start + literal + '.env.example'.length });
+    }
+    // Quoted input to a file reader is literal data. Remove only template markers in that body.
+    if (!command.words[0] || !/(^|\/)(?:cat|head|tail|base64|xxd)$/.test(command.words[0].text)) continue;
+    for (const heredoc of command.heredocBodies) {
+      if (!heredoc.quoted || !heredoc.body) continue;
+      let start = evidence.indexOf(heredoc.body);
+      while (start >= 0 && sourceWords.some((word) => word.start < start + heredoc.body.length &&
+          word.start + word.raw.length > start)) start = evidence.indexOf(heredoc.body, start + 1);
+      if (start >= 0) markers(heredoc.body, start);
+    }
+  }
+  ranges.sort((a, b) => b.start - a.start || b.end - a.end);
+  let result = evidence;
+  let nextStart = evidence.length;
+  for (const range of ranges) {
+    if (range.end > nextStart) continue; // duplicate/overlapping entries must not erase adjacent evidence
+    result = result.slice(0, range.start) + result.slice(range.end);
+    nextStart = range.start;
+  }
+  return result;
+}
 
 const { cmd } = guard.readInput('egress ガード');
 if (!cmd) process.exit(0);
@@ -105,7 +154,7 @@ if (EXFIL_SHAPES.some((re) => re.test(cmd))) {
   );
 }
 
-if (!isExampleOnly(cmd) && SECRET_FILE_RE.test(cmd) && NET_VERB_RE.test(cmd)) {
+if (SECRET_FILE_RE.test(withoutTemplateTokens(cmd)) && NET_VERB_RE.test(cmd)) {
   deny(
     '秘密ファイル (.env / *token*.json / *.key 等) の読取とネットワーク送信が同一コマンドに含まれています。\n' +
     '秘密の外部送信を防ぐためブロックしました (egress guard)。',
@@ -265,10 +314,14 @@ const CURL_FLAG_LONG = new Set([
 ]);
 const CURL_LONG_NAMES = [...CURL_VALUE_LONG, ...CURL_FLAG_LONG];
 
-/** Recognize curl's file-reading payloads while leaving variable references and literal data opaque. */
-function curlReadsUpload(words) {
+/** Recognize curl file payloads and opaque config input without reading either file. */
+function curlReadsUpload(words, incomplete = false) {
+  // xargs/find can provide an unseen filename to a trailing file-reading option.
+  const fileOptions = new Set(['upload-file', 'data', 'data-ascii', 'data-binary', 'json',
+    'header', 'proxy-header', 'data-urlencode', 'form']);
   /** Match file references using the option's own value, not text printed inside another value. */
   const payload = (option, value) => {
+    if (option === 'config') return true; // config can supply upload options or a destination
     if (option === 'upload-file') return Boolean(value);
     if (['data', 'data-ascii', 'data-binary', 'json', 'header', 'proxy-header'].includes(option)) return value.startsWith('@');
     if (option === 'data-urlencode') return value.includes('@');
@@ -284,14 +337,60 @@ function curlReadsUpload(words) {
       const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter((option) => option.startsWith(name));
       if (matches.length !== 1 || !CURL_VALUE_LONG.has(matches[0])) continue;
       const option = matches[0];
+      if (option === 'config') return true;
       const value = eq < 0 ? words[++k] : { text: t.slice(eq + 1) };
-      if (value && payload(option, value.text)) return true;
+      if (value ? payload(option, value.text) : incomplete && fileOptions.has(option)) return true;
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
         const option = CURL_VALUE_SHORT[t[p]];
         if (!option) continue;
+        if (option === 'config') return true;
         const value = p + 1 < t.length ? { text: t.slice(p + 1) } : words[++k];
-        if (value && payload(option, value.text)) return true;
+        if (value ? payload(option, value.text) : incomplete && fileOptions.has(option)) return true;
+        break;
+      }
+    }
+  }
+  return false;
+}
+
+// Wget 1.25.0 --help: consume option values so a printed option name is not executable syntax.
+const WGET_VALUE_LONG = new Set([
+  'execute', 'output-file', 'append-output', 'report-speed', 'input-file', 'base', 'config',
+  'rejected-log', 'tries', 'retry-on-http-error', 'output-document', 'start-pos', 'progress',
+  'timeout', 'dns-timeout', 'connect-timeout', 'read-timeout', 'wait', 'waitretry', 'quota',
+  'bind-address', 'limit-rate', 'restrict-file-names', 'prefer-family', 'user', 'password',
+  'use-askpass', 'local-encoding', 'remote-encoding', 'directory-prefix', 'cut-dirs',
+  'http-user', 'http-password', 'default-page', 'header', 'compression', 'max-redirect',
+  'proxy-user', 'proxy-password', 'referer', 'user-agent', 'load-cookies', 'save-cookies',
+  'post-data', 'post-file', 'method', 'body-data', 'body-file', 'secure-protocol', 'certificate',
+  'certificate-type', 'private-key', 'private-key-type', 'ca-certificate', 'ca-directory',
+  'crl-file', 'pinnedpubkey', 'random-file', 'ciphers', 'hsts-file', 'ftp-user', 'ftp-password',
+  'warc-file', 'warc-header', 'warc-max-size', 'warc-dedup', 'warc-tempdir', 'level', 'backups',
+  'accept', 'reject', 'accept-regex', 'reject-regex', 'regex-type', 'domains', 'exclude-domains',
+  'follow-tags', 'ignore-tags', 'include-directories', 'exclude-directories',
+]);
+const WGET_VALUE_SHORT = 'eoaiBtOTwQPUlARDIX';
+
+/** Reject Wget's file bodies or opaque config while skipping literal values of other options. */
+function wgetReadsUpload(words) {
+  const opaque = new Set(['post-file', 'body-file', 'config', 'execute']);
+  for (let k = 0; k < words.length; k++) {
+    const t = words[k].text;
+    if (t === '--') break;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = t.slice(2, eq < 0 ? undefined : eq);
+      const matches = WGET_VALUE_LONG.has(name) ? [name] : [...WGET_VALUE_LONG].filter((option) => option.startsWith(name));
+      if (matches.length !== 1) continue;
+      if (opaque.has(matches[0])) return true;
+      // --use-askpass has an optional attached value; the following word remains an option/URL.
+      if (eq < 0 && matches[0] !== 'use-askpass') k++;
+    } else if (t.startsWith('-')) {
+      for (let p = 1; p < t.length; p++) {
+        if (!WGET_VALUE_SHORT.includes(t[p])) continue;
+        if (t[p] === 'e') return true;
+        if (p === t.length - 1) k++;
         break;
       }
     }
@@ -331,6 +430,42 @@ function remoteCopyDestination(invocation) {
 function networkInvocation(invocation) {
   return ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet'].includes(invocation.name) ||
     (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
+}
+
+/** Fail closed for an unresolved executable when its arguments identify a possible upload. */
+function dynamicNetworkShape(invocation) {
+  return invocation.dynamicName && (curlReadsUpload(invocation.args, invocation.incomplete) || wgetReadsUpload(invocation.args) ||
+    (invocation.args[0] && invocation.args[0].text === 'gist') ||
+    invocation.args.some((word) => /^-b(?:$|[^-])/.test(word.text) ||
+      /^(?:https?|ftp|sftp|ssh|git):\/\//i.test(word.text) || destinationArg(word.text)));
+}
+
+/** Reject possible network children when launcher options leave the executable boundary uncertain. */
+function opaqueLauncherNetwork(invocation) {
+  if (!invocation.launcherUnknown) return false;
+  const words = invocation.launcherArgs || [];
+  return curlReadsUpload(words, invocation.incomplete) || wgetReadsUpload(words) || words.some((word) =>
+    ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh'].includes(word.text.split('/').pop()) ||
+    /^(?:https?|ftp|sftp|ssh|git):\/\//i.test(word.text) || destinationArg(word.text));
+}
+
+/** Detect SFTP command/batch sessions without treating consumed SSH option values as hostnames. */
+function sftpSession(words) {
+  const valueOptions = 'BbcDFiJloPRSsX';
+  let afterDD = false;
+  for (let k = 0; k < words.length; k++) {
+    const t = words[k].text;
+    if (!afterDD && t === '--') { afterDD = true; continue; }
+    if (!afterDD && t.startsWith('-')) {
+      for (let p = 1; p < t.length; p++) {
+        if (t[p] === 'b') return true;
+        if (valueOptions.includes(t[p])) { if (p === t.length - 1) k++; break; }
+      }
+      continue;
+    }
+    return true; // SFTP accepts [user@]host with no ':' and then reads interactive/stdin commands.
+  }
+  return false;
 }
 
 /** Detect netcat execution options without interpreting consumed port/address/proxy values as flags. */
@@ -433,14 +568,17 @@ function collectNetworkInvocations(inspection, depth = 0) {
 /** Apply the classic egress shapes to executable names reconstructed by the shell parser. */
 function parsedExfil(invocation) {
   if (invocation.name === 'gh') return invocation.args[0] && invocation.args[0].text === 'gist';
-  if (invocation.name === 'curl') return curlReadsUpload(invocation.args);
+  if (invocation.name === 'curl') return curlReadsUpload(invocation.args, invocation.incomplete);
+  if (invocation.name === 'wget') return wgetReadsUpload(invocation.args);
   if (['nc', 'ncat'].includes(invocation.name)) return reverseShell(invocation);
-  if (['scp', 'sftp', 'rsync'].includes(invocation.name)) return remoteCopyDestination(invocation);
+  // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.
+  if (invocation.name === 'sftp') return sftpSession(invocation.args);
+  if (['scp', 'rsync'].includes(invocation.name)) return remoteCopyDestination(invocation);
   return false;
 }
 
 const invocations = collectNetworkInvocations(insp);
-if (invocations.some(parsedExfil)) {
+if (invocations.some(parsedExfil) || invocations.some(dynamicNetworkShape) || invocations.some(opaqueLauncherNetwork)) {
   deny('シェルの引用符・escape を戻した実行コマンドに、外向き送信 (gist / reverse shell / ローカルファイル upload 等) を検出しました (egress guard)。');
 }
 const parsedFileRefs = invocations.flatMap((invocation) => {
@@ -448,7 +586,8 @@ const parsedFileRefs = invocations.flatMap((invocation) => {
   return (readsFiles ? invocation.args : []).concat(invocation.redirs.map((redir) => redir.word)).map((word) => word.text);
 });
 const secretEvidence = [cmd, ...parsedFileRefs].join('\n');
-if (!isExampleOnly(secretEvidence) && SECRET_FILE_RE.test(secretEvidence) && invocations.some(networkInvocation)) {
+if (SECRET_FILE_RE.test(withoutTemplateTokens(secretEvidence)) &&
+    invocations.some((invocation) => networkInvocation(invocation) || invocation.dynamicName || invocation.launcherUnknown)) {
   deny('秘密ファイルの読取と、シェルの引用符・escape を戻したネットワーク送信コマンドが同一コマンドに含まれています (egress guard)。');
 }
 
@@ -457,6 +596,9 @@ for (const g of insp.gits) {
   const firstWord = a.find((x) => !x.startsWith('-'));
   const remoteWrite = g.sub === 'remote' && (firstWord === 'add' || firstWord === 'set-url');
   const configWrite = g.sub === 'config' && writesDestinationConfig(g.args);
+  if (g.sub === 'send-pack') {
+    deny('git send-pack は履歴を直接送る plumbing command で、egress ガードの検査対象外です。送信をブロックします (fail-closed)。');
+  }
   if (g.sub === 'push' && g.incomplete) {
     deny('xargs / find などの入力から git push に追加される引数は、egress ガードで宛先を確かめられません (fail-closed)。');
   }

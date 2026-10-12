@@ -20,13 +20,16 @@ function readStdin() {
   try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
 }
 
-/** Emit Claude Code's deny response and stop without allowing an uncaught hook error. */
+/** Flush a bounded deny response before exiting, so a pipe cannot truncate its JSON. */
 function deny(reason) {
-  process.stdout.write(JSON.stringify({
+  const message = typeof reason === 'string' ? reason : 'hook が入力を検査できないため実行をブロックします (fail-closed)。';
+  // 512 UTF-16 units stay below 4 KiB even when JSON escapes every unit as \uXXXX.
+  const bounded = message.length > 512 ? message.slice(0, 511) + '…' : message;
+  fs.writeFileSync(1, JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: reason,
+      permissionDecisionReason: bounded,
     },
   }));
   process.exit(0);
@@ -618,7 +621,80 @@ const isAssignWord = (w) => /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(w.raw);
 /** Extract the variable name from an assignment, including the shell's += form. */
 const assignName = (w) => w.raw.split('=')[0].replace(/\+$/, '');
 
+const LAUNCHER_OPTIONS = {
+  setsid: {
+    long: { ctty: 'c', fork: 'f', wait: 'w', help: 'h', version: 'V' },
+    values: '', selectors: '', operands: 0,
+  },
+  taskset: {
+    long: { 'all-tasks': 'a', pid: 'p', 'cpu-list': 'c', help: 'h', version: 'V' },
+    values: '', selectors: 'p', operands: 1,
+  },
+  ionice: {
+    long: { classdata: 'n', class: 'c', pid: 'p', pgid: 'P', uid: 'u', ignore: 't', help: 'h', version: 'V' },
+    values: 'ncpPu', selectors: 'pPu', operands: 0,
+  },
+};
+
+/** Read util-linux launchers' option arity without treating process selectors as children. */
+function launcherArgs(rest, info, name) {
+  const spec = LAUNCHER_OPTIONS[name];
+  const shorts = new Set(Object.values(spec.long));
+  let k = 0;
+  let selector = false;
+  let terminal = false;
+  info.launcherArgs.push(...rest);
+  const apply = (ch, value, attached) => {
+    if (spec.selectors.includes(ch)) selector = true;
+    if ('hV'.includes(ch)) terminal = true;
+    if (spec.values.includes(ch) && (!value || value.dynamicMaySplit ||
+        (attached && value.dynamic && !value.text.replaceAll(DYN, '')))) info.launcherUnknown = true;
+  };
+  while (k < rest.length && rest[k].text.startsWith('-') && rest[k].text !== '-') {
+    const w = rest[k];
+    const t = w.text;
+    if (t === '--') { k++; break; }
+    if (w.dynamicMaySplit) info.launcherUnknown = true;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const option = t.slice(2, eq < 0 ? undefined : eq);
+      const names = Object.keys(spec.long);
+      const matches = names.includes(option) ? [option] : names.filter((n) => n.startsWith(option));
+      if (matches.length !== 1) info.launcherUnknown = true;
+      else {
+        const ch = spec.long[matches[0]];
+        let value;
+        if (spec.values.includes(ch)) value = eq < 0 ? rest[++k] : { ...w, text: t.slice(eq + 1) };
+        else if (eq >= 0) info.launcherUnknown = true;
+        apply(ch, value, false);
+      }
+    } else {
+      for (let p = 1; p < t.length; p++) {
+        const ch = t[p];
+        if (!shorts.has(ch)) { info.launcherUnknown = true; break; }
+        let value;
+        const attached = p + 1 < t.length;
+        if (spec.values.includes(ch)) value = attached ? { ...w, text: t.slice(p + 1) } : rest[++k];
+        apply(ch, value, attached);
+        if (spec.values.includes(ch)) break;
+      }
+    }
+    k++;
+  }
+  if (!info.launcherUnknown && (terminal || selector)) return -1;
+  if (!info.launcherUnknown && rest.length - k <= spec.operands) return -1; // query or bad usage, no child
+  for (let n = 0; n < spec.operands; n++) {
+    // A variable mask can instead become another launcher option, moving the child boundary.
+    if (!rest[k] || rest[k].dynamic) info.launcherUnknown = true;
+    k++;
+  }
+  return k;
+}
+
 const WRAPPERS = {
+  setsid: (rest, info) => launcherArgs(rest, info, 'setsid'),
+  taskset: (rest, info) => launcherArgs(rest, info, 'taskset'),
+  ionice: (rest, info) => launcherArgs(rest, info, 'ionice'),
   command: (rest) => {
     let k = 0;
     while (k < rest.length && /^-[pvV]+$/.test(rest[k].text)) {
@@ -798,6 +874,7 @@ function resolveCommand(words) {
     name: null, nameWord: null, args: [], assigns: [], assignRaws: [],
     cdLike: false, incomplete: false, nonExec: false, dynamicName: false, splitString: false,
     envOps: [], wrapped: false, wrapperNames: [], persistsEnv: false, envUnknown: false, splitWords: [],
+    launcherUnknown: false, launcherArgs: [],
   };
   let k = 0;
   for (;;) {
@@ -1074,6 +1151,7 @@ function inspect(cmd) {
       words: c.words, redirs: c.redirs, heredocBodies: c.heredocBodies, scope: c.scope, incomplete: info.incomplete,
       wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
       wrapperNames: info.wrapperNames,
+      launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
       definitionName: c.definitionName || (info.name === 'function' ? (info.args[0] && info.args[0].text) : null),
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
@@ -1100,11 +1178,14 @@ function inspect(cmd) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit))) {
+      res.problems.push('launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
+      return;
+    }
     if (info.dynamicName) {
-      const first = info.args[0];
       if (wordHasGit(info.nameWord) || gitInAssign ||
           info.args.some((w) => !w.dynamic && path.posix.basename(w.text) === 'git') ||
-          (first && !first.dynamic && RISKY_SUBS.has(first.text))) {
+          info.args.some((w) => !w.dynamic && RISKY_SUBS.has(w.text))) {
         res.problems.push('コマンドの名前が変数や置換で作られていて、git かどうかを決められない');
       }
       return;
