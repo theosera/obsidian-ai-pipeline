@@ -83,6 +83,34 @@ const CMD_LEAD = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'while', 'unti
 /** Recognize a command position after static reserved words, without reinterpreting quoted text. */
 const atCmdPos = (words) => words.every((w) => !w.quoted && !w.dynamic && CMD_LEAD.has(w.text));
 
+/** Find Bash 5.3's reserved closing brace without interpreting quotes or nested groups as its boundary. */
+function alternateSubstitutionEnd(src, start) {
+  let braces = 0;
+  let parentheses = 0;
+  let terminator = false;
+  for (let k = start; k < src.length; k++) {
+    const ch = src[k];
+    if (ch === '\\') { k++; terminator = false; continue; }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const quote = ch;
+      for (k++; k < src.length && src[k] !== quote; k++) if (src[k] === '\\' && quote !== "'") k++;
+      if (k >= src.length) return -1;
+      terminator = false;
+      continue;
+    }
+    if (ch === '(') parentheses++;
+    else if (ch === ')' && parentheses) parentheses--;
+    else if (ch === '{') braces++;
+    else if (ch === '}') {
+      if (braces) braces--;
+      else if (!parentheses && terminator) return k;
+    }
+    if (ch === ';' || ch === '\n' || ch === '&') terminator = true;
+    else if (!/[ \t]/.test(ch)) terminator = false;
+  }
+  return -1;
+}
+
 /** Scan one expansion and collect executable substitutions in child shell scopes. */
 function scanExpansion(src, i, out, depth, scope, effects) {
   const n = src.length;
@@ -125,8 +153,9 @@ function scanExpansion(src, i, out, depth, scope, effects) {
         j++;
       }
       if (j >= n) { out.errors.push('閉じていない $(( … ))'); return { end: n, dynamic: true }; }
-      scanSubsts(src.slice(i + 3, j), out, depth + 1, scope, effects);
-      return { end: j + 2, dynamic: true };
+      const expression = src.slice(i + 3, j);
+      scanSubsts(expression, out, depth + 1, scope, effects);
+      return { end: j + 2, dynamic: true, evaluations: [{ kind: 'arithmetic', text: expression }] };
     }
     const close = parseSeq(src, i + 2, out, depth + 1, true, { parent: scope }, effects);
     if (close >= n) { out.errors.push('閉じていない $( … )'); return { end: n, dynamic: true }; }
@@ -145,13 +174,27 @@ function scanExpansion(src, i, out, depth, scope, effects) {
       j++;
     }
     if (j >= n) { out.errors.push('閉じていない $[ … ]'); return { end: n, dynamic: true }; }
-    scanSubsts(src.slice(i + 2, j), out, depth + 1, scope, effects);
-    return { end: j + 1, dynamic: true };
+    const expression = src.slice(i + 2, j);
+    scanSubsts(expression, out, depth + 1, scope, effects);
+    return { end: j + 1, dynamic: true, evaluations: [{ kind: 'arithmetic', text: expression }] };
   }
   if (c1 === '{') {
+    if (/[ \t\n|]/.test(src[i + 2] || '')) {
+      const end = alternateSubstitutionEnd(src, i + 2);
+      if (end < 0) {
+        out.evaluationUnknown = true;
+        return { end: n, dynamic: true, evaluations: [{ kind: 'source', text: null }] };
+      }
+      const source = src.slice(i + 2, end).replace(/^\|/, '');
+      const first = out.cmds.length;
+      parseSeq(source, 0, out, depth + 1, false, scope, effects);
+      for (let k = first; k < out.cmds.length; k++) out.cmds[k].mediated = true;
+      return { end: end + 1, dynamic: true, evaluations: [{ kind: 'source', text: source }] };
+    }
     let j = i + 2;
     let d = 0;
     let multiWord = false;
+    const evaluations = [];
     while (j < n) {
       const ch = src[j];
       if (ch === '\\') { j += 2; continue; }
@@ -159,7 +202,7 @@ function scanExpansion(src, i, out, depth, scope, effects) {
         const q = src.indexOf("'", j + 1);
         if (q < 0) { j = n; break; }
         // 外側が二重引用の ${…} では、この単一引用内の置換も実行されうる。
-        multiWord = scanSubsts(src.slice(j + 1, q), out, depth + 1, scope, effects) || multiWord;
+        multiWord = scanSubsts(src.slice(j + 1, q), out, depth + 1, scope, effects, evaluations) || multiWord;
         j = q + 1;
         continue;
       }
@@ -169,6 +212,7 @@ function scanExpansion(src, i, out, depth, scope, effects) {
           if (src[j] === '\\') { j += 2; continue; }
           if (src[j] === '$' || src[j] === '`') {
             const r = scanExpansion(src, j, out, depth + 1, scope, effects);
+            evaluations.push(...(r.evaluations || []));
             multiWord = multiWord || !!r.multiWord;
             j = r.end;
             continue;
@@ -181,6 +225,7 @@ function scanExpansion(src, i, out, depth, scope, effects) {
       }
       if (ch === '$' || ch === '`') {
         const r = scanExpansion(src, j, out, depth + 1, scope, effects);
+        evaluations.push(...(r.evaluations || []));
         multiWord = multiWord || !!r.multiWord;
         j = r.end;
         continue;
@@ -194,9 +239,24 @@ function scanExpansion(src, i, out, depth, scope, effects) {
     }
     if (j >= n) { out.errors.push('閉じていない ${ … }'); return { end: n, dynamic: true }; }
     const body = src.slice(i + 2, j);
+    {
+      const prompt = /^([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?|[@*0-9])@P$/.exec(body);
+      if (prompt) evaluations.push({ kind: 'prompt', text: prompt[1] });
+      else if (/^!?[A-Za-z_][A-Za-z0-9_]*(?:\[.*\])?@P$/.test(body)) evaluations.push({ kind: 'prompt', text: null });
+      const parameter = /^!?([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?(.*)$/s.exec(body);
+      if (parameter) {
+        if (parameter[2] !== undefined && !/^[@*]$/.test(parameter[2])) {
+          evaluations.push({ kind: 'arithmetic', text: parameter[2], arrayName: parameter[1] });
+        }
+        // Substring offset/length are arithmetic; :- / := / :? / :+ are ordinary parameter operators.
+        if (/^:(?![-=+?])/.test(parameter[3])) {
+          evaluations.push({ kind: 'arithmetic', text: parameter[3].slice(1).replace(/:/g, ';') });
+        }
+      }
+    }
     // "$@"・"${a[@]}"・"${!prefix@}" は、二重引用されていても複数の語になりうる。
     multiWord = multiWord || /\[@\]/.test(body) || /^@(?::|$)/.test(body) || /^![A-Za-z_][A-Za-z0-9_]*@$/.test(body);
-    return { end: j + 1, dynamic: true, multiWord };
+    return { end: j + 1, dynamic: true, multiWord, evaluations };
   }
   if (c1 === "'") {
     // $'…'（escape を解く文字列）。中身は実行されないが、語の文字は決めない。
@@ -240,7 +300,7 @@ function arithEnd(src, j) {
 }
 
 /** Collect expansions from arithmetic or heredoc text without treating its operators as commands. */
-function scanSubsts(text, out, depth, scope, effects) {
+function scanSubsts(text, out, depth, scope, effects, evaluations = []) {
   let k = 0;
   let multiWord = false;
   while (k < text.length) {
@@ -248,6 +308,7 @@ function scanSubsts(text, out, depth, scope, effects) {
     if (ch === '\\') { k += 2; continue; }
     if (ch === '$' || ch === '`') {
       const r = scanExpansion(text, k, out, depth, scope, effects);
+      evaluations.push(...(r.evaluations || []));
       multiWord = multiWord || !!r.multiWord;
       k = r.end;
       continue;
@@ -302,7 +363,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
   let definitionName = null;
 
   const startWord = () => {
-    if (!cur) cur = { text: '', braceSource: '', dynamic: false, dynamicMaySplit: false, quoted: false, start: i };
+    if (!cur) cur = { text: '', braceSource: '', dynamic: false, dynamicMaySplit: false, quoted: false, start: i, evaluations: [] };
   };
   const endWord = () => {
     if (!cur) return;
@@ -337,7 +398,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
     endWord();
     redirNext = null;
     if (words.length || redirs.length) {
-      const c = { words, redirs, piped, heredocBodies: [], scope, definitionName, effects: currentEffects() };
+      const c = { words, redirs, piped, heredocBodies: [], scope, definitionName, effects: currentEffects(), arrayInitializer: scope.arrayInitializer };
       out.cmds.push(c);
       for (const h of heredocs) if (!h.cmd) h.cmd = c;
     }
@@ -348,6 +409,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
     closedGroup = null;
   };
   const appendExpansion = (r, quoted = false) => {
+    cur.evaluations.push(...(r.evaluations || []));
     if (r.dynamic) {
       cur.dynamic = true;
       cur.braceSource += DYN;
@@ -444,7 +506,11 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
         if (bodyEnd === n) out.errors.push('ヒアドキュメントの終わりの語が無い');
         if (lcLine) out.errors.push('引用符の無いヒアドキュメントの本文の行末に \\ がある');
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
-        if (!h.quoted) scanSubsts(body, out, depth + 1, scope, h.cmd ? h.cmd.effects : currentEffects());
+        if (!h.quoted) {
+          const evaluations = [];
+          scanSubsts(body, out, depth + 1, scope, h.cmd ? h.cmd.effects : currentEffects(), evaluations);
+          if (h.cmd) h.cmd.evaluations = (h.cmd.evaluations || []).concat(evaluations);
+        }
         if (h.cmd) h.cmd.heredocBodies.push({ body, quoted: h.quoted });
       }
       continue;
@@ -501,11 +567,15 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       // コマンドの頭（予約語の後を含む・v3.5.2）か `for` の後の `((…))` は算術（v3.5）。シェルと同じく対の `))` まで
       // 生の文字として読み、中の置換だけを読む（`<<` はシフトでヒアドキュメントではない）。対にならなければ括弧として読む。
       const atCmd = !cur && atCmdPos(words);
+      const arrayInitializer = !atCmd && fn && /^([A-Za-z_][A-Za-z0-9_]*)\+?=$/.exec(fn.text);
       const arithAt = atCmd || (!cur && words.length === 1 && !words[0].quoted && words[0].text === 'for');
       if (src[i + 1] === '(' && arithAt) {
         const end = arithEnd(src, i + 2);
         if (end >= 0) {
-          scanSubsts(src.slice(i + 2, end), out, depth + 1, scope, currentEffects());
+          const expression = src.slice(i + 2, end);
+          scanSubsts(expression, out, depth + 1, scope, currentEffects());
+          out.cmds.push({ words: [], redirs: [], piped: false, heredocBodies: [], scope,
+            effects: currentEffects(), evaluations: [{ kind: 'arithmetic', text: expression }] });
           i = end + 2;
           continue;
         }
@@ -519,7 +589,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       inheritedEffects = currentEffects().concat(group);
       pipeline = newEffect();
       parenScopes.push(scope);
-      scope = { parent: scope };
+      scope = { parent: scope, ...(arrayInitializer ? { arrayInitializer: arrayInitializer[1] } : {}) };
       parenDepth++;
       i++;
       continue;
@@ -609,7 +679,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
 
 /** Parse shell source without executing it, retaining errors and isolated child scopes. */
 function parseShell(src) {
-  const out = { cmds: [], errors: [], scope: { parent: null }, async: false };
+  const out = { cmds: [], errors: [], scope: { parent: null }, async: false, evaluationUnknown: false };
   parseSeq(src, 0, out, 0, false, out.scope);
   return out;
 }
@@ -620,9 +690,9 @@ function parseShell(src) {
 
 const RESERVED = new Set(['!', '{', '}', 'then', 'else', 'elif', 'fi', 'do', 'done', 'if', 'while', 'until']);
 /** Assignment syntax is recognized from source, where quoting can change its shell meaning. */
-const isAssignWord = (w) => /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(w.raw);
+const isAssignWord = (w) => /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/.test(w.raw);
 /** Extract the variable name from an assignment, including the shell's += form. */
-const assignName = (w) => w.raw.split('=')[0].replace(/\+$/, '');
+const assignName = (w) => w.raw.split('=')[0].replace(/\+$/, '').replace(/\[.*$/, '');
 
 const LAUNCHER_OPTIONS = {
   setsid: {
@@ -964,7 +1034,7 @@ const BUILTIN_SUBS = new Set((
 const RISKY_SUBS = new Set([
   'add', 'stage', 'rm', 'mv', 'commit', 'commit-tree', 'mktree', 'update-ref', 'update-index',
   'read-tree', 'apply', 'checkout', 'restore', 'reset', 'stash', 'merge', 'cherry-pick', 'revert',
-  'am', 'push', 'send-pack', 'http-push', 'remote', 'config',
+  'am', 'push', 'send-pack', 'http-push', 'fast-import', 'remote', 'config',
 ]);
 
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish']);
@@ -1150,6 +1220,117 @@ function trapInvocation(args) {
   return { scripts: [action], query: false, unknown };
 }
 
+/** Select alias definitions' executable values; query names and dump/reset forms stay data. */
+function aliasInvocation(args) {
+  const scripts = [];
+  let options = true;
+  let unknown = false;
+  for (const word of args) {
+    if (options && word.text === '--' && !word.dynamic) { options = false; continue; }
+    if (options && word.text.startsWith('-')) {
+      if (word.dynamic || !/^-[p]+$/.test(word.text)) unknown = true;
+      continue;
+    }
+    options = false;
+    const definition = /^([^=]+)=(.*)$/s.exec(word.text);
+    if (definition) scripts.push({ ...word, text: definition[2] });
+    else if (word.dynamic) unknown = true;
+  }
+  return { scripts, unknown };
+}
+
+/** Read a variable assignment's cooked literal value, retaining an indexed target for arithmetic checks. */
+function scalarAssignment(word) {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?(\+?=)(.*)$/s.exec(word.text);
+  return match && { name: match[1], index: match[2], append: match[3] === '+=', value: word.dynamic ? null : match[4] };
+}
+
+/** Prove arithmetic contains only numbers, operators and recursively known numeric values; never evaluate it. */
+function numericArithmetic(source, state, seen = new Set(), depth = 0) {
+  if (typeof source !== 'string' || seen.size > MAX_DEPTH || depth > MAX_DEPTH) return false;
+  let unknownExpansion = false;
+  source = source.replace(/\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})/g, (_match, plain, braced) => {
+    const name = plain || braced;
+    const next = new Set(seen); next.add(name);
+    if (state.valuesTainted || seen.has(name) || !state.values.has(name) ||
+        !numericArithmetic(state.values.get(name), state, next, depth + 1)) unknownExpansion = true;
+    return '0';
+  });
+  if (unknownExpansion || /[$`'"\\]/.test(source)) return false;
+  const values = new Map(state.values);
+  const proveValue = (name) => {
+    if (seen.has(name) || !values.has(name) || values.get(name) === null) return false;
+    const next = new Set(seen); next.add(name);
+    return numericArithmetic(values.get(name), { ...state, values }, next, depth + 1);
+  };
+  for (let part of source.split(/[;,]/)) {
+    // A statically numeric assignment makes its target safe for subsequent clauses of arithmetic for/let.
+    const assignment = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)(.*)$/s.exec(part);
+    if (assignment) {
+      if (!numericArithmetic(assignment[2], { ...state, values }, seen, depth + 1)) return false;
+      values.set(assignment[1], '0');
+      continue;
+    }
+    let k = 0;
+    while (k < part.length) {
+      const rest = part.slice(k);
+      const number = /^(?:[0-9]+#[A-Za-z0-9@_]+|0[xX][0-9A-Fa-f]+|[0-9]+)/.exec(rest);
+      if (number) { k += number[0].length; continue; }
+      const identifier = /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest);
+      if (identifier) {
+        if (state.valuesTainted) return false;
+        let name = identifier[0]; k += name.length;
+        if (part[k] === '[') {
+          const end = part.indexOf(']', k + 1);
+          if (end < 0) return false;
+          const index = part.slice(k + 1, end).trim();
+          if (!numericArithmetic(index, { ...state, values }, seen, depth + 1) || !/^(?:0|[1-9]\d*)$/.test(index)) return false;
+          name += '[' + index + ']'; k = end + 1;
+        }
+        if (!proveValue(name)) return false;
+        continue;
+      }
+      if (!/[ \t\n()+\-*\/%<>=!~&|^?:]/.test(part[k])) return false;
+      k++;
+    }
+  }
+  return true;
+}
+
+/** Keep literal scalar/array values in their shell scope; conditional overwrites require agreement. */
+function rememberValue(state, assignment, conditional) {
+  let key = assignment.name;
+  if (assignment.index !== undefined) {
+    if (!/^(?:0|[1-9]\d*)$/.test(assignment.index)) {
+      state.values.delete(key);
+      for (const entry of state.values.keys()) if (entry.startsWith(key + '[')) state.values.set(entry, null);
+      return;
+    }
+    key += '[' + assignment.index + ']';
+  } else {
+    // A scalar assignment can overwrite element zero of a previously created array.
+    state.values.set(key + '[0]', null);
+  }
+  let value = assignment.value;
+  if (assignment.append) value = value !== null && state.values.has(key) && state.values.get(key) !== null
+    ? state.values.get(key) + value : null;
+  if (conditional && (!state.values.has(key) || state.values.get(key) !== value)) value = null;
+  state.values.set(key, value);
+}
+
+/** Read one arithmetic operand after a simple scalar expansion, without treating its value as shell text. */
+function arithmeticOperand(word, state) {
+  if (!word.dynamic) return word.text;
+  const scalar = /^"?\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"?$/.exec(word.raw);
+  if (scalar && !state.valuesTainted) return state.values.get(scalar[1] || scalar[2]);
+  return null;
+}
+
+/** Delayed code which can assign shell values invalidates proofs made before registration. */
+const sourceChangesValues = (inner) => inner.invocations.some((entry) => entry.assignments.length ||
+  ['set', 'read', 'readarray', 'mapfile', 'printf', 'declare', 'typeset', 'local', 'readonly', 'unset', 'let'].includes(entry.name) &&
+    (entry.name !== 'printf' || entry.args.some((word) => word.text === '-v')));
+
 /** Read set's positional operands without confusing option queries or consumed -o names with argv. */
 function positionalSet(args) {
   let k = 0;
@@ -1240,6 +1421,7 @@ function inspect(cmd, options = {}) {
     res.problems.push('コマンドに CR（\\r）があり、シェルと同じに語へ分けられる保証が無い');
   }
   const parsed = parseShell(cmd);
+  if (parsed.evaluationUnknown) res.problems.push('Bash の実行する置換の source 境界を読みきれない');
   res.async = parsed.async;
   if (parsed.errors.length && gitContext) {
     res.problems.push(`コマンドの引用符や括弧が閉じていない（${parsed.errors[0]}）`);
@@ -1258,15 +1440,15 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false });
-  const copyState = (s) => ({ ...s, env: new Set(s.env) });
+  const emptyState = () => ({ env: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false });
+  const copyState = (s) => ({ ...s, env: new Set(s.env), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
       scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
     }
     return scopeStates.get(scope);
   };
-  const seedScope = (scope, env, cd, inherited) => scopeStates.set(scope, { ...emptyState(), ...inherited, env: new Set(env), cd });
+  const seedScope = (scope, env, cd, inherited) => scopeStates.set(scope, copyState({ ...emptyState(), ...inherited, env: new Set(env), cd }));
   if (Array.isArray(options.initialPositionals)) scopeStates.set(parsed.scope, { ...emptyState(), positionals: knownPositionals(options.initialPositionals) });
   const updatePositionals = (state, c, next) => {
     const conditional = (c.effects || []).some((effect) => effect.conditional || effect.pipeline);
@@ -1278,6 +1460,47 @@ function inspect(cmd, options = {}) {
   const visit = (c, info, depth) => {
     if (depth > MAX_DEPTH) { res.problems.push('入れ子が深すぎる'); return; }
     const state = stateFor(c.scope);
+    const conditional = (c.effects || []).some((effect) => effect.conditional || effect.pipeline);
+    const checkEvaluation = (evaluation, valuesState) => {
+      if (evaluation.kind === 'arithmetic' && !(evaluation.arrayName && valuesState.associatives.has(evaluation.arrayName)) &&
+          !numericArithmetic(evaluation.text, valuesState)) {
+        res.problems.push('算術で再評価される変数・添字・式が静的な数値と確かめられず、保存された source の実行を検査できない');
+      } else if (evaluation.kind === 'prompt') {
+        const value = valuesState.values.get(evaluation.text);
+        if (valuesState.valuesTainted || typeof value !== 'string' || /[$`\\]/.test(value)) {
+          res.problems.push('@P で再評価する prompt の値を確かめられず、保存された source の実行を検査できない');
+        }
+      } else if (evaluation.kind === 'source') {
+        const inner = inspectMediatedSource(evaluation.text, sourceDepth);
+        if (inner.problems.length) res.problems.push(`Bash の current-environment command substitution を検査できない（${inner.problems[0]}）`);
+      }
+    };
+    for (const evaluation of c.evaluations || []) checkEvaluation(evaluation, state);
+    // Assignment-only commands expand assignments in order. Prefix assignments to other commands
+    // are not proofs for those commands' argument expansions.
+    const expansionState = copyState(state);
+    // Flattened current-environment bodies may have changed a value before an earlier outer-word
+    // expansion is inspected. Do not certify a saved value from that reordered visit.
+    if (c.words.some((word) => (word.evaluations || []).some((evaluation) => evaluation.kind === 'source'))) {
+      expansionState.valuesTainted = true;
+    }
+    for (const word of c.words.concat(c.redirs.map((redir) => redir.word))) {
+      for (const evaluation of word.evaluations || []) checkEvaluation(evaluation, expansionState);
+      const assignment = scalarAssignment(word);
+      if (!info.name && !info.dynamicName && assignment) rememberValue(expansionState, assignment, conditional);
+    }
+    if (c.arrayInitializer) {
+      for (const word of c.words) {
+        const indexed = /^\[([^\]]*)\]=(.*)$/s.exec(word.text);
+        if (indexed && !state.associatives.has(c.arrayInitializer) && !numericArithmetic(indexed[1], state)) {
+          res.problems.push('配列の compound assignment の添字を静的な数値と確かめられない');
+        }
+        if (state.integers.has(c.arrayInitializer) && !numericArithmetic(word.dynamic ? null : indexed ? indexed[2] : word.text, state)) {
+          res.problems.push('整数配列の compound assignment の値を静的な数値と確かめられない');
+        }
+      }
+      return; // Initializer elements are data; their direct substitutions were collected separately.
+    }
     const positionalExec = positionalExecutable(info.nameWord);
     const positionalsBefore = state.positionals;
     let positionalUnknown = !!positionalExec && (state.positionalsTainted || state.searchChanged);
@@ -1307,6 +1530,7 @@ function inspect(cmd, options = {}) {
     const shell = SHELLS.has(info.name) ? shellInvocation(info.args, info.name) : null;
     const builtin = info.wrapperNames.every((name) => name === 'command' || name === 'builtin');
     const trap = info.name === 'trap' && builtin ? trapInvocation(info.args) : null;
+    const alias = info.name === 'alias' && builtin ? aliasInvocation(info.args) : null;
     const invocation = {
       order: res.invocations.length, name: info.name, nameWord: info.nameWord, args: info.args,
       words: c.words, redirs: c.redirs, heredocBodies: c.heredocBodies, scope: c.scope, incomplete: info.incomplete,
@@ -1325,8 +1549,82 @@ function inspect(cmd, options = {}) {
       shellSourceUnknown: shell ? shell.unknown : false, shellReadsStdin: shell ? shell.readsStdin : false,
       shellPositionals: shell && !shell.unknown ? shell.positionals : null,
       trapScripts: trap ? trap.scripts : [], trapSourceUnknown: trap ? trap.unknown : false,
+      aliasScripts: alias ? alias.scripts : [], aliasSourceUnknown: alias ? alias.unknown : false,
+      // Carrier offsets allow template/data evidence to be mapped back to a known executable body.
+      // Its output is dynamic, but these selected source bytes are literal and already visited above.
+      expansionScripts: c.words.flatMap((word) => {
+        const sources = (word.evaluations || []).filter((evaluation) => evaluation.kind === 'source');
+        return sources.length && sources.every((source) => typeof source.text === 'string')
+          ? [{ ...word, text: sources.map((source) => source.text).join(';\n'), dynamic: false }] : [];
+      }),
     };
     res.invocations.push(invocation);
+    const persistentValues = (!info.name && !info.dynamicName && !info.wrapped) ||
+      info.persistsEnv || (builtin && (SPECIAL_BUILTINS.has(info.name) || EXPORT_LIKE.has(info.name)));
+    const declaration = builtin && EXPORT_LIKE.has(info.name);
+    const integerDeclaration = declaration && info.args.some((word) => !word.dynamic && /^-[A-Za-z]*i[A-Za-z]*$/.test(word.text));
+    const associativeDeclaration = declaration && info.args.some((word) => !word.dynamic && /^-[A-Za-z]*A[A-Za-z]*$/.test(word.text));
+    if (builtin && ['declare', 'typeset', 'local'].includes(info.name) &&
+        info.args.some((word) => !word.dynamic && /^-[A-Za-z]*n[A-Za-z]*$/.test(word.text))) state.valuesTainted = true;
+    const valueWords = c.words.filter((word) => info.assignRaws.includes(word.raw))
+      .concat(declaration ? info.args : []);
+    for (const word of valueWords) {
+      const assignment = scalarAssignment(word);
+      if (!assignment) {
+        if (integerDeclaration && /^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) state.integers.add(word.text);
+        if (associativeDeclaration && !conditional && /^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) state.associatives.add(word.text);
+        continue;
+      }
+      if (associativeDeclaration && !conditional) state.associatives.add(assignment.name);
+      if (assignment.index !== undefined && !state.associatives.has(assignment.name) && !numericArithmetic(assignment.index, state)) {
+        res.problems.push('配列の添字が静的な数値と確かめられず、添字で評価する source を検査できない');
+      }
+      if (integerDeclaration || state.integers.has(assignment.name)) {
+        state.integers.add(assignment.name);
+        if (!numericArithmetic(assignment.value, state)) {
+          res.problems.push('整数属性への代入が静的な数値と確かめられず、保存された source の再評価を検査できない');
+        }
+        if (persistentValues) rememberValue(state, { ...assignment, value: '0' }, conditional);
+      } else if (persistentValues) rememberValue(state, assignment, conditional);
+    }
+    if (builtin && info.name === 'let') {
+      for (const word of info.args) {
+        if (!numericArithmetic(word.dynamic ? null : word.text, state)) {
+          res.problems.push('let の式が静的な数値と確かめられず、保存された source の再評価を検査できない');
+        }
+      }
+    }
+    if (builtin && info.name === '[[') {
+      for (let k = 1; k + 1 < info.args.length; k++) {
+        if (!/^-(?:eq|ne|lt|le|gt|ge)$/.test(info.args[k].text)) continue;
+        for (const word of [info.args[k - 1], info.args[k + 1]]) {
+          if (!numericArithmetic(arithmeticOperand(word, state), state)) res.problems.push('[[ ]] の数値比較で再評価する式を検査できない');
+        }
+      }
+    }
+    // Builtins which can assign/read unknown text invalidate cached literal proofs.
+    if (builtin && ['read', 'readarray', 'mapfile', 'unset'].includes(info.name)) {
+      if (info.args.some((word) => word.dynamic)) { state.valuesTainted = true; state.associatives.clear(); }
+      if (!info.args.length && info.name === 'read') state.values.set('REPLY', null);
+      for (const word of info.args) {
+        const target = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(word.text);
+        if (!target) continue;
+        if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('builtin が評価する配列の添字を検査できない');
+        state.values.set(target[1], null);
+        if (info.name === 'unset') state.associatives.delete(target[1]);
+        for (const key of state.values.keys()) if (key.startsWith(target[1] + '[')) state.values.set(key, null);
+      }
+    }
+    if (builtin && info.name === 'printf') {
+      const vi = info.args.findIndex((word) => word.text === '-v');
+      const target = vi >= 0 && info.args[vi + 1] && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(info.args[vi + 1].text);
+      if (vi >= 0 && (!target || info.args[vi + 1].dynamic)) state.valuesTainted = true;
+      if (target) {
+        if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('printf -v が評価する配列の添字を検査できない');
+        state.values.set(target[1], null);
+        for (const key of state.values.keys()) if (key.startsWith(target[1] + '[')) state.values.set(key, null);
+      }
+    }
     if (info.cdLike) res.cdLike = true;
     for (const a of info.assigns) if (/^GIT_/.test(a) && !res.gitEnvNames.includes(a)) res.gitEnvNames.push(a);
     if (!info.name && !info.dynamicName && !info.wrapped) { state.env = env; state.pathChanged = pathChanged; }
@@ -1337,6 +1635,7 @@ function inspect(cmd, options = {}) {
     if (invocation.definitionName) {
       state.unknownContext = true;
       state.positionalsTainted = true;
+      state.valuesTainted = true;
       if (invocation.definitionName === 'git') state.gitShadowed = true;
     }
     if (info.envUnknown && (gitContext || c.words.some(wordHasGit))) {
@@ -1387,6 +1686,7 @@ function inspect(cmd, options = {}) {
       for (const script of trap.scripts) {
         const inner = inspectMediatedSource(script, sourceDepth);
         if (inner.problems.length) res.problems.push(`trap の action を検査できない（${inner.problems[0]}）`);
+        if (sourceChangesValues(inner)) state.valuesTainted = true;
         if (inner.invocations.some((entry) =>
           (entry.name === 'set' && positionalSet(entry.args)) ||
           (entry.name === 'shift' && (!entry.args[0] || entry.args[0].dynamic || entry.args[0].text !== '0')))) state.positionalsTainted = true;
@@ -1394,12 +1694,29 @@ function inspect(cmd, options = {}) {
       if (trap.scripts.length) state.unknownContext = true; // A DEBUG/signal action may run before a later write.
       return;
     }
+    if (alias) {
+      if (alias.unknown) res.problems.push('alias の定義の位置や値を読みきれず、実行する source を検査できない');
+      for (const script of alias.scripts) {
+        const inner = inspectMediatedSource(script, sourceDepth);
+        if (inner.problems.length) res.problems.push(`alias の値を検査できない（${inner.problems[0]}）`);
+        if (sourceChangesValues(inner)) state.valuesTainted = true;
+      }
+      if (alias.scripts.length || alias.unknown) state.searchChanged = true;
+      return;
+    }
     if (name === '.' || name === 'source' || name === 'eval') {
       state.unknownContext = true;
       state.positionalsTainted = true;
+      state.valuesTainted = true;
       state.searchChanged = true; // 未読のコードは PATH や関数による command lookup も変えうる。
     }
     if (COMMAND_SEARCH_MUTATORS.has(name)) state.searchChanged = true;
+    if ((name === 'hash' && info.args.some((word) => word.dynamic || /^-[^-]*p/.test(word.text))) ||
+        (name === 'enable' && info.args.some((word) => word.dynamic || /^-[^-]*f/.test(word.text))) ||
+        (name === 'autoload' && info.args.some((word) => word.dynamic || !word.text.startsWith('-')))) {
+      res.problems.push('command lookup に未検査の実行先や source を登録する形は、中身を検査できない');
+      state.valuesTainted = true;
+    }
     if (CD_LIKE.has(name)) { res.cdLike = true; state.cd = true; }
     if (EXPORT_LIKE.has(name)) {
       for (const w of info.args) {
@@ -1478,7 +1795,7 @@ function inspect(cmd, options = {}) {
     }
     if (name !== 'git') {
       // Literal printf/echo argv is data, including in a tuple or inspected source string.
-      if ((positionalExec || sourceDepth > 0) && ['echo', 'printf'].includes(name) &&
+      if ((positionalExec || sourceDepth > 0 || c.mediated) && ['echo', 'printf'].includes(name) &&
           [name, '/bin/' + name, '/usr/bin/' + name].includes(info.nameWord.text)) return;
       // git 以外の名前で包んで git を走らせる形（`arch -arm64 git commit …` など・v3）。
       // `git` の語の後が書き込む側の subcommand（または読みきれない語の後に目印の subcommand）

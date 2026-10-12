@@ -186,7 +186,12 @@ for (const g of gits) {
 
 // commit や ref を index を通さずに作る plumbing は、エージェントの経路では使わない。
 for (const g of gits) {
-  if (g.sub === 'commit-tree' || g.sub === 'mktree' || g.sub === 'update-ref') {
+  // fast-import の単独 help は stdin を import せずに終了する。値・stream 内の文字は見ない。
+  const importHelp = g.sub === 'fast-import' && g.args.length === 1 && !g.args[0].dynamic &&
+    ['-h', '--help'].includes(g.args[0].text);
+  if (importHelp) g.terminal = true;
+  if (g.sub === 'commit-tree' || g.sub === 'mktree' || g.sub === 'update-ref' ||
+      (g.sub === 'fast-import' && !importHelp)) {
     deny(
       `\`git ${g.sub}\` はブロックしました。staged 検査を通らずに commit や ref を作れるためです。\n` +
       'commit は `git add <files>` → `git commit` で作ってください（plumbing が要る作業は人が実行します）。',

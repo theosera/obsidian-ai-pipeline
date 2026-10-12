@@ -90,7 +90,8 @@ function withoutTemplateTokens(evidence, depth = 0) {
     .filter((word) => evidence.slice(word.start, word.start + word.raw.length) === word.raw);
   const codeSources = new Map();
   const inspected = guard.inspect(evidence);
-  for (const invocation of inspected.invocations) for (const script of invocation.trapScripts) {
+  for (const invocation of inspected.invocations) for (const script of invocation.trapScripts
+    .concat(invocation.aliasScripts || [], invocation.expansionScripts || [])) {
     if (!script.dynamic) codeSources.set(`${script.start}:${script.raw}`, script.text);
   }
   for (const word of sourceWords) {
@@ -100,7 +101,7 @@ function withoutTemplateTokens(evidence, depth = 0) {
   }
   for (const g of inspected.gits) if (g.sub === 'config') {
     const operation = configOperation(g.args);
-    if (!operation.read && !operation.rename && operation.operands.length > 1 && /^credential(?:\..+)?\.helper$/i.test(operation.operands[0])) {
+    if (!operation.read && !operation.rename && !operation.deletion && operation.operands.length > 1 && /^credential(?:\..+)?\.helper$/i.test(operation.operands[0])) {
       const word = operation.operandWords[1];
       codeSources.set(`${word.start}:${word.raw}`, word.text.startsWith('!') ? word.text.slice(1) :
         word.text.startsWith('/') ? word.text : `__credential_helper__${word.text}`);
@@ -124,7 +125,7 @@ function withoutTemplateTokens(evidence, depth = 0) {
       const codeSource = codeSources.get(`${word.start}:${word.raw}`);
       const cleanSource = codeSource === undefined ? null : withoutTemplateTokens(codeSource, depth + 1);
       const templateDataSource = cleanSource !== null && cleanSource !== codeSource && !SECRET_FILE_RE.test(cleanSource);
-      if (word.dynamic || (!templateFilename && !headerData && !templateDataSource)) continue;
+      if ((word.dynamic && !templateDataSource) || (!templateFilename && !headerData && !templateDataSource)) continue;
       const start = word.start;
       const end = start + word.raw.length;
       // Nested sources can use relative offsets. Remove only a matching whole word in this source.
@@ -247,6 +248,7 @@ function configOperation(words) {
   let afterDD = false;
   let actionSeen = false;
   let rename = false;
+  let deletion = null;
   for (let k = 0; k < words.length; k++) {
     const t = words[k].text;
     if (!afterDD && t === '--') { afterDD = true; continue; }
@@ -258,7 +260,9 @@ function configOperation(words) {
         continue;
       }
       if (name.startsWith('ren') && 'rename-section'.startsWith(name)) rename = true;
-      if (/^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|--list|--unset(?:-all)?|--remove-section)$/.test(t)) read = true;
+      if (name.startsWith('uns') && ['unset', 'unset-all'].some((option) => option.startsWith(name))) deletion = 'key';
+      if (name.startsWith('rem') && 'remove-section'.startsWith(name)) deletion = 'section';
+      if (/^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|--list)$/.test(t)) read = true;
       continue;
     }
     if (!afterDD && t.startsWith('-')) {
@@ -269,7 +273,8 @@ function configOperation(words) {
     if (!afterDD && !actionSeen && ['get', 'list', 'unset', 'remove-section', 'set', 'rename-section', 'edit'].includes(t)) {
       actionSeen = true;
       rename = t === 'rename-section';
-      read = ['get', 'list', 'unset', 'remove-section'].includes(t);
+      deletion = t === 'unset' ? 'key' : t === 'remove-section' ? 'section' : null;
+      read = ['get', 'list'].includes(t);
       continue;
     }
     operands.push(t);
@@ -277,12 +282,15 @@ function configOperation(words) {
     // config は key 以降を value / value-pattern として扱う（--get という値もある）。
     afterDD = true;
   }
-  return { read, rename, operands, operandWords };
+  return { read, rename, deletion, operands, operandWords };
 }
 
 /** Distinguish destination-config writes from getters without treating option values as actions. */
 function writesDestinationConfig(words) {
-  const { read, rename, operands, operandWords } = configOperation(words);
+  const { read, rename, deletion, operands, operandWords } = configOperation(words);
+  // Removing a selected destination exposes fallback URLs/configuration just like replacing it.
+  if (deletion) return operands.length > 0 && (operandWords[0].dynamic ||
+    (deletion === 'key' ? destinationConfig(operands[0]) : destinationSection(operands[0])));
   return !read && operands.length > 1 && (rename ?
     operandWords[1].dynamic || destinationSection(operands[1]) : destinationConfig(operands[0]));
 }
@@ -311,7 +319,7 @@ function credentialHelperSources(g) {
   }
   if (g.sub === 'config') {
     const operation = configOperation(g.args);
-    if (!operation.read && !operation.rename && operation.operands.length > 1 && helperKey(operation.operands[0])) {
+    if (!operation.read && !operation.rename && !operation.deletion && operation.operands.length > 1 && helperKey(operation.operands[0])) {
       values.push(operation.operands[1]);
     }
   }
@@ -698,6 +706,8 @@ function collectNetworkInvocations(inspection, depth = 0) {
     }
     if (invocation.trapSourceUnknown) deny('trap に登録する source が確定できず、egress ガードで検査できません (fail-closed)。');
     scripts.push(...invocation.trapScripts.map((script) => ({ ...script, mediated: true })));
+    if (invocation.aliasSourceUnknown) deny('alias に登録する source が確定できず、egress ガードで検査できません (fail-closed)。');
+    scripts.push(...(invocation.aliasScripts || []).map((script) => ({ ...script, mediated: true })));
     for (const script of scripts) {
       const nested = script.mediated ? guard.inspectMediatedSource(script) :
         guard.inspect(script.text, { initialPositionals: script.initialPositionals });
@@ -760,6 +770,9 @@ for (const g of inspectedGits) {
   const firstWord = a.find((x) => !x.startsWith('-'));
   const remoteWrite = g.sub === 'remote' && (firstWord === 'add' || firstWord === 'set-url');
   const configWrite = g.sub === 'config' && writesDestinationConfig(g.args);
+  if (g.sub === 'fast-import' && !(g.args.length === 1 && !g.args[0].dynamic && ['-h', '--help'].includes(g.args[0].text))) {
+    deny('git fast-import は stdin のデータから未検査の履歴と ref を作るため、実行をブロックします (fail-closed)。');
+  }
   if (['send-pack', 'http-push'].includes(g.sub)) {
     deny(`git ${g.sub} は履歴を直接送る plumbing command で、egress ガードの検査対象外です。送信をブロックします (fail-closed)。`);
   }
