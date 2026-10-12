@@ -82,11 +82,30 @@ const EXFIL_SHAPES = [
 const SECRET_FILE_RE = /(\.env(\.|\b)|x_tokens\.json|pkce_state\.json|pipeline_config\.json|credentials[^/\s]*\.json|service-account[^/\s]*\.json|[^/\s]*token[^/\s]*\.json|\.pem\b|\.key\b|id_(rsa|ed25519)\b|secrets\.(json|ya?ml)\b|(^|[\s'"/=])secrets\/)/i;
 const NET_VERB_RE = /\b(curl|wget|nc|ncat|scp|sftp|rsync|telnet)\b|\bgh\s+gist\b/i;
 /** Remove exact template basename evidence while retaining every other secret family's markers. */
-function withoutTemplateTokens(evidence) {
+function withoutTemplateTokens(evidence, depth = 0) {
+  if (!/\.env\.example/i.test(evidence) || depth > 16) return evidence;
   const parsed = guard.parseShell(evidence);
   const ranges = [];
   const sourceWords = parsed.cmds.flatMap((command) => command.words.concat(command.redirs.map((redir) => redir.word)))
     .filter((word) => evidence.slice(word.start, word.start + word.raw.length) === word.raw);
+  const codeSources = new Map();
+  const inspected = guard.inspect(evidence);
+  for (const invocation of inspected.invocations) for (const script of invocation.trapScripts) {
+    if (!script.dynamic) codeSources.set(`${script.start}:${script.raw}`, script.text);
+  }
+  for (const word of sourceWords) {
+    const config = /^credential(?:\..+)?\.helper=(.*)$/is.exec(word.text);
+    if (config) codeSources.set(`${word.start}:${word.raw}`, config[1].startsWith('!') ? config[1].slice(1) :
+      config[1].startsWith('/') ? config[1] : `__credential_helper__${config[1]}`);
+  }
+  for (const g of inspected.gits) if (g.sub === 'config') {
+    const operation = configOperation(g.args);
+    if (!operation.read && !operation.rename && operation.operands.length > 1 && /^credential(?:\..+)?\.helper$/i.test(operation.operands[0])) {
+      const word = operation.operandWords[1];
+      codeSources.set(`${word.start}:${word.raw}`, word.text.startsWith('!') ? word.text.slice(1) :
+        word.text.startsWith('/') ? word.text : `__credential_helper__${word.text}`);
+    }
+  }
   const markers = (source, offset) => {
     for (const match of source.matchAll(/(^|[^A-Za-z0-9_.-])(\.env\.example)(?=$|[^A-Za-z0-9_.-])/gi)) {
       const start = offset + match.index + match[1].length;
@@ -102,14 +121,17 @@ function withoutTemplateTokens(evidence) {
       const previous = index > 0 ? command.words[index - 1].text : '';
       const headerData = command.words.slice(0, index).some((entry) => /(^|\/)curl$/.test(entry.text)) &&
         ['-H', '--header', '--proxy-header'].includes(previous);
-      if (word.dynamic || (!templateFilename && !headerData)) continue;
+      const codeSource = codeSources.get(`${word.start}:${word.raw}`);
+      const cleanSource = codeSource === undefined ? null : withoutTemplateTokens(codeSource, depth + 1);
+      const templateDataSource = cleanSource !== null && cleanSource !== codeSource && !SECRET_FILE_RE.test(cleanSource);
+      if (word.dynamic || (!templateFilename && !headerData && !templateDataSource)) continue;
       const start = word.start;
       const end = start + word.raw.length;
       // Nested sources can use relative offsets. Remove only a matching whole word in this source.
       if (evidence.slice(start, end) !== word.raw ||
           (start > 0 && !/[\s;&|<>()]/.test(evidence[start - 1])) ||
           (end < evidence.length && !/[\s;&|<>()]/.test(evidence[end]))) continue;
-      if (headerData) { markers(word.raw, start); continue; }
+      if (headerData || templateDataSource) { markers(word.raw, start); continue; }
       // Keep path prefixes: a template filename must not hide a secrets/ or key-name marker.
       const literal = word.raw.toLowerCase().indexOf('.env.example', word.raw.lastIndexOf('/') + 1);
       if (literal >= 0) ranges.push({ start: start + literal, end: start + literal + '.env.example'.length });
@@ -216,8 +238,8 @@ function pushRepository(words) {
   return { repository: positional || explicit, indeterminate };
 }
 
-/** Distinguish destination-config writes from getters without treating option values as actions. */
-function writesDestinationConfig(words) {
+/** Read config actions and operands without treating option values or getter patterns as writes. */
+function configOperation(words) {
   const valueOpts = ['file', 'blob', 'type', 'default', 'value', 'url', 'comment'];
   const operands = [];
   const operandWords = [];
@@ -255,8 +277,51 @@ function writesDestinationConfig(words) {
     // config は key 以降を value / value-pattern として扱う（--get という値もある）。
     afterDD = true;
   }
+  return { read, rename, operands, operandWords };
+}
+
+/** Distinguish destination-config writes from getters without treating option values as actions. */
+function writesDestinationConfig(words) {
+  const { read, rename, operands, operandWords } = configOperation(words);
   return !read && operands.length > 1 && (rename ?
     operandWords[1].dynamic || destinationSection(operands[1]) : destinationConfig(operands[0]));
+}
+
+/** Reconstruct credential-helper shell commands only for consumers or persistent helper writes. */
+function credentialHelperSources(g) {
+  const helperKey = (key) => /^credential(?:\..+)?\.helper$/i.test(key);
+  const action = g.args.find((word) => !word.text.startsWith('-'));
+  const consumes = ['push', 'fetch', 'pull', 'clone', 'ls-remote'].includes(g.sub) ||
+    (g.sub === 'credential' && action && ['fill', 'approve', 'reject'].includes(action.text)) ||
+    (g.sub === 'remote' && action && ['show', 'update'].includes(action.text)) ||
+    (g.sub === 'submodule' && action && ['add', 'update'].includes(action.text));
+  const values = [];
+  if (consumes) {
+    if (g.configEnvs.some((config) => helperKey(config.split('=')[0]))) {
+      deny('credential helper の source が --config-env の値から作られ、egress ガードで検査できません (fail-closed)。');
+    }
+    for (const config of g.configs) {
+      const eq = config.indexOf('=');
+      const key = eq < 0 ? config : config.slice(0, eq);
+      if (!helperKey(key)) continue;
+      const value = eq < 0 ? '' : config.slice(eq + 1);
+      if (!value && /^credential\.helper$/i.test(key)) values.length = 0;
+      else if (value) values.push(value);
+    }
+  }
+  if (g.sub === 'config') {
+    const operation = configOperation(g.args);
+    if (!operation.read && !operation.rename && operation.operands.length > 1 && helperKey(operation.operands[0])) {
+      values.push(operation.operands[1]);
+    }
+  }
+  return values.filter(Boolean).map((helper) => {
+    if (helper.includes('\0')) deny('credential helper の source が変数・置換を含み、egress ガードで検査できません (fail-closed)。');
+    // A neutral parser prefix represents Git's trusted named-helper dispatch while preserving shell suffix code.
+    return { text: helper.startsWith('!') ? helper.slice(1) : helper.startsWith('/') ? helper : `__credential_helper__${helper}`,
+      mediated: true,
+      gitContext: consumes ? g : null };
+  });
 }
 
 /** Identify section names whose renamed contents can activate a destination or transport override. */
@@ -334,7 +399,53 @@ const CURL_LONG_NAMES = [...CURL_VALUE_LONG, ...CURL_FLAG_LONG];
 function curlReadsUpload(words, incomplete = false) {
   // xargs/find can provide an unseen filename to a trailing file-reading option.
   const fileOptions = new Set(['upload-file', 'data', 'data-ascii', 'data-binary', 'json',
-    'header', 'proxy-header', 'data-urlencode', 'form']);
+    'header', 'proxy-header', 'data-urlencode', 'form', 'variable']);
+  const variables = new Map();
+  let definitionVersion = 0;
+  let unknownFileVersion = 0;
+  const outbound = new Set(['data', 'data-ascii', 'data-binary', 'data-raw', 'data-urlencode', 'json',
+    'form', 'form-string', 'header', 'proxy-header', 'url', 'url-query', 'request', 'request-target',
+    'user', 'proxy-user', 'user-agent', 'referer', 'cookie', 'oauth2-bearer', 'ftp-account',
+    'mail-auth', 'mail-from', 'mail-rcpt', 'quote', 'telnet-option']);
+  /** Expand known inline values locally; file/env contents remain an unknown marker and are never read. */
+  const expanded = (value) => {
+    let file = false;
+    const text = value.replace(/\{\{([A-Za-z0-9_]+)(?::([^}]*))?\}\}/g, (whole, name, transforms, offset) => {
+      let escapes = 0;
+      for (let p = offset - 1; p >= 0 && value[p] === '\\'; p--) escapes++;
+      if (escapes % 2) return whole;
+      const variable = variables.get(name);
+      file ||= unknownFileVersion > (variable ? variable.version : 0);
+      if (!variable) return file ? '\0' : '';
+      file ||= variable.file;
+      let result = variable.text;
+      if (result === null) return '\0';
+      for (const transform of (transforms || '').split(/[,:]/).filter(Boolean)) {
+        if (transform === 'trim') result = result.trim();
+        else if (transform === 'json') result = JSON.stringify(result);
+        else if (transform === 'url') result = encodeURIComponent(result);
+        else if (transform === 'b64') result = Buffer.from(result).toString('base64');
+        else if (transform === '64dec') result = Buffer.from(result, 'base64').toString();
+        else return '\0';
+      }
+      return result;
+    });
+    return { text, file };
+  };
+  /** Track definitions in order so unused or overwritten file variables do not imply an upload. */
+  const variableDefinition = (value, expanding) => {
+    const definition = /^%?([A-Za-z0-9_]+)(?:\[[0-9-]+\])?([=@])?(.*)$/s.exec(value);
+    definitionVersion++;
+    if (!definition) {
+      const at = value.indexOf('@');
+      const eq = value.indexOf('=');
+      if (at >= 0 && (eq < 0 || at < eq)) unknownFileVersion = definitionVersion;
+      return;
+    }
+    const source = expanding ? expanded(definition[3]) : { text: definition[3], file: false };
+    variables.set(definition[1], { file: definition[2] === '@' || source.file, version: definitionVersion,
+      text: definition[2] === '@' || !definition[2] || source.text.includes('\0') ? null : source.text });
+  };
   /** Match file references using the option's own value, not text printed inside another value. */
   const payload = (option, value) => {
     if (option === 'config') return true; // config can supply upload options or a destination
@@ -349,13 +460,20 @@ function curlReadsUpload(words, incomplete = false) {
     if (t === '--') break;
     if (t.startsWith('--')) {
       const eq = t.indexOf('=');
-      const name = t.slice(2, eq < 0 ? undefined : eq);
+      const fullName = t.slice(2, eq < 0 ? undefined : eq);
+      const expanding = fullName.startsWith('expand-');
+      const name = expanding ? fullName.slice(7) : fullName;
       const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter((option) => option.startsWith(name));
       if (matches.length !== 1 || !CURL_VALUE_LONG.has(matches[0])) continue;
       const option = matches[0];
       if (option === 'config') return true;
       const value = eq < 0 ? words[++k] : { text: t.slice(eq + 1) };
-      if (value ? payload(option, value.text) : incomplete && fileOptions.has(option)) return true;
+      if (value) {
+        if (option === 'variable') { variableDefinition(value.text, expanding); continue; }
+        const source = expanding ? expanded(value.text) : { text: value.text, file: false };
+        if (expanding && outbound.has(option) && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) return true;
+        if ((source.file && outbound.has(option)) || payload(option, source.text)) return true;
+      } else if (incomplete && fileOptions.has(option)) return true;
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
         const option = CURL_VALUE_SHORT[t[p]];
@@ -549,14 +667,19 @@ function envSplitInspection(invocation, script) {
   return guard.inspect(['env', ...words.map((word) => word.text), ...tail.map((word) => word.text)].map(parserLiteral).join(' '));
 }
 
+const inspectedGits = [];
 /** Parse interpreter strings as code, retaining ordinary literal arguments as data. */
 function collectNetworkInvocations(inspection, depth = 0) {
   if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。');
+  if (inspection.problems.length) deny(guard.problemMessage(inspection.problems, 'egress ガード'));
+  inspectedGits.push(...inspection.gits);
   const result = [];
   for (const invocation of inspection.invocations) {
     if (invocation.nonExec || invocation.definitionName) continue;
     result.push(invocation);
     const scripts = [];
+    const gitCommand = inspection.gits.find((g) => g.invocationOrder === invocation.order);
+    if (gitCommand) scripts.push(...credentialHelperSources(gitCommand));
     if (invocation.splitString) {
       for (const script of invocation.splitWords) result.push(...collectNetworkInvocations(envSplitInspection(invocation, script), depth + 1));
     }
@@ -564,15 +687,27 @@ function collectNetworkInvocations(inspection, depth = 0) {
       if (invocation.shellCommandMode && invocation.shellSourceUnknown) {
         deny('シェルの command mode の source が option の境界から確定できず、egress ガードで検査できません (fail-closed)。');
       }
-      scripts.push(...invocation.shellScripts);
+      scripts.push(...invocation.shellScripts.map((script) => ({ ...script, initialPositionals: invocation.shellPositionals })));
       if (!invocation.shellCommandMode && invocation.shellReadsStdin) {
-        scripts.push(...invocation.redirs.filter((redir) => redir.op === '<<<').map((redir) => redir.word));
+        scripts.push(...invocation.redirs.filter((redir) => redir.op === '<<<')
+          .map((redir) => ({ ...redir.word, initialPositionals: invocation.shellPositionals })));
       }
     } else if (invocation.name === 'eval') {
       const args = invocation.args[0] && invocation.args[0].text === '--' ? invocation.args.slice(1) : invocation.args;
       scripts.push({ text: args.map((word) => word.text).join(' ') });
     }
-    for (const script of scripts) result.push(...collectNetworkInvocations(guard.inspect(script.text), depth + 1));
+    if (invocation.trapSourceUnknown) deny('trap に登録する source が確定できず、egress ガードで検査できません (fail-closed)。');
+    scripts.push(...invocation.trapScripts.map((script) => ({ ...script, mediated: true })));
+    for (const script of scripts) {
+      const nested = script.mediated ? guard.inspectMediatedSource(script) :
+        guard.inspect(script.text, { initialPositionals: script.initialPositionals });
+      if (script.gitContext) for (const g of nested.gits) {
+        g.gitEnvNames = [...new Set(g.gitEnvNames.concat(script.gitContext.gitEnvNames))];
+        g.configs.push(...script.gitContext.configs.filter((config) => destinationConfig(config.split('=')[0])));
+        g.configEnvs.push(...script.gitContext.configEnvs);
+      }
+      result.push(...collectNetworkInvocations(nested, depth + 1));
+    }
   }
   return result;
 }
@@ -620,7 +755,7 @@ if (SECRET_FILE_RE.test(sshReadEvidence) &&
   deny('秘密ファイルの読取と SSH セッションが同一コマンドに含まれ、SSH の stdin に秘密を送る可能性があります (egress guard)。');
 }
 
-for (const g of insp.gits) {
+for (const g of inspectedGits) {
   const a = g.args.map((w) => w.text);
   const firstWord = a.find((x) => !x.startsWith('-'));
   const remoteWrite = g.sub === 'remote' && (firstWord === 'add' || firstWord === 'set-url');

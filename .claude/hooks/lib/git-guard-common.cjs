@@ -290,7 +290,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
   const parenEffects = [];
   const braceEffects = [];
   const compoundEffects = [];
-  const newEffect = () => ({ pipeline: false, unsafeSetup: false });
+  const newEffect = () => ({ pipeline: false, unsafeSetup: false, conditional: false });
   let inheritedEffects = parentEffects;
   let pipeline = newEffect();
   let closedGroup = null;
@@ -314,6 +314,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       const close = { if: 'fi', while: 'done', until: 'done', for: 'done', select: 'done', case: 'esac' }[cur.text];
       if (close) {
         const group = newEffect();
+        group.conditional = true; // A conditional/loop body may never update positional parameters.
         compoundEffects.push({ close, inheritedEffects, pipeline, group });
         inheritedEffects = currentEffects().concat(group);
         pipeline = newEffect();
@@ -459,8 +460,10 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       const isPipe = c === '|' && src[i + 1] !== '|';
       endWord(); // fi/done/esac closes its outer segment before a trailing pipe.
       if (isPipe) pipeline.pipeline = true;
+      if (c === '&' && src[i + 1] !== '&') pipeline.conditional = true;
       endCmd();
       if (!isPipe) pipeline = newEffect();
+      if ((c === '&' || c === '|') && src[i + 1] === c) pipeline.conditional = true;
       piped = isPipe;
       if ((c === ';' || c === '|' || c === '&') && src[i + 1] === c) i += 2;
       else if (c === '|' && src[i + 1] === '&') i += 2;
@@ -1117,13 +1120,86 @@ function shellInvocation(args, name) {
   const readsStdin = !commandMode && (stdin || !operand || (!operand.dynamic &&
     (operand.text === '-' || ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '/proc/thread-self/fd/0']
       .includes(path.posix.normalize(operand.text)))));
-  return { scripts, commandMode, readsStdin, unknown };
+  const positionals = commandMode ? args.slice(k + (name === 'fish' ? 0 : 2))
+    : stdin ? args.slice(k) : operand ? args.slice(k + 1) : [];
+  return { scripts, commandMode, readsStdin, unknown, positionals };
 }
 
 /** Detect Git text that a shell can expose after tokenization, without executing its input. */
 function shellInputHasGit(source) {
   return hasGitText(source.replace(/['"\\]/g, '')) ||
     parseShell(source).cmds.some((c) => c.words.some(wordHasGit));
+}
+
+/** Select only a registered trap action; queries, signal operands and reset forms are data. */
+function trapInvocation(args) {
+  let k = 0;
+  let query = false;
+  let unknown = false;
+  while (k < args.length && args[k].text.startsWith('-') && args[k].text !== '-') {
+    const word = args[k];
+    if (word.text === '--') { k++; break; }
+    if (word.text === '--help') { query = true; k++; continue; }
+    if (!word.dynamic && /^-[pl]+$/.test(word.text)) query = true;
+    else { unknown = true; break; }
+    k++;
+  }
+  const action = args[k];
+  if (query || !action || args.length - k < 2 || (!action.dynamic &&
+      (action.text === '' || action.text === '-' || /^\d+$/.test(action.text)))) return { scripts: [], query, unknown: false };
+  return { scripts: [action], query: false, unknown };
+}
+
+/** Read set's positional operands without confusing option queries or consumed -o names with argv. */
+function positionalSet(args) {
+  let k = 0;
+  let explicit = false;
+  let unknown = false;
+  while (k < args.length) {
+    const word = args[k];
+    const text = word.text;
+    if (text === '--') { k++; explicit = true; break; }
+    if (text === '-') { k++; break; }
+    if (word.dynamic) { unknown = true; break; }
+    if (!/^[+-]/.test(text)) break;
+    for (let p = 1; p < text.length; p++) {
+      if (text[p] === 'o') {
+        if (p + 1 === text.length && args[k + 1] && !/^[+-]/.test(args[k + 1].text)) {
+          if (args[++k].dynamic) unknown = true;
+        }
+        break;
+      }
+      if (!/[A-Za-z]/.test(text[p])) unknown = true;
+    }
+    k++;
+  }
+  if (!explicit && k >= args.length) return null;
+  return { words: args.slice(k), unknown };
+}
+
+/** Detect positional expansion in executable position, including scalar and sliced forms. */
+const positionalExecutable = (word) => word && word.dynamic &&
+  /\$(?:[@*1-9]|\{(?:[@*]|[1-9][0-9]*)(?:\}|[:#%/+-]))/.test(word.raw);
+/** Quoted @ preserves the known tuple's word boundaries, unlike unquoted expansions and $*. */
+const exactQuotedAt = (word) => /^"\$(?:@|\{@\})"$/.test(word.raw);
+/** Preserve expanded argv as literal words: its contents are not shell assignments or reserved words. */
+const expandedLiteral = (word) => ({ ...word, raw: "'" + word.text.replace(/'/g, "'\\''") + "'", quoted: true });
+/** Only fully known words with preserved boundaries can be reused as positional argv. */
+const knownPositionals = (words) => words.every((word) => !word.dynamic &&
+  (word.quoted || !/[?*\[]/.test(word.text))) ? words : null;
+
+/** Inspect an executable source string conservatively while leaving ordinary command arguments as data. */
+function inspectMediatedSource(source, depth = 0) {
+  const word = typeof source === 'string' ? { text: source, dynamic: false } : source;
+  if (!word || word.dynamic) return { gits: [], invocations: [], problems: ['実行する source 文字列が動的で、中身を検査できない'] };
+  const inner = inspect(word.text, { sourceDepth: depth + 1 });
+  const opaque = inner.invocations.some((invocation) => invocation.dynamicName || invocation.definitionName ||
+    ['.', 'source', 'eval'].includes(invocation.name) || COMMAND_SEARCH_MUTATORS.has(invocation.name) ||
+    invocation.shellSourceUnknown || invocation.shellScripts.some((script) => script.dynamic) ||
+    (SHELLS.has(invocation.name) && !invocation.shellCommandMode && !invocation.heredocBodies.length &&
+      !invocation.redirs.some((redir) => redir.op === '<<<' && !redir.word.dynamic)));
+  if (inner.gits.length || opaque) inner.problems.push('文字列から実行する git や不明な実行先は、場所・環境・helper を検査できない');
+  return inner;
 }
 
 let trustedGitPaths;
@@ -1150,11 +1226,13 @@ function trustedGitExecutable(word) {
 }
 
 /** Inspect executable Git invocations, associating preceding scope changes with each invocation. */
-function inspect(cmd) {
+function inspect(cmd, options = {}) {
+  const sourceDepth = options.sourceDepth || 0;
   const res = {
     gits: [], problems: [], cdLike: false, gitEnvNames: [], cmdCount: 0, invocations: [], async: false,
   };
   res.commands = res.invocations;
+  if (sourceDepth > MAX_DEPTH) { res.problems.push('source 文字列の入れ子が深すぎる'); return res; }
   const normalized = cmd.replace(/['"\\]/g, '');
   const gitContext = hasGitText(normalized);
   // CR（\r）を含むコマンドは、シェルと同じに語へ分けられる保証が無い（v3・fail-closed）。
@@ -1176,11 +1254,11 @@ function inspect(cmd) {
     assignRawsAll.push(...info.assignRaws);
   }
   // 代入の値に git の語がある（`G=git` のように、後で変数からコマンドを作りうる）。
-  const gitInAssign = assignRawsAll.some((raw) => hasGitText(raw.slice(raw.indexOf('=') + 1)));
+  const gitInAssign = assignRawsAll.some((raw) => hasGitText(raw.slice(raw.indexOf('=') + 1).replace(/['"\\]/g, '')));
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false });
+  const emptyState = () => ({ env: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false });
   const copyState = (s) => ({ ...s, env: new Set(s.env) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
@@ -1189,10 +1267,34 @@ function inspect(cmd) {
     return scopeStates.get(scope);
   };
   const seedScope = (scope, env, cd, inherited) => scopeStates.set(scope, { ...emptyState(), ...inherited, env: new Set(env), cd });
+  if (Array.isArray(options.initialPositionals)) scopeStates.set(parsed.scope, { ...emptyState(), positionals: knownPositionals(options.initialPositionals) });
+  const updatePositionals = (state, c, next) => {
+    const conditional = (c.effects || []).some((effect) => effect.conditional || effect.pipeline);
+    const same = state.positionals && next && state.positionals.length === next.length &&
+      state.positionals.every((word, index) => word.text === next[index].text);
+    state.positionals = conditional && !same ? null : next;
+  };
 
   const visit = (c, info, depth) => {
     if (depth > MAX_DEPTH) { res.problems.push('入れ子が深すぎる'); return; }
     const state = stateFor(c.scope);
+    const positionalExec = positionalExecutable(info.nameWord);
+    const positionalsBefore = state.positionals;
+    let positionalUnknown = !!positionalExec && (state.positionalsTainted || state.searchChanged);
+    if (positionalExec && !positionalUnknown) {
+      let replacement;
+      const scalar = /^"\$(?:([1-9])|\{([1-9][0-9]*)\})"$/.exec(info.nameWord.raw);
+      if (state.positionals && exactQuotedAt(info.nameWord)) replacement = state.positionals;
+      else if (state.positionals && scalar) {
+        replacement = [state.positionals[Number(scalar[1] || scalar[2]) - 1] || { text: '', dynamic: false, quoted: true }];
+      } else if (state.positionals && !state.positionals.length && /^\$(?:[@*]|\{[@*]\})$/.test(info.nameWord.raw)) replacement = [];
+      else if (state.positionals && !state.positionals.length && /^"\$(?:\*|\{\*\})"$/.test(info.nameWord.raw)) replacement = [{ text: '', dynamic: false, quoted: true }];
+      else positionalUnknown = true;
+      if (replacement) {
+        const index = c.words.indexOf(info.nameWord);
+        info = resolveCommand(c.words.slice(0, index).concat(replacement.map(expandedLiteral), c.words.slice(index + 1)));
+      }
+    }
     const env = new Set(state.env);
     let pathChanged = state.pathChanged;
     for (const op of info.envOps) {
@@ -1203,12 +1305,15 @@ function inspect(cmd) {
     }
     const cdBefore = state.cd || info.cdLike;
     const shell = SHELLS.has(info.name) ? shellInvocation(info.args, info.name) : null;
+    const builtin = info.wrapperNames.every((name) => name === 'command' || name === 'builtin');
+    const trap = info.name === 'trap' && builtin ? trapInvocation(info.args) : null;
     const invocation = {
       order: res.invocations.length, name: info.name, nameWord: info.nameWord, args: info.args,
       words: c.words, redirs: c.redirs, heredocBodies: c.heredocBodies, scope: c.scope, incomplete: info.incomplete,
       wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
       wrapperNames: info.wrapperNames,
       launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
+      positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
       definitionName: c.definitionName || (info.name === 'function' ? (info.args[0] && info.args[0].text) : null),
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
@@ -1218,6 +1323,8 @@ function inspect(cmd) {
       unsafeGroupSetup: (c.effects || []).some((e) => e.unsafeSetup),
       shellScripts: shell ? shell.scripts : [], shellCommandMode: shell ? shell.commandMode : false,
       shellSourceUnknown: shell ? shell.unknown : false, shellReadsStdin: shell ? shell.readsStdin : false,
+      shellPositionals: shell && !shell.unknown ? shell.positionals : null,
+      trapScripts: trap ? trap.scripts : [], trapSourceUnknown: trap ? trap.unknown : false,
     };
     res.invocations.push(invocation);
     if (info.cdLike) res.cdLike = true;
@@ -1229,6 +1336,7 @@ function inspect(cmd) {
     }
     if (invocation.definitionName) {
       state.unknownContext = true;
+      state.positionalsTainted = true;
       if (invocation.definitionName === 'git') state.gitShadowed = true;
     }
     if (info.envUnknown && (gitContext || c.words.some(wordHasGit))) {
@@ -1237,6 +1345,10 @@ function inspect(cmd) {
     }
     if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit))) {
       res.problems.push('launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
+      return;
+    }
+    if (positionalUnknown || (positionalExec && info.name === 'git')) {
+      res.problems.push('位置引数から実行する git や不明なコマンドは、引数と実行先を検査できない');
       return;
     }
     if (info.dynamicName) {
@@ -1256,8 +1368,35 @@ function inspect(cmd) {
       return;
     }
     const name = info.name;
+    if (builtin && name === 'set') {
+      const change = positionalSet(info.args);
+      if (change) {
+        const words = change.words.flatMap((word) => state.positionals && exactQuotedAt(word) ? state.positionals : [word]);
+        updatePositionals(state, c, change.unknown ? null : knownPositionals(words));
+      }
+      return; // Stored positional operands are data until an executable expansion uses them.
+    }
+    if (builtin && name === 'shift') {
+      const count = info.args.length ? info.args[0] : { text: '1', dynamic: false };
+      if (info.args.length > 1 || (!count.dynamic && !/^\d+$/.test(count.text))) { /* invalid shift leaves argv unchanged */ }
+      else if (!state.positionals || count.dynamic) updatePositionals(state, c, null);
+      else if (Number(count.text) <= state.positionals.length) updatePositionals(state, c, state.positionals.slice(Number(count.text)));
+    }
+    if (trap) {
+      if (trap.unknown) res.problems.push('trap の action の位置を読みきれず、実行する source を検査できない');
+      for (const script of trap.scripts) {
+        const inner = inspectMediatedSource(script, sourceDepth);
+        if (inner.problems.length) res.problems.push(`trap の action を検査できない（${inner.problems[0]}）`);
+        if (inner.invocations.some((entry) =>
+          (entry.name === 'set' && positionalSet(entry.args)) ||
+          (entry.name === 'shift' && (!entry.args[0] || entry.args[0].dynamic || entry.args[0].text !== '0')))) state.positionalsTainted = true;
+      }
+      if (trap.scripts.length) state.unknownContext = true; // A DEBUG/signal action may run before a later write.
+      return;
+    }
     if (name === '.' || name === 'source' || name === 'eval') {
       state.unknownContext = true;
+      state.positionalsTainted = true;
       state.searchChanged = true; // 未読のコードは PATH や関数による command lookup も変えうる。
     }
     if (COMMAND_SEARCH_MUTATORS.has(name)) state.searchChanged = true;
@@ -1288,7 +1427,7 @@ function inspect(cmd) {
             const inner = parseShell(h.body);
             for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
             res.async = res.async || inner.async;
-            seedScope(inner.scope, env, cdBefore, { ...state, pathChanged });
+            seedScope(inner.scope, env, cdBefore, { ...state, pathChanged, positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
             if (inner.errors.length && shellInputHasGit(h.body)) {
               res.problems.push(`${name} に流すヒアドキュメントを読みきれない`);
             }
@@ -1301,7 +1440,7 @@ function inspect(cmd) {
                 const inner = parseShell(r.word.text);
                 for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
                 res.async = res.async || inner.async;
-                seedScope(inner.scope, env, cdBefore, { ...state, pathChanged });
+                seedScope(inner.scope, env, cdBefore, { ...state, pathChanged, positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
                 if (inner.errors.length) res.problems.push(`${name} に流す文字列の git を読みきれない`);
                 for (const ic of inner.cmds) visit(ic, resolveCommand(ic.words), depth + 1);
               }
@@ -1338,6 +1477,9 @@ function inspect(cmd) {
       return;
     }
     if (name !== 'git') {
+      // Literal printf/echo argv is data, including in a tuple or inspected source string.
+      if ((positionalExec || sourceDepth > 0) && ['echo', 'printf'].includes(name) &&
+          [name, '/bin/' + name, '/usr/bin/' + name].includes(info.nameWord.text)) return;
       // git 以外の名前で包んで git を走らせる形（`arch -arm64 git commit …` など・v3）。
       // `git` の語の後が書き込む側の subcommand（または読みきれない語の後に目印の subcommand）
       // のときだけ、git のコマンドとして読む（`grep -rn git .` や `which git` は止めない）。
@@ -1559,6 +1701,7 @@ module.exports = {
   readInput,
   parseShell,
   inspect,
+  inspectMediatedSource,
   problemMessage,
   aliasProblem,
   resolveDir,
