@@ -9,7 +9,7 @@
  *
  * 入力: stdin に PreToolUse の JSON ({ tool_input: { command }, cwd })。
  * 出力: ブロック時は hookSpecificOutput.permissionDecision="deny" を返す。許可時は無出力。
- * 副作用: `git commit` のときだけ `git diff --cached --name-only` と `git ls-files` を、
+ * 副作用: `git commit` のときだけ `git diff --cached --name-only -z` と `git ls-files` を、
  * builtin でない subcommand のときだけ `git config --get alias.<name>` を読む（読取のみ）。
  * コマンドの読み取り（シェルの語・git の global option と subcommand）は
  * lib/git-guard-common.cjs にあり、git ガード 3 本で共有する。
@@ -139,6 +139,45 @@ function readOnlyMode(g) {
 /** Return whether this invocation may change state used by the pre-commit inspection. */
 const writesRepo = (g) => g.sub && !g.terminal && !guard.READ_ONLY_SUBS.has(g.sub) && !readOnlyMode(g);
 
+const READ_ONLY_COMMANDS = new Set([
+  ':', 'true', 'false', 'test', '[', 'echo', 'printf', 'pwd', 'cat', 'head', 'tail', 'wc', 'ls',
+  'cd', 'pushd', 'popd', 'export', 'declare', 'typeset', 'local', 'readonly', 'unset',
+]);
+const READ_ONLY_PROGRAMS = new Set(['true', 'false', 'test', '[', 'echo', 'printf', 'pwd', 'cat', 'head', 'tail', 'wc', 'ls']);
+const STATE_BUILTINS = new Set(['export', 'declare', 'typeset', 'local', 'readonly', 'unset']);
+/**
+ * Recognize simple commands whose effects before commit cannot replace the inspected index.
+ * Directory/environment builtins rely on the parser's per-invocation target checks. Launchers,
+ * unknown executables, output redirections, and printf's variable-assignment forms stay blocked.
+ */
+function readOnlyInvocation(invocation) {
+  if (invocation.pathChangedBefore) return false;
+  const wrappers = invocation.wrapperNames;
+  if (!Array.isArray(wrappers) || wrappers.some((name) => !['command', 'builtin', 'env'].includes(name))) return false;
+  if (invocation.dynamicName) return false;
+  if (!invocation.name) return true; // assignment-only; redirections are checked separately
+  if (invocation.nonExec && invocation.name === 'command') return true; // command -v / -V
+  const executable = invocation.nameWord && invocation.nameWord.text;
+  if (invocation.name === 'git') return true; // Git's writes and executable identity are checked separately.
+  if (!executable) return false;
+  if (executable.includes('/')) {
+    if (!['/bin/', '/usr/bin/'].some((prefix) => executable === prefix + invocation.name) || !READ_ONLY_PROGRAMS.has(invocation.name)) return false;
+  } else if (!READ_ONLY_COMMANDS.has(executable)) return false;
+  const args = invocation.args;
+  if (STATE_BUILTINS.has(invocation.name) && args.some((w) => w.dynamic &&
+      (w.dynamicMaySplit !== false || !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w.text)))) return false;
+  if (invocation.name === 'printf') {
+    const first = args[0];
+    if (first && (first.dynamic || /^-v/.test(first.text))) return false;
+    const format = first && first.text === '--' ? args[1] : first;
+    if (format && (format.dynamic || /%[-+# 0]*(?:\*|\d+)?(?:\.(?:\*|\d+))?n/.test(format.text))) return false;
+  }
+  return true;
+}
+
+/** Shell output and read/write redirections can replace the index before a command starts. */
+const writesViaRedirection = (redirection) => redirection.op.includes('>') && redirection.op !== '<<<';
+
 // builtin でない subcommand が alias なら拒む（alias の中身は検査できない）。
 for (const g of gits) {
   const p = guard.aliasProblem(g, baseDir);
@@ -192,8 +231,39 @@ for (const g of addGits) {
 //    index」しか見えない。そのため commit と同じコマンドでは、読むだけの git 以外を
 //    走らせない・commit のときに stage する形（`-a` / `-p` / pathspec）を先に見る、とし、
 //    staged 検査は backstop に残す。
-const commits = gits.filter((g) => g.sub === 'commit');
+const commits = gits.filter((g) => g.sub === 'commit' && !g.terminal);
 if (commits.length) {
+  if (commits.length > 1) {
+    deny(
+      '同一コマンド内で複数の `git commit` を実行する形はブロックしました。\n' +
+      'PreToolUse フックは最初の commit より前の index しか検査できないため、commit は別々のコマンドとして実行してください。',
+    );
+  }
+  const commit = commits[0];
+  if (commit.pipelineParticipant !== false) {
+    deny('commit をパイプラインに含める形は、ほかの処理が同時に index を書き換えうるためブロックしました (fail-closed)。commit はパイプラインから分けて実行してください。');
+  }
+  if (commit.unsafeGroupSetup !== false) {
+    deny('commit を囲む command group のリダイレクトや置換が、検査後に index を書き換えうるためブロックしました (fail-closed)。リダイレクトと commit は別々のコマンドとして実行してください。');
+  }
+  if (insp.async) {
+    deny('background 実行と commit を同じコマンドに含める形は、index を commit 前に書き換える可能性があるためブロックしました (fail-closed)。別々のコマンドとして実行してください。');
+  }
+  if (!Array.isArray(insp.invocations) || !Number.isInteger(commit.invocationOrder)) {
+    deny('commit より前のコマンドの実行順を検査できないためブロックしました (fail-closed)。');
+  }
+  const beforeCommit = insp.invocations.filter((invocation) => invocation.order <= commit.invocationOrder);
+  const redirect = beforeCommit.find((invocation) => invocation.redirs.some(writesViaRedirection));
+  if (redirect) {
+    deny('commit の実行前に出力リダイレクトがあります。検査後に index などを書き換えうるためブロックしました。リダイレクトと commit は別々のコマンドとして実行してください。');
+  }
+  const effect = beforeCommit.find((invocation) => !readOnlyInvocation(invocation));
+  if (effect) {
+    deny(
+      `commit より前のコマンド（${effect.name || '動的なコマンド'}）の副作用を検査できないためブロックしました (fail-closed)。\n` +
+      'PreToolUse フックが読んだ index を、そのコマンドが commit 前に書き換えうるためです。別々のコマンドとして実行してください。',
+    );
+  }
   const others = gits.filter((g) => g !== commits[0]);
   if (others.some((g) => ['add', 'stage', 'rm', 'mv'].includes(g.sub))) {
     deny(
@@ -258,7 +328,7 @@ for (const g of commits) {
   const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
   let staged = '';
   try {
-    staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
+    staged = execFileSync('git', ['diff', '--cached', '--name-only', '-z'], {
       cwd: inspectCwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -270,7 +340,7 @@ for (const g of commits) {
       '検査できない状態で commit を通すと staged secret を見逃すためブロックしました (fail-closed)。',
     );
   }
-  const bad = staged.split('\n').map((s) => s.trim()).filter(isSecret);
+  const bad = staged.split('\0').filter(isSecret);
   if (bad.length) {
     deny(
       `staged に secret-looking file が含まれています: ${bad.join(', ')}\n` +
@@ -305,9 +375,9 @@ for (const g of commits) {
   }
 }
 
-// v3.5.3: 今の main（ae10261）の同じ検査を、コマンドの文字の全体にもう一度当てる（和をとる）。
-// 上の読み方が取りこぼしても、今の main より緩めないため。ブロックの中は main の文字のまま（空行と、頭の
-// `require('node:path')` の 1 行のほかは main の行と同じ）。
+// v3.5.3 の raw-text backstop を継続し、旧 main 由来の option / path 判定も当てる。
+// staged 照合は NUL 区切りへ変更し、実行しない commit の help を除いた。
+// 実行する commit を parser が読めた場合は、その呼び出しの cwd で staged を照合する。
 // main の「git の文字が無ければ exit」はブロックの条件にした。SECRET_RE と isSecret は上の同じもの（main と同じ文字）。
 const RECHECK_AS_MAIN = true;
 if (RECHECK_AS_MAIN && /\bgit\b/.test(cmd)) {
@@ -358,7 +428,8 @@ if (addMatch) {
 //    index」しか見えない。同一コマンドで stage してから commit する形と `git commit -a`
 //    はこの検査をすり抜けるので、形そのものを先に拒否し、staged 検査は backstop に残す。
 const commitMatch = cmd.match(gitSubRe('commit'));
-if (commitMatch) {
+// 実際の commit がすべて help なら index を読まない。コメント等だけの旧判定は保つ。
+if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
   if (gitSubRe('add|stage|rm|mv').test(unquote(cmd))) {
     deny(
       '同一コマンド内で staging (`git add` 等) と `git commit` を連結しています。\n' +
@@ -383,11 +454,13 @@ if (commitMatch) {
     );
   }
   const cDir = (gitOptsPart.match(/-C\s*(\S+)/) || [])[1];
-  const baseDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const inspectCwd = cDir ? path.resolve(baseDir, stripToken(cDir)) : baseDir;
+  const legacyBaseDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // 最初の raw match が help でも、実行する commit の対象は上で読んだ呼び出しから取る。
+  const inspectCwd = commits.length ? guard.resolveDir(baseDir, commits[0].cdirs)
+    : cDir ? path.resolve(legacyBaseDir, stripToken(cDir)) : legacyBaseDir;
   let staged = '';
   try {
-    staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
+    staged = execFileSync('git', ['diff', '--cached', '--name-only', '-z'], {
       cwd: inspectCwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -400,7 +473,7 @@ if (commitMatch) {
       '検査できない状態で commit を通すと staged secret を見逃すためブロックしました (fail-closed)。',
     );
   }
-  const bad = staged.split('\n').map((s) => s.trim()).filter(isSecret);
+  const bad = staged.split('\0').filter(isSecret);
   if (bad.length) {
     deny(
       `staged に secret-looking file が含まれています: ${bad.join(', ')}\n` +

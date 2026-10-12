@@ -11,6 +11,7 @@
  * コマンドの読み取り（シェルの語・git の global option と subcommand）は
  * lib/git-guard-common.cjs にあり、git ガード 3 本で共有する。
  */
+const path = require('node:path');
 let guard;
 try {
   guard = require('./lib/git-guard-common.cjs');
@@ -69,7 +70,8 @@ if (/core\.hooksPath\s*=/i.test(cmd) || /git\s+config\b[^;&|]*\bcore\.hooksPath\
 const projectDir = (process.env.CLAUDE_PROJECT_DIR || process.cwd()).replace(/\/+$/, '');
 for (const g of insp.gits) {
   if (g.sub !== 'add' && g.sub !== 'stage') continue;
-  const roots = new Set([projectDir, baseDir.replace(/\/+$/, ''), guard.resolveDir(baseDir, g.cdirs).replace(/\/+$/, '')]);
+  const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
+  const roots = new Set([projectDir, baseDir, inspectCwd].map((p) => path.resolve(p)));
   // `"$PWD"` のような変数の語は、引用符を外した元の文字で見る。
   const args = g.args.map((w) => (w.dynamic ? w.raw.replace(/['"]/g, '') : w.text));
   const blanket = args.some(
@@ -80,7 +82,22 @@ for (const g of insp.gits) {
       || (a.startsWith('--a') && '--all'.startsWith(a))
       || (/^-[a-z]*$/i.test(a) && a.includes('A')),
   );
-  if (blanket) {
+  const normalizedRoot = g.args.some((w) => {
+    let value = w.text;
+    if (w.dynamic) {
+      const raw = w.raw.replace(/['"]/g, '');
+      if (!/^(?:\$PWD|\$\{PWD\})(?=\/|$)/.test(raw)) return false;
+      // prefix は source で PWD と確かめ、suffix は shell が escape を戻した text から取る。
+      // $PWD/\. は root、"$PWD/\." は backslash を含む別の path。
+      if (!w.text.startsWith(guard.DYN)) return false;
+      const suffix = w.text.slice(guard.DYN.length);
+      if (suffix.includes(guard.DYN) || (suffix && !suffix.startsWith('/'))) return false;
+      value = path.resolve(baseDir, `.${suffix}`);
+    }
+    if (!value || value.startsWith('-') || value.startsWith(':')) return false;
+    return roots.has(path.resolve(inspectCwd, value));
+  });
+  if (blanket || normalizedRoot) {
     deny('`git add -A` / `git add .` / `--all`（`.` `..` `*` `:/` `:(top)` `$PWD` / リポジトリ root の絶対パス含む）は禁止です。CLAUDE.md の規約に従い、ファイルを個別に列挙して add してください（untracked secret の巻き込み防止）。');
   }
 }

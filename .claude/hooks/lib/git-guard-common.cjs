@@ -81,7 +81,7 @@ const CMD_LEAD = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'while', 'unti
 const atCmdPos = (words) => words.every((w) => !w.quoted && !w.dynamic && CMD_LEAD.has(w.text));
 
 /** Scan one expansion and collect executable substitutions in child shell scopes. */
-function scanExpansion(src, i, out, depth, scope) {
+function scanExpansion(src, i, out, depth, scope, effects) {
   const n = src.length;
   // `${…}` と `$((…))` の入れ子は parseSeq を通らずに呼び合うので、ここでも深さを見る（v3）。
   if (depth > MAX_DEPTH) { out.errors.push('入れ子が深すぎる'); return { end: n, dynamic: true }; }
@@ -99,7 +99,7 @@ function scanExpansion(src, i, out, depth, scope) {
       j++;
     }
     if (j >= n) { out.errors.push('閉じていない `…`'); return { end: n, dynamic: true }; }
-    parseSeq(inner, 0, out, depth + 1, false, { parent: scope });
+    parseSeq(inner, 0, out, depth + 1, false, { parent: scope }, effects);
     return { end: j + 1, dynamic: true };
   }
   // `$` の直後の行の継続: シェルは継続を消してから `$(`・`${`・`$[`・`$'`・`$name` と読む（v3.5.2）。
@@ -122,10 +122,10 @@ function scanExpansion(src, i, out, depth, scope) {
         j++;
       }
       if (j >= n) { out.errors.push('閉じていない $(( … ))'); return { end: n, dynamic: true }; }
-      scanSubsts(src.slice(i + 3, j), out, depth + 1, scope);
+      scanSubsts(src.slice(i + 3, j), out, depth + 1, scope, effects);
       return { end: j + 2, dynamic: true };
     }
-    const close = parseSeq(src, i + 2, out, depth + 1, true, { parent: scope });
+    const close = parseSeq(src, i + 2, out, depth + 1, true, { parent: scope }, effects);
     if (close >= n) { out.errors.push('閉じていない $( … )'); return { end: n, dynamic: true }; }
     return { end: close + 1, dynamic: true };
   }
@@ -142,7 +142,7 @@ function scanExpansion(src, i, out, depth, scope) {
       j++;
     }
     if (j >= n) { out.errors.push('閉じていない $[ … ]'); return { end: n, dynamic: true }; }
-    scanSubsts(src.slice(i + 2, j), out, depth + 1, scope);
+    scanSubsts(src.slice(i + 2, j), out, depth + 1, scope, effects);
     return { end: j + 1, dynamic: true };
   }
   if (c1 === '{') {
@@ -156,7 +156,7 @@ function scanExpansion(src, i, out, depth, scope) {
         const q = src.indexOf("'", j + 1);
         if (q < 0) { j = n; break; }
         // 外側が二重引用の ${…} では、この単一引用内の置換も実行されうる。
-        multiWord = scanSubsts(src.slice(j + 1, q), out, depth + 1, scope) || multiWord;
+        multiWord = scanSubsts(src.slice(j + 1, q), out, depth + 1, scope, effects) || multiWord;
         j = q + 1;
         continue;
       }
@@ -165,7 +165,7 @@ function scanExpansion(src, i, out, depth, scope) {
         while (j < n && src[j] !== '"') {
           if (src[j] === '\\') { j += 2; continue; }
           if (src[j] === '$' || src[j] === '`') {
-            const r = scanExpansion(src, j, out, depth + 1, scope);
+            const r = scanExpansion(src, j, out, depth + 1, scope, effects);
             multiWord = multiWord || !!r.multiWord;
             j = r.end;
             continue;
@@ -177,7 +177,7 @@ function scanExpansion(src, i, out, depth, scope) {
         continue;
       }
       if (ch === '$' || ch === '`') {
-        const r = scanExpansion(src, j, out, depth + 1, scope);
+        const r = scanExpansion(src, j, out, depth + 1, scope, effects);
         multiWord = multiWord || !!r.multiWord;
         j = r.end;
         continue;
@@ -237,14 +237,14 @@ function arithEnd(src, j) {
 }
 
 /** Collect expansions from arithmetic or heredoc text without treating its operators as commands. */
-function scanSubsts(text, out, depth, scope) {
+function scanSubsts(text, out, depth, scope, effects) {
   let k = 0;
   let multiWord = false;
   while (k < text.length) {
     const ch = text[k];
     if (ch === '\\') { k += 2; continue; }
     if (ch === '$' || ch === '`') {
-      const r = scanExpansion(text, k, out, depth, scope);
+      const r = scanExpansion(text, k, out, depth, scope, effects);
       multiWord = multiWord || !!r.multiWord;
       k = r.end;
       continue;
@@ -254,11 +254,27 @@ function scanSubsts(text, out, depth, scope) {
   return multiWord;
 }
 
+/** Recognize unquoted brace lists or valid ranges; quoted/escaped segments are opaque markers. */
+function hasBraceExpansion(source) {
+  const stack = [];
+  for (let k = 0; k < source.length; k++) {
+    if (source[k] === '{') stack.push({ start: k, comma: false });
+    else if (source[k] === ',' && stack.length) stack[stack.length - 1].comma = true;
+    else if (source[k] === '}' && stack.length) {
+      const group = stack.pop();
+      const body = source.slice(group.start + 1, k);
+      if (group.comma || /^[+-]?\d+\.\.[+-]?\d+(?:\.\.[+-]?\d+)?$/.test(body) ||
+          /^[A-Za-z]\.\.[A-Za-z](?:\.\.[+-]?\d+)?$/.test(body)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Tokenize a shell sequence into commands with scope metadata and redirections.
  * For substitutions, stop at the unmatched closing parenthesis; otherwise consume the source.
  */
-function parseSeq(src, start, out, depth, stopAtParen, scope) {
+function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []) {
   const n = src.length;
   if (depth > MAX_DEPTH) { out.errors.push('入れ子が深すぎる'); return n; }
   let i = start;
@@ -268,17 +284,43 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
   // 開いている括弧の種類（'sub' = コマンドの位置のサブシェル・'other' = それ以外・v3.5.2）。
   const parenKinds = [];
   const parenScopes = [];
+  const parenEffects = [];
+  const braceEffects = [];
+  const compoundEffects = [];
+  const newEffect = () => ({ pipeline: false, unsafeSetup: false });
+  let inheritedEffects = parentEffects;
+  let pipeline = newEffect();
+  let closedGroup = null;
+  const currentEffects = () => inheritedEffects.concat(pipeline);
   let redirNext = null;
   let redirs = [];
   let piped = false;
   const heredocs = [];
+  let definitionName = null;
 
   const startWord = () => {
-    if (!cur) cur = { text: '', dynamic: false, dynamicMaySplit: false, quoted: false, start: i };
+    if (!cur) cur = { text: '', braceSource: '', dynamic: false, dynamicMaySplit: false, quoted: false, start: i };
   };
   const endWord = () => {
     if (!cur) return;
     cur.raw = src.slice(cur.start, i);
+    cur.braceExpanded = hasBraceExpansion(cur.braceSource);
+    delete cur.braceSource;
+    if (cur.braceExpanded) { cur.dynamic = true; cur.dynamicMaySplit = true; }
+    if (!redirNext && !cur.quoted && !cur.dynamic && atCmdPos(words)) {
+      const close = { if: 'fi', while: 'done', until: 'done', for: 'done', select: 'done', case: 'esac' }[cur.text];
+      if (close) {
+        const group = newEffect();
+        compoundEffects.push({ close, inheritedEffects, pipeline, group });
+        inheritedEffects = currentEffects().concat(group);
+        pipeline = newEffect();
+      } else if (compoundEffects.length && compoundEffects[compoundEffects.length - 1].close === cur.text) {
+        const group = compoundEffects.pop();
+        inheritedEffects = group.inheritedEffects;
+        pipeline = group.pipeline;
+        closedGroup = group.group;
+      }
+    }
     if (redirNext) {
       redirs.push({ op: redirNext, word: cur });
       redirNext = null;
@@ -291,17 +333,20 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
     endWord();
     redirNext = null;
     if (words.length || redirs.length) {
-      const c = { words, redirs, piped, heredocBodies: [], scope };
+      const c = { words, redirs, piped, heredocBodies: [], scope, definitionName, effects: currentEffects() };
       out.cmds.push(c);
       for (const h of heredocs) if (!h.cmd) h.cmd = c;
     }
     words = [];
     redirs = [];
     piped = false;
+    definitionName = null;
+    closedGroup = null;
   };
   const appendExpansion = (r, quoted = false) => {
     if (r.dynamic) {
       cur.dynamic = true;
+      cur.braceSource += DYN;
       if ((!quoted && !r.noSplit) || r.multiWord) cur.dynamicMaySplit = true;
       cur.text += DYN;
     } else { cur.text += r.literal || ''; }
@@ -313,12 +358,14 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
       if (src[i + 1] === '\n') { i += 2; continue; }
       startWord();
       cur.quoted = true;
+      cur.braceSource += DYN;
       if (i + 1 < n) { cur.text += src[i + 1]; i += 2; } else { i++; }
       continue;
     }
     if (c === "'") {
       startWord();
       cur.quoted = true;
+      cur.braceSource += DYN;
       const j = src.indexOf("'", i + 1);
       if (j < 0) { out.errors.push("閉じていない '…'"); return n; }
       cur.text += src.slice(i + 1, j);
@@ -328,6 +375,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
     if (c === '"') {
       startWord();
       cur.quoted = true;
+      cur.braceSource += DYN;
       i++;
       while (i < n && src[i] !== '"') {
         const d = src[i];
@@ -338,7 +386,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
           continue;
         }
         if (d === '$' || d === '`') {
-          const r = scanExpansion(src, i, out, depth, scope);
+          const r = scanExpansion(src, i, out, depth, scope, currentEffects());
           appendExpansion(r, true);
           i = r.end;
           continue;
@@ -352,7 +400,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
     }
     if (c === '$' || c === '`') {
       startWord();
-      const r = scanExpansion(src, i, out, depth, scope);
+      const r = scanExpansion(src, i, out, depth, scope, currentEffects());
       appendExpansion(r);
       i = r.end;
       continue;
@@ -366,6 +414,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
     }
     if (c === '\n') {
       endCmd();
+      pipeline = newEffect();
       i++;
       // 改行の後にヒアドキュメントの本文が来る。
       while (heredocs.length) {
@@ -391,7 +440,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
         if (bodyEnd === n) out.errors.push('ヒアドキュメントの終わりの語が無い');
         if (lcLine) out.errors.push('引用符の無いヒアドキュメントの本文の行末に \\ がある');
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
-        if (!h.quoted) scanSubsts(body, out, depth + 1, scope);
+        if (!h.quoted) scanSubsts(body, out, depth + 1, scope, h.cmd ? h.cmd.effects : currentEffects());
         if (h.cmd) h.cmd.heredocBodies.push({ body, quoted: h.quoted });
       }
       continue;
@@ -403,15 +452,44 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
       continue;
     }
     if (c === ';' || c === '|' || (c === '&' && src[i + 1] !== '>')) {
+      if (c === '&' && src[i + 1] !== '&') out.async = true;
       const isPipe = c === '|' && src[i + 1] !== '|';
+      endWord(); // fi/done/esac closes its outer segment before a trailing pipe.
+      if (isPipe) pipeline.pipeline = true;
       endCmd();
+      if (!isPipe) pipeline = newEffect();
       piped = isPipe;
       if ((c === ';' || c === '|' || c === '&') && src[i + 1] === c) i += 2;
       else if (c === '|' && src[i + 1] === '&') i += 2;
       else i++;
       continue;
     }
+    if (c === '{' && !cur && atCmdPos(words) && /[ \t\n;]/.test(src[i + 1] || '')) {
+      endCmd();
+      const group = newEffect();
+      braceEffects.push({ inheritedEffects, pipeline, group });
+      inheritedEffects = currentEffects().concat(group);
+      pipeline = newEffect();
+      i++;
+      continue;
+    }
+    if (c === '}' && !cur && braceEffects.length && /[ \t\n;&|)]|^$/.test(src[i + 1] || '')) {
+      endCmd();
+      const group = braceEffects.pop();
+      inheritedEffects = group.inheritedEffects;
+      pipeline = group.pipeline;
+      closedGroup = group.group;
+      i++;
+      continue;
+    }
     if (c === '(') {
+      const header = words.concat(cur ? [cur] : []);
+      const fn = header[header.length - 1];
+      if (/^\([ \t\n]*\)/.test(src.slice(i)) && fn && !fn.quoted && !fn.dynamic &&
+          /^[A-Za-z_][A-Za-z0-9_]*$/.test(fn.text) &&
+          (header.length === 1 || (header.length === 2 && header[0].text === 'function' && !header[0].quoted))) {
+        definitionName = fn.text;
+      }
       // `(` と `(` の間の行の継続: シェルは `((` と読む（v3.5.2）。
       if (joinedByLC(src, i + 1, '(')) out.errors.push('( と ( の間に行の継続がある');
       // コマンドの頭（予約語の後を含む・v3.5.2）か `for` の後の `((…))` は算術（v3.5）。シェルと同じく対の `))` まで
@@ -421,7 +499,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
       if (src[i + 1] === '(' && arithAt) {
         const end = arithEnd(src, i + 2);
         if (end >= 0) {
-          scanSubsts(src.slice(i + 2, end), out, depth + 1, scope);
+          scanSubsts(src.slice(i + 2, end), out, depth + 1, scope, currentEffects());
           i = end + 2;
           continue;
         }
@@ -430,6 +508,10 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
       // 算術にならなかった `((` の外側の中では、`<<` がヒアドキュメントかをシェルと同じに決められない。
       parenKinds.push(atCmd && src[i + 1] !== '(' ? 'sub' : 'other');
       endCmd();
+      const group = newEffect();
+      parenEffects.push({ inheritedEffects, pipeline, group });
+      inheritedEffects = currentEffects().concat(group);
+      pipeline = newEffect();
       parenScopes.push(scope);
       scope = { parent: scope };
       parenDepth++;
@@ -444,19 +526,27 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
         return i;
       }
       endCmd();
-      if (parenDepth > 0) { parenDepth--; parenKinds.pop(); scope = parenScopes.pop(); }
+      if (parenDepth > 0) {
+        parenDepth--; parenKinds.pop(); scope = parenScopes.pop();
+        const group = parenEffects.pop();
+        inheritedEffects = group.inheritedEffects;
+        pipeline = group.pipeline;
+        closedGroup = group.group;
+      }
       i++;
       continue;
     }
     if (c === '<' || c === '>' || c === '&') {
+      if (closedGroup) closedGroup.unsafeSetup = true;
       // `<` と `<` の間の行の継続: シェルは `<<` と読む（v3.5.2）。
       if (c === '<' && joinedByLC(src, i + 1, '<')) out.errors.push('< と < の間に行の継続がある');
       if ((c === '<' || c === '>') && src[i + 1] === '(') {
         // プロセス置換 <( … ) / >( … )
         startWord();
-        const close = parseSeq(src, i + 2, out, depth + 1, true, { parent: scope });
+        const close = parseSeq(src, i + 2, out, depth + 1, true, { parent: scope }, currentEffects());
         if (close >= n) { out.errors.push('閉じていない <( … )'); return n; }
         cur.dynamic = true;
+        cur.braceSource += DYN;
         cur.text += DYN;
         i = close + 1;
         continue;
@@ -464,6 +554,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
       // fd の番号（2> など）は語にしない。
       if (cur && !cur.quoted && !cur.dynamic && /^\d+$/.test(cur.text)) cur = null;
       else endWord();
+      if (closedGroup) closedGroup.unsafeSetup = true;
       if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
         // ヒアドキュメント: 区切りの語を読み、本文は次の改行の後で読む。
         i += 2;
@@ -502,6 +593,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
       continue;
     }
     startWord();
+    cur.braceSource += c;
     cur.text += c;
     i++;
   }
@@ -511,7 +603,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope) {
 
 /** Parse shell source without executing it, retaining errors and isolated child scopes. */
 function parseShell(src) {
-  const out = { cmds: [], errors: [], scope: { parent: null } };
+  const out = { cmds: [], errors: [], scope: { parent: null }, async: false };
   parseSeq(src, 0, out, 0, false, out.scope);
   return out;
 }
@@ -606,30 +698,63 @@ const WRAPPERS = {
     return k;
   },
   env: (rest, info) => {
+    const longNames = ['ignore-environment', 'null', 'unset', 'chdir', 'split-string', 'argv0', 'debug',
+      'default-signal', 'ignore-signal', 'block-signal', 'list-signal-handling', 'help', 'version'];
+    const required = new Set(['unset', 'chdir', 'split-string', 'argv0']);
+    const apply = (name, value) => {
+      if (name === 'ignore-environment') info.envOps.push({ clear: true });
+      if (name === 'chdir') info.cdLike = true;
+      if (name === 'split-string') {
+        info.splitString = true;
+        if (value) info.splitWords.push(value);
+      }
+      if (value && value.dynamicMaySplit) info.envUnknown = true;
+      if (name === 'unset' && value && !value.dynamic) info.envOps.push({ unset: value.text });
+    };
     let k = 0;
     while (k < rest.length) {
+      const w = rest[k];
       const t = rest[k].text;
       if (t === '--') { k++; break; }
-      if (['-', '-i', '--ignore-environment'].includes(t)) { info.envOps.push({ clear: true }); k++; continue; }
-      if (['-0', '--null', '-v', '--debug'].includes(t)) { k++; continue; }
-      if (t === '-u' || t === '--unset') {
-        if (rest[k + 1] && !rest[k + 1].dynamic) info.envOps.push({ unset: rest[k + 1].text });
-        k += 2; continue;
+      if (t === '-') { apply('ignore-environment'); k++; continue; }
+      if (t.startsWith('--')) {
+        const eq = t.indexOf('=');
+        const name = t.slice(2, eq < 0 ? undefined : eq);
+        const matches = longNames.includes(name) ? [name] : longNames.filter((n) => n.startsWith(name));
+        if (matches.length !== 1) { info.envUnknown = true; k++; continue; }
+        const full = matches[0];
+        if (full === 'help' || full === 'version') return -1;
+        let value;
+        if (eq >= 0) value = { ...w, text: t.slice(eq + 1) };
+        else if (required.has(full)) value = rest[++k];
+        if (required.has(full) && !value) info.envUnknown = true;
+        apply(full, value);
+        k++;
+        continue;
       }
-      if (t === '-P') { k += 2; continue; }
-      if (/^--unset=/.test(t) || /^-u./.test(t)) {
-        if (!rest[k].dynamic) info.envOps.push({ unset: t.startsWith('--') ? t.slice(8) : t.slice(2) });
-        k++; continue;
+      if (t.startsWith('-')) {
+        for (let p = 1; p < t.length; p++) {
+          const ch = t[p];
+          if (ch === 'i') { apply('ignore-environment'); continue; }
+          if ('0v'.includes(ch)) continue;
+          if ('SCuaP'.includes(ch)) {
+            const name = { S: 'split-string', C: 'chdir', u: 'unset', a: 'argv0', P: 'path' }[ch];
+            const value = p + 1 < t.length ? { ...w, text: t.slice(p + 1) } : rest[++k];
+            if (!value) info.envUnknown = true;
+            apply(name, value);
+            break;
+          }
+          info.envUnknown = true;
+          break;
+        }
+        k++;
+        continue;
       }
-      if (t === '-C' || t === '--chdir') { info.cdLike = true; k += 2; continue; }
-      if (/^--chdir=/.test(t) || /^-C./.test(t)) { info.cdLike = true; k++; continue; }
-      if (t === '-S' || t === '--split-string') { info.splitString = true; k += 2; continue; }
-      if (/^--split-string=/.test(t) || /^-S./.test(t)) { info.splitString = true; k++; continue; }
-      if (t.startsWith('-')) { k++; continue; }
       break;
     }
     // env 自身が読む代入はシェルの代入語と違い、引用された NAME=value も有効。
     while (k < rest.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[k].text)) {
+      if (rest[k].dynamicMaySplit) info.envUnknown = true;
       const name = rest[k].text.split('=')[0];
       info.assigns.push(name);
       info.assignRaws.push(rest[k].raw);
@@ -672,7 +797,7 @@ function resolveCommand(words) {
   const info = {
     name: null, nameWord: null, args: [], assigns: [], assignRaws: [],
     cdLike: false, incomplete: false, nonExec: false, dynamicName: false, splitString: false,
-    envOps: [], wrapped: false, persistsEnv: false,
+    envOps: [], wrapped: false, wrapperNames: [], persistsEnv: false, envUnknown: false, splitWords: [],
   };
   let k = 0;
   for (;;) {
@@ -698,6 +823,7 @@ function resolveCommand(words) {
       // exec は POSIX special builtin。プログラムを付けない形でも代入が残りうる。
       if (base === 'exec' && !info.wrapped) info.persistsEnv = true;
       info.wrapped = true;
+      info.wrapperNames.push(base);
       const r = wrapper(rest, info);
       if (r < 0) { info.nonExec = true; info.name = base; return info; }
       k = k + 1 + r;
@@ -766,6 +892,7 @@ const CD_LIKE = new Set(['cd', 'pushd', 'popd']);
 const EXPORT_LIKE = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 // POSIX モードでは prefix の代入が、通常のコマンドと違い special builtin の後にも残る。
 const SPECIAL_BUILTINS = new Set([':', '.', 'break', 'continue', 'eval', 'exit', 'export', 'readonly', 'return', 'set', 'shift', 'times', 'trap', 'unset']);
+const COMMAND_SEARCH_MUTATORS = new Set(['alias', 'unalias', 'hash', 'rehash', 'enable', 'autoload', 'functions']);
 
 // commit や add と同じコマンドの git に付けてよい `-c` / `--config-env` の鍵（短い allowlist）。
 // 設定の中には、git に別のプログラムを走らせるものがある。そのため、ここに無い鍵は
@@ -801,6 +928,7 @@ function parseGit(args) {
     if (t === '-C' || t === '-c') {
       const v = args[k + 1];
       if (!v) { g.problems.push(`git の ${t} に値が無い`); return g; }
+      if (v.dynamicMaySplit) { g.problems.push(`git の ${t} の値が複数の語になりうるため、subcommand を決められない`); return g; }
       if (v.dynamic) g.dynamicOpt = true;
       if (t === '-C') g.cdirs.push(v.text); else g.configs.push(v.text);
       k += 2;
@@ -819,6 +947,7 @@ function parseGit(args) {
       if (eq >= 0) { value = t.slice(eq + 1); k++; } else {
         const v = args[k + 1];
         if (!v) { g.problems.push(`git の ${t} に値が無い`); return g; }
+        if (v.dynamicMaySplit) { g.problems.push(`git の ${t} の値が複数の語になりうるため、subcommand を決められない`); return g; }
         if (v.dynamic) g.dynamicOpt = true;
         value = v.text;
         k += 2;
@@ -864,11 +993,35 @@ function shellInputHasGit(source) {
     parseShell(source).cmds.some((c) => c.words.some(wordHasGit));
 }
 
+let trustedGitPaths;
+/** Permit system Git and the exact executable used by this hook's unchanged PATH lookup. */
+function trustedGitExecutable(word) {
+  if (!trustedGitPaths) {
+    trustedGitPaths = new Set();
+    const remember = (p) => { try { trustedGitPaths.add(fs.realpathSync(p)); } catch {} };
+    remember('/usr/bin/git');
+    remember('/bin/git');
+    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+      const candidate = path.resolve(dir || '.', 'git');
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        if (!fs.statSync(candidate).isFile()) continue;
+        remember(candidate);
+        break;
+      } catch {}
+    }
+  }
+  if (word.text === 'git') return trustedGitPaths.size > 0;
+  if (!path.isAbsolute(word.text)) return false;
+  try { return trustedGitPaths.has(fs.realpathSync(word.text)); } catch { return false; }
+}
+
 /** Inspect executable Git invocations, associating preceding scope changes with each invocation. */
 function inspect(cmd) {
   const res = {
-    gits: [], problems: [], cdLike: false, gitEnvNames: [], cmdCount: 0,
+    gits: [], problems: [], cdLike: false, gitEnvNames: [], cmdCount: 0, invocations: [], async: false,
   };
+  res.commands = res.invocations;
   const normalized = cmd.replace(/['"\\]/g, '');
   const gitContext = hasGitText(normalized);
   // CR（\r）を含むコマンドは、シェルと同じに語へ分けられる保証が無い（v3・fail-closed）。
@@ -876,6 +1029,7 @@ function inspect(cmd) {
     res.problems.push('コマンドに CR（\\r）があり、シェルと同じに語へ分けられる保証が無い');
   }
   const parsed = parseShell(cmd);
+  res.async = parsed.async;
   if (parsed.errors.length && gitContext) {
     res.problems.push(`コマンドの引用符や括弧が閉じていない（${parsed.errors[0]}）`);
   }
@@ -893,30 +1047,58 @@ function inspect(cmd) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const copyState = (s) => ({ env: new Set(s.env), cd: s.cd });
+  const emptyState = () => ({ env: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false });
+  const copyState = (s) => ({ ...s, env: new Set(s.env) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
-      scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : { env: new Set(), cd: false });
+      scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
     }
     return scopeStates.get(scope);
   };
-  const seedScope = (scope, env, cd) => scopeStates.set(scope, { env: new Set(env), cd });
+  const seedScope = (scope, env, cd, inherited) => scopeStates.set(scope, { ...emptyState(), ...inherited, env: new Set(env), cd });
 
   const visit = (c, info, depth) => {
     if (depth > MAX_DEPTH) { res.problems.push('入れ子が深すぎる'); return; }
     const state = stateFor(c.scope);
     const env = new Set(state.env);
+    let pathChanged = state.pathChanged;
     for (const op of info.envOps) {
-      if (op.clear) env.clear();
-      if (op.unset) env.delete(op.unset);
+      if (op.clear) { env.clear(); pathChanged = false; }
+      if (op.unset) { env.delete(op.unset); if (op.unset === 'PATH') pathChanged = false; }
       if (op.set && /^GIT_/.test(op.set)) env.add(op.set);
+      if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
     }
     const cdBefore = state.cd || info.cdLike;
+    const invocation = {
+      order: res.invocations.length, name: info.name, nameWord: info.nameWord, args: info.args,
+      words: c.words, redirs: c.redirs, heredocBodies: c.heredocBodies, scope: c.scope, incomplete: info.incomplete,
+      wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
+      wrapperNames: info.wrapperNames,
+      splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
+      definitionName: c.definitionName || (info.name === 'function' ? (info.args[0] && info.args[0].text) : null),
+      assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
+      pathChangedBefore: pathChanged || state.searchChanged,
+      unknownContextBefore: state.unknownContext,
+      pipelineParticipant: (c.effects || []).some((e) => e.pipeline),
+      unsafeGroupSetup: (c.effects || []).some((e) => e.unsafeSetup),
+      shellReadsStdin: SHELLS.has(info.name) &&
+        !info.args.some((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w.text) || w.text === '--command') && shellReadsStdin(info.args),
+    };
+    res.invocations.push(invocation);
     if (info.cdLike) res.cdLike = true;
     for (const a of info.assigns) if (/^GIT_/.test(a) && !res.gitEnvNames.includes(a)) res.gitEnvNames.push(a);
-    if (!info.name && !info.dynamicName && !info.wrapped) state.env = env;
+    if (!info.name && !info.dynamicName && !info.wrapped) { state.env = env; state.pathChanged = pathChanged; }
     if (info.persistsEnv || (!info.wrapped && SPECIAL_BUILTINS.has(info.name))) {
       for (const a of env) state.env.add(a);
+      state.pathChanged = state.pathChanged || pathChanged;
+    }
+    if (invocation.definitionName) {
+      state.unknownContext = true;
+      if (invocation.definitionName === 'git') state.gitShadowed = true;
+    }
+    if (info.envUnknown && (gitContext || c.words.some(wordHasGit))) {
+      res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
+      return;
     }
     if (info.dynamicName) {
       const first = info.args[0];
@@ -927,16 +1109,26 @@ function inspect(cmd) {
       }
       return;
     }
-    if (info.splitString && c.words.some(wordHasGit)) {
+    if (info.splitString && c.words.concat(info.splitWords).some((w) => wordHasGit(w) || (w.dynamic && gitContext))) {
       res.problems.push('env -S の文字列に入れた git は、中身を検査できない');
     }
     if (!info.name || info.nonExec) return;
+    if (/[ \t\n\r]/.test(info.nameWord.text) && wordHasGit(info.nameWord)) {
+      res.problems.push('空白を含むコマンド名に git があり、文字列がどう分割されるか検査できない');
+      return;
+    }
     const name = info.name;
+    if (name === '.' || name === 'source' || name === 'eval') {
+      state.unknownContext = true;
+      state.searchChanged = true; // 未読のコードは PATH や関数による command lookup も変えうる。
+    }
+    if (COMMAND_SEARCH_MUTATORS.has(name)) state.searchChanged = true;
     if (CD_LIKE.has(name)) { res.cdLike = true; state.cd = true; }
     if (EXPORT_LIKE.has(name)) {
       for (const w of info.args) {
         const nm = w.text.split('=')[0];
         if (/^GIT_/.test(nm)) { res.gitEnvNames.push(nm); state.env.add(nm); }
+        if (nm === 'PATH' || nm === 'FPATH') state.pathChanged = true;
       }
     }
     // unset は && / || の分岐で実行されないことがあるので、永続状態からは消さない。
@@ -955,7 +1147,9 @@ function inspect(cmd) {
         if (reads) {
           for (const h of c.heredocBodies) {
             const inner = parseShell(h.body);
-            seedScope(inner.scope, env, cdBefore);
+            for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
+            res.async = res.async || inner.async;
+            seedScope(inner.scope, env, cdBefore, { ...state, pathChanged });
             if (inner.errors.length && shellInputHasGit(h.body)) {
               res.problems.push(`${name} に流すヒアドキュメントを読みきれない`);
             }
@@ -966,7 +1160,9 @@ function inspect(cmd) {
               if (r.word.dynamic) res.problems.push(`${name} に流す文字列の git は、中身を検査できない`);
               else {
                 const inner = parseShell(r.word.text);
-                seedScope(inner.scope, env, cdBefore);
+                for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
+                res.async = res.async || inner.async;
+                seedScope(inner.scope, env, cdBefore, { ...state, pathChanged });
                 if (inner.errors.length) res.problems.push(`${name} に流す文字列の git を読みきれない`);
                 for (const ic of inner.cmds) visit(ic, resolveCommand(ic.words), depth + 1);
               }
@@ -995,8 +1191,8 @@ function inspect(cmd) {
           const sub = resolveCommand(info.args.slice(k + 1, e));
           sub.incomplete = true;
           const scope = { parent: null };
-          seedScope(scope, env, cdBefore);
-          visit({ words: info.args.slice(k + 1, e), redirs: [], piped: false, heredocBodies: [], scope }, sub, depth + 1);
+          seedScope(scope, env, cdBefore, { ...state, pathChanged });
+          visit({ words: info.args.slice(k + 1, e), redirs: [], piped: false, heredocBodies: [], scope, effects: c.effects }, sub, depth + 1);
           k = e;
         }
       }
@@ -1018,16 +1214,29 @@ function inspect(cmd) {
         if (writes || unclear) {
           // 外側が xargs / find なら、未知 wrapper を外しても追加引数の不確定性を保つ。
           const scope = { parent: null };
-          seedScope(scope, env, cdBefore);
+          seedScope(scope, env, cdBefore, { ...state, pathChanged });
           const sub = resolveCommand(tail);
           sub.incomplete = info.incomplete || sub.incomplete;
-          visit({ words: tail, redirs: [], piped: false, heredocBodies: [], scope }, sub, depth + 1);
+          visit({ words: tail, redirs: [], piped: false, heredocBodies: [], scope, effects: c.effects }, sub, depth + 1);
         }
       }
       return;
     }
     const g = parseGit(info.args);
     if (g.problems.length) { res.problems.push(...g.problems); return; }
+    if (g.sub === 'commit' && parseCommitArgs(g.args).terminal) g.terminal = true;
+    if (!trustedGitExecutable(info.nameWord) || pathChanged || state.searchChanged || state.gitShadowed) {
+      res.problems.push('git の実行ファイルやコマンド探索が変わっていて、検査に使う git と同じ実行先か確かめられない');
+      return;
+    }
+    if (state.unknownContext && g.sub && !g.terminal && !READ_ONLY_SUBS.has(g.sub)) {
+      res.problems.push('source / eval / 関数定義の後の git 書込みは、実行前の場所と環境を確かめられない');
+      return;
+    }
+    if (['add', 'stage'].includes(g.sub) && g.args.some((w) => w.braceExpanded)) {
+      res.problems.push('git add / stage の引数に brace expansion があり、追加される pathspec を検査できない');
+      return;
+    }
     if (g.dynamicOpt && !(g.sub && READ_ONLY_SUBS.has(g.sub))) {
       res.problems.push('git の -C / -c などの値が変数や置換で作られていて、読みきれない');
       return;
@@ -1038,6 +1247,10 @@ function inspect(cmd) {
       return;
     }
     g.incomplete = info.incomplete;
+    g.invocationOrder = invocation.order;
+    g.unknownContextBefore = state.unknownContext;
+    g.pipelineParticipant = invocation.pipelineParticipant;
+    g.unsafeGroupSetup = invocation.unsafeGroupSetup;
     g.gitEnvNames = [...env];
     g.cdLikeBefore = cdBefore;
     res.gits.push(g);
@@ -1045,6 +1258,10 @@ function inspect(cmd) {
 
   for (const { c, info } of resolved) visit(c, info, 0);
   res.cmdCount = resolved.length;
+  const finalRoot = stateFor(parsed.scope);
+  if (res.gits.length && (finalRoot.pathChanged || finalRoot.searchChanged || finalRoot.gitShadowed)) {
+    res.problems.push('git と同じ入力で永続する PATH / コマンド探索の変更があり、後続の実行先を保証できない');
+  }
 
   // commit や add と同じコマンドでは、どの git の `-c` / `--config-env` も allowlist の鍵に限る。
   if (res.gits.some((g) => STAGING_OR_COMMIT.has(g.sub))) {
@@ -1130,7 +1347,7 @@ function resolveCommitLong(name) {
 
 /** Identify commit-time staging and pathspecs while accepting single-word dynamic option values. */
 function parseCommitArgs(words) {
-  const r = { all: false, patch: false, fromFile: false, noVerify: false, dynamic: false, unknown: [], pathspecs: [] };
+  const r = { all: false, patch: false, fromFile: false, noVerify: false, terminal: false, dynamic: false, unknown: [], pathspecs: [] };
   let k = 0;
   let afterDD = false;
   while (k < words.length) {
@@ -1170,10 +1387,15 @@ function parseCommitArgs(words) {
       for (let p = 1; p < t.length; p++) {
         const ch = t[p];
         if (ch === DYN) { r.dynamic = true; break; }
+        // 不明な先行引数が -m 等になると、この -h は値として消費されうる。
+        if (ch === 'h') { if (!r.dynamic && !r.unknown.length) r.terminal = true; break; }
         if (COMMIT_SHORT_VALUE.has(ch)) {
           if (p === t.length - 1) {
             if (words[k + 1] && words[k + 1].dynamicMaySplit) r.dynamic = true;
             k++; // 値は次の語
+          } else if (w.dynamic && !t.slice(p + 1).replaceAll(DYN, '') && k + 1 < words.length) {
+            // -m"$MSG" は MSG が空なら -m になり、次の語を値として消費する。
+            r.dynamic = true;
           }
           break;
         }
