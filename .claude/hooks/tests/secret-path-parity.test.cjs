@@ -1,8 +1,9 @@
 'use strict';
 /**
  * Compare the production wrapper's extracted grep filter with the canonical
- * filename predicate. Filenames are stdin DATA; the wrapper, git and Vault are
- * never run. SECRET_PATH_PARITY_SCRIPT_SOURCE selects a saved older source for
+ * filename predicate. Filenames are stdin DATA. Git runs only in disposable
+ * DUMMY fixtures; extracted reader/restore fragments are tested separately.
+ * The full production wrapper and Vault operations are never run. SECRET_PATH_PARITY_SCRIPT_SOURCE selects a saved older source for
  * baseline comparison without copying its regex into this test.
  *
  * node --test .claude/hooks/tests/secret-path-parity.test.cjs
@@ -11,8 +12,21 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { isSecretPath } = require('../lib/git-guard-common.cjs');
+
+// Resolve the installed Git before fixture PATH stubs are introduced. Retain
+// usable tool paths while isolating Git configuration from the user's account.
+const toolPath = process.env.PATH || '/usr/bin:/bin';
+const gitExecutable = toolPath.split(path.delimiter).map(dir => path.resolve(dir, 'git')).find(candidate => {
+  try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
+  catch { return false; }
+});
+assert.ok(gitExecutable, 'Git is available on the test process PATH');
+const fixtureEnv = { PATH: toolPath, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull };
+const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+
 
 const scriptPath = process.env.SECRET_PATH_PARITY_SCRIPT_SOURCE ||
   path.resolve(__dirname, '../../skills/vault-ops/scripts/safe-vault-push-perm.sh');
@@ -39,11 +53,11 @@ function readerSource() {
   return match[0];
 }
 function fixture(t, names = []) {
-  const dir = fs.mkdtempSync('/private/tmp/secret-path-parity-');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-path-parity-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.mkdirSync(path.join(dir, 'tmp'));
   const git = (...args) => {
-    const result = spawnSync('/usr/bin/git', args, { cwd: dir, encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+    const result = spawnSync(gitExecutable, args, { cwd: dir, encoding: 'utf8', env: fixtureEnv });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout;
   };
@@ -62,7 +76,7 @@ function runReader(dir, options = {}) {
     `if [ "\${#SECRET_OFFENDERS[@]}" -gt 0 ]; then\n${restore ? restore[0] : ''}\nprintf '%s\\0' "\${SECRET_OFFENDERS[@]}"\nfi\n` +
     `else\n[ "\${#SECRET_OFFENDERS[@]}" -eq 0 ] || exit 9\nexit 7\nfi`;
   return spawnSync('/bin/bash', ['--noprofile', '--norc', '-c', `set -euo pipefail\n${commands}`], {
-    cwd: dir, encoding: 'utf8', env: { PATH: options.bin ? `${options.bin}:/usr/bin:/bin` : '/usr/bin:/bin',
+    cwd: dir, encoding: 'utf8', env: { ...fixtureEnv, PATH: options.bin ? `${options.bin}${path.delimiter}${toolPath}` : toolPath,
       TMPDIR: path.join(dir, 'tmp'), LC_ALL: 'en_US.UTF-8', ...options.env },
   });
 }
@@ -71,7 +85,7 @@ function nulFields(text) { return text ? text.split('\0').slice(0, -1) : []; }
 function shellSecret(filename, locale = 'C.UTF-8', literalLFProbe = false) {
   assert.ok((literalLFProbe || !filename.includes('\n')) && !filename.includes('\0'), 'filename DATA or explicit LF predicate probe');
   const result = spawnSync('/bin/bash', ['--noprofile', '--norc', '-c', `${assignments}\n${filter} || true`], {
-    input: `${filename}\n`, encoding: 'utf8', env: { PATH: '/usr/bin:/bin', LC_ALL: locale },
+    input: `${filename}\n`, encoding: 'utf8', env: { ...fixtureEnv, LC_ALL: locale },
   });
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
@@ -192,7 +206,7 @@ test('nonzero Git, truncated NUL and read-length failures publish no offenders',
     assert.equal(result.stdout, '');
     assert.ok(!fs.readdirSync(path.join(dir, 'tmp')).some(name => name.startsWith('vault-ops-staged.')));
   }
-  fs.writeFileSync(fakeGit, '#!/bin/sh\nexec /usr/bin/git "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(fakeGit, `#!/bin/sh\nexec ${shellQuote(gitExecutable)} "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'wc'), '#!/bin/sh\ncat >/dev/null\nprintf 999999\n', { mode: 0o755 });
   const unread = runReader(dir, { bin, restore: true });
   assert.equal(unread.status, 7, unread.stderr);
@@ -227,7 +241,7 @@ test('extracted production restore loop preserves exact array filenames and -- b
   const { dir } = fixture(t, names);
   const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
   const log = path.join(dir, 'restore-argv');
-  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nif [ "$1" = restore ]; then printf "%s\\0" "$@" >> "$PARITY_LOG"; else exec /usr/bin/git "$@"; fi\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nif [ "$1" = restore ]; then printf "%s\\0" "$@" >> "$PARITY_LOG"; else exec ${shellQuote(gitExecutable)} "$@"; fi\n`, { mode: 0o755 });
   const result = runReader(dir, { bin, restore: true, env: { PARITY_LOG: log } });
   assert.equal(result.status, 0, result.stderr);
   const fields = nulFields(fs.readFileSync(log, 'utf8'));

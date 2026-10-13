@@ -103,6 +103,8 @@ R15 は、child shell の ENV startup と imported / exported function source �
 
 同じ R15 で、GNU timeout / nice / stdbuf の正確な value-taking option arity・duration / buffering mode・child 境界を検査し、動的 / missing / 未対応・省略形 option は UNKNOWN とする。単独 Git の positive `diff.external` / GIT_EXTERNAL_DIFF、textconv / filter / hook / pager / include selector は active operation の役割で検査する。実際に helper を使わない通常 log の format / grep DATA、対応 getter / stdout query、実 disable flag は別の対照であり、消費値の `--no-ext-diff` を disable としない。共通 gh operation / payload 分類の Release upload / create asset と edit notes file と Issue 本文 file / stdin の確定 payload は公開 artifact でも FORBIDDEN。SSH `-n` は stdin だけを抑止するため remote command の展開結果を省略せず、Git push option も index / named remote と別の outbound DATA として検査する。secret filename 読取との関連と argv / context が確認できれば FORBIDDEN、未確定の producer・source・送信先 / transport は UNKNOWN。通常作業への影響、同目的を保てる対応形式、owner へ渡す条件は [ガイドの R15 節](../docs/security/git-command-guards.md#r15-startup--exported-function--outbound-data-の境界)を参照する。
 
+R16ではGH writeのbody / notes / titleの生成値もSSH / push-optionと共通のsource-to-sink判定へ接続する。repo / tag等も、quoted scalarのword境界だけで値を認証しない。既知literal / exact scalar proofは許可し、関連secret readerはFORBIDDEN、未追跡の生成source / metadataはUNKNOWN。静的本文と無関係readerの対照は維持し、生成本文や動的selectorが止まる通常影響とowner出口はガイドのR16節へ記載する。R15の測定は新sourceへ持ち越さない。
+
 Vault の `safe-vault-push-perm.sh` はこの PreToolUse 3 本とは別の staged gate である。R15 では canonical filename predicate との parity と、Git の `--name-only -z` の完全な読取を検査する。読取失敗・途中で切れた NUL record・LF filename は何も unstage せず停止し、非秘密の LF 名も通常作業の影響範囲になる。predicate は filename policy であり、file 内容の安全認証ではない。R15 の新 source の全 L1 / L2 / L3・CI は別に取得し、上記 R14 の成功数を持ち越さない。
 
 ## settings.local.json (gitignore 対象)

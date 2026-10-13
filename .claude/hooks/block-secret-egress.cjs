@@ -1287,7 +1287,9 @@ function ghFilePayload(invocation) {
   let afterDD = false;
   const operands = [];
   let unknown = !!invocation.incomplete;
+  let sourceUnknown = false;
   let payload = false;
+  const transmittedValueWords = [];
   const dataBoundary = word => Boolean(word && word.dynamicMaySplit === false && !word.ansiCUnknown &&
     !word.globExpanded && !word.braceExpanded && !word.tildeExpanded);
   for (let k = 1; k < words.length; k++) {
@@ -1317,11 +1319,12 @@ function ghFilePayload(invocation) {
       }
       if (!option) continue;
       if (!value || !dataBoundary(word) || !dataBoundary(value)) unknown = true;
-      if (option === 'repo' && !knownWord(value)) unknown = true;
       if (spec?.files.includes(option)) {
-        if (!knownWord(value) || value.text === '-') unknown = true;
+        const file = literalSourceWord(value);
+        if (!file || file.text === '-') sourceUnknown = true;
         else payload = true;
-      }
+      } else if (spec && ['body', 'notes', 'title'].includes(option)) transmittedValueWords.push(value);
+      else if (!literalSourceWord(value)) sourceUnknown = true;
       continue;
     }
     if (!action) {
@@ -1330,13 +1333,15 @@ function ghFilePayload(invocation) {
       spec = specFor(action);
       if (!spec) return false; // Queries and other operations keep their existing guard conditions.
     } else {
-      if (!knownWord(word)) unknown = true;
+      if (!literalSourceWord(word)) sourceUnknown = true;
+      if (!dataBoundary(word)) unknown = true;
       operands.push(word);
     }
   }
   if (!spec) return unknown ? 'UNKNOWN' : false;
-  if (unknown || operands.length < spec.min || operands.length > spec.max) return 'UNKNOWN';
-  return payload || operands.length > spec.assetStart ? 'FORBIDDEN' : false;
+  if (unknown || sourceUnknown || operands.length < spec.min || operands.length > spec.max) return 'UNKNOWN';
+  return payload || operands.length > spec.assetStart ? 'FORBIDDEN' :
+    outboundPayloadVerdict(invocation, transmittedValueWords);
 }
 
 /** Select SSH commands/config sources that run locally, retaining proven non-executing query and DATA options. */

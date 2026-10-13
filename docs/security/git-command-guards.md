@@ -306,6 +306,20 @@ SSH / push-option は共通の値の生成元判定を使う。既存 state が�
 
 新headのrequired CIとfresh review / thread状態はPRで別に取得する。旧R14結果やprivate focused / harmless native数を新統合suite・実CLIの成功数へ加算しない。
 
+## R16: GH scalar の生成元と試験器具の可搬性
+
+R15 の file / stdin 分類だけでは、Issue / PR 本文や Release notes に `$(cat …)` で読んだ値を渡す経路が残っていた。公開4fと5eaの全3hookで正確な3入力がALLOWだったことを当席で確認した。これは旧版から残る同じ値の生成元の不足であり、実送信・実秘密の読取を測った結果ではない。
+
+識別できた GH write operation の body / notes / title は、SSH / push-option と同じ `outboundPayloadVerdict` で、対象wordに結び付くproducer・scope・order・source・contextを検査する。秘密filenameを読むproducerと確定した送信wordが結び付けばFORBIDDEN。未対応加工・stdout・taint・sourceが残ればUNKNOWN。repo / tag / assignee / label等の別役割は本文payloadと分けるが、quoted scalarで語数が保たれるだけでは値の生成元の証明にせず、既存のexact literal proofを要求する。確定literalと対応する既知変数は許可する。無関係なreaderと静的本文は許可対照であり、必要のない読取まで送信との関連を推定しない。
+
+通常の生成本文・titleや動的repo等は、生成元を確定できなければ停止する。同じ目的と条件を保てる対応literal / exact scalar proofへ表せる場合だけ書換え、必要な生成処理や対象を変えてしまう場合はownerへ操作・対象・cwd・env/config/sourceと不明点を渡す。file optionの既存FORBIDDENと未検査stdinのUNKNOWNは独立に保持する。対応していない任意のGHプログラム・alias・外部処理を安全と認証したものではない。
+
+CodeRabbitが追加指摘した試験器具の固定 `/private/tmp` / `/usr/bin/git` は、`os.tmpdir()`とテストprocessのPATHから解決したGitへ変更した。Gitのglobal/system設定はDUMMY fixtureで隔離し、stubは実行pathを正しく引用する。macOSの通常環境8/8と、空白・apostropheを含む別PATH / TMPDIRの8/8、Git shimの実使用と引用roundtripを確認した。Linuxでこの席が実行した結果ではない。production wrapper / Vault作業自体は起動していない。
+
+R16の固定source（common `addb1e95` / egress `5233b213`）は2026-10-13 20:06:20 JSTに **3795/3795、broken 0、hash不変**。旧3764定義の入力・期待値をすべて保持し31件を追加した。同じ3795入力で旧5eaは18判定差、理由だけの差0、broken 0。公開L1 45 / deny API 6 / filename parity 8も全59契約が成功。3つの正確なGH生成値witnessはegress自身がFORBIDDENで停止し、共通value edgeだけを外すとALLOWへ戻った。literal / file / stdin / metadata対照を維持した。差は独立した漏えい件数ではない。
+
+新sourceのCLI2.1.296は **5試行 / 4実入口PASS / 0FAIL / 1NOT_EXERCISED**。literal本文とexact scalar本文は許可され、networkを使わないGH stubのDUMMY markerだけが期待どおり増えた。file本文はFORBIDDEN、未確定selector sourceはUNKNOWNで停止し、HEAD / refs / index / status / DUMMY files / object inventories / 他markersは不変。秘密filenameの生成本文1例はAPI safeguardがBash / hookより前に止めたためguard成功へ加えない。実GH送信・auth・server・production全lifecycleは測っていない。R15の10試行 / 8PASSを新sourceへ持ち越さない。新head CI / fresh reviewは別に取得する。
+
 ## 試験を 3 層に分ける
 
 上記の条件ごとに L1 の意味、L2 の ALLOW / FORBIDDEN / UNKNOWN と担当、L3 の実 dispatch と副作用を別々に確認する。新しい source の結果を取得するまで、過去の合格数や dispatch を持ち越さない。
