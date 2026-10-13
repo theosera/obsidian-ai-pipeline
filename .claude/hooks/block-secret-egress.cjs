@@ -179,7 +179,9 @@ if (EXFIL_SHAPES.some((re) => re.test(cmd))) {
   );
 }
 
-if (SECRET_FILE_RE.test(withoutTemplateTokens(cmd)) && NET_VERB_RE.test(cmd)) {
+// Check the required network shape before the raw filename inventory; long unrelated words
+// must not spend the hook deadline in a filename-only backstop which cannot deny this input.
+if (NET_VERB_RE.test(cmd) && SECRET_FILE_RE.test(withoutTemplateTokens(cmd))) {
   deny(
     '秘密ファイル名の形 (.env / *token*.json / *.key 等) とネットワーク名が同じ文字列に含まれています。\n' +
     '読取から送信への関係をこの照合だけでは確認できないためブロックしました (egress guard)。owner に対象・操作・cwd・source を確認してください。',
@@ -187,7 +189,9 @@ if (SECRET_FILE_RE.test(withoutTemplateTokens(cmd)) && NET_VERB_RE.test(cmd)) {
 }
 
 // git の形を、git の呼び出しごとにも見る（global option や引用符を挟んだ形も同じに読む）。
-const insp = guard.inspect(cmd);
+const insp = guard.inspect(cmd, {
+  initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH'].filter(name => process.env[name] !== undefined),
+});
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
 const URL_ARG_RE = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)/;
 // Git は最初の `:` より前に `/` が無い宛先を scp 形と読む。`./a:b` はローカル。
@@ -278,9 +282,25 @@ function configOperation(words) {
   let actionSeen = false;
   let rename = false;
   let deletion = null;
+  let unknownOption = false;
+  let edit = false;
+  let terminal = false;
   for (let k = 0; k < words.length; k++) {
-    const t = words[k].text;
+    const word = words[k];
+    const t = word.text;
+    // An unresolved option can consume a later getter flag instead of selecting that read action.
+    if (!afterDD && t.startsWith('-')) {
+      const eq = t.indexOf('=');
+      const shortValue = /^-[z]*[fbt]/.exec(t);
+      const optionName = t.startsWith('--') && eq >= 0 ? t.slice(0, eq) : shortValue ? shortValue[0] : t;
+      if (optionName.includes('\0') || word.ansiCUnknown || word.globExpanded || word.braceExpanded ||
+          (word.dynamic && word.dynamicMaySplit !== false)) unknownOption = true;
+    }
     if (!afterDD && t === '--') { afterDD = true; continue; }
+    if (!afterDD && ['-h', '--help'].includes(t) && !word.dynamic && !word.ansiCUnknown) {
+      terminal = true;
+      continue;
+    }
     if (!afterDD && t.startsWith('--')) {
       const eq = t.indexOf('=');
       const name = t.slice(2, eq < 0 ? undefined : eq);
@@ -291,12 +311,14 @@ function configOperation(words) {
       if (name.startsWith('ren') && 'rename-section'.startsWith(name)) rename = true;
       if (name.startsWith('uns') && ['unset', 'unset-all'].some((option) => option.startsWith(name))) deletion = 'key';
       if (name.startsWith('rem') && 'remove-section'.startsWith(name)) deletion = 'section';
+      if (name.startsWith('ed') && 'edit'.startsWith(name)) edit = true;
       if (/^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|--list)$/.test(t)) read = true;
       continue;
     }
     if (!afterDD && t.startsWith('-')) {
       if (/^-[z]*[fbt]$/.test(t)) k++;
       if (t === '-l') read = true;
+      if (/^-[zl]*e/.test(t)) edit = true;
       continue;
     }
     if (!afterDD && !actionSeen && ['get', 'list', 'unset', 'remove-section', 'set', 'rename-section', 'edit'].includes(t)) {
@@ -304,6 +326,7 @@ function configOperation(words) {
       rename = t === 'rename-section';
       deletion = t === 'unset' ? 'key' : t === 'remove-section' ? 'section' : null;
       read = ['get', 'list'].includes(t);
+      edit = t === 'edit';
       continue;
     }
     operands.push(t);
@@ -311,24 +334,214 @@ function configOperation(words) {
     // config は key 以降を value / value-pattern として扱う（--get という値もある）。
     afterDD = true;
   }
-  return { read, rename, deletion, operands, operandWords };
+  return { read, rename, deletion, operands, operandWords, unknownOption, edit, terminal: terminal && !unknownOption };
 }
 
 /** Classify destination writes while keeping getters and consumed option values outside the refusal. */
 function writesDestinationConfig(words) {
-  const { read, rename, deletion, operands, operandWords } = configOperation(words);
+  const { read, rename, deletion, operands, operandWords, unknownOption } = configOperation(words);
+  if (unknownOption) return 'UNKNOWN';
   // Removing a selected destination exposes fallback URLs/configuration just like replacing it.
   if (deletion) {
     if (!(operands.length > 0 && (operandWords[0].dynamic ||
-        (deletion === 'key' ? destinationConfig(operands[0]) : destinationSection(operands[0]))))) return false;
+        (deletion === 'key' ? destinationConfig(operands[0]) || editorConfig(operands[0])
+          : destinationSection(operands[0]) || /^(?:core|sequence)$/i.test(operands[0]))))) return false;
     if (deletion === 'section' || !knownWord(operandWords[0])) return 'UNKNOWN';
   } else {
+    const key = operandWords[0];
+    if (!read && !rename && key &&
+        (operands.length > 1 || key.dynamicMaySplit !== false || key.globExpanded || key.braceExpanded) &&
+        (!knownWord(key) || key.globExpanded || key.braceExpanded || key.tildeExpanded)) return 'UNKNOWN';
+    if (!read && operands.length > 1 && (editorConfig(operands[0]) ||
+        (rename && /^(?:core|sequence)$/i.test(operands[0])))) return 'UNKNOWN';
     if (!(!read && operands.length > 1 && (rename ?
         operandWords[1].dynamic || destinationSection(operands[1]) : destinationConfig(operands[0])))) return false;
     if (rename || !knownWord(operandWords[0])) return 'UNKNOWN';
   }
   // An include or transport key selects executable/config source whose effect is not inspected here.
-  return transportConfig(operands[0]) || /^include(?:if\..+)?\.path$/i.test(operands[0]) ? 'UNKNOWN' : 'FORBIDDEN';
+  return editorConfig(operands[0]) || transportConfig(operands[0]) || /^include(?:if\..+)?\.path$/i.test(operands[0]) ? 'UNKNOWN' : 'FORBIDDEN';
+}
+
+/** Editor configuration chooses executable source, including a fallback exposed by deletion. */
+function editorConfig(key) { return /^(?:core|sequence)\.editor$/i.test(key); }
+
+/** Read actual editor-relevant options, keeping required option values and refs after -- as DATA. */
+function gitEditorOptions(g, required, shortValues, flags) {
+  let afterDD = false;
+  let unknown = Boolean(g.incomplete);
+  const selected = new Set();
+  for (let k = 0; k < g.args.length; k++) {
+    const word = g.args[k];
+    const text = word.text;
+    if (word.dynamic || word.ansiCUnknown || word.globExpanded || word.braceExpanded) unknown = true;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (afterDD || !text.startsWith('-')) continue;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      if (required.includes(name)) { if (eq < 0) k++; continue; }
+      if (!flags.includes(name) || eq >= 0) { unknown = true; continue; }
+      selected.add(name);
+    } else {
+      for (let p = 1; p < text.length; p++) {
+        if (shortValues.includes(text[p])) { if (p === text.length - 1) k++; break; }
+        selected.add(text[p]);
+      }
+    }
+  }
+  return { selected, unknown };
+}
+
+/** Stop operations which can invoke an uninspected message or sequence editor. */
+function gitEditorCanRun(g) {
+  if (g.terminal) return false;
+  if (g.sub === 'commit') return guard.parseCommitArgs(g.args).editorMayRun !== false;
+  if (g.sub === 'merge' || g.sub === 'pull') return guard.parseMergeMessageArgs(g.args).editorMayRun !== false;
+  if (g.sub === 'config') {
+    const operation = configOperation(g.args);
+    return operation.edit && !operation.terminal;
+  }
+  if (g.sub === 'rebase') {
+    const parsed = gitEditorOptions(g, ['onto', 'strategy', 'strategy-option', 'exec', 'rebase-merges', 'update-refs', 'empty'], 'sxX',
+      ['interactive', 'edit-todo', 'continue', 'abort', 'quit', 'skip', 'show-current-patch', 'help', 'no-edit', 'no-interactive',
+        'root', 'force-rebase', 'no-ff', 'fork-point', 'no-fork-point', 'keep-base', 'reapply-cherry-picks', 'no-reapply-cherry-picks',
+        'autosquash', 'no-autosquash', 'autostash', 'no-autostash', 'keep-empty', 'no-keep-empty', 'rebase-merges', 'no-rebase-merges',
+        'apply', 'merge', 'quiet', 'verbose', 'stat', 'no-stat', 'committer-date-is-author-date', 'ignore-date', 'reset-author-date']);
+    return parsed.unknown || ['interactive', 'edit-todo', 'continue', 'skip', 'i', 'e'].some(flag => parsed.selected.has(flag));
+  }
+  if (g.sub === 'cherry-pick' || g.sub === 'revert') {
+    const parsed = gitEditorOptions(g, ['mainline', 'strategy', 'strategy-option', 'cleanup'], 'mX',
+      ['edit', 'no-edit', 'continue', 'abort', 'quit', 'skip', 'no-commit', 'signoff', 'allow-empty', 'allow-empty-message',
+        'keep-redundant-commits', 'ff', 'rerere-autoupdate', 'no-rerere-autoupdate', 'help']);
+    if (parsed.unknown) return true;
+    if (['abort', 'quit', 'help', 'no-commit', 'n'].some(flag => parsed.selected.has(flag))) return false;
+    if (parsed.selected.has('edit') || parsed.selected.has('e') || parsed.selected.has('continue') || parsed.selected.has('skip')) return true;
+    return g.sub === 'revert' && !parsed.selected.has('no-edit');
+  }
+  if (g.sub === 'am') {
+    const parsed = gitEditorOptions(g, ['patch-format', 'directory', 'exclude', 'include', 'whitespace', 'reject'], 'pC',
+      ['interactive', 'continue', 'resolved', 'abort', 'quit', 'skip', 'help', 'signoff', '3way', 'quiet', 'keep', 'keep-non-patch',
+        'message-id', 'no-message-id', 'scissors', 'no-scissors', 'utf8', 'no-utf8', 'committer-date-is-author-date', 'ignore-date']);
+    return parsed.unknown || ['interactive', 'continue', 'resolved', 'skip', 'i', 'e'].some(flag => parsed.selected.has(flag));
+  }
+  if (g.sub === 'branch') {
+    const parsed = gitEditorOptions(g, ['format', 'sort', 'contains', 'no-contains', 'merged', 'no-merged', 'track'], '',
+      ['edit-description', 'list', 'show-current', 'help', 'all', 'remotes', 'verbose', 'delete', 'force', 'move', 'copy']);
+    return parsed.unknown || parsed.selected.has('edit-description');
+  }
+  if (g.sub === 'add' || g.sub === 'stage') {
+    const parsed = guard.parseAddArgs(g.args);
+    if (parsed.terminal) return false;
+    const flags = gitEditorOptions(g, ['chmod', 'pathspec-from-file', 'unified', 'inter-hunk-context'], 'U',
+      ['edit', 'interactive', 'patch', 'all', 'update', 'force', 'verbose', 'dry-run', 'intent-to-add', 'refresh', 'renormalize',
+        'ignore-errors', 'ignore-missing', 'no-warn-embedded-repo', 'sparse', 'pathspec-file-nul']);
+    return ['edit', 'interactive', 'patch', 'e', 'i', 'p'].some(flag => flags.selected.has(flag));
+  }
+  return false;
+}
+
+/** Bash socket paths are an unsupported native network channel, even without a network executable. */
+function nativeSocketRedirection(invocation) {
+  return invocation.redirs.some(redir => {
+    if (['<<<', '<<', '<<-'].includes(redir.op)) return false;
+    const word = redir.word;
+    if (!word) return true;
+    const text = typeof word.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word.text;
+    if (/^\/dev\/(?:tcp|udp)\//.test(text)) return true;
+    if (!word.dynamic && !word.ansiCUnknown) return false;
+    const prefix = text.split('\0')[0];
+    return !prefix || ['/dev/tcp/', '/dev/udp/'].some(pathname => pathname.startsWith(prefix) || prefix.startsWith(pathname));
+  });
+}
+
+/** mapfile/readarray callbacks are executable source, never ordinary delimiter/count option DATA. */
+function quotedAttachedOptionValue(word, text, shortValues, longValues = []) {
+  if (!word.dynamic || word.dynamicMaySplit !== false || word.ansiCUnknown || word.globExpanded || word.braceExpanded) return false;
+  if (text.startsWith('--')) {
+    const eq = text.indexOf('=');
+    return eq >= 0 && longValues.includes(text.slice(2, eq));
+  }
+  if (!text.startsWith('-')) return false;
+  for (let p = 1; p < text.length; p++) {
+    if (text[p] === '\0') return false;
+    if (shortValues.includes(text[p])) return true;
+  }
+  return false;
+}
+
+function arrayReaderCallback(invocation) {
+  if (!['mapfile', 'readarray'].includes(invocation.name)) return false;
+  let unknown = Boolean(invocation.incomplete);
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    const text = typeof word.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word.text;
+    if (word.dynamic && typeof word.literalValue !== 'string' && !quotedAttachedOptionValue(word, text, 'dnOsuCc') ||
+        word.ansiCUnknown || word.globExpanded || word.braceExpanded) unknown = true;
+    if (text === '--') return unknown;
+    if (text === '--help') return unknown;
+    if (!text.startsWith('-')) break;
+    for (let p = 1; p < text.length; p++) {
+      if (text[p] === 'C') return true;
+      if ('dnOsuc'.includes(text[p])) {
+        const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+        if (value?.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+        break;
+      }
+    }
+  }
+  return unknown;
+}
+
+/** A selected rsync remote shell is opaque local executable source; a proven local copy does not select it. */
+function rsyncRemoteHelper(invocation) {
+  if (invocation.name !== 'rsync') return false;
+  const values = new Set(['rsh', 'rsync-path', 'filter', 'include', 'exclude', 'include-from', 'exclude-from', 'files-from',
+    'compare-dest', 'copy-dest', 'link-dest', 'password-file', 'address', 'port', 'timeout', 'contimeout', 'bwlimit',
+    'chown', 'chmod', 'usermap', 'groupmap', 'out-format', 'log-file', 'backup-dir', 'suffix', 'temp-dir', 'remote-option',
+    'block-size', 'max-size', 'min-size', 'max-delete', 'modify-window', 'sockopts', 'skip-compress', 'compress-level']);
+  const flags = new Set(['archive', 'recursive', 'links', 'copy-links', 'copy-unsafe-links', 'safe-links', 'copy-dirlinks',
+    'keep-dirlinks', 'perms', 'executability', 'acls', 'xattrs', 'owner', 'group', 'devices', 'specials', 'hard-links',
+    'times', 'omit-dir-times', 'super', 'fake-super', 'sparse', 'dry-run', 'whole-file', 'no-whole-file', 'one-file-system',
+    'existing', 'ignore-existing', 'remove-source-files', 'delete', 'delete-before', 'delete-during', 'delete-delay',
+    'delete-after', 'delete-excluded', 'ignore-errors', 'force', 'partial', 'delay-updates', 'checksum', 'update',
+    'inplace', 'append', 'append-verify', 'relative', 'no-implied-dirs', 'dirs', 'quiet', 'verbose', 'progress', 'stats',
+    'numeric-ids', 'human-readable', 'itemize-changes', 'cvs-exclude', 'ignore-times', 'size-only', 'ipv4', 'ipv6', 'list-only']);
+  let selected = (invocation.helperEnvNames || []).includes('RSYNC_RSH');
+  let unknown = Boolean(invocation.incomplete);
+  let remote = false;
+  let afterDD = false;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    const text = typeof word.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word.text;
+    if (word.dynamic && typeof word.literalValue !== 'string' && !quotedAttachedOptionValue(word, text, 'efBMT', [...values]) ||
+        word.ansiCUnknown || word.globExpanded || word.braceExpanded) unknown = true;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (!afterDD && ['--help', '--version'].includes(text)) return selected && unknown;
+    if (!afterDD && text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      if (name === 'rsh') selected = true;
+      if (values.has(name)) {
+        const value = eq < 0 ? invocation.args[++k] : { ...word, text: text.slice(eq + 1) };
+        if (value?.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+      } else if (!flags.has(name)) unknown = true;
+      continue;
+    }
+    if (!afterDD && text.startsWith('-')) {
+      for (let p = 1; p < text.length; p++) {
+        if ('efBMT'.includes(text[p])) {
+          if (text[p] === 'e') selected = true;
+          const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+          if (value?.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+          break;
+        }
+        if (!'avrlpgoDHtOUJSLkKNnWxuzqsIbcdRACEXyih46'.includes(text[p])) unknown = true;
+      }
+      continue;
+    }
+    if (destinationArg(text)) remote = true;
+  }
+  return selected && (remote || unknown);
 }
 
 /** Reconstruct credential-helper shell commands only for consumers or persistent helper writes. */
@@ -945,7 +1158,8 @@ function envSplitInspection(invocation, script) {
   const parsed = guard.parseShell(envSplitSource(script.text));
   const words = parsed.cmds.flatMap((command) => command.words);
   const tail = invocation.words.filter((word) => word.start > script.start);
-  return guard.inspect(['env', ...words.map((word) => word.text), ...tail.map((word) => word.text)].map(parserLiteral).join(' '));
+  return guard.inspect(['env', ...words.map((word) => word.text), ...tail.map((word) => word.text)].map(parserLiteral).join(' '),
+    { initialHelperEnvNames: invocation.helperEnvNames });
 }
 
 const inspectedGits = [];
@@ -967,6 +1181,9 @@ function collectNetworkInvocations(inspection, depth = 0) {
   for (const g of inspection.gits) {
     const decision = guard.gitObjectInputDecision(g);
     if (decision) deny(decision.reason, gitVerdict(g, decision.category));
+    if (gitEditorCanRun(g)) {
+      deny('Git の message / sequence editor を呼べる操作で、実際に編集を抑止する対応済み argv 条件を確認できません。既定・env/config override の editor source は内部を検査できません。同目的を保つ actual inline/file/reuse message や no-edit 形式を検討し、保てなければ owner に対象・操作・cwd/env/config/source を確認してください。個別操作の承認は hook 無効化の承認ではありません。');
+    }
     const pager = guard.grepPagerEffect(g);
     const beforeCommit = activeCommits.some(commit => !Number.isInteger(g.invocationOrder) ||
       !Number.isInteger(commit.invocationOrder) || g.invocationOrder <= commit.invocationOrder);
@@ -977,6 +1194,9 @@ function collectNetworkInvocations(inspection, depth = 0) {
   const result = [];
   for (const invocation of inspection.invocations) {
     if (invocation.nonExec || invocation.definitionName) continue;
+    if (nativeSocketRedirection(invocation)) deny('Bash の /dev/tcp・/dev/udp redirection または socket を選びうる動的 target は未対応の network channel です。read/write/FD と秘密 filename の有無だけでは送信条件を確認できません。' + UNKNOWN_OWNER_GATE);
+    if (arrayReaderCallback(invocation)) deny('mapfile / readarray の -C callback または callback を選びうる argv は未対応の実行 source です。callback が literal でも内部や副作用を検査できません。同目的を保てる callback-free 形式を検討してください。' + UNKNOWN_OWNER_GATE);
+    if (rsyncRemoteHelper(invocation)) deny('remote rsync の -e / --rsh / RSYNC_RSH が選ぶ helper source、または remote/local の argv 条件を検査できません。download でも helper はローカルで実行されます。' + UNKNOWN_OWNER_GATE);
     result.push(invocation);
     const scripts = [];
     const gitCommand = inspection.gits.find((g) => g.invocationOrder === invocation.order);
@@ -1004,7 +1224,10 @@ function collectNetworkInvocations(inspection, depth = 0) {
     scripts.push(...(invocation.aliasScripts || []).map((script) => ({ ...script, mediated: true })));
     for (const script of scripts) {
       const nested = script.mediated ? guard.inspectMediatedSource(script) :
-        guard.inspect(script.text, { initialPositionals: script.initialPositionals });
+        guard.inspect(script.text, { initialPositionals: script.initialPositionals, initialHelperEnvNames: invocation.helperEnvNames });
+      if (script.mediated) for (const nestedInvocation of nested.invocations) {
+        nestedInvocation.helperEnvNames = [...new Set((nestedInvocation.helperEnvNames || []).concat(invocation.helperEnvNames || []))];
+      }
       if (script.gitContext) for (const g of nested.gits) {
         g.gitEnvNames = [...new Set(g.gitEnvNames.concat(script.gitContext.gitEnvNames))];
         g.configs.push(...script.gitContext.configs.filter((config) => destinationConfig(config.split('=')[0])));
@@ -1127,7 +1350,10 @@ for (const g of inspectedGits) {
   const repo = push && push.repository;
   const unknownPushDestination = g.sub === 'push' && (push.indeterminate || (repo && repo.dynamic) ||
     g.configEnvs.some((config) => destinationConfig(config.split('=')[0])) ||
-    g.configs.some((config) => transportConfig(config.split('=')[0])) ||
+    g.configs.some((config) => {
+      const key = config.split('=')[0];
+      return transportConfig(key) || /^include(?:if\..+)?\.path$/i.test(key);
+    }) ||
     g.gitEnvNames.some((name) => /^GIT_CONFIG(?:_|$)/.test(name) || /^GIT_(?:SSH(?:_COMMAND)?|PROXY_COMMAND)$/.test(name)));
   if (unknownPushDestination) {
     deny('git push の宛先や transport command が変数・置換や config / GIT_CONFIG / GIT_SSH / GIT_PROXY_COMMAND の override で作られていて、egress ガードで確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);

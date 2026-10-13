@@ -63,6 +63,7 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
   - AI 出力パスの検証（`validateClassificationResult`）
   - Claude Code の Bash / Git ガード: shell の引用・escape と実行 source を解析し、対応済み条件の充足、禁止操作の確認、判断不能を区別する。後二者は停止し、理由を `[禁止]` / `[判断不能]` と示す。対象や実行条件を確定できない変数・glob による add や設定を差し替えた Git も fail-closed とする（対応範囲、代替、owner 確認、試験3層: [Git ガード](docs/security/git-command-guards.md)）
     - 通常の release tag 作成・削除・署名・検証、notes 更新、stash push / pop や管理も、検査範囲外の object / ref / working state 操作として `[判断不能]` で停止する。commit `-F` / `-t` と merge `-F` の source、commit 前の grep pager、curl の query file 入力にも制限がある。対応する query / literal DATA と、同目的の writer 代替がない場合の owner 確認は上記ガイドを参照する。
+    - R12 では、既定の editor も含め、未検査の editor が起動し得る Git 操作を `[判断不能]` で停止する。普通の merge も実際の `--no-edit` と確定 argv が必要となる。commit の対応 `-m` / `-F` / `-C`、実 `--no-edit` / dry-run 等は editor を起動しない条件だけの対照であり、index・message source 等の別条件も満たす必要がある。実行名の glob / brace / tilde、mapfile / readarray の実 `-C` callback、Bash の実 `/dev/tcp` / `/dev/udp` redirection、remote rsync の明示 remote-shell helper は同じく停止する。一方、literal の FD 複製・close と正確な `/dev/null` 出力は、index を書き換える redirection と区別する。通常作業への影響と同目的の代替条件は上記ガイドに記載する。
   - security-guidance プラグイン（公式）: Claude Code が書くコードを編集時 / ターン終了時 / commit 時の 3 層で自動セキュリティレビュー。`.claude/claude-security-guidance.md` で本リポの脅威モデルをレビュー観点に注入（詳細・既存防御との棲み分け: `docs/security/security-guidance-plugin.md`）
 - **dry-run モード**: `--dry-run` は Vault へ一切書き込まない（分類レポート・失敗ログは Vault 外の一時ディレクトリへ出力し、スナップショット / `folder_rules.json` 昇格の永続化も抑止）。実行前後で Vault ツリーが不変であることをテストで保証
 - **Vault Root 外部化**: `pipeline_config.json` または環境変数 `VAULT_ROOT` で設定、ハードコードなし

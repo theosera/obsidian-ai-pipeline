@@ -163,8 +163,19 @@ function readOnlyInvocation(invocation) {
   return true;
 }
 
-/** Shell output and read/write redirections can replace the index before a command starts. */
-const writesViaRedirection = (redirection) => redirection.op.includes('>') && redirection.op !== '<<<';
+/** Shell file-opening output and read/write redirections can replace the inspected index. */
+function writesViaRedirection(redirection) {
+  if (!redirection.op.includes('>') || redirection.op === '<<<') return false;
+  const word = redirection.word;
+  const literal = word && word.dynamic === false && word.dynamicMaySplit === false &&
+    !word.ansiCUnknown && !word.braceExpanded && !word.globExpanded && !word.tildeExpanded;
+  if (!literal) return true;
+  // `>&1` duplicates an FD, while `>1` opens an ordinary file named 1.
+  if (redirection.op === '>&' && /^(?:\d+|-)$/.test(word.text)) return false;
+  // Only the exact device path is supported; no expansion or path normalization proves it.
+  if (word.text === '/dev/null' && ['>', '>>', '>|', '&>', '&>>', '>&'].includes(redirection.op)) return false;
+  return true;
+}
 
 // builtin でない subcommand が alias なら拒む（alias の中身は検査できない）。
 for (const g of gits) {

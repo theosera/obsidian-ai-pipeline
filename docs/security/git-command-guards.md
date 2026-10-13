@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の R11 候補で定めた保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。
+この文書は PR #191 の R12 で採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。R11 の取得時刻・source を付した測定は履歴として残し、R12 の実測と区別する。
 
 ## 判定の意味
 
@@ -33,7 +33,7 @@
 | MCP | この 3 本の担当なし | 接続先と別の permission / owner approval gate が必要。担当が確認できない経路は未被覆 |
 | 起動後の子プログラム内部・任意の設定ファイル内の処理 | 個別の hook は付かない | 選択して解析する source 以外を包括的に検査しない。担当が確認できない処理は未被覆 |
 
-設定の `if` 記述だけから、任意の入力での実 dispatch を推測しない。旧 a464 時点の CLI 2.1.296 の実入口 3 例では、引用した `g''it` の例も含めて全 3 wrapper が起動した。条件付き 2 本が省略されたという証拠ではない。この観測を R11 の新 source、全変形入力や他版へ一般化せず、対応する変形経路は常時 Bash の egress 自身の停止も fixture の `denyBy` で確認する。hook に直接 JSON を渡す fixture 自体は dispatch の証明ではなく、L3 の代表実測と分ける。
+設定の `if` 記述だけから、任意の入力での実 dispatch を推測しない。旧 a464 時点の CLI 2.1.296 の実入口 3 例では、引用した `g''it` の例も含めて全 3 wrapper が起動した。条件付き 2 本が省略されたという証拠ではない。この観測を R11 / R12 の新 source、全変形入力や他版へ一般化せず、対応する変形経路は常時 Bash の egress 自身の停止も fixture の `denyBy` で確認する。hook に直接 JSON を渡す fixture 自体は dispatch の証明ではなく、L3 の代表実測と分ける。
 
 方式は全面的な command allowlist ではない。危険な操作を検出する条件と、その近傍で必要情報を確認できなければ止める条件を置く。任意の Bash、external executable の実体、呼び出したプログラム内部をすべて評価できるとはしない。
 
@@ -43,7 +43,7 @@
 
 先行する理由分類計画の 27 群を、PR の先行 round と R10 の条件群にまとめ、R11 の新しい 4 条件群と、その後の限定監査で採用した merge file / stash の 2 群を区別して加える。先行群には、main 由来の policy / raw backstop と、本 PR で追加した解析・停止条件を併記する。すべての禁止規則を本 PR で新設したという意味ではない。R10 / R11 行にも、既存の secret inventory へ新しい入力経路を結び付けた条件が含まれる。
 
-R11 の file query、grep pager、commit message source、notes/tag route の方針は、それぞれの実装前の担当指示で決めた。scope plan JSON は後から集約した記録であり、集約時刻を最初の方針決定時刻に読み替えない。merge file / stash は、別の限定監査で dummy native の保存経路と旧 source の許可を確認した後に、通常作業への影響と停止範囲を決めて追加した。
+R11 の file query、grep pager、commit message source、notes/tag route の方針は、それぞれの実装前の担当指示で決めた。scope plan JSON は後から集約した記録であり、集約時刻を最初の方針決定時刻に読み替えない。merge file / stash は、別の限定監査で dummy native の保存経路と旧 source の許可を確認した後に、通常作業への影響と停止範囲を決めて追加した。R12 も対応範囲・ALLOW / FORBIDDEN / UNKNOWN・停止後の出口を先に定め、下表の追加条件と精度修正を実装に割り当てた。全 Git writer の一括禁止や全面的な Bash allowlist へ広げたものではない。
 
 表の L1 / L2 は確認する試験項目と既存対照を示す。理由 prefix の assertion がない古い対照まで分類を自動検証済みとはしない。L3 の代表実測と、各行の未測定範囲は後述する。
 
@@ -69,6 +69,22 @@ R11 の file query、grep pager、commit message source、notes/tag route の方
 | R11: commit 前の grep file-opening pager | active commit 以前の Git grep argv。実 `-O` / `--open-files-in-pager` の optional attached value、default / explicit、後置 negation、required value、first bare operand / `--` を区別 | helper の副作用と検査後の index 維持を確認できず UNKNOWN。pager option 自体を新 FORBIDDEN にしない。動的 argv / glob で選択が不明な場合も UNKNOWN | pager で matching file を開いて同じ Bash 内で commit する作業、option になり得る裸の動的検索語 | 検索結果を読む同目的なら pager を選ばない対応 grep。scalar 検索語は `-e "$PATTERN"` の DATA 形式。pager 自体が必要なら owner に対象・操作・cwd / env / config / source を確認 | `grepPagerEffect` と order、default / explicit / reset、consumed DATA。harmless native marker で意味を照合 | R11SG01 helper 前置 UNKNOWN / SG25 ordinary grep allow、SG32 後置 disable・SG34 global -P default 対照、OBJ59/62 egress 経路、standalone / after-commit 対照 | NOT_EXERCISED†。API safeguard で Bash / hook 前に停止。hook deny は未測定 |
 | R11 限定監査: merge message の file source | 実 `-F` / `--file` の option arity と、単一対応 literal filename の選択。消費される `-m` / strategy 等の DATA と区別し、cwd / env 等の他条件も確認 | 対応した単一 selected secret filename は FORBIDDEN。stdin / FD、未知 path・argv / context、複数 source・未対応 override は UNKNOWN。file source のない普通の merge はこの追加停止の対象外 | file message を使う merge、動的 `-F`、複数 message source の選択 | 同じ内容・目的と非秘密性を確認した対応 inline `-m` / 単一 literal filename にできる場合のみ書換え。source 自体が必要なら owner に対象・操作・cwd / env / config / source を確認 | merge の actual file value / DATA と filesystem source 選択。dummy で tree にない file 内容が message に保存される意味を照合 | selected secret FORBIDDEN / unknown source UNKNOWN と ordinary public filename / inline merge 対照。追加 source の統合結果は別記 | R11 の単一 `.env` file 停止 1 例†。他 source / override は未測定 |
 | R11 限定監査: stash の tree / object / ref と working state | 対応 static list / show / actual help を読取と区別。default / push / save / create / store / import、drop / clear / apply / pop / branch 等の snapshot・更新・未対応 action は staged 検査の範囲外 | snapshot の対象内容、object / ref / index / working tree の影響を検査できず UNKNOWN。既知 `-a` でも実秘密の保存確定を意味しない。その他の未対応 action / argv も UNKNOWN | 通常の stash push / save、退避の apply / pop、stash 作成・管理・削除。public な変更だけの stash も停止 | 同目的の writer / snapshot 代替は未対応。list / show は読取目的だけ。必要な操作は owner に input / tree / ref の対象・操作・cwd / env / config / source と未確認内容を渡す。hook 無効化の承認と分ける | actual action / option 消費値 / help。dummy の ignored file 保存経路と list / show の境界を照合 | snapshot / mutating / unsupported action UNKNOWN と static list / show / help 対照。追加 source の統合結果は別記 | R11 の `stash -a` 停止 1 例†。他 action / query は未測定 |
+
+### R12 の追加条件と精度修正
+
+FD / device 行以外の担当条件は常時 Bash の egress でも検査する。FD / device の区別は secret-git の index 維持条件の修正であり、他の guard の停止を解除しない。試験欄は確認すべき対照を示す。R12 source の全 suite・API 契約・実入口の結果は、この方針を決めた時点では未取得である。
+
+| 守る対象 | 対応範囲・必要条件 | FORBIDDEN / UNKNOWN | 止まる通常作業 | 対応済みの代替・owner への出口 | L1: 意味・metadata | L2: permission と理由 | L3: 実入口・副作用 |
+|---|---|---|---|---|---|---|---|
+| config writer の送信先 / 実行 source | 実 action・key と消費値を区別。対応 getter、確定した非 protected key の setter は対照 | writer の key / action / argv が未確定なら UNKNOWN。確定した禁止 destination key の変更は従来の FORBIDDEN | 変数で key / action を選ぶ設定変更 | 同目的・同じ非 protected key と確認できた場合だけ対応 static setter。変更先 / action 自体が不明、または禁止なら対象・操作・cwd / env / config を owner へ | config action / key / option arity と DATA | dynamic writer UNKNOWN / static public setter・getter・消費値 DATA 対照。egress 必須 | R12 未測定 |
+| push が選ぶ include 設定 | 実 `-c include.path=...` / `includeIf.*.path` や対応 config-env を、未読の config source として扱う | include の transport / helper 効果を確認できず UNKNOWN | include を明示した通常 push | 同目的が通常の確認済み設定で満たせる場合だけその条件へ。include 自体が必要なら source と宛先・env / config を owner へ | global config の選択と push operand / refspec | include UNKNOWN / public config DATA・getter 対照。既に停止する exact 入力は防御条件の明示であり、新穴と数えない | R12 未測定 |
+| commit の index と redirection | 確定 literal の `>&` + digits / `-` は FD 複製 / close。正確な `/dev/null` と対応出力 operator は通常 file の書込みと区別 | 実 file `>1` / `&>1`、未確定・展開 target、対応外の read/write `<>` 等は UNKNOWN。FD / null 自体はこの条件の停止対象外 | 未知 target、普通の出力 file を伴う commit。従来の FD / null 過剰停止を縮小 | 同目的に FD 操作 / null 出力が適する場合だけ対応 literal へ。実 file 書込みが必要なら対象・順序・index 効果を owner へ | redirection operator、literal / expansion、FD と filename の区別 | `2>&1` / `>&-` / `/dev/null` 対照と `>1` / `&>1` / unknown target UNKNOWN。group 等の別停止を維持 | R12 未測定 |
+| Git editor / sequencer の実行 source | editor を起動し得る対応 operation と実 option を検査。既定 / config / EDITOR / VISUAL / GIT_EDITOR 等の selector も対象。消費値・query / help は別役割 | 起動抑止を証明できない editor-capable operation、実 editor 設定の変更・削除 / config edit は UNKNOWN。selector の存在だけで実送信を確定しない | 引数なし commit、普通の merge、reedit / template / interactive / sequencer、branch description 編集 | 同目的を保つ場合だけ対応 nonediting commit / 実 merge `--no-edit` 等へ。editor そのものが必要なら対象・argv・選択 source・cwd / env / config を owner へ | `editorMayRun`、option arity / order、selector scope と consumed DATA | default / explicit editor UNKNOWN、実抑止 / 対応 message / query / unused selector DATA 対照。egress 必須 | R12 未測定 |
+| Bash の native network channel | 実 redirection の `/dev/tcp` / `/dev/udp` と socket を選び得る未確定 target を検査。read / write / FD を区別しても channel は未対応 | 秘密 filename の有無によらず UNKNOWN。単に pathname を印字する DATA はこの条件の対象外 | Bash socket の read / write / FD 接続 | 必要な read / transfer の条件を owner へ。別 client / tool への変更だけで保護済みとしない。単なる表示が目的なら対応 literal DATA | 実 redirection と DATA、target proof | literal / dynamic socket UNKNOWN、印字 DATA・ordinary file 対照 | R12 未測定。実 network 接続を試験のために起動しない |
+| mapfile / readarray callback source | 実 `-C` callback と value arity を検査。`-d` / `-n` / `-u` / `-c` 等の消費値や actual help は別役割 | literal callback も内部と副作用が未対応で UNKNOWN。callback を選び得る未知 argv も UNKNOWN | callback を使う通常 array reader | 同じ目的を満たす場合だけ callback-free 対応形式へ。callback が必要なら source・入力・副作用条件を owner へ | callback option vs delimiter / count / help DATA | `-C` UNKNOWN / callback-free・消費値・help 対照。egress 必須 | R12 未測定 |
+| heredoc の body / suffix source 境界 | delimiter の unquoted backslash + LF は両方を除去し、引用された delimiter とは判定しない。他の引用・escape・body 条件を保持 | 境界や選択 source が不明な protected route は既存 UNKNOWN。line continuation 自体を新禁止にしない | malformed / 未対応境界を持つ protected script。対応 continuation の通常入力を保つ | 同じ delimiter / body / suffix の意味を保つ対応形式へ。意味を確定できなければ source と不明境界を owner へ | delimiter text / quotedness、body 展開、後続 invocation の保存 | continuation の後続禁止を取りこぼさず、対応 body DATA / 後続 ordinary command を過剰停止しない | R12 未測定 |
+| shell が選ぶ executable | どの実行位置でも active glob / brace / tilde による executable 選択を停止。quoted literal executable と argument 側の展開は別役割 | filesystem を列挙して推測せず UNKNOWN。Git らしい綴りの有無に限定しない | `/usr/bin/g?t`、brace / tilde で実行名を作る通常 command | 実体と同じ目的を確認した対応 literal executable へ。解決できなければ実行対象・cwd / env / argv を owner へ | executable expansion marker、wrapper 位置、quoted literal / argument DATA | active executable UNKNOWN / quoted literal・argument 対照。egress 必須 | R12 未測定 |
+| remote rsync の local helper | actual `-e` / `--rsh` / RSYNC_RSH と remote / local operand を確認。download でも helper は local 実行 source | helper を選ぶ remote rsync、または helper / remote 条件が未確定なら UNKNOWN。確認済み local-only copy の未使用 selector はこの条件の対象外 | custom RSH での download / remote query、未知 operand | 同目的を満たす確認済み local copy の場合だけ対応形式へ。remote helper 自体が必要なら source・対象・argv・cwd / env / config を owner へ | helper selector scope、option arity と consumed DATA、remote operand | remote helper UNKNOWN / local unused helper・actual help / version 対照。egress 必須 | R12 未測定 |
 
 pipeline の filename 判定は参照できた operand に基づく。任意 reader の内部、実行時 cwd / 設定 / filesystem のすべてを解決した証明ではない。通常名や `/bin` / `/usr/bin` の対応 reader でも、内容が非秘密だと認証する検査ではない。SSH や API client の parsed name の判定も、任意 executable の実体と内部動作を認証するものではない。
 
@@ -131,7 +147,7 @@ message file は Git pathspec ではない。引用して shell 展開を止め�
 
 ### R11 の限定監査: merge file / stash
 
-[git-merge の `-F` / `--file`](https://git-scm.com/docs/git-merge/2.54.0)は、message を file から取り込む。限定した dummy native proof では、tree と staged inventory にない `.env` の DUMMY marker が merge commit の message に保存された。これを受け、実 file option の単一対応 source に commit と同じ filename policy を適用する。secret filename は FORBIDDEN、stdin / FD・未解決 path・複数 source / override・argv / context 不明は UNKNOWN。普通の file source のない merge と対応 inline `-m` は、この新条件では止めない。public filename や inline DATA を通すことは、file 内容・merged tree・履歴全体の安全認証ではない。
+[git-merge の `-F` / `--file`](https://git-scm.com/docs/git-merge/2.54.0)は、message を file から取り込む。限定した dummy native proof では、tree と staged inventory にない `.env` の DUMMY marker が merge commit の message に保存された。これを受け、実 file option の単一対応 source に commit と同じ filename policy を適用する。secret filename は FORBIDDEN、stdin / FD・未解決 path・複数 source / override・argv / context 不明は UNKNOWN。R11 の file-source 条件だけでは、普通の file source のない merge と対応 inline `-m` を止めなかった。R12 は独立した editor 条件を加えるため、これらも実 `--no-edit` 等で起動抑止を確認できなければ UNKNOWN となる。public filename や inline DATA を通すことは、file 内容・merged tree・履歴全体の安全認証ではない。
 
 [git-stash](https://git-scm.com/docs/git-stash/2.54.0)は working state を stash entry に保存し、`--all` は ignored / untracked file も取り込む。dummy proof では、ignored かつ index にない `.env` の DUMMY marker が stash object に保存された。snapshot 入力は staged 検査の外にあるため、default / push / save / create / store / import を UNKNOWN とする。drop / clear / apply / pop / branch 等も ref / index / working tree への影響が未対応であり UNKNOWN。既知 `-a` や通常の public snapshot が停止しても、実秘密を保存したと断定した意味ではない。
 
@@ -145,6 +161,38 @@ dummy Git 2.54.0 の harmless-marker proof では、captured stdout でも helpe
 
 [curl の `--url-query`](https://curl.se/docs/manpage.html#--url-query)は `@file` / `name@file` で file 入力を作れるため、確定した対応 argv / context では file-upload として FORBIDDEN にする。先頭 `+raw` や `name=value` の中の `@` は file 入力とはしない。quoted scalar の固定 `+` / `=` と、未解決 prefix・複数 argv に展開し得る値を区別し、後者は UNKNOWN。file-backed variable が query に流れる対応 expansion も検査する。普通の literal GET / inline query 対照は維持するが、file-input 自体が必要なら owner gate が必要である。
 
+### R12 の editor と helper selector
+
+Git の editor 起動条件と、message file の filename 条件を別に判定する。editor の値が command 文字列に現れなくても、既定値や設定で選ばれる外部処理の内部は検査できない。そのため対応 operation が editor-capable なら、起動しないと確認できる argv がない限り UNKNOWN とする。EDITOR / VISUAL の明示だけを止めて既定 editor を許す方針ではない。
+
+commit では実 `-m` / `--message`、`-F` / `--file`、`-C` / `--reuse-message` の対応 source、実 `--no-edit`、対応 dry-run / help が editor 条件の対照になる。実 `-e` / `--edit`、`-c` / `--reedit-message`、template / fixup / squash 等は選択順と起動可能性を検査し、起動抑止を証明できなければ停止する。未知 / missing / 展開 argv は保守的に editor-capable のままとする。message file・staged inventory・no-verify 等の独立した禁止や UNKNOWN は残る。たとえば public `-F` の filename 条件を満たしても、実 `--edit` を加えれば editor 条件で停止する。
+
+merge は message DATA があっても editor を起動し得るため、通常の `git merge topic` や `git merge -m 'public message' topic` も UNKNOWN となる。同じ目的に editor が不要と確認できる場合は、対応する実 `--no-edit` と確定 argv の形式へ書き換えられる。`-m '--no-edit'`、strategy の消費値、`--` 後の ref は抑止 flag ではない。後続 `--edit` や不明 argv があれば抑止したと判断しない。この判断は merged tree / history や arbitrary child program を検査済みにするものではない。
+
+その他の対応 family も、interactive / edit-todo / continuation 等の sequencer、revert の編集、branch `--edit-description`、add / stage の edit / interactive / patch 等を選ぶ条件を停止する。対応する noninteractive / nonediting 対照があることを、rebase / cherry-pick / revert / am 等すべての writer や全引数の安全認証へ一般化しない。
+
+helper selector の env は名前と役割を追跡し、値を通常の message / DATA と混ぜない。prefix 代入、対応 `env` wrapper、persistent assignment / export と選択した child scope で EDITOR / VISUAL / RSYNC_RSH を引き継ぎ、既存 GIT_* の追跡も維持する。shell の persistent `unset` だけでは条件分岐等を含む実行状態の消去を証明したと扱わない。認識した per-invocation `env -u` / clear はその呼出しの selector を更新するが、selector を消しても既定 editor の起動抑止にはならない。selector 名の印字や対応 option の消費値は DATA と区別する。
+
+実 `core.editor` / `sequence.editor` の setter・削除、これらの section に影響する未対応変更、config editor は UNKNOWN。削除も fallback source を選び得る。対応 static getter、非 protected key の setter、editor を起動しない query の未使用 selector は他条件を満たす対照である。helper source そのものが必要な作業には対応済みの同目的代替を保証せず、owner に対象・操作・argv・source・cwd / env / config と未確認内容を渡す。
+
+### R12 の callback / socket / remote shell
+
+mapfile / readarray の実 `-C` は callback source であり、literal な `printf` 等でも内部と副作用は対応範囲外として UNKNOWN とする。callback-free reader、actual help と `-d` / `-n` / `-u` / `-c` 等に消費される DATA を、callback の実 option と区別する。callback-free にすると目的が変わる場合は機械的に削除しない。
+
+Bash `/dev/tcp/<host>/<port>` / `/dev/udp/<host>/<port>` は実 redirection で接続を作れる。network executable がなく、read / write / FD のどの形でも、また secret filename が見えなくても、この channel は UNKNOWN とする。target が動的で socket を選び得る場合も停止する。`printf` 等で pathname を表示する DATA は実 redirection ではない。普通の file redirection を許す別条件も、network channel の許可には広げない。
+
+remote rsync は download でも `-e` / `--rsh` / RSYNC_RSH が選ぶプログラムを local で起動し得る。実 helper を選ぶ remote operation または選択条件が不明なら UNKNOWN。remote / local operand と option arity を確認でき、helper が使われない local-only copy はこの条件の停止対象外である。default remote shell / 選ばれたプログラム内部まで安全と認証した結果ではない。remote transfer の既存禁止も独立して適用する。
+
+### R12 の shell 境界と redirection の精度
+
+実行名の active glob / brace / tilde 展開は、Git / network らしい綴りかどうかに関係なく UNKNOWN とする。filesystem を調べて展開先を推測する allow は追加しない。正確に引用された literal 実行名や argument 側の展開は別の役割で検査し、引用するだけで任意 executable の実体が安全と認証されるわけではない。
+
+heredoc delimiter の unquoted backslash + LF は shell と同じく両方を除去する。この continuation を delimiter の引用と誤認せず、body 展開と後続 invocation の境界を保持する。他の引用 / escape の規則を一律に変えず、未完 heredoc を一律新禁止にする修正でもない。選択した source の禁止・UNKNOWN は従来どおり判定する。
+
+secret-git の index 維持条件では、literal `2>&1` / `>&-` は FD 複製 / close であり、普通の file を開く `>1` / `&>1` と区別する。正確な literal `/dev/null` は対応 output operator に限り、この file-write 条件の対照にする。変数・glob / brace / tilde・未知 ANSI-C target や `/dev/../dev/null` のような別表記を、その例外へ正規化しない。`<>/dev/null` は read/write 形として未対応である。group redirection、commit 前の別副作用、source / config / index の不明条件はそれぞれ残る。
+
+動的 config writer の key / action は、送信先や helper 設定を選び得るため UNKNOWN とする。確定した protected destination key の禁止、対応 static public setter / getter、option に消費される DATA は分ける。push の明示 include source を UNKNOWN とする条件は egress の担当を明示する追加防御である。review で示された exact `git -c include.path=... push ...` は旧 source の共通解析でも既に全 guard が停止しており、その例を新しい抜け穴の成立証拠とは扱わない。
+
 ## 停止したときの出口
 
 まず、禁止対象が確定したのか、必要情報が不足したのかを理由と入力から確認する。UNKNOWN は、危険な操作が成立したと断定した記録ではない。
@@ -155,7 +203,23 @@ dummy Git 2.54.0 の harmless-marker proof では、captured stdout でも helpe
 
 ## 試験を 3 層に分ける
 
-| 層 | 確認するもの | 現在の証拠と限界 |
+R12 は上記の条件ごとに L1 の意味、L2 の ALLOW / FORBIDDEN / UNKNOWN と担当、L3 の実 dispatch と副作用を別々に確認する。方針決定時点の R12 全 suite・API 契約・L3 は未取得だった。後から取得した R12 の結果と、取得時刻・source を固定した R11 の履歴を以下に分ける。
+
+### R12 の凍結 source に対する測定
+
+2026-10-13 13:10:20 JST の直接入力 suite は **2860/2860、broken 0、source hash 不変**。旧 c7 の 2530 ID と command / stdin / cwd / project をすべて保持し、editor 条件で 37 定義の期待を ALLOW から UNKNOWN / egress 必須に変更した。2493 定義は不変、330 件を追加した。通常形式の actual no-edit 対照 20 件も含む。L1 公開解析 API は **20/20**、deny API / lib 不在の契約は **6/6**。同じ 2860 入力を c7 に渡すと decision / 担当 hook 不一致 180、理由だけの不一致 0。初回並列比較の timeout 1 件は履歴に保持し、c7 の単独追試と最終追加 22 件を別測定で補完した集計では broken 0。case 不一致を独立した漏えい件数とはしない。
+
+最初の並列比較では 80k alias key の `R6PO01` が c7 と候補で 20 秒の runner timeout に当たった。単独候補の追試では約 5.5 秒で UNKNOWN、必要な network 形を先に見る同値の判定順序へ変更した後は約 123 ms で同じ UNKNOWN となった。最終 full は timeout なし。途中の候補 full は source 変更中だったため最終の証拠にしない。config edit の actual help 4 対照と Bash の `[[ ... ]]` 1 対照で生じた候補過剰停止も修正し、旧 ALLOW の期待を維持した。
+
+13:10:26 JST の CLI 2.1.296 の新 source L3 は **6 試行 / 実入口を確認した 5 PASS / 0 FAIL / 1 NOT_EXERCISED**。ordinary commit `2>&1` は exact Bash 1 回で a.txt だけを commit した（HEAD 変化は期待する副作用）。heredoc continuation と status は正常 tool result で状態不変。default commit editor、mapfile callback、実行名 glob は actual egress の `[判断不能]` で停止し、HEAD / refs / index / status、DUMMY `.env` と helper markers は不変だった。callback / glob では egress のみが起動したが、Git 引用変形で条件付き 2 本が省略されるという一般的な dispatch 証明にはしない。
+
+rsync custom RSH の 1 試行は API `[cyber]` が Bash / hook 起動前に拒否したため **NOT_EXERCISED**。hook 停止の成功とは扱わず、model 変更や bypass retry は行っていない。FD 8、parser 22、editor / callback / RSH の DUMMY native 17 の意味照合は別の L1 補助測定であり、socket の実 network 接続は試験していない。
+
+source は common `df5b9b91`、secret `031e9e5b`、add-all `210a9bcb`、egress `88fac8aa` で固定。DUMMY fixture は original PreToolUse matcher / if / timeout と permission deny を保持し、user defaults を除外する flags と permission bypass は使用しなかった。workspace は未 trust と CLI が表示し、project Skill allow 2 項目は無視された。trust 設定は変更せず、production SessionStart / PostToolUse / Stop / project plugin と本番全 lifecycle は再現していない。旧 6e5 source での 2 試行は source 変更を検知して打ち切った履歴であり、新 source の PASS に持ち越さない。
+
+### R11 の測定履歴
+
+| 層 | 確認するもの | R11 の証拠と限界 |
 |---|---|---|
 | **L1: 意味・parser metadata** | command と DATA、option arity、path proof、scope / order / pipeline、env / config、source 選択 | [git-guard-analysis.test.cjs](../../.claude/hooks/tests/git-guard-analysis.test.cjs) は R11 の凍結 common `0f0d102a` で **16/16**。file source、grep pager、notes/tag と query 境界の契約を含む。harmless Bash / dummy Git / `SSH -G` 等の native proof は意味の照合を助けるが、入力・版・fixture の範囲だけであり L3 ではない |
 | **L2: permission decision と理由** | hook JSON の deny / 無出力、担当 hook、FORBIDDEN / UNKNOWN の理由 prefix、例外や壊れた出力 | R11 の全 3 hook への直接入力 suite は **2530/2530、broken 0、source hash 不変**。decision・`denyBy`・broken と任意の `expectReasonPrefixes` assertion を確認する。理由 prefix を指定していない case まで分類を自動検証したとはしない。共通 deny API と isolated lib 不在 fallback の契約は **6/6**。同じ 2530 入力を公開 a464 に渡すと判定 / 担当 hook 不一致 202、理由だけの不一致 0、broken 0 |

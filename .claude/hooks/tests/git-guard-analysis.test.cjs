@@ -227,3 +227,66 @@ test('notes/tag metadata retains selected file sources and exact query boundarie
   assert.equal(dash.mode, 'write');
   assert.equal(dash.messageFiles[0].word.text, '-h');
 });
+
+// Append to the existing L1 analysis tests; test/assert/API bindings already exist there.
+test('heredoc delimiter continuations expose the suffix without adding body quotation', () => {
+  const lc = '\\\n';
+  const open = inspect(`cat <<EO${lc}F\n$(printf %s body)\nEOF\nprintf %s suffix`);
+  assert.deepEqual(open.problems, []);
+  assert.equal(open.invocations.find(i => i.name === 'cat').heredocBodies[0].quoted, false);
+  assert.equal(open.invocations.filter(i => i.name === 'printf').length, 2);
+  const quoted = inspect(`cat <<E'O'${lc}F\n$(printf %s body)\nEOF\nprintf %s suffix`);
+  assert.equal(quoted.invocations.find(i => i.name === 'cat').heredocBodies[0].quoted, true);
+  assert.equal(quoted.invocations.filter(i => i.name === 'printf').length, 1);
+});
+
+test('active executable expansions stay unknown while argument and quoted literal roles stay DATA', () => {
+  for (const source of ['/tmp/to?l a.txt', 'command /tmp/to[l] a.txt', '/tmp/{tool,other} a.txt', '~+/tool a.txt']) {
+    const analysis = inspect(source);
+    assert.equal(analysis.invocations[0].dynamicName, true);
+    assert.equal(analysis.invocations[0].executableExpansionUnknown, true);
+    assert.ok(analysis.problems.length > 0);
+    assert.deepEqual(analysis.gits, []);
+  }
+  for (const source of ["'/tmp/to?l' a.txt", '/tmp/to\\?l a.txt', 'printf %s /tmp/to?l']) {
+    const analysis = inspect(source);
+    assert.deepEqual(analysis.problems, []);
+    assert.equal(analysis.invocations[0].executableExpansionUnknown, false);
+  }
+  assert.deepEqual(inspect('X=2; [[ $X -eq 2 ]]').problems, []);
+  assert.ok(inspect('command [[ ordinary ]]').problems.length > 0);
+});
+
+test('helper selector names stay separate and follow per-invocation environment operations', () => {
+  const changed = inspect('EDITOR=x; env -u EDITOR VISUAL=x git status; git status');
+  const [first, second] = changed.gits;
+  assert.deepEqual(first.helperEnvNames, ['VISUAL']);
+  assert.deepEqual(second.helperEnvNames, ['EDITOR']);
+  assert.deepEqual(first.gitEnvNames, []);
+  const persistentUnset = singleGit('EDITOR=x; unset EDITOR; git status');
+  assert.deepEqual(persistentUnset.helperEnvNames, ['EDITOR']);
+  const seeded = inspect('env -u RSYNC_RSH rsync host:/x a.txt', { initialHelperEnvNames: ['RSYNC_RSH'] });
+  assert.deepEqual(seeded.invocations[0].helperEnvNames, []);
+  const combined = inspect('rsync host:/x a.txt', { initialPositionals: [], initialHelperEnvNames: ['RSYNC_RSH'] });
+  assert.deepEqual(combined.invocations[0].helperEnvNames, ['RSYNC_RSH']);
+  const promptData = singleGit('read -p EDITOR value; git status');
+  assert.deepEqual(promptData.helperEnvNames, []);
+});
+
+test('editor capability consumes commit and merge argv values before recognizing flags', () => {
+  const commit = source => parseCommitArgs(singleGit(source).args).editorMayRun;
+  assert.equal(commit('git commit'), true);
+  assert.equal(commit('git commit -m "$MSG"'), false);
+  assert.equal(commit('git commit --author --no-edit'), true);
+  assert.equal(commit('git commit -- --no-edit'), true);
+  assert.equal(commit('git commit -m x -e --no-edit'), false);
+  assert.equal(commit('git commit --no-edit -m x -e'), true);
+  assert.equal(commit('git commit --dry-run -e'), false);
+  assert.equal(commit('git commit --dry-run --bogus'), true);
+  const merge = source => parseMergeMessageArgs(singleGit(source).args).editorMayRun;
+  assert.equal(merge('git merge --no-edit topic'), false);
+  assert.equal(merge('git merge -m --no-edit topic'), true);
+  assert.equal(merge('git merge -s --no-edit topic'), true);
+  assert.equal(merge('git merge -- --no-edit'), true);
+  assert.equal(merge('git merge --no-edit $TOPIC'), true);
+});

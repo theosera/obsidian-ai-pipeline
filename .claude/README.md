@@ -79,6 +79,12 @@ R11 では、通常の release tag 作成・削除・署名・検証と notes �
 
 通常の stash push / save / apply / pop や作成・管理・削除も、input / object / ref / index / working tree の効果が staged 検査の範囲外のため `[判断不能]` で停止する。対応 static list / show / actual help は読取対照であり、同目的の snapshot / writer 代替は未対応である。必要な操作は input / tree / ref の対象・操作・cwd / env / config / source と未確認内容を owner に渡し、個別操作承認を hook 無効化の承認に広げない。
 
+R12 の実行 source 条件では、既定 editor も含めて editor の起動を抑止したと確認できない対応 Git 操作を `[判断不能]` とする。単独 `git commit`、普通の merge、editor を選ぶ `-e` / reedit / template / interactive / sequencer 等が影響を受ける。commit の対応 `-m` / `-F` / `-C`、実 `--no-edit` / dry-run / help と、merge の実 `--no-edit` は、それぞれ editor 条件の対照である。他の source / index / argv 条件を解除せず、消費値としての `--no-edit` を抑止 flag にしない。EDITOR / VISUAL / GIT_EDITOR 等の selector と `core.editor` / `sequence.editor` の変更・削除も実行 source の役割で扱う。
+
+同じ R12 で、どの実行名でも active glob / brace / tilde 展開を検査不能として止め、実際の mapfile / readarray `-C` callback、Bash `/dev/tcp` / `/dev/udp` redirection、remote rsync の `-e` / `--rsh` / RSYNC_RSH も停止する。download でも helper はローカルで動き得る。callback-free 読取、単なる印字 DATA、helper が使われないと確認した local rsync は別の対照である。動的 Git config writer の key / action と、push が選ぶ include 設定も UNKNOWN とする。正確な literal `>&1` / `>&-` の FD 操作と `/dev/null` 出力は index への file 書込みと区別し、`>1` / `&>1`、未知 target や group の別条件は引き続き停止する。
+
+R12 の試験結果は、その source で取得した L1 / L2 / L3 の記録で確認する。下記ガイドの R11 測定や過去の CLI dispatch の成功を、新しい条件の実測として持ち越さない。
+
 停止理由の `[禁止]` は確認した policy 禁止、`[判断不能]` は対象・設定・source などの必要情報不足を表す。raw pattern の一致だけで実際の秘密送信を確認したとは扱わない。無出力も操作全体の安全認証や owner 承認ではなく、範囲外の経路を保護済みと記録しない。対応済みの代替がない操作は対象・実行条件・不明点を owner に確認し、hook の無効化や別の場所での実行を自動的な代替にしない。
 
 ## settings.local.json (gitignore 対象)
