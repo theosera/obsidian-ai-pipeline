@@ -89,7 +89,13 @@ network 側では incomplete な curl / wget / gh の生成 argv、curl の bare
 
 commit 前と当該 commit の Git `-c` / `--config-env` は、対応する `core.quotePath` / `color.*` / `advice.*`、user / author / committer の name / email、実 stdout terminal usage を除き UNKNOWN とする。旧 common の staging / commit を含む Bash 全体に対する key 条件も独立して残るため、未対応 override を commit 後へ移すだけでは許可にならない。false 値・未使用に見える key・設定 query の名前だけで効果がないとは推定しない。既存 alias / include / hook / root 等の停止も解除しない。
 
-試験結果は、その source で取得した L1 / L2 / L3 の記録で確認する。下記ガイドの R11 / R12 測定や過去の CLI dispatch の成功を、R13 の新しい条件の実測として持ち越さない。
+試験結果は、その source で取得した L1 / L2 / L3 の記録で確認する。下記ガイドの R11 / R12 / R13 測定や過去の CLI dispatch の成功を、R14 の新しい条件の実測として持ち越さない。R14 の凍結 source は2026-10-13 17:16:02 JSTに直接入力3498/3498、broken0・source不変、L1 33/33・deny API6/6。CLI 2.1.296 は17:14:43 JSTまでに8試行・実入口確認6 PASS・0 FAIL・2 NOT_EXERCISED。BASH_ENVとCURL_HOMEの2例はAPI safeguardがBash前に停止し、hook試験成功には含めない。詳しい条件・副作用・未測定範囲はガイドに残す。
+
+R14 では、実際に選ばれた local shell 関数の本文を独立 scope で検査する。未使用の定義・引用された `function` DATA と区別し、未対応 body / 呼出し境界は UNKNOWN とする。定義後の既存 Git context 条件と `git` 関数 shadow の保守的停止は維持する。shell の pipeline / file / interactive stdin source、競合する FD 入力、未検査の script file / dot・source、各 actual argv の bytes / 語数を確定できない eval source も停止する。対応 literal `-c` と、pipeline がなく redirection / heredoc が合計1つで original default / literal fd 0 の proof がある literal here-string / quoted heredoc は、その source と別条件を検査する。known context の Bash の実 first literal `--help` / `--version` は使用されない child source と区別するが、後続 flag を証明にせず、外側の expansion / redirection は検査する。
+
+BASH_ENV は active child Bash の startup source、GIT_ASKPASS / SSH_ASKPASS / core.askPass は authentication-capable Git の helper source、実 Wget `--use-askpass` は helper source、実 SCP `-S` は connection source として UNKNOWN にする。SSH_ASKPASS は実 SSH / SCP / SFTP と remote-shell rsync でも対象となる。download でもローカル helper は起動し得る。対応する local query / local-only copy / daemon route、実 per-call `env -u`、実 terminal query など、selector が使われないと確認できた条件を区別する。Wget は実 `--no-config` と完全な対応 argv 下で実 `--use-askpass` がなければ、WGET_ASKPASS / SSH_ASKPASS の名前だけで helper 選択としない。単なる `unset` の出現や環境変数の名前の印字を不在・選択の証明にしない。formal review の8入力すべては local L2 で egress 自身の停止を必要とする。
+
+curl は実際の first literal argv が `-q` / `--disable`、Wget は actual option role の `--no-config` を必要とする。見えていない既定 config の file 入力・helper 条件を通常 GET の名前だけで許可しない。curl の後続 / 消費値の `-q` と Wget の消費値の `--no-config` は抑止の証明にならず、明示 config も UNKNOWN のままである。Wget の実 option `--no-config` は先頭に限定せず、help / version にも必要とする。既定設定が目的に不要ならこの対応形式を検討し、必要なら対象・設定内容・実行条件・未確認点を owner に確認する。秘密送信を確認した理由と、source を確認できない理由を区別する。
 
 停止理由の `[禁止]` は確認した policy 禁止、`[判断不能]` は対象・設定・source などの必要情報不足を表す。raw pattern の一致だけで実際の秘密送信を確認したとは扱わない。無出力も操作全体の安全認証や owner 承認ではなく、範囲外の経路を保護済みと記録しない。対応済みの代替がない操作は対象・実行条件・不明点を owner に確認し、hook の無効化や別の場所での実行を自動的な代替にしない。
 

@@ -401,7 +401,7 @@ function hasBraceExpansion(source) {
  * Tokenize a shell sequence into commands with scope metadata and redirections.
  * For substitutions, stop at the unmatched closing parenthesis; otherwise consume the source.
  */
-function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []) {
+function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = [], functionBoundary = null) {
   const n = src.length;
   if (depth > MAX_DEPTH) { out.errors.push('入れ子が深すぎる'); return n; }
   let i = start;
@@ -420,10 +420,13 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
   let closedGroup = null;
   const currentEffects = () => inheritedEffects.concat(pipeline);
   let redirNext = null;
+  let redirectionOrder = 0;
   let redirs = [];
   let piped = false;
   const heredocs = [];
   let definitionName = null;
+  let functionBody = null;
+  let functionClosed = false;
 
   const startWord = () => {
     if (!cur) cur = { text: '', braceSource: '', dynamic: false, dynamicMaySplit: false, quoted: false, start: i, evaluations: [] };
@@ -457,10 +460,11 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
         inheritedEffects = group.inheritedEffects;
         pipeline = group.pipeline;
         closedGroup = group.group;
+        if (functionBoundary === cur.text && compoundEffects.length === 0) functionClosed = true;
       }
     }
     if (redirNext) {
-      redirs.push({ op: redirNext, word: cur });
+      redirs.push({ ...redirNext, word: cur });
       redirNext = null;
     } else {
       words.push(cur);
@@ -471,15 +475,45 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
     endWord();
     redirNext = null;
     if (words.length || redirs.length) {
-      const c = { words, redirs, piped, heredocBodies: [], scope, definitionName, effects: currentEffects(), arrayInitializer: scope.arrayInitializer };
+      const keywordDefinition = functionKeywordHeader(words);
+      const c = { words, redirs, piped, heredocBodies: [], scope,
+        definitionName: definitionName || (keywordDefinition ? words[words.length - 1].text : null),
+        functionBody, functionBodyUnknown: !!keywordDefinition && !functionBody,
+        effects: currentEffects(), arrayInitializer: scope.arrayInitializer };
       out.cmds.push(c);
       for (const h of heredocs) if (!h.cmd) h.cmd = c;
     }
     words = [];
     redirs = [];
+    redirectionOrder = 0;
     piped = false;
     definitionName = null;
+    functionBody = null;
     closedGroup = null;
+  };
+  // A function stores its body and redirection expansions; neither runs at definition time.
+  // Keeping a separate parse result also prevents an unused body's errors/effects leaking out.
+  const retainFunction = (header, bodyStart, boundary) => {
+    endWord();
+    definitionName = header[header.length - 1].text;
+    const bodyScope = { parent: null, functionBody: true };
+    const body = { cmds: [], errors: [], unsupportedSources: [], scope: bodyScope,
+      async: false, evaluationUnknown: false };
+    const close = parseSeq(src, bodyStart, body, depth + 1, boundary === ')', bodyScope, [], boundary);
+    functionBody = { ...body, subshell: boundary === ')', unknown: close >= n || body.errors.length > 0 };
+    i = boundary === '}' || boundary === ')' ? Math.min(close + 1, n) : close;
+  };
+  const functionKeywordHeader = (header) => header.length >= 2 &&
+    atCmdPos(header.slice(0, -2)) && header.at(-2).text === 'function' &&
+    !header.at(-2).quoted && !header.at(-2).dynamic &&
+    !header.at(-1).quoted && !header.at(-1).dynamic && /^[A-Za-z_][A-Za-z0-9_]*$/.test(header.at(-1).text);
+  const functionBodyStart = (k) => {
+    for (;;) {
+      k = skipLC(src, k);
+      if (/[ \t\n]/.test(src[k] || '')) { k++; continue; }
+      if (src[k] === '#') { const e = src.indexOf('\n', k); k = e < 0 ? n : e + 1; continue; }
+      return k;
+    }
   };
   const appendExpansion = (r, quoted = false) => {
     cur.evaluations.push(...(r.evaluations || []));
@@ -496,6 +530,14 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
 
   while (i < n) {
     const c = src[i];
+    if (!cur && !functionBody && functionKeywordHeader(words)) {
+      const compound = /^(if|while|until|for|select|case)(?=[ \t\n;(])/.exec(src.slice(i));
+      if (compound) {
+        const close = { if: 'fi', while: 'done', until: 'done', for: 'done', select: 'done', case: 'esac' }[compound[1]];
+        retainFunction(words, i, close);
+        continue;
+      }
+    }
     if (c === '\\') {
       if (src[i + 1] === '\n') { i += 2; continue; }
       startWord();
@@ -528,7 +570,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
           continue;
         }
         if (d === '$' || d === '`') {
-          const r = scanExpansion(src, i, out, depth, scope, currentEffects(), true);
+          const r = scanExpansion(src, i, functionBody || out, depth, functionBody ? functionBody.scope : scope, currentEffects(), true);
           appendExpansion(r, true);
           i = r.end;
           continue;
@@ -542,7 +584,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
     }
     if (c === '$' || c === '`') {
       startWord();
-      const r = scanExpansion(src, i, out, depth, scope, currentEffects());
+      const r = scanExpansion(src, i, functionBody || out, depth, functionBody ? functionBody.scope : scope, currentEffects());
       appendExpansion(r);
       i = r.end;
       continue;
@@ -555,7 +597,16 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       continue;
     }
     if (c === '\n') {
+      endWord();
+      if (!functionBody && functionKeywordHeader(words)) {
+        const bodyStart = functionBodyStart(i);
+        if (src[bodyStart] === '{' || src[bodyStart] === '(') {
+          retainFunction(words, bodyStart + 1, src[bodyStart] === '{' ? '}' : ')');
+          continue;
+        }
+      }
       endCmd();
+      if (functionClosed) return i;
       pipeline = newEffect();
       i++;
       // 改行の後にヒアドキュメントの本文が来る。
@@ -584,16 +635,20 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
         if (!h.quoted) {
           const evaluations = [];
-          scanSubsts(body, out, depth + 1, scope, h.cmd ? h.cmd.effects : currentEffects(), evaluations);
+          const stored = h.cmd && h.cmd.functionBody;
+          scanSubsts(body, stored || out, depth + 1, stored ? stored.scope : scope,
+            h.cmd ? h.cmd.effects : currentEffects(), evaluations);
           if (h.cmd) h.cmd.evaluations = (h.cmd.evaluations || []).concat(evaluations);
         }
-        if (h.cmd) h.cmd.heredocBodies.push({ body, quoted: h.quoted });
+        if (h.cmd) h.cmd.heredocBodies.push({ body, quoted: h.quoted,
+          fd: h.fd, fdKnown: h.fdKnown, redirectionOrder: h.redirectionOrder });
       }
       continue;
     }
     // CR（\r）は bash / zsh と同じく語の文字として扱う（区切りにしない・v3）。
     if (c === ' ' || c === '\t') {
       endWord();
+      if (functionClosed) { endCmd(); return i; }
       i++;
       continue;
     }
@@ -601,6 +656,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       if (c === '&' && src[i + 1] !== '&') out.async = true;
       const isPipe = c === '|' && src[i + 1] !== '|';
       endWord(); // fi/done/esac closes its outer segment before a trailing pipe.
+      if (functionClosed) { endCmd(); return i; }
       if (isPipe) pipeline.pipeline = true;
       if (c === '&' && src[i + 1] !== '&') pipeline.conditional = true;
       endCmd();
@@ -611,6 +667,14 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       else if (c === '|' && src[i + 1] === '&') i += 2;
       else i++;
       continue;
+    }
+    if (c === '{' && !cur && !functionBody && functionKeywordHeader(words) && /[ \t\n;]/.test(src[i + 1] || '')) {
+      retainFunction(words, i + 1, '}');
+      continue;
+    }
+    if (c === '}' && !cur && !braceEffects.length && functionBoundary === '}' && /[ \t\n;&|)]|^$/.test(src[i + 1] || '')) {
+      endCmd();
+      return i;
     }
     if (c === '{' && !cur && atCmdPos(words) && /[ \t\n;]/.test(src[i + 1] || '')) {
       endCmd();
@@ -635,8 +699,28 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       const fn = header[header.length - 1];
       if (/^\([ \t\n]*\)/.test(src.slice(i)) && fn && !fn.quoted && !fn.dynamic &&
           /^[A-Za-z_][A-Za-z0-9_]*$/.test(fn.text) &&
-          (header.length === 1 || (header.length === 2 && header[0].text === 'function' && !header[0].quoted))) {
+          (atCmdPos(header.slice(0, -1)) || functionKeywordHeader(header))) {
+        const signature = /^\([ \t\n]*\)/.exec(src.slice(i))[0];
+        const bodyStart = functionBodyStart(i + signature.length);
+        if (src[bodyStart] === '{' || src[bodyStart] === '(') {
+          retainFunction(header, bodyStart + 1, src[bodyStart] === '{' ? '}' : ')');
+          continue;
+        }
+        const compound = /^(if|while|until|for|select|case)(?=[ \t\n;(])/.exec(src.slice(bodyStart));
+        if (compound) {
+          const close = { if: 'fi', while: 'done', until: 'done', for: 'done', select: 'done', case: 'esac' }[compound[1]];
+          retainFunction(header, bodyStart, close);
+          continue;
+        }
+        // The selected function will fail closed if its compound source boundary is unsupported.
         definitionName = fn.text;
+        endWord();
+        i += signature.length;
+        continue;
+      }
+      if (!functionBody && functionKeywordHeader(header)) {
+        retainFunction(header, i + 1, ')');
+        continue;
       }
       // `(` と `(` の間の行の継続: シェルは `((` と読む（v3.5.2）。
       if (joinedByLC(src, i + 1, '(')) out.errors.push('( と ( の間に行の継続がある');
@@ -695,7 +779,8 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       if ((c === '<' || c === '>') && src[i + 1] === '(') {
         // プロセス置換 <( … ) / >( … )
         startWord();
-        const close = parseSeq(src, i + 2, out, depth + 1, true, { parent: scope }, currentEffects());
+        const close = parseSeq(src, i + 2, functionBody || out, depth + 1, true,
+          { parent: functionBody ? functionBody.scope : scope }, currentEffects());
         if (close >= n) { out.errors.push('閉じていない <( … )'); return n; }
         cur.dynamic = true;
         cur.braceSource += DYN;
@@ -704,8 +789,13 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
         continue;
       }
       // fd の番号（2> など）は語にしない。
-      if (cur && !cur.quoted && !cur.dynamic && /^\d+$/.test(cur.text)) cur = null;
-      else endWord();
+      let fd = null;
+      let fdKnown = true;
+      if (cur && !cur.quoted && !cur.dynamic && /^\d+$/.test(cur.text)) { fd = cur.text; cur = null; }
+      else if (cur && !cur.quoted && !cur.dynamic && /^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(cur.text)) {
+        fdKnown = false; cur = null; // Bash allocates a descriptor; its runtime value is not fd 0 proof.
+      } else endWord();
+      const descriptor = { fd, fdKnown, redirectionOrder: redirectionOrder++ };
       if (closedGroup) closedGroup.unsafeSetup = true;
       if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
         // ヒアドキュメント: 区切りの語を読み、本文は次の改行の後で読む。
@@ -735,7 +825,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
           i++;
         }
         if (!delim) { out.errors.push('ヒアドキュメントの区切りが無い'); return n; }
-        heredocs.push({ delim, strip, quoted, cmd: null });
+        heredocs.push({ delim, strip, quoted, cmd: null, ...descriptor });
         // サブシェルと決められない括弧の中のヒアドキュメント（v3.5.2）。
         if (parenKinds.some((k) => k !== 'sub')) out.errors.push('サブシェルと決められない括弧の中のヒアドキュメント');
         continue;
@@ -743,7 +833,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       // ほかのリダイレクト（> >> < <> >| >& <& &> &>> <<<）: 次の語は対象。
       let j = i;
       while (j < n && '<>&|'.includes(src[j]) && j - i < 3) j++;
-      redirNext = src.slice(i, j);
+      redirNext = { op: src.slice(i, j), ...descriptor };
       i = j;
       continue;
     }
@@ -1022,7 +1112,7 @@ const WRAPPERS = {
 };
 
 /** Unwrap known launchers and retain the invocation's ordered environment changes. */
-function resolveCommand(words) {
+function resolveCommand(words, localFunctions = null) {
   const info = {
     name: null, nameWord: null, args: [], assigns: [], assignRaws: [],
     cdLike: false, incomplete: false, nonExec: false, dynamicName: false, executableExpansionUnknown: false, splitString: false,
@@ -1052,6 +1142,11 @@ function resolveCommand(words) {
     }
     const base = path.posix.basename(w.text);
     const rest = words.slice(k + 1);
+    // Shell function lookup precedes builtin/external wrapper handling for a direct literal call.
+    if (!info.wrapped && localFunctions && localFunctions.has(w.text)) {
+      info.name = w.text; info.nameWord = w; info.args = rest;
+      return info;
+    }
     const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, base) ? WRAPPERS[base] : null;
     if (wrapper) {
       // exec は POSIX special builtin。プログラムを付けない形でも代入が残りうる。
@@ -1126,7 +1221,7 @@ const CD_LIKE = new Set(['cd', 'pushd', 'popd']);
 const EXPORT_LIKE = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 const CONFIG_ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME']);
 // Track explicit external-helper selectors separately from Git target/config variables.
-const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH']);
+const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']);
 /** Include Git's configuration-root variables in per-invocation environment effects. */
 const affectsGitEnvironment = (name) => /^GIT_/.test(name) || CONFIG_ROOT_ENV.has(name);
 /** Shell declaration options stop at the first operand; later strings are variable names or values. */
@@ -1238,6 +1333,11 @@ function parseGit(args) {
 
 /** Locate shell source using option arity, preserving subsequent positional arguments as data. */
 function shellInvocation(args, name) {
+  // Bash processes these first literal options as terminal queries before reading a program.
+  // Redirection expansions were parsed independently and retain their executable effects.
+  if (name === 'bash' && args[0] && !args[0].dynamic && ['--help', '--version'].includes(args[0].text)) {
+    return { scripts: [], commandMode: false, readsStdin: false, unknown: false, positionals: [], terminal: true };
+  }
   const scripts = [];
   let commandMode = false;
   let stdin = false;
@@ -1609,8 +1709,8 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set() });
-  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs) });
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set() });
+  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
       scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
@@ -1632,6 +1732,7 @@ function inspect(cmd, options = {}) {
   const visit = (c, info, depth) => {
     if (depth > MAX_DEPTH) { res.problems.push('入れ子が深すぎる'); return; }
     const state = stateFor(c.scope);
+    if (!c.definitionName && !info.incomplete) info = resolveCommand(c.words, state.functions);
     for (const [frame, name] of state.loopBindings) if (!(c.effects || []).includes(frame)) {
       state.values.set(name, null); state.loopBindings.delete(frame); state.pathProofs.delete(name);
     }
@@ -1664,7 +1765,7 @@ function inspect(cmd, options = {}) {
         if (inner.problems.length) res.problems.push(`Bash の current-environment command substitution を検査できない（${inner.problems[0]}）`);
       }
     };
-    for (const evaluation of c.evaluations || []) checkEvaluation(evaluation, state);
+    for (const evaluation of c.definitionName ? [] : c.evaluations || []) checkEvaluation(evaluation, state);
     // Assignment-only commands expand assignments in order. Prefix assignments to other commands
     // are not proofs for those commands' argument expansions.
     const expansionState = copyState(state);
@@ -1674,7 +1775,7 @@ function inspect(cmd, options = {}) {
       expansionState.valuesTainted = true;
       state.pathProofs.clear();
     }
-    for (const word of c.words.concat(c.redirs.map((redir) => redir.word))) {
+    for (const word of c.definitionName ? [] : c.words.concat(c.redirs.map((redir) => redir.word))) {
       for (const evaluation of word.evaluations || []) checkEvaluation(evaluation, expansionState);
       const assignment = scalarAssignment(word);
       if (!info.name && !info.dynamicName && assignment) rememberValue(expansionState, assignment, conditional);
@@ -1705,7 +1806,7 @@ function inspect(cmd, options = {}) {
       else positionalUnknown = true;
       if (replacement) {
         const index = c.words.indexOf(info.nameWord);
-        info = resolveCommand(c.words.slice(0, index).concat(replacement.map(expandedLiteral), c.words.slice(index + 1)));
+        info = resolveCommand(c.words.slice(0, index).concat(replacement.map(expandedLiteral), c.words.slice(index + 1)), state.functions);
       }
     }
     const env = new Set(state.env);
@@ -1736,7 +1837,8 @@ function inspect(cmd, options = {}) {
       launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
-      definitionName: c.definitionName || (info.name === 'function' ? (info.args[0] && info.args[0].text) : null),
+      definitionName: c.definitionName,
+      functionBodyUnknown: !!c.functionBodyUnknown || !!c.functionBody?.unknown,
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
       helperEnvNames: [...helperEnv],
       pathChangedBefore: pathChanged || state.searchChanged,
@@ -1761,12 +1863,79 @@ function inspect(cmd, options = {}) {
       }),
     };
     res.invocations.push(invocation);
+    if (invocation.definitionName) {
+      state.functions.set(invocation.definitionName, { ...c, functionConditional: conditional });
+      // Keep the existing conservative Git/positional gates after a definition, without running it.
+      state.unknownContext = true;
+      state.positionalsTainted = true;
+      state.valuesTainted = true;
+      if (invocation.definitionName === 'git') state.gitShadowed = true;
+      return;
+    }
+    const reservedTime = info.wrapperNames.length > 0 && info.wrapperNames.every((name) => name === 'time') &&
+      c.words.some((word, index) => word.text === 'time' && !word.quoted && !word.dynamic && atCmdPos(c.words.slice(0, index)));
+    const selectedFunction = (!info.wrapped || reservedTime) && !info.nonExec && !info.dynamicName && !info.incomplete &&
+      info.nameWord?.text === info.name && state.functions.get(info.name);
+    if (selectedFunction) {
+      invocation.functionCallName = info.name;
+      invocation.redirs = selectedFunction.redirs.concat(c.redirs);
+      invocation.heredocBodies = selectedFunction.heredocBodies.concat(c.heredocBodies);
+      if (info.name === 'git') res.problems.push('git の関数定義で実行先が置き換わり、Git と同じ実行条件を保証できない');
+      const body = selectedFunction.functionBody;
+      if (!body || body.unknown || selectedFunction.functionConditional || state.searchChanged) {
+        res.problems.push('選択された関数の body / source 境界を読みきれず、実行するコマンド・環境・引数を検査できない');
+        return;
+      }
+      if (body.evaluationUnknown || body.unsupportedSources.length) {
+        res.problems.push('選択された関数の未対応の実行 source・副作用を検査できない');
+      }
+      res.async = res.async || body.async;
+      // Each call inherits its current caller. Cached descendant scopes from an
+      // earlier call must not retain that call's environment or positional proof.
+      for (const cachedScope of scopeStates.keys()) {
+        for (let ancestor = cachedScope; ancestor; ancestor = ancestor.parent) {
+          if (ancestor === body.scope) { scopeStates.delete(cachedScope); break; }
+        }
+      }
+      seedScope(body.scope, env, cdBefore, { ...state, helperEnv, pathChanged,
+        localNames: new Set(), positionals: knownPositionals(info.args), positionalsTainted: !!info.incomplete });
+      for (const evaluation of selectedFunction.evaluations || []) checkEvaluation(evaluation, stateFor(body.scope));
+      for (const redir of selectedFunction.redirs) {
+        for (const evaluation of redir.word.evaluations || []) checkEvaluation(evaluation, stateFor(body.scope));
+      }
+      for (const ic of body.cmds) {
+        visit({ ...ic, effects: (ic.effects || []).concat(c.effects || []) }, resolveCommand(ic.words), depth + 1);
+      }
+      if (!body.subshell) {
+        const after = stateFor(body.scope);
+        // Function calls share ordinary shell variables and registered functions. Arguments remain local.
+        const local = (name) => info.assigns.includes(name) || after.localNames.has(name);
+        for (const name of after.env) if (!local(name)) state.env.add(name);
+        for (const name of after.helperEnv) if (!local(name)) state.helperEnv.add(name);
+        for (const [name, definition] of after.functions) state.functions.set(name, definition);
+        state.cd ||= after.cd;
+        if (!local('PATH') && !local('FPATH')) state.pathChanged ||= after.pathChanged;
+        state.searchChanged ||= after.searchChanged;
+        state.gitShadowed ||= after.gitShadowed;
+        state.unknownContext ||= after.unknownContext;
+        state.valuesTainted = true;
+        state.pathProofs.clear();
+      }
+      return;
+    }
     const persistentValues = (!info.name && !info.dynamicName && !info.wrapped) ||
       info.persistsEnv || (builtin && (SPECIAL_BUILTINS.has(info.name) || EXPORT_LIKE.has(info.name)));
     const declaration = builtin && EXPORT_LIKE.has(info.name);
     const declOptions = declaration ? declarationOptions(info.args) : [];
     const declarationQuery = ['declare', 'typeset', 'local'].includes(info.name) &&
       declOptions.some((option) => /^-[A-Za-z]*p[A-Za-z]*$/.test(option));
+    if (c.scope.functionBody && !declarationQuery && ['local', 'declare', 'typeset'].includes(info.name) &&
+        !declOptions.some((option) => /^-[A-Za-z]*g[A-Za-z]*$/.test(option))) {
+      for (const word of info.args.slice(declOptions.length)) {
+        const declared = /^([A-Za-z_][A-Za-z0-9_]*)(?:=|$)/.exec(word.text);
+        if (declared) state.localNames.add(declared[1]);
+      }
+    }
     const integerDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*i[A-Za-z]*$/.test(option));
     const associativeDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*A[A-Za-z]*$/.test(option));
     if (builtin && !declarationQuery && ['declare', 'typeset', 'local'].includes(info.name) &&
@@ -1887,12 +2056,6 @@ function inspect(cmd, options = {}) {
       for (const a of helperEnv) state.helperEnv.add(a);
       state.pathChanged = state.pathChanged || pathChanged;
     }
-    if (invocation.definitionName) {
-      state.unknownContext = true;
-      state.positionalsTainted = true;
-      state.valuesTainted = true;
-      if (invocation.definitionName === 'git') state.gitShadowed = true;
-    }
     if (info.envUnknown && (gitContext || c.words.some(wordHasGit))) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
@@ -1922,6 +2085,19 @@ function inspect(cmd, options = {}) {
       return;
     }
     const name = info.name;
+    const selectsLocalFunction = (script) => !script.dynamic && parseShell(script.text).cmds.some((entry) => {
+      const selected = resolveCommand(entry.words, state.functions);
+      const timed = selected.wrapperNames.length > 0 && selected.wrapperNames.every((name) => name === 'time') &&
+        entry.words.some((word, index) => word.text === 'time' && !word.quoted && !word.dynamic && atCmdPos(entry.words.slice(0, index)));
+      return (!selected.wrapped || timed) && !selected.nonExec && !selected.dynamicName &&
+        selected.nameWord?.text === selected.name && state.functions.has(selected.name);
+    });
+    const evalWords = name === 'eval' && info.args[0]?.text === '--' && !info.args[0].dynamic ? info.args.slice(1) : info.args;
+    const mediatedFunction = (trap && trap.scripts.some(selectsLocalFunction)) ||
+      (alias && alias.scripts.some(selectsLocalFunction)) ||
+      (name === 'eval' && evalWords.every((word) => !word.dynamic) &&
+        selectsLocalFunction({ text: evalWords.map((word) => word.text).join(' '), dynamic: false }));
+    if (mediatedFunction) res.problems.push('文字列の実行 source が選ぶ既存の関数の状態・body・呼出し条件を引き継いで検査できない');
     if (builtin && name === 'set') {
       const change = positionalSet(info.args);
       if (change) {
@@ -1991,6 +2167,7 @@ function inspect(cmd, options = {}) {
     }
     // unset は && / || の分岐で実行されないことがあるので、永続状態からは消さない。
     if (SHELLS.has(name)) {
+      if (shell.terminal) return;
       const inputGit = c.heredocBodies.some((h) => shellInputHasGit(h.body)) ||
         c.redirs.some((r) => r.op === '<<<' && wordHasGit(r.word));
       if (shell.unknown && (gitContext || inputGit)) {

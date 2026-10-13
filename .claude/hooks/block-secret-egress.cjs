@@ -12,11 +12,14 @@
  * 入力: stdin に PreToolUse の JSON ({ tool_input: { command } })。
  * 出力: ブロック時は hookSpecificOutput.permissionDecision="deny"。許可時は無出力。
  *
- * 設計 (低誤検知): 日常操作を壊さないため、拒否は以下に限定する。
+ * 設計: 読み取れた禁止形式と、実行 source を確定できない形を区別して拒否する。
  *   (A) コマンド文字列に **リテラルの秘密**が含まれる (`$VAR` 参照は許可 = 値ではない)。
  *   (B) 古典的 exfil 形: `gh gist` / 非 origin への push / reverse shell /
  *       ローカルファイルの upload / 秘密ファイル読取 + ネットワーク送信。
- * 通常の `curl https://api...` (GET) や named remote への `git push` は通す。
+ *   (C) シェル / helper / network client の executable source・argv・config が判断不能。
+ * `curl -q https://api...` (GET) は既定 config を無効化した argv を検査する。
+ * Wget も actual `--no-config` を必要とし、selected helper/source は判断不能として止める。
+ * named remote への `git push` も、askpass 等の未検査 source が選ばれていない形を検査する。
  * git の形は、下の正規表現に加えて lib/git-guard-common.cjs（git ガード 3 本で共有する
  * コマンドの読み取り）で git の呼び出しごとにも見る。
  */
@@ -190,7 +193,8 @@ if (NET_VERB_RE.test(cmd) && SECRET_FILE_RE.test(withoutTemplateTokens(cmd))) {
 
 // git の形を、git の呼び出しごとにも見る（global option や引用符を挟んだ形も同じに読む）。
 const insp = guard.inspect(cmd, {
-  initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH'].filter(name => process.env[name] !== undefined),
+  initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
+    .filter(name => process.env[name] !== undefined),
 });
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
 const URL_ARG_RE = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)/;
@@ -200,6 +204,33 @@ const REMOTE_URL_KEY_RE = /^remote\..+\.(?:url|pushurl)$/i;
 /** Require a static word before treating an existing refusal as a confirmed prohibited form. */
 function knownWord(word) {
   return Boolean(word && !word.dynamic && !word.ansiCUnknown && !word.text.includes('\0'));
+}
+
+/** Executable text needs both known bytes and one proven argv boundary before reparsing it. */
+function literalSourceWord(word) {
+  if (!word || word.dynamicMaySplit || word.ansiCUnknown || word.globExpanded || word.braceExpanded || word.tildeExpanded) return null;
+  if (knownWord(word)) return word;
+  return typeof word.literalValue === 'string' && word.dynamicMaySplit === false && !word.literalValue.includes('\0')
+    ? { ...word, text: word.literalValue, dynamic: false } : null;
+}
+
+/** Bash's first help/version option exits before startup source or stdin is evaluated. */
+function terminalBashQuery(invocation) {
+  return invocation.name === 'bash' && knownInvocationContext(invocation) && knownWord(invocation.args[0]) &&
+    ['--help', '--version'].includes(invocation.args[0].text);
+}
+
+/** A single literal here-string or quoted heredoc on proven fd 0 has a supported source proof. */
+function shellStdinSource(invocation) {
+  if (invocation.pipelineParticipant || invocation.heredocBodies.length + invocation.redirs.length !== 1) return null;
+  const source = invocation.redirs[0] || invocation.heredocBodies[0];
+  // Parser provenance must establish default/0 FD. It never infers a missing FD from
+  // dropped argv, an allocated {fd}, or a body whose competing redirection order is unknown.
+  if (!source.fdKnown || source.fd !== null && source.fd !== '0') return null;
+  if (invocation.heredocBodies.length) return source.quoted
+    ? { text: source.body, initialPositionals: invocation.shellPositionals } : null;
+  if (source.op !== '<<<' || !literalSourceWord(source.word)) return null;
+  return { ...literalSourceWord(source.word), initialPositionals: invocation.shellPositionals };
 }
 
 /** Downgrade evidence when executable identity or preceding context is not established by this parser. */
@@ -588,6 +619,21 @@ function credentialHelperSources(g) {
   });
 }
 
+/** Askpass can run for remote reads as well as pushes; only proven local queries do not select it. */
+function gitAskpassSource(g, invocation) {
+  const envSelected = (invocation?.helperEnvNames || []).some(name => ['GIT_ASKPASS', 'SSH_ASKPASS'].includes(name)) ||
+    g.gitEnvNames.some(name => name === 'GIT_ASKPASS');
+  const configSelected = [...g.configs, ...g.configEnvs].some(config => /^core\.askpass(?:=|$)/i.test(config));
+  if (!envSelected && !configSelected) return false;
+  if (g.terminal && g.helpKind === 'stdout' && knownInvocationContext(invocation)) return false;
+  const localQueries = new Set(['status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'cat-file',
+    'describe', 'shortlog', 'blame', 'grep', 'merge-base', 'rev-list', 'for-each-ref', 'show-ref', 'name-rev',
+    'count-objects', 'var', 'version', 'check-ignore', 'check-attr', 'cherry', 'whatchanged',
+    'diff-tree', 'diff-index', 'diff-files']);
+  const local = localQueries.has(g.sub) || g.sub === 'config' && configOperation(g.args).read;
+  return !local || !knownInvocationContext(invocation) || g.dynamicOpt || g.incomplete;
+}
+
 /** Identify section names whose renamed contents can activate a destination or transport override. */
 function destinationSection(section) {
   return /^(?:remote(?:\..+)?|branch\..+|url\..+|include|includeif\..+|core)$/i.test(section);
@@ -805,6 +851,67 @@ const WGET_VALUE_LONG = new Set([
   'follow-tags', 'ignore-tags', 'include-directories', 'exclude-directories',
 ]);
 const WGET_VALUE_SHORT = 'eoaiBtOTwQPUlARDIX';
+const WGET_FLAG_LONG = new Set([
+  'help', 'version', 'background', 'debug', 'quiet', 'verbose', 'no-verbose', 'no-config',
+  'retry-connrefused', 'retry-on-host-error', 'no-clobber', 'no-netrc', 'continue', 'show-progress',
+  'timestamping', 'no-if-modified-since', 'no-use-server-timestamps', 'server-response', 'spider',
+  'no-dns-cache', 'inet4-only', 'inet6-only', 'unlink', 'xattr', 'ask-password', 'random-wait',
+  'no-proxy', 'no-cache', 'adjust-extension', 'ignore-length', 'no-cookies', 'keep-session-cookies',
+  'save-headers', 'auth-no-challenge', 'content-disposition', 'content-on-error', 'trust-server-names',
+  'no-http-keep-alive', 'no-check-certificate', 'no-hsts', 'https-only', 'no-iri', 'no-warc-compression',
+  'no-warc-digests', 'no-warc-keep-log', 'warc-cdx', 'no-glob', 'no-passive-ftp', 'preserve-permissions',
+  'retr-symlinks', 'ftps-implicit', 'ftps-resume-ssl', 'ftps-clear-data-connection', 'ftps-fallback-to-ftp',
+  'recursive', 'mirror', 'delete-after', 'convert-links', 'convert-file-only', 'backup-converted',
+  'page-requisites', 'strict-comments', 'relative', 'follow-ftp', 'span-hosts', 'no-parent', 'ignore-case',
+  'no-directories', 'force-directories', 'no-host-directories', 'protocol-directories', 'force-html',
+]);
+const WGET_FLAG_SHORT = 'hVbdqvncNS46rkmEpKpFHs';
+
+/** Prove config/helper option roles while consuming values; option-looking DATA is never a flag. */
+function wgetSourceBoundary(invocation) {
+  let noConfig = false;
+  // Environment names are fallbacks for an active --use-askpass, not an activation
+  // by themselves once default config is disabled and option roles are fully known.
+  let selected = false;
+  let unknown = Boolean(invocation.incomplete);
+  let terminal = false;
+  let afterDD = false;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    const text = word.text;
+    if (word.dynamic && !quotedAttachedOptionValue(word, text, WGET_VALUE_SHORT, [...WGET_VALUE_LONG]) ||
+        word.ansiCUnknown || word.globExpanded || word.braceExpanded) unknown = true;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (!afterDD && text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      const names = [...WGET_VALUE_LONG, ...WGET_FLAG_LONG];
+      const matches = names.includes(name) ? [name] : names.filter(option => option.startsWith(name));
+      if (matches.length !== 1) { unknown = true; continue; }
+      const option = matches[0];
+      if (option === 'no-config' && eq < 0 && knownWord(word)) noConfig = true;
+      if (['help', 'version'].includes(option) && eq < 0 && knownWord(word)) terminal = true;
+      if (option === 'use-askpass') selected = true;
+      if (WGET_VALUE_LONG.has(option) && option !== 'use-askpass') {
+        const value = eq < 0 ? invocation.args[++k] : { ...word, text: text.slice(eq + 1) };
+        if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+      } else if (eq >= 0 && option !== 'use-askpass') unknown = true;
+      continue;
+    }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      for (let p = 1; p < text.length; p++) {
+        if (WGET_VALUE_SHORT.includes(text[p])) {
+          const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+          if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+          break;
+        }
+        if ('hV'.includes(text[p]) && knownWord(word)) terminal = true;
+        if (!WGET_FLAG_SHORT.includes(text[p])) unknown = true;
+      }
+    }
+  }
+  return !noConfig || unknown || selected && !(terminal && knownInvocationContext(invocation));
+}
 
 /** Reject Wget's file bodies or opaque config while skipping literal values of other options. */
 function wgetReadsUpload(words) {
@@ -878,6 +985,120 @@ function remoteCopyDestination(invocation) {
   const destination = operands[operands.length - 1];
   if (unknown || !literal(destination) || operands.length < 2) return 'UNKNOWN';
   return destinationArg(textOf(destination)) ? 'FORBIDDEN' : false;
+}
+
+/** scp -S is local executable source even for downloads; only proven entirely local copies ignore it. */
+function scpConnectionSource(invocation, selectedEnv = false) {
+  if (invocation.name !== 'scp') return false;
+  let selected = selectedEnv;
+  let unknown = Boolean(invocation.incomplete);
+  let afterDD = false;
+  const operands = [];
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    const literal = literalSourceWord(word);
+    const text = literal ? literal.text : word.text;
+    if (!literal) unknown = true;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      if (text.startsWith('--')) { unknown = true; continue; }
+      for (let p = 1; p < text.length; p++) {
+        if ('cDFiJloPSX'.includes(text[p])) {
+          if (text[p] === 'S') selected = true;
+          const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+          if (!literalSourceWord(value)) unknown = true;
+          break;
+        }
+        if (!'346ABCOpqRrsTv'.includes(text[p])) unknown = true;
+      }
+      continue;
+    }
+    operands.push(text);
+  }
+  return selected && (unknown || !knownInvocationContext(invocation) || operands.length < 2 ||
+    operands.some(value => destinationArg(value) || /^scp:\/\//i.test(value)));
+}
+
+/** Prove an SSH argv query role rather than confusing a consumed value/remote command with it. */
+function sshAuthenticationQuery(invocation) {
+  let terminal = false;
+  let host = false;
+  const valueOptions = 'BbcDEeFIiJLlmOopQRSWw';
+  const flags = '46AaCfGgKkMNnqsTtVvXxYy';
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    if (!literalSourceWord(word)) return false;
+    const text = word.text;
+    if (text === '--') break;
+    if (!text.startsWith('-') || text === '-') { if (host) break; host = true; continue; }
+    for (let p = 1; p < text.length; p++) {
+      const option = text[p];
+      if ('GQV'.includes(option)) terminal = true;
+      if (valueOptions.includes(option)) {
+        const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+        if (!literalSourceWord(value)) return false;
+        break;
+      }
+      if (!flags.includes(option)) return false;
+    }
+  }
+  return terminal;
+}
+
+/** A daemon/local rsync route does not select SSH unless an actual remote shell overrides it. */
+function rsyncAuthenticationRoute(invocation) {
+  let selectedRsh = (invocation.helperEnvNames || []).includes('RSYNC_RSH');
+  let unknown = Boolean(invocation.incomplete);
+  let afterDD = false;
+  const operands = [];
+  if (invocation.args.length === 1 && knownWord(invocation.args[0]) && invocation.args[0].text === '--daemon') return false;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    const text = word.text;
+    if (!literalSourceWord(word) && !quotedAttachedOptionValue(word, text, RSYNC_VALUE_SHORT, [...RSYNC_VALUE_LONG])) unknown = true;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (!afterDD && ['--help', '--version'].includes(text) && !unknown) return false;
+    if (!afterDD && text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const option = text.slice(2, eq < 0 ? undefined : eq);
+      if (option === 'rsh') selectedRsh = true;
+      if (RSYNC_VALUE_LONG.has(option)) {
+        const value = eq < 0 ? invocation.args[++k] : { ...word, text: text.slice(eq + 1) };
+        if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+      } else if (!RSYNC_FLAG_LONG.has(option) || eq >= 0) unknown = true;
+      continue;
+    }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      for (let p = 1; p < text.length; p++) {
+        if (RSYNC_VALUE_SHORT.includes(text[p])) {
+          if (text[p] === 'e') selectedRsh = true;
+          const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+          if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+          break;
+        }
+        if (!RSYNC_FLAG_SHORT.includes(text[p])) unknown = true;
+      }
+      continue;
+    }
+    operands.push(text);
+  }
+  if (unknown || operands.length < 2) return true;
+  return operands.some(value => {
+    const daemon = /^rsync:\/\//i.test(value) || /^[^/:]+::/.test(value);
+    return destinationArg(value) && (!daemon || selectedRsh);
+  });
+}
+
+/** SSH_ASKPASS is also a local executable source for active native SSH transport consumers. */
+function sshAuthenticationSource(invocation) {
+  if (!(invocation.helperEnvNames || []).includes('SSH_ASKPASS') ||
+      !['ssh', 'scp', 'sftp', 'rsync'].includes(invocation.name)) return false;
+  if (!knownInvocationContext(invocation) || invocation.incomplete) return true;
+  if (invocation.name === 'ssh') return !sshAuthenticationQuery(invocation);
+  if (invocation.name === 'scp') return scpConnectionSource(invocation, true);
+  if (invocation.name === 'rsync') return rsyncAuthenticationRoute(invocation);
+  return !(invocation.args.length === 0 || invocation.args.length === 1 && knownWord(invocation.args[0]) &&
+    ['-h', '--help'].includes(invocation.args[0].text));
 }
 
 /** Identify an executable network verb using parsed command names, never names printed as data. */
@@ -1247,36 +1468,52 @@ function collectNetworkInvocations(inspection, depth = 0) {
   for (const invocation of inspection.invocations) {
     if (invocation.nonExec || invocation.definitionName) continue;
     if (nativeSocketRedirection(invocation)) deny('Bash の /dev/tcp・/dev/udp redirection または socket を選びうる動的 target は未対応の network channel です。read/write/FD と秘密 filename の有無だけでは送信条件を確認できません。' + UNKNOWN_OWNER_GATE);
+    // Known local functions select the separately parsed body, not the external client
+    // or builtin sharing their name. Call redirections above still take effect.
+    if (invocation.functionCallName) continue;
+    if (['.', 'source'].includes(invocation.name)) deny('dot / source が実行する filename の本文と副作用を検査できません。literal な filename も実行 source の内容を証明しません。' + UNKNOWN_OWNER_GATE);
     if (arrayReaderCallback(invocation)) deny('mapfile / readarray の -C callback または callback を選びうる argv は未対応の実行 source です。callback が literal でも内部や副作用を検査できません。同目的を保てる callback-free 形式を検討してください。' + UNKNOWN_OWNER_GATE);
     if (rsyncRemoteHelper(invocation)) deny('remote rsync の -e / --rsh / RSYNC_RSH が選ぶ helper source、または remote/local の argv 条件を検査できません。download でも helper はローカルで実行されます。' + UNKNOWN_OWNER_GATE);
+    if (scpConnectionSource(invocation)) deny('scp の -S が選ぶローカルの connection program と副作用を検査できません。download でも helper は実行され得ます。local-only の operands/argv を証明できない形も判断不能です。' + UNKNOWN_OWNER_GATE);
+    if (sshAuthenticationSource(invocation)) deny('SSH_ASKPASS が actual SSH / SCP / SFTP / rsync remote-shell の authentication route で選ぶローカル helper source を検査できません。download と不明な route も判断不能です。' + UNKNOWN_OWNER_GATE);
     result.push(invocation);
     const scripts = [];
     const gitCommand = inspection.gits.find((g) => g.invocationOrder === invocation.order);
+    if (gitCommand && gitAskpassSource(gitCommand, invocation)) deny('Git の GIT_ASKPASS / SSH_ASKPASS / core.askPass が選ぶ credential program を検査できません。push と authentication を伴い得る remote query 等ではローカル helper が実行され得ます。' + UNKNOWN_OWNER_GATE);
     if (gitCommand) scripts.push(...credentialHelperSources(gitCommand));
     scripts.push(...sshCommandSources(invocation));
     if (invocation.splitString) {
       for (const script of invocation.splitWords) result.push(...collectNetworkInvocations(envSplitInspection(invocation, script), depth + 1));
     }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
-      if (invocation.shellCommandMode && invocation.shellSourceUnknown) {
-        deny('シェルの command mode の source が option の境界から確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+      if (terminalBashQuery(invocation)) continue;
+      if (invocation.name === 'bash' && (invocation.helperEnvNames || []).includes('BASH_ENV')) {
+        deny('child Bash の BASH_ENV が選ぶ startup filename / expansion / code source を検査できません。-c の本文が literal でも startup source は先に実行され得ます。' + UNKNOWN_OWNER_GATE);
       }
+      if (invocation.shellSourceUnknown || invocation.incomplete) deny('シェルの option / argv 境界から実行する source を確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
       scripts.push(...invocation.shellScripts.map((script) => ({ ...script, initialPositionals: invocation.shellPositionals })));
       if (!invocation.shellCommandMode && invocation.shellReadsStdin) {
-        scripts.push(...invocation.redirs.filter((redir) => redir.op === '<<<')
-          .map((redir) => ({ ...redir.word, initialPositionals: invocation.shellPositionals })));
+        const stdinSource = shellStdinSource(invocation);
+        if (!stdinSource) deny('シェルが実行する stdin の完全な effective fd 0 source を検査できません。pipeline / file / FD redirection / heredoc / 競合入力の実行内容は判断不能です。' + UNKNOWN_OWNER_GATE);
+        scripts.push(stdinSource);
+      } else if (!invocation.shellCommandMode) {
+        deny('シェルが実行する filename / executable source の内容を検査できません。literal な名前も source 本文の証明にはなりません。' + UNKNOWN_OWNER_GATE);
       }
     } else if (invocation.name === 'eval') {
       const args = invocation.args[0] && invocation.args[0].text === '--' ? invocation.args.slice(1) : invocation.args;
-      scripts.push({ text: args.map((word) => word.text).join(' ') });
+      const literalArgs = args.map(literalSourceWord);
+      if (invocation.incomplete || literalArgs.some(word => !word)) deny('eval の executable argv が dynamic / split / glob / brace / ANSI-C source を含み、連結後の実行文字列を確定できません。' + UNKNOWN_OWNER_GATE);
+      scripts.push({ text: literalArgs.map((word) => word.text).join(' ') });
     }
     if (invocation.trapSourceUnknown) deny('trap に登録する source が確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     scripts.push(...invocation.trapScripts.map((script) => ({ ...script, mediated: true })));
     if (invocation.aliasSourceUnknown) deny('alias に登録する source が確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     scripts.push(...(invocation.aliasScripts || []).map((script) => ({ ...script, mediated: true })));
     for (const script of scripts) {
+      const literal = literalSourceWord(script);
+      if (!literal) deny('interpreter / helper の executable source bytes または argv boundary を確定できません。' + UNKNOWN_OWNER_GATE);
       const nested = script.mediated ? guard.inspectMediatedSource(script) :
-        guard.inspect(script.text, { initialPositionals: script.initialPositionals, initialHelperEnvNames: invocation.helperEnvNames });
+        guard.inspect(literal.text, { initialPositionals: script.initialPositionals, initialHelperEnvNames: invocation.helperEnvNames });
       if (script.mediated) for (const nestedInvocation of nested.invocations) {
         nestedInvocation.helperEnvNames = [...new Set((nestedInvocation.helperEnvNames || []).concat(invocation.helperEnvNames || []))];
       }
@@ -1299,8 +1536,12 @@ function parsedExfil(invocation) {
   let verdict = false;
   if (invocation.name === 'gh') verdict = invocation.args[0]?.text === 'gist' ?
     knownWord(invocation.args[0]) ? 'FORBIDDEN' : 'UNKNOWN' : ghApiUpload(invocation);
-  if (invocation.name === 'curl') verdict = curlReadsUpload(invocation.args, invocation.incomplete, true);
-  if (invocation.name === 'wget') verdict = wgetReadsUpload(invocation.args);
+  if (invocation.name === 'curl') {
+    verdict = curlReadsUpload(invocation.args, invocation.incomplete, true);
+    // Only the actual first literal argv -q/--disable prevents curl's implicit curlrc load.
+    if (!verdict && !(knownWord(invocation.args[0]) && ['-q', '--disable'].includes(invocation.args[0].text))) verdict = 'UNKNOWN';
+  }
+  if (invocation.name === 'wget') verdict = wgetReadsUpload(invocation.args) || (wgetSourceBoundary(invocation) ? 'UNKNOWN' : false);
   if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
   // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.
   if (invocation.name === 'sftp') verdict = sftpSession(invocation.args) ? 'UNKNOWN' : false;

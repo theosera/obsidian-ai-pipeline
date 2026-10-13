@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の R13 で採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。R11 / R12 の取得時刻・source を付した測定は履歴として残し、R13 の実測と区別する。
+この文書は PR #191 の R14 で採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。R11 / R12 の取得時刻・source を付した測定は履歴として残し、R13 の実測と R14 の確認を区別する。
 
 ## 判定の意味
 
@@ -39,7 +39,7 @@
 
 ## PR #191 の停止条件と通常作業への影響
 
-各行の ALLOW 対照も、その行に示した条件下での判定である。他の禁止や UNKNOWN があれば停止する。path は基本的に filename policy であり、ファイル内容を秘密でないと証明する検査ではない。同じ入力に禁止形が見えても、先行する raw backstop などが UNKNOWN で停止すれば理由は `[判断不能] ` になる。表は常に `[禁止] ` が返ることを約束しない。
+各行の ALLOW 対照も、その行に示した条件下での判定である。他の禁止や UNKNOWN があれば停止する。過去 round の curl / Wget 対照を現在の入力へ使う場合は、R14 の既定設定抑止条件も満たす必要がある。curl の実 first literal `-q` / `--disable`、Wget の実 `--no-config` がない GET・inline DATA・help / version を、この表だけで ALLOW としない。path は基本的に filename policy であり、ファイル内容を秘密でないと証明する検査ではない。同じ入力に禁止形が見えても、先行する raw backstop などが UNKNOWN で停止すれば理由は `[判断不能] ` になる。表は常に `[禁止] ` が返ることを約束しない。
 
 先行する理由分類計画の 27 群を、PR の先行 round と R10 の条件群にまとめ、R11 の新しい 4 条件群と、その後の限定監査で採用した merge file / stash の 2 群を区別して加える。先行群には、main 由来の policy / raw backstop と、本 PR で追加した解析・停止条件を併記する。すべての禁止規則を本 PR で新設したという意味ではない。R10 / R11 行にも、既存の secret inventory へ新しい入力経路を結び付けた条件が含まれる。
 
@@ -175,7 +175,7 @@ message file は Git pathspec ではない。引用して shell 展開を止め�
 
 dummy Git 2.54.0 の harmless-marker proof では、captured stdout でも helper が動いた。値なしの既定 `-O` は実 global `git -P grep ...` で無効になったが、明示 `-O<helper>` / `--open-files-in-pager=<helper>` は `-P` があっても動いた。scope は active commit 以前に helper が起動し得る条件の UNKNOWN であり、standalone grep pager の全禁止ではない。通常 grep、確定した消費値 / disable、commit 後の helper はこの停止条件の対照として維持する。他の禁止・UNKNOWN や任意 helper 内部の保証を解除する説明ではない。
 
-[curl の `--url-query`](https://curl.se/docs/manpage.html#--url-query)は `@file` / `name@file` で file 入力を作れるため、確定した対応 argv / context では file-upload として FORBIDDEN にする。先頭 `+raw` や `name=value` の中の `@` は file 入力とはしない。quoted scalar の固定 `+` / `=` と、未解決 prefix・複数 argv に展開し得る値を区別し、後者は UNKNOWN。file-backed variable が query に流れる対応 expansion も検査する。普通の literal GET / inline query 対照は維持するが、file-input 自体が必要なら owner gate が必要である。
+[curl の `--url-query`](https://curl.se/docs/manpage.html#--url-query)は `@file` / `name@file` で file 入力を作れるため、確定した対応 argv / context では file-upload として FORBIDDEN にする。先頭 `+raw` や `name=value` の中の `@` は file 入力とはしない。quoted scalar の固定 `+` / `=` と、未解決 prefix・複数 argv に展開し得る値を区別し、後者は UNKNOWN。file-backed variable が query に流れる対応 expansion も検査する。literal GET / inline query は file 入力条件の対照であり、現在は R14 の first literal `-q` / `--disable` と他条件も必要になる。file-input 自体が必要なら owner gate が必要である。
 
 ### R12 の editor と helper selector
 
@@ -248,6 +248,32 @@ shared `preCommitConfigKey` は、Git の `-c` / `--config-env` の key と valu
 同じ目的を、確認済みの literal file、通常の repository / env、対応済みの argv / source で保てる場合だけ、その形式に書き換える。別の設定 root、file-upload、custom config そのものが目的に必要なら、別 operation へ勝手に置き換えず、対象・cwd・env / config・外部プログラム条件・不明点を owner に渡す。対応範囲を追加する場合は、許可条件と禁止・UNKNOWN・通常作業の対照を揃える。
 
 個別 operation の owner approval は、hook の無効化や guard 回避の承認ではない。別の場所へのコピー、実行名の引用・変形、別ツール経由の実行も、承認済みの代替にはならない。担当のない経路へ移しただけで、未被覆が解消したと扱わない。
+
+## R14: executable source と既定 client 設定の境界
+
+R14 は formal review の8入力を、元の df463a9 と既存公開 head にも直接渡して比較した後、対応範囲・結果・例外を決めてから実装した。7入力は旧版から未停止であり、GIT_ASKPASS の1入力だけは本作業で旧拒否が失われていた。直接 hook の拒否履歴を、実際の authentication / file upload / 漏出成立の実測へ読み替えない。
+
+| 守る対象 | 必要条件 / UNKNOWN | 影響する通常作業 | 対応済みの形式・出口 | 確認する対照 |
+|---|---|---|---|---|
+| 選択した local shell 関数の実行 source | original unquoted function 構文の定義と実 call を区別し、対応 brace / subshell body を独立 scope で検査。未対応 body / conditional definition / search の変更や既存関数を選ぶ mediated source は UNKNOWN | 複雑な関数や eval / trap / alias 経由の関数 call | 同じ目的を直接の対応 source に表せる場合だけ書換え。関数の実行条件自体が必要なら owner へ | 未使用 definition・quoted / printed DATA・普通の対応 body、call positionals / env、reserved `time` と外部 wrapper の役割 |
+| shell stdin / file / FD source | literal `-c` と、pipeline がなく redirection / heredoc が合計1つだけの literal here-string / quoted heredoc を検査。parser の original FD proof が default / literal 0 を確定すること。pipeline / interactive stdin、script filename、dot / source、非0 FD・allocated / unknown FD・競合入力は UNKNOWN | script file の実行、pipeline で生成した shell、複数 FD の通常 script | 同目的の literal source が確認済みなら対応 `bash -c '…'` 等へ。file source が必要なら内容と条件を owner へ | known context の Bash の実 first literal `--help` / `--version` は未使用 child source と区別。later flag は証明にせず、外側の expansion / redirection は検査 |
+| eval の executable source | concat 前の各 actual argv の bytes と語数・境界を確認。未確定 dynamic / split / glob / brace / unknown ANSI-C source は UNKNOWN | 変数から組み立てる eval | 同目的の直接 command / 対応 literal source に表せる場合だけ書換え | literal eval、消費する DATA、単一語の proof がある known bytes、ANSI-C の不明 decode を区別 |
+| child Bash startup source | 選ばれた BASH_ENV の filename / expansion / 本文を未検査なら UNKNOWN。literal `-c :` でも startup は先に動き得る | startup file を使う Bash wrapper | 同目的に startup が不要なら actual per-call `env -u BASH_ENV` と対応 source。必要なら owner へ | 実 first help/version、prefix / export / declaration / inherited positive selector、print DATA、conditional unset |
+| 認証・接続 helper source | active GIT_ASKPASS / SSH_ASKPASS / core.askPass の authentication-capable Git、Wget の実 `--use-askpass`、SCP の実 `-S`、selected SSH_ASKPASS の SSH / SCP / SFTP / remote-shell rsync は UNKNOWN | push・remote query・認証付き download・custom connection helper | helper が使われないと証明できる対応 local query / local-only copy / daemon route / terminal query を区別。必要な auth / helper 自体に同目的代替がなければ owner へ | download 方向でも helper を検査。option-looking consumed DATA、per-call removal、Wget の実 `--no-config` と完全な対応 argv 下で実 `--use-askpass` がない unused WGET_ASKPASS / SSH_ASKPASS を区別 |
+| curl の implicit config | actual first literal argv が正確な `-q` / `--disable` で、他の argv / context 条件を満たすこと。later / consumed / unknown prefix は抑止証明にならず UNKNOWN。明示 config も UNKNOWN | 普通の GET と help / version、CURL_HOME / HOME / XDG 等の default config | default config が目的に不要なら `curl -q https://example.invalid`、query は `curl -q --version`。必要なら config・file source・対象条件を owner へ | first / later `-q`、DATA・既定設定 root・明示設定・file upload の独立禁止 |
+| Wget の implicit config | actual option role の `--no-config` と完全な対応 argv が必要。消費値 / 未知 option / cardinality では証明せず UNKNOWN。明示 config も UNKNOWN | 普通の download と help / version、WGETRC / HOME の default config | default config が不要なら `wget --no-config https://example.invalid`、query は `wget --no-config --version`。必要なら owner へ | no-config を header / output の値と混同しない。実 use-askpass、unknown option、native help/version の config load |
+
+関数の本文と定義時の redirection / heredoc expansion は、選択された call で検査する。未使用の定義を実行した扱いにはしない。一方、定義後の既存 Git context / positional taint / whole-chain 条件は維持し、`git` 関数の shadow は引き続き UNKNOWN とする。original reserved `time` が直接 local 関数を選ぶ場合は本文を検査し、`command` / `builtin` や外部 `env` / launcher の child は local 関数 call と推定しない。
+
+FORBIDDEN と UNKNOWN の理由は独立して確認する。見えている禁止形が先に停止する場合もある。ALLOW 対照は、その行の条件だけで任意 executable / env / config 全体を安全認証する意味ではない。通常の環境で helper 名が見えないことも、すべての実行時 selector が不在という証明にはしない。hook process の既知 positive selector は名前だけを seed し、値や credential を記録しない。
+
+これらの source 条件は常時 Bash の egress 自身が担当する。formal review の8入力すべてで、local L2 の `denyBy` に egress を必須とする。conditional Git guard の union が停止したことだけで実 dispatch が成立したとは記録しない。試験は解析 metadata・判定と理由 / required guard・実際の CLI 入口と副作用の3層に分ける。R14 の凍結 source の実測を次段落に記載する。R13 の3250件・6試行を新 source の結果に持ち越さない。
+
+2026-10-13 **17:16:02 JST** の R14 凍結 source 直接入力 suite は **3498/3498、broken0、source不変**。公開 f2f8 の3250 IDとcommand / stdin / cwd / project / env入力をすべて保持し、3042定義は不変、208期待だけをALLOWからUNKNOWN / egress必須へ変更した（implicit client config 196、未検査のshell source 12）。248入力を追加した。同じ3498入力に対する旧f2f8は **307 decision不一致、reason-only0、broken0、source不変**、取得は17:16:01 JSTである。不一致は独立脆弱性・漏出の件数ではない。L1公開解析契約 **33/33**、deny API / lib不在契約 **6/6**。個別のprivate metadata assertion 144/144やnative DUMMY観測は、この33件へ加算しない。
+
+R14のactual CLI 2.1.296は **17:14:43 JSTまでの8試行 / 実入口確認6 PASS / 0 FAIL / 2 NOT_EXERCISED**。ordinary関数body、`curl -q --version`、`wget --no-config --version` は正常tool result。pipeline stdin shell、script filename shell、default configを抑止していない `curl --version` は actual egressのUNKNOWN denyで停止した。正常関数例は3本、残る実施例はegressのみが起動した。この代表測定を任意入力のdispatchへ一般化しない。全試行でHEAD / refs / index / status / DUMMY `.env` / a.txt / helper markers / object database inventoryは不変。BASH_ENV startupとCURL_HOME default configの2例はAPI safeguard（cyber refusal）がBashより前で止めたため、guard自身のdeny成功ではない。これらとauth helperのactual入口は未測定のまま分ける。nativeのoffline credential helper / file:// / local-copy / config-load観測は別層であり、実送信・secret・Wget authentication challengeは実行していない。
+
+sourceは common `51202716`、egress `0df0b5c4`、secret `a78a0acd`、add-all `210a9bcb`で固定。original PreToolUse matcher / if / timeout、permission denyを保持し、user defaultsは有効。trust変更、model override、permission / hook bypassは使用していない。untrusted DUMMY workspaceのproject Skill allowは無視され得る。production SessionStart / PostToolUse / Stop / pluginと本番全lifecycleは再現していない。通常作業の例が通ることも、任意program内部・default SSH設定・すべてのruntime envの安全認証ではない。
 
 ## 試験を 3 層に分ける
 
