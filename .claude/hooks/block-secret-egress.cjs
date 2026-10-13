@@ -38,6 +38,7 @@ try {
 }
 const { deny } = guard;
 const path = require('node:path');
+const fs = require('node:fs');
 const UNKNOWN_OWNER_GATE = ' owner に対象・操作・cwd・env/config/source と不明点を確認してください。個別操作の承認は hook 無効化の許可ではありません。';
 
 // (A) リテラル秘密。`$GITHUB_TOKEN` 等の env 参照は値ではないので **当たらない**
@@ -203,6 +204,8 @@ const insp = guard.inspect(cmd, {
     .filter(name => process.env[name] !== undefined),
   initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL'].filter(name => process.env[name] !== undefined),
   initialPagerEnvNames: ['GIT_PAGER', 'PAGER'].filter(name => process.env[name] !== undefined),
+  initialPromptEnvPresent: process.env.PS4 !== undefined,
+  initialTraceMode: process.env.SHELLOPTS === undefined ? false : null,
   initialFunctionSourceNames: inheritedFunctionNames,
   initialExportedFunctionNames: inheritedFunctionNames,
 });
@@ -1441,14 +1444,19 @@ function ghFilePayload(invocation) {
   const groupWord = literalSourceWord(words[start]);
   if (!groupWord) return words.length ? 'UNKNOWN' : false;
   const group = groupWord.text;
-  if (group.startsWith('-') && words.some((word, index) => ['secret', 'variable'].includes(literalSourceWord(word)?.text) &&
-      literalSourceWord(words[index + 1])?.text === 'set')) return 'UNKNOWN';
-  if (!['release', 'issue', 'pr', 'ssh-key', 'repo', 'secret', 'variable'].includes(group)) return false;
+  if (group.startsWith('-') && words.some((word, index) =>
+      ['secret', 'variable'].includes(literalSourceWord(word)?.text) && literalSourceWord(words[index + 1])?.text === 'set' ||
+      literalSourceWord(word)?.text === 'workflow' && literalSourceWord(words[index + 1])?.text === 'run')) return 'UNKNOWN';
+  if (!['release', 'issue', 'pr', 'ssh-key', 'repo', 'secret', 'variable', 'workflow'].includes(group)) return false;
   if (group === 'repo') {
     if (!literalSourceWord(words[start + 1])) return 'UNKNOWN';
     if (literalSourceWord(words[start + 1]).text !== 'deploy-key') return false;
   }
   const specFor = action => {
+    if (group === 'workflow') return action === 'run' ? {
+      values: ['field', 'raw-field', 'ref'], short: { F: 'field', f: 'raw-field', r: 'ref' },
+      files: [], flags: ['json'], shortFlags: '', min: 0, max: 1, assetStart: Infinity, workflow: true,
+    } : null;
     if (['secret', 'variable'].includes(group)) return action === 'set' ? {
       values: ['body', 'env', 'env-file', 'org', 'repos', 'visibility', ...(group === 'secret' ? ['app'] : [])],
       short: { b: 'body', e: 'env', f: 'env-file', o: 'org', r: 'repos', v: 'visibility', ...(group === 'secret' ? { a: 'app' } : {}) },
@@ -1505,6 +1513,8 @@ function ghFilePayload(invocation) {
   let bodyWord = null;
   let envFileStdin = false;
   let noStore = false;
+  let jsonStdin = false;
+  let fieldStdin = false;
   const transmittedValueWords = [];
   const dataBoundary = word => Boolean(word && word.dynamicMaySplit === false && !word.ansiCUnknown &&
     !word.globExpanded && !word.braceExpanded && !word.tildeExpanded);
@@ -1525,6 +1535,7 @@ function ghFilePayload(invocation) {
           if (!knownWord(word) || eq >= 0 && !['true', 'false'].includes(text.slice(eq + 1))) unknown = true;
           if (option === 'help' && text.slice(eq + 1) === 'true' && !unknown) return false;
           if (spec?.setValue && option === 'no-store') noStore = eq < 0 || text.slice(eq + 1) !== 'false';
+          if (spec?.workflow && option === 'json') jsonStdin = eq < 0 || text.slice(eq + 1) !== 'false';
           continue;
         } else { unknown = true; continue; }
       } else {
@@ -1543,6 +1554,17 @@ function ghFilePayload(invocation) {
         if (spec.setValue && file?.text === '-') envFileStdin = true;
         else if (!file || file.text === '-') sourceUnknown = true;
         else payload = true;
+      } else if (spec?.workflow && ['field', 'raw-field'].includes(option)) {
+        const scalar = literalSourceWord(value), pair = scalar?.text.indexOf('=');
+        if (scalar && pair > 0) {
+          const selected = scalar.text.slice(pair + 1);
+          if (option === 'field' && selected.startsWith('@')) {
+            if (selected === '@-') fieldStdin = true;
+            else if (selected.length === 1) sourceUnknown = true;
+            else payload = true;
+          }
+        } else if (scalar) sourceUnknown = true;
+        transmittedValueWords.push(value);
       } else if (spec?.setValue && option === 'body') bodyWord = value;
       else if (spec && ['body', 'notes', 'title'].includes(option)) transmittedValueWords.push(value);
       else if (!literalSourceWord(value)) sourceUnknown = true;
@@ -1561,6 +1583,17 @@ function ghFilePayload(invocation) {
   }
   if (!spec) return unknown ? 'UNKNOWN' : false;
   if (unknown || sourceUnknown || operands.length < spec.min || operands.length > spec.max) return 'UNKNOWN';
+  if (spec.workflow) {
+    if (payload) return 'FORBIDDEN';
+    const inline = outboundPayloadVerdict(invocation, transmittedValueWords);
+    if (inline) return inline;
+    if (jsonStdin || fieldStdin) {
+      const stdin = stdinPayloadVerdict(invocation, invocationSources.get(invocation) || [], true);
+      if (stdin) return stdin;
+      return shellStdinSource(invocation) ? false : 'UNKNOWN'; // Proven literal fd 0 bytes are payload DATA, not executable source.
+    }
+    return operands.length ? false : 'UNKNOWN'; // Interactive selector/input collection is uninspected.
+  }
   if (spec.setValue) {
     if (noStore) return 'UNKNOWN';
     if (payload) return 'FORBIDDEN';
@@ -1920,10 +1953,15 @@ function envSplitInspection(invocation, script) {
 /** Carry exported function selectors into reparsed source before command lookup/unwrap. */
 function sourceInspectionOptions(invocation, extra = {}) {
   const privileged = ['bash', 'sh'].includes(invocation.name) && invocation.shellPrivileged === true;
+  const childShell = ['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name);
   return {
     initialHelperEnvNames: invocation.helperEnvNames,
     initialGitIdentitySources: invocation.gitIdentitySources || [],
     initialPagerSources: invocation.gitPagerEnvSources || [],
+    initialPromptSources: childShell ? invocation.tracePromptEnvSources || [] :
+      [{ name: 'PS4', word: invocation.tracePromptWord }],
+    initialTraceMode: childShell ? invocation.shellXtrace ?? null : invocation.traceModeBefore ?? false,
+    initialPromptVars: childShell ? true : invocation.promptVarsBefore ?? true,
     initialFunctionSourceNames: privileged ? [] : invocation.exportedFunctionNames || [],
     // -p suppresses this child's imports, but preserves encoded environment entries
     // which a later nonprivileged child can import again.
@@ -2216,6 +2254,22 @@ for (const g of inspectedGits) {
   }
   if (['send-pack', 'http-push'].includes(g.sub)) {
     deny(`git ${g.sub} の送信先と対象履歴は、このガードの supported inspection 外で確認できません (fail-closed)。owner に対象・操作・source と不明点を確認してください。`);
+  }
+  if (g.outboundRole && !g.outboundRole.terminal) {
+    const role = g.outboundRole;
+    const directory = guard.resolveDir(baseDir, g.cdirs);
+    const confirmedFile = word => {
+      const literal = literalSourceWord(word);
+      if (!literal || !directory) return false;
+      try { const stat = fs.statSync(path.resolve(directory, literal.text)); return stat.isFile() || stat.isDirectory(); }
+      catch { return false; }
+    };
+    const verdict = g.sub === 'send-email' && !role.unknown && !role.noSend && role.files.length &&
+      role.files.every(confirmedFile) ? 'FORBIDDEN' : 'UNKNOWN';
+    deny(verdict === 'FORBIDDEN' ?
+      'Git send-email の static file/directory operands は既存の file-egress policy の送信 source です。mail の妥当性や実送信の成立を確認したものではありません。' :
+      `Git ${g.sub} の source・argv・設定・宛先・実行条件を検査できません。dry-run 等の非送信 mode も helper/source の保証ではありません。同目的・同条件を保つ対応済み形式がなければ owner に対象・操作・cwd/env/config/source と不明点を確認してください。` + UNKNOWN_OWNER_GATE,
+      gitVerdict(g, verdict));
   }
   if (g.sub === 'imap-send' && !imapSendRole(g).terminal) {
     const invocation = gitInvocationContexts.get(g);

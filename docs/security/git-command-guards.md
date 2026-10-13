@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の保護範囲、R19 / R20 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の保護範囲、R19 / R20 / R21 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -19,6 +19,43 @@
 既存 main 由来の raw backstop も残す。文字列の形だけが一致し、実 argv・操作と message / コメント / DATA を区別できない停止は **UNKNOWN** である。この一致を、秘密ファイルが実際に送信されることの証明として扱わない。
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
+
+## R21: 修正の条件・結果・例外
+
+公開 head `35145135458da162f3e4faa778074bf3fb284439` への fresh Codex review は、2026-10-14 **07:24:12 JST** に P1 5件を返した。**07:32:09 JST** の全ページ取得では thread **122 / resolved 117 / open 5**、CodeRabbit 0 / Codex 5、PR は OPEN / BLOCKED、auto-merge なしである。CodeRabbit の同 head full review は完了して指摘0だった。以下は修正前に決めた条件に、対照試験で確認した境界を追補したものである。新 source のローカル試験と、新 head の required CI / 両 fresh review / thread 解決は別の証拠として取得する。
+
+| 対象・停止条件 | 結果と理由 | 維持する例外・DATA | 通常作業への影響と owner への出口 |
+|---|---|---|---|
+| **Git `send-email` の送信 source** | 確定した file / directory payload は既存 file 送信禁止の FORBIDDEN。revision selector、未検査 argv / source / SMTP・sendmail・validate helper / destination は UNKNOWN。`--dry-run` は外部送信を実施しないが、その他の処理を検査できる保証ではない | 確認した sole `-h` usage。option が消費する `-h` DATA や revision を file と混同しない。dump / alias 展開も無条件の安全 getter としない | 通常の公開 patch 送信も停止する。表示 query は送信の代替ではない。送信が必要なら recipient、payload、cwd、config、helper、mode と不明点を owner へ |
+| **GH `workflow run` の JSON stdin・typed field・generated input** | `--json` の fd0 と `-F` / `--field key=@file` を既存 payload 判定へ接続する。確定 file input と関連 secret reader は FORBIDDEN。未検査 stdin / field / source / argv は UNKNOWN。`-f` / `--raw-field` は `@` を file 構文として解かないが、生成値の出所は検査する | 対応する既知 ordinary literal / scalar field と、証明した単一 quoted fd0 heredoc / known here-string、実 help、printed DATA。literal stdout pipeline は、この追加判定では source proof に対応せず UNKNOWN。repo / ref / workflow selector の消費値は input と混同しない。ordinary filename も file upload 禁止の対象 | 公開 JSON / file による workflow input も停止する。同じ値・目的・条件を保つ対応 inline input で表せる場合だけ再検査。file / 未知 stdin や interactive input が必要なら workflow、ref、repo、input source を owner へ |
+| **active Git `filter-branch` の argv-selected source と history context** | setup / 各 filter は shell source。revision / cwd / refs / index / helper の実行条件を検査できない active rewrite は UNKNOWN。静的 `:` filter だけで history rewrite の安全を証明しない | 確認した sole `-h` usage。filter が消費した `-h` / `--help` DATA を query としない | 通常の公開履歴の filter も停止する。同目的の対応 writer 代替はない。rewrite 対象、backup、全 filter source / context と不明点を owner へ |
+| **active Git `daemon` の repository server** | serve directory、object / ref inventory、service / helper / config、公開条件が未検査の repository egress として UNKNOWN。default server や `--export-all` の有無を含む active server が対象 | 確認した sole `-h` usage。base path / listen / access-hook 等の消費値や directory を query としない | 通常の公開 repository server も停止する。同目的の対応 server 代替はない。serve 対象、protocol、bind / auth、access / service / config と不明点を owner へ |
+| **Bash の active PS4 / xtrace source** | stored PS4 と trace / promptvars の mode・順序・scope を追跡する。実 trace 前に選ばれる未検査 prompt source は UNKNOWN。単なる PS4 の存在だけで全 Bash を停止しない。BASH_XTRACEFD の変更は source 展開の解除ではない | unused PS4、確認した static prompt、実 disable / promptvars off、local / export / child の選択を区別。`set +x` / unset / reset 自身は旧 active PS4 で trace され得るため、後続の解除を先取りしない。版不明の `local -` による option 復元は証明しない | 動的 trace prompt、未確定 shell mode、PS4 / trace / promptvars を変更する登録済み trap callback の未対応状態も停止し得る。ordinary echo callback、trap query / reset と印字 DATA を区別する。確認した static prompt で同じ目的を満たせる場合だけ再検査。必要な未知 prompt / mode は source、shell / version、env、function scope と不明点を owner へ |
+
+停止後に対応済み形式で目的を満たせなければ、表の対象・操作・実行条件を添えて owner に確認する。個別操作の了承を hook 無効化の了承へ広げず、別の場所や別ツールからの実行を自動的に許可された代替経路としない。secret-git / add-all の conditional Git 入口と全 Bash egress の設定は維持し、egress 自身の停止と実 dispatch を別々に測る。
+
+### 修正前の分類漏れと有限の調査範囲
+
+5指摘の正確な入力は GH の2形式を含む6本である。元の command を変えず、`3514513` / `df463a91` / `4f0ff562` / `387688f` の固定 source に Hook INPUT DATA として渡した24行は、すべて全3 hook ALLOW、own egress ALLOW、broken0、各 source 前後不変だった。これは4 snapshot の同じ6入力であり、24独立脆弱性や実通信・被害の確認ではない。この有限比較では、6経路は修正が新設した穴としては観測していない。
+
+`g''it daemon --export-all .` は common parser が `git` / `daemon` / `--export-all` / `.` を正しく取り出していた。不足は egress の server 操作分類である。[Git daemon の公式仕様](https://git-scm.com/docs/git-daemon)では `--export-all` が `git-daemon-export-ok` を不要にする。この flag 自体は Git の想定動作であり、公開対象の objects / refs をガードが検査できないことを UNKNOWN の理由とする。未追跡の working-tree file がそのまま公開されるとの主張はしない。
+
+悉皆調査は、固定した Git 版の operation 一覧と、対応 option / mode / source の範囲を決めれば分類漏れを点検できる。任意 Bash、外部 helper、環境設定、生成値の全組合せを確認済みとはしない。read / write / send / server / executable-source の役割を保ち、担当がないものを保護済みと記録しない。今回の修正は5条件と必要な正常対照に限定し、責務を分割する広いリファクタリングは別作業とする。
+
+[Git send-email](https://git-scm.com/docs/git-send-email)、[filter-branch](https://git-scm.com/docs/git-filter-branch)、[GH workflow run](https://cli.github.com/manual/gh_workflow_run)、[GNU Bash](https://www.gnu.org/s/bash/manual/bash.html) の一次仕様と、installed 版の marker / usage 観測を区別する。macOS Bash 3.2 / 5.3 で PS4 36観測、Git / GH sole usage 4観測、隔離 DUMMY filter setup 1観測の合計41観測を取得した。41 PASS と集計しない。PS4 の `set +x` 自身が旧 source を展開し、promptvars off は両版で marker0だった。Bash3.2 の `local -` 非対応2形は stderr 診断があり、exit0だけで復元成功としない。DUMMY filter の marker は成立し、HEAD / refs / index / objects / status は前後一致した。native sender / server / GH dispatch、実秘密は実行していない。
+
+### R21 の検証状態
+
+最終 v4 の固定 source は common `7f797e63fa52cdf9e8896eef578771496e389e1b47397939c9dd7f30e1ca06f8` / egress `0d3d9b478800a72029bf963d1c6db3a7b877262ac6a9b163b3a7d32831d6c047`。add-all / secret-git は R20 と同じ hash である。初回 freeze、ANSI unknown sentinel の訂正前 v1、間接参照 printf の訂正前 v2、GH stdin / callback の訂正前 v3 を保存し、その成功を v4 へ持ち越さない。
+
+- **L1 / API:** 公開解析80、filename parity8、別実行の私有 deny API6 は94/94。私有 metadata30/30も v4 で成功した。初回 parity の誤 filename による85件実行と、v3 の93件結果は原記録を残し、最終94件に加算しない。
+- **L2:** 旧4124の ID / command / stdin / cwd / project / env と期待を変更せず、新 unique84を加えた**4208/4208**が **2026-10-14 08:12:01 JST** に成功した。broken0、4 source / 固定 public runner 不変。固定351へ同じ4208入力・期待を渡した08:11:59 JSTの比較は50 assertion差、実decision差49、hook / reasonのみの差1で、脆弱性数ではない。旧4124の期待は両sourceですべて一致した。元レビュー6 commandとclean contextを保持し、egress自身が2 FORBIDDEN / 4 UNKNOWNで停止した。send-emailの実在file対照はdirty / a.txtの別入力であり、cleanに.envがない前提を実secret送信成立と混同しない。
+- **reverse:** 使い捨て v4 コピーの単一edge反転14試行は14/14、broken0、元source不変。拒否の必要性11、普通literal stdin許可の必要性1、分類精度2を分ける。stat proofと@-役割の2試行は別のUNKNOWN停止が残るため、拒否必要性は未証明として記録する。normal controlsと他の独立ガードを保持した。
+- **L3:** v4の新DUMMY2試行は **08:10:09 JST** に2 PASS / 0 FAIL / 0 NOT、source不変。typed field @- のordinary here-stringはegress、quoted JSON heredocは全3 hookの実dispatchと許可を確認し、GH local stubの期待marker以外のHEAD / refs / index / objects / files / markersは不変だった。実GH workflow dispatch / authentication / transportは行っていない。追加のfile-backed @- 1試行はAPI cyber refusalでBash / hook前に停止し、状態不変だった。再試行せずNOT_EXERCISEDとして残し、egressの実dispatch成功へ数えない。v3の5試行 / 4 PASS / 1 PS4 API cyber refusal NOTは履歴であり、v4へ加算しない。PS4の拒否は再試行せず、v4のPS4 / callback実dispatchは未確認として残す。
+
+候補版のPS4 writer3 / ANSI unknown / 間接参照printf / 登録callbackの漏れ、stat branchのfs import欠落による実在a.txtのFORBIDDEN→UNKNOWN、clean.env / public.patch不存在の試験前提、GH @- unknownをFORBIDDENとした理由精度、ordinary here-string / JSON heredocの過剰拒否も保存した。登録callbackは固定351でも通過した旧取り残しであり、候補版が新しく実通信を可能にしたとの主張はしない。採取器の全環境値過剰記録は最小contextへ訂正し、runnerの実行開始時と終了時whole-file SHAの違いは、CASES外の実行コード同一性と最終固定runnerの再取得で分離した。
+
+旧 R20 の4124件、80契約、3実入口PASSは履歴であり、変更 source の証拠には持ち越さない。新 head の required CI、両 fresh review の指摘0、未解決 thread0を別に要求し、merge は行わない。
 
 ## R20: 修正の条件・結果・例外
 

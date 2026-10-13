@@ -18,6 +18,128 @@ function singleGit(source) {
   return analysis.gits[0];
 }
 
+test('R21 reconstructed Git daemon retains server roles and consumed help DATA', () => {
+  const server = inspect("g''it daemon --export-all .").gits[0];
+  assert.equal(server.sub, 'daemon');
+  assert.deepEqual(server.args.map(w => w.text), ['--export-all', '.']);
+  assert.equal(server.outboundRole.terminal, false);
+  assert.equal(inspect('git daemon -h').gits[0].outboundRole.terminal, true);
+  const consumed = inspect('git daemon --listen --help .').gits[0].outboundRole;
+  assert.equal(consumed.terminal, false);
+  assert.equal(consumed.values[0].word.text, '--help');
+  assert.equal(inspect('git daemon -- --help').gits[0].outboundRole.afterDD, true);
+});
+
+test('R21 send-email separates operand candidates, recipient DATA and no-send mode', () => {
+  const role = inspect('git send-email --to --help .env').gits[0].outboundRole;
+  assert.equal(role.terminal, false);
+  assert.equal(role.values[0].word.text, '--help');
+  assert.equal(role.files[0].text, '.env');
+  assert.equal(inspect('git send-email --dry-run .env').gits[0].outboundRole.noSend, true);
+  assert.equal(inspect('git send-email -h').gits[0].outboundRole.terminal, true);
+  // These are operand roles; filesystem proof and sending decisions belong to L2.
+});
+
+test('R21 filter source keeps its raw span and does not turn consumed usage text into a query', () => {
+  const role = inspect("git filter-branch --setup 'c''url DUMMY' HEAD").gits[0].outboundRole;
+  assert.equal(role.terminal, false);
+  assert.equal(role.values[0].option, 'setup');
+  assert.equal(role.values[0].word.raw, "'c''url DUMMY'");
+  assert.equal(inspect('git filter-branch --setup -h HEAD').gits[0].outboundRole.terminal, false);
+  assert.equal(inspect('git filter-branch -h').gits[0].outboundRole.terminal, true);
+});
+
+test('R21 PS4 is stored DATA until the next command is traced', () => {
+  const idle = inspect("PS4='$(printf DUMMY)'; :");
+  assert.deepEqual(idle.problems, []);
+  const traced = inspect("PS4='$(printf DUMMY)'; set -x; :");
+  assert.equal(traced.invocations.find(i => i.name === 'set').traceModeBefore, false);
+  assert.equal(traced.invocations.at(-1).traceModeBefore, true);
+  assert.equal(traced.invocations.at(-1).tracePromptWord.text, '$(printf DUMMY)');
+  assert.ok(traced.problems.some(p => p.includes('PS4')));
+});
+
+test('R21 trace disable is evaluated after its own old-prompt trace', () => {
+  const a = inspect("PS4='$(printf DUMMY)'; set -x; set +x; :");
+  assert.deepEqual(a.invocations.filter(i => i.name === 'set').map(i => i.traceModeBefore), [false, true]);
+  assert.equal(a.invocations.at(-1).traceModeBefore, false);
+  assert.ok(a.problems.some(p => p.includes('PS4')));
+  const disabled = inspect("set +o xtrace; PS4='$(printf DUMMY)'; :");
+  assert.deepEqual(disabled.problems, []);
+});
+
+test('R21 child xtrace flags keep their actual ordering', () => {
+  for (const [cmd, expected] of [
+    ["bash -x +x -c :", false], ["bash +x -x -c :", true],
+    ["bash -o xtrace +o xtrace -c :", false], ["bash +o xtrace -o xtrace -c :", true],
+  ]) assert.equal(inspect(cmd).invocations[0].shellXtrace, expected, cmd);
+});
+
+test('R21 child PS4 selection requires export and honors actual env removal', () => {
+  const unexported = inspect("PS4='$(printf DUMMY)'; bash -x -c :").invocations.at(-1);
+  const exported = inspect("export PS4='$(printf DUMMY)'; bash -x -c :").invocations.at(-1);
+  const cleared = inspect("export PS4='$(printf DUMMY)'; env -u PS4 bash -x -c :").invocations.at(-1);
+  assert.deepEqual(unexported.tracePromptEnvSources, []);
+  assert.equal(exported.tracePromptEnvSources[0].word.text, '$(printf DUMMY)');
+  assert.deepEqual(cleared.tracePromptEnvSources, []);
+});
+
+test('R21 promptvars setters differ from queries and use command ordering', () => {
+  const off = inspect("shopt -u promptvars; PS4='$(printf DUMMY)'; set -x; :");
+  const query = inspect("PS4='$(printf DUMMY)'; shopt -q promptvars; set -x; :");
+  assert.equal(off.invocations.at(-1).promptVarsBefore, false);
+  assert.deepEqual(off.problems, []);
+  assert.equal(query.invocations.at(-1).promptVarsBefore, true);
+  assert.ok(query.problems.some(p => p.includes('PS4')));
+});
+
+test('R21 subshell trace mode is isolated and function-local PS4 restores its source', () => {
+  const isolated = inspect("(set -x); PS4='$(printf DUMMY)'; :");
+  assert.equal(isolated.invocations.at(-1).traceModeBefore, false);
+  assert.deepEqual(isolated.problems, []);
+  const restored = inspect("PS4='$(printf DUMMY)'; f() { local PS4='+ local '; set -x; :; }; f; :");
+  assert.equal(restored.invocations.at(-1).tracePromptWord.text, '$(printf DUMMY)');
+  assert.ok(restored.problems.some(p => p.includes('PS4')));
+});
+
+test('R21 direct printf prompt writer keeps selected code and ordinary prompt distinct', () => {
+  const code = inspect("printf -v PS4 '%s' '$(printf DUMMY)'; set -x; :");
+  const ordinary = inspect("printf -v PS4 '%s' '+ ordinary '; set -x; :");
+  assert.equal(code.invocations.at(-1).tracePromptWord.text, '$(printf DUMMY)');
+  assert.ok(code.problems.some(p => p.includes('PS4')));
+  assert.deepEqual(ordinary.problems, []);
+});
+
+test('R21 PS4 append retains the prior prompt source', () => {
+  const appended = inspect("PS4='$(printf DUMMY)'; PS4+=ordinary; set -x; :");
+  assert.equal(appended.invocations.at(-1).tracePromptWord.text, '$(printf DUMMY)ordinary');
+  assert.ok(appended.problems.some(p => p.includes('PS4')));
+  assert.deepEqual(inspect("PS4='+ '; PS4+=ordinary; set -x; :").problems, []);
+});
+
+test('R21 nameref assignment and printf target invalidate selected prompt proof', () => {
+  for (const writer of ["R='$(printf DUMMY)'", "printf -v R '%s' '$(printf DUMMY)'"]) {
+    const a = inspect('declare -n R=PS4; PS4=ordinary; ' + writer + '; set -x; :');
+    assert.equal(a.invocations.at(-1).tracePromptWord, null);
+    assert.ok(a.problems.some(p => p.includes('PS4')));
+  }
+});
+
+test('R21 undecoded ANSI-C prompt is unknown rather than a false safe sentinel', () => {
+  const a = inspect("PS4=$'\\u0024(echo DUMMY)'; set -x; :");
+  assert.ok(a.invocations.at(-1).tracePromptWord.ansiCUnknown);
+  assert.ok(a.problems.some(p => p.includes('PS4')));
+});
+
+test('R21 selected trap trace-state uncertainty stays distinct from ordinary callbacks and queries', () => {
+  const changed = inspect("trap 'PS4=$(printf DUMMY); set -x' USR1; kill -USR1 $$; :");
+  assert.ok(changed.problems.length);
+  for (const cmd of ["trap 'echo ordinary' USR1; :", 'trap - USR1; trap -p; :',
+    "trap 'PS4=ordinary' USR1; :", "trap 'set -x' USR1; :"]) {
+    assert.deepEqual(inspect(cmd).problems, [], cmd);
+  }
+});
+
 test('R20 identity selection requires export; later export preserves the original producer span', () => {
   const source = 'GIT_AUTHOR_NAME="$(cat .env)"; git commit -m ordinary';
   assert.deepEqual(singleGit(source).gitIdentitySources, []);

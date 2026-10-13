@@ -1310,7 +1310,7 @@ const affectsGitEnvironment = (name) => /^GIT_/.test(name) || CONFIG_ROOT_ENV.ha
 const GIT_IDENTITY_ENV = new Set(['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE',
   'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL']);
 const GIT_PAGER_ENV = new Set(['GIT_PAGER', 'PAGER']);
-const TRACKED_VALUE_ENV = new Set([...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV]);
+const TRACKED_VALUE_ENV = new Set([...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, 'PS4']);
 /** A stored shell value enters a child environment only with a selected export attribute. */
 function identityEnvironmentSources(state) {
   return new Map([...state.identitySources].flatMap(([name, word]) => {
@@ -1320,10 +1320,14 @@ function identityEnvironmentSources(state) {
 }
 /** A child receives the invocation's selected environment, not unexported shell values. */
 function childIdentityState(sources) {
+  const childSources = new Map([...sources].map(([name, word]) => [name,
+    word && (!word.dynamic || typeof word.literalValue === 'string') ? word : null]));
+  const childExports = new Map([...sources.keys()].map(name => [name, true]));
+  if (!childSources.has('PS4')) {
+    childSources.set('PS4', { text: '+ ', dynamic: false }); childExports.set('PS4', false);
+  }
   return {
-    identitySources: new Map([...sources].map(([name, word]) => [name,
-      word && (!word.dynamic || typeof word.literalValue === 'string') ? word : null])),
-    identityExports: new Map([...sources.keys()].map(name => [name, true])),
+    identitySources: childSources, identityExports: childExports, promptRefNames: new Set(),
   };
 }
 /** Shell declaration options stop at the first operand; later strings are variable names or values. */
@@ -1472,6 +1476,7 @@ function shellInvocation(args, name) {
   let unknown = false;
   let interactive = null;
   let privileged = false;
+  let xtrace = false;
   let posix = name === 'sh';
   let posixExplicit = false;
   let k = 0;
@@ -1530,10 +1535,12 @@ function shellInvocation(args, name) {
         if (ch === 'o' && option?.text === 'posix' && !option.dynamic) {
           posix = t[0] === '-'; posixExplicit = true;
         }
+        if (ch === 'o' && option?.text === 'xtrace' && !option.dynamic) xtrace = t[0] === '-';
         break;
       } else {
         if (ch === 'i') interactive = t[0] === '-';
         if (ch === 'p') privileged = t[0] === '-';
+        if (ch === 'x') xtrace = t[0] === '-';
         if (t[0] === '-' && ch === 'c') commandMode = true;
         if (t[0] === '-' && ch === 's') stdin = true;
       }
@@ -1551,7 +1558,8 @@ function shellInvocation(args, name) {
     : stdin ? args.slice(k) : operand ? args.slice(k + 1) : [];
   return { scripts, commandMode, readsStdin, unknown, positionals,
     interactive: unknown ? null : interactive === null && (commandMode || !readsStdin) ? false : interactive,
-    privileged: unknown ? null : privileged, posix: unknown ? null : posix, posixExplicit };
+    privileged: unknown ? null : privileged, posix: unknown ? null : posix, posixExplicit,
+    xtrace: unknown ? null : xtrace };
 }
 
 /** Detect Git text that a shell can expose after tokenization, without executing its input. */
@@ -1737,6 +1745,28 @@ function sourceChangesValues(inner) {
   });
 }
 
+/** A registered callback can change later prompt execution without returning through linear state. */
+function sourceTraceEffects(inner) {
+  const effects = { prompt: false, trace: false, promptvars: false };
+  for (const entry of inner.invocations) {
+    const builtin = entry.wrapperNames.every(name => ['command', 'builtin'].includes(name));
+    if (!builtin || entry.nonExec || entry.definitionName) continue;
+    const prompt = entry.tracePromptWord;
+    const literal = prompt && !prompt.ansiCUnknown ? (typeof prompt.literalValue === 'string' ? prompt.literalValue :
+      !prompt.dynamic ? prompt.text : null) : null;
+    if (literal === null || /[$`]/.test(literal)) effects.prompt = true;
+    if (entry.assignments.includes('PS4') && (!entry.name || SPECIAL_BUILTINS.has(entry.name))) effects.prompt = true;
+    if (EXPORT_LIKE.has(entry.name) && !declarationOptions(entry.args).some(option => /^-[A-Za-z]*p[A-Za-z]*$/.test(option)) &&
+        entry.args.some(word => scalarAssignment(word)?.name === 'PS4')) effects.prompt = true;
+    if (entry.name === 'printf' && printfValueEffect(entry.args).targetWord?.text === 'PS4') effects.prompt = true;
+    if (entry.name === 'read' && readEnvironmentTargets(entry.args).targets.some(word => word.text === 'PS4')) effects.prompt = true;
+    if (entry.name === 'getopts' && entry.args[1]?.text === 'PS4') effects.prompt = true;
+    if (entry.name === 'set' && xtraceSet(entry.args, false) !== false) effects.trace = true;
+    if (entry.name === 'shopt' && promptvarsSet(entry.args, false) !== false) effects.promptvars = true;
+  }
+  return effects;
+}
+
 /** Reuse an exact quoted scalar proof without rewriting the shell word or evaluating its contents. */
 function literalScalarWord(word, state) {
   const variable = /^([A-Za-z0-9_./=:-]*)"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"$/.exec(word.raw);
@@ -1769,6 +1799,96 @@ function functionAutoExportSet(args, before) {
     }
   }
   return mode;
+}
+
+/** set's option region changes tracing; queries and positional DATA do not. */
+function xtraceSet(args, before) {
+  let mode = before;
+  for (let k = 0; k < args.length; k++) {
+    const word = args[k], text = word.text;
+    if (text === '--' || text === '-' || !/^[+-]/.test(text) && !word.dynamic) break;
+    if (word.dynamic || !/^[+-][A-Za-z]+$/.test(text)) return null;
+    for (let p = 1; p < text.length; p++) {
+      if (text[p] === 'x') mode = text[0] === '-';
+      if (text[p] === 'o') {
+        if (p + 1 < text.length) return null;
+        const option = args[k + 1];
+        if (option?.dynamic) return null;
+        if (option && !/^[+-]/.test(option.text)) {
+          if (option.text === 'xtrace') mode = text[0] === '-';
+          k++;
+        }
+        break;
+      }
+    }
+  }
+  return mode;
+}
+
+/** Only an actual shopt setter changes prompt expansion; print/query names stay DATA. */
+function promptvarsSet(args, before) {
+  let mode = before, setter = null, query = false, k = 0;
+  for (; k < args.length; k++) {
+    const word = args[k];
+    if (word.text === '--' && !word.dynamic) { k++; break; }
+    if (!word.dynamic && !word.text.startsWith('-')) break;
+    if (word.dynamic || !/^-[supq]+$/.test(word.text)) return null;
+    for (const flag of word.text.slice(1)) {
+      if (flag === 's') setter = true;
+      if (flag === 'u') setter = false;
+      if ('pq'.includes(flag)) query = true;
+    }
+  }
+  if (query || setter === null) return mode;
+  for (const word of args.slice(k)) {
+    if (word.dynamic) return null;
+    if (word.text === 'promptvars') mode = setter;
+  }
+  return mode;
+}
+
+/** These Git operations have argv-selected sources or repository egress outside inspection. */
+function gitOutboundRole(g) {
+  if (!['send-email', 'filter-branch', 'daemon'].includes(g.sub)) return null;
+  const role = { operation: g.sub, terminal: false, files: [], values: [], noSend: false,
+    unknown: Boolean(g.incomplete || g.dynamicOpt), afterDD: false };
+  // A sole -h is a terminal usage operation. --help can invoke an external manual viewer.
+  if (g.args.length === 1 && !g.args[0].dynamic && g.args[0].text === '-h' && !role.unknown) {
+    role.terminal = true; return role;
+  }
+  const required = g.sub === 'send-email' ? ['to', 'cc', 'bcc', 'from', 'subject', 'in-reply-to',
+    'reply-to', 'smtp-server', 'smtp-server-port', 'smtp-user', 'smtp-pass', 'smtp-domain',
+    'smtp-encryption', 'smtp-ssl-cert-path', 'smtp-debug', 'smtp-auth', 'smtp-batch-size',
+    'smtp-relog-delay', 'sendmail-cmd', 'to-cmd', 'cc-cmd', 'header-cmd', 'confirm', 'suppress-cc',
+    'transfer-encoding', 'compose-encoding', '8bit-encoding', 'identity'] :
+    g.sub === 'filter-branch' ? ['setup', 'env-filter', 'tree-filter', 'index-filter', 'parent-filter',
+      'msg-filter', 'commit-filter', 'tag-name-filter', 'subdirectory-filter', 'original', 'state-branch'] :
+      ['listen', 'port', 'user', 'group', 'base-path', 'interpolated-path', 'pid-file', 'init-timeout',
+        'timeout', 'max-connections', 'access-hook', 'enable', 'disable', 'allow-override', 'forbid-override'];
+  const flags = g.sub === 'send-email' ? ['dry-run', 'quiet', 'chain-reply-to', 'thread', 'no-thread',
+    'signed-off-by-cc', 'no-signed-off-by-cc', 'suppress-from', 'no-suppress-from', 'compose',
+    'annotate', 'no-annotate', 'validate', 'no-validate', 'no-xmailer', 'xmailer', 'force'] :
+    g.sub === 'filter-branch' ? ['force', 'prune-empty', 'remap-to-ancestor'] :
+      ['verbose', 'syslog', 'inetd', 'detach', 'reuseaddr', 'strict-paths', 'base-path-relaxed',
+        'export-all', 'informative-errors', 'no-informative-errors'];
+  for (let k = 0; k < g.args.length; k++) {
+    const word = g.args[k], text = typeof word.literalValue === 'string' ? word.literalValue : word.text;
+    if (word.dynamic && typeof word.literalValue !== 'string' || word.dynamicMaySplit || word.globExpanded || word.braceExpanded || word.tildeExpanded) role.unknown = true;
+    if (!role.afterDD && text === '--') { role.afterDD = true; continue; }
+    if (!role.afterDD && text.startsWith('-')) {
+      const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
+      if (text.startsWith('--') && required.includes(option)) {
+        const value = eq < 0 ? g.args[++k] : commitInlineValue(word, word, text.slice(eq + 1), eq + 1);
+        role.values.push({ option, word: value });
+        if (['sendmail-cmd', 'to-cmd', 'cc-cmd', 'header-cmd'].includes(option)) role.unknown = true;
+        if (!value || value.dynamic && typeof value.literalValue !== 'string' || value.dynamicMaySplit) role.unknown = true;
+      } else if (text.startsWith('--') && flags.includes(option) && eq < 0 || g.sub === 'filter-branch' && text === '-f') {
+        if (option === 'dry-run') role.noSend = true;
+      } else role.unknown = true;
+    } else if (g.sub === 'send-email') role.files.push(word);
+    else role.values.push({ option: 'operand', word });
+  }
+  return role;
 }
 
 /** Read set's positional operands without confusing option queries or consumed -o names with argv. */
@@ -1885,8 +2005,8 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), identitySources: new Map(), identityExports: new Map() });
-  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports) });
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), identitySources: new Map([['PS4', { text: '+ ', dynamic: false }]]), identityExports: new Map([['PS4', false]]), promptRefNames: new Set(), xtrace: false, promptvars: true, localShellOptions: false });
+  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports), promptRefNames: new Set(s.promptRefNames) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
       scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
@@ -1911,6 +2031,13 @@ function inspect(cmd, options = {}) {
     initial.identityExports = selected.identityExports;
   }
   const sourcePlaceholder = (name) => ({ definitionName: name, redirs: [], heredocBodies: [], functionBody: null });
+  const initial = stateFor(parsed.scope);
+  if (Object.prototype.hasOwnProperty.call(options, 'initialTraceMode')) initial.xtrace = options.initialTraceMode;
+  if (Object.prototype.hasOwnProperty.call(options, 'initialPromptVars')) initial.promptvars = options.initialPromptVars;
+  if (options.initialPromptEnvPresent) { initial.identitySources.set('PS4', null); initial.identityExports.set('PS4', true); }
+  for (const source of options.initialPromptSources || []) if (source.name === 'PS4') {
+    initial.identitySources.set('PS4', source.word); initial.identityExports.set('PS4', true);
+  }
   const seedFunctionNames = (names, add) => {
     if (!Array.isArray(names)) return;
     for (const name of names) {
@@ -2010,6 +2137,13 @@ function inspect(cmd, options = {}) {
       }
     }
     const env = new Set(state.env);
+    const promptWord = state.identitySources.has('PS4') ? state.identitySources.get('PS4') : { text: '+ ', dynamic: false };
+    const promptLiteral = promptWord && !promptWord.ansiCUnknown ? (typeof promptWord.literalValue === 'string' ? promptWord.literalValue :
+      !promptWord.dynamic ? promptWord.text : null) : null;
+    if (!c.definitionName && state.xtrace !== false && state.promptvars !== false &&
+        (promptLiteral === null || /[$`]/.test(promptLiteral))) {
+      res.problems.push('active xtrace が展開する PS4 prompt の保存 source・置換・実行条件を検査できない');
+    }
     const identitySources = identityEnvironmentSources(state);
     const helperEnv = new Set(state.helperEnv);
     const exportedFunctions = new Set(state.exportedFunctions);
@@ -2043,6 +2177,8 @@ function inspect(cmd, options = {}) {
     }
     const cdBefore = state.cd || info.cdLike;
     const shell = SHELLS.has(info.name) ? shellInvocation(info.args, info.name) : null;
+    const shellXtrace = shell && helperEnv.has('SHELLOPTS') && shell.privileged !== true && ['bash', 'sh'].includes(info.name)
+      ? shell.xtrace === true ? true : null : shell?.xtrace;
     if (shell && !shell.posixExplicit && (helperEnv.has('SHELLOPTS') || helperEnv.has('POSIXLY_CORRECT'))) shell.posix = null;
     const importedFunctionNames = [...new Set([...exportedFunctions, ...environmentFunctions.values()])];
     const builtin = info.wrapperNames.every((name) => name === 'command' || name === 'builtin');
@@ -2064,6 +2200,10 @@ function inspect(cmd, options = {}) {
       helperEnvNames: [...helperEnv],
       gitIdentitySources: [...identitySources].filter(([name]) => GIT_IDENTITY_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitPagerEnvSources: [...identitySources].filter(([name]) => GIT_PAGER_ENV.has(name)).map(([name, word]) => ({ name, word })),
+      traceModeBefore: state.xtrace, tracePromptWord: promptWord,
+      promptVarsBefore: state.promptvars,
+      tracePromptEnvSources: [...identitySources].filter(([name]) => name === 'PS4').map(([name, word]) => ({ name, word })),
+      shellXtrace,
       exportedFunctionNames: importedFunctionNames, exportedFunctionUnknown: exportedFunctionUnknown || environmentFunctionUnknown.size > 0,
       pathChangedBefore: pathChanged || state.searchChanged,
       unknownContextBefore: state.unknownContext,
@@ -2127,7 +2267,7 @@ function inspect(cmd, options = {}) {
       }
       seedScope(body.scope, env, cdBefore, { ...state, helperEnv, pathChanged,
         exportedFunctions, exportedFunctionUnknown, environmentFunctions, environmentFunctionUnknown,
-        localNames: new Set(), positionals: knownPositionals(info.args), positionalsTainted: !!info.incomplete });
+        localNames: new Set(), localShellOptions: false, positionals: knownPositionals(info.args), positionalsTainted: !!info.incomplete });
       for (const evaluation of selectedFunction.evaluations || []) checkEvaluation(evaluation, stateFor(body.scope));
       for (const redir of selectedFunction.redirs) {
         for (const evaluation of redir.word.evaluations || []) checkEvaluation(evaluation, stateFor(body.scope));
@@ -2145,6 +2285,9 @@ function inspect(cmd, options = {}) {
         for (const name of after.exportedFunctions) state.exportedFunctions.add(name);
         state.exportedFunctionUnknown ||= after.exportedFunctionUnknown;
         state.functionAutoExport = after.functionAutoExport;
+        state.xtrace = after.localShellOptions && state.xtrace !== after.xtrace ? null : after.xtrace;
+        state.promptvars = after.promptvars;
+        for (const name of after.promptRefNames) if (!local(name)) state.promptRefNames.add(name);
         for (const [environment, name] of after.environmentFunctions) if (!local(environment)) state.environmentFunctions.set(environment, name);
         for (const environment of after.environmentFunctionUnknown) if (!local(environment)) state.environmentFunctionUnknown.add(environment);
         state.cd ||= after.cd;
@@ -2170,6 +2313,9 @@ function inspect(cmd, options = {}) {
     const declOptions = declaration ? declarationOptions(info.args) : [];
     const declarationQuery = ['declare', 'typeset', 'local'].includes(info.name) &&
       declOptions.some((option) => /^-[A-Za-z]*p[A-Za-z]*$/.test(option));
+    if (builtin && c.scope.functionBody && info.name === 'local' && info.args.some(word => !word.dynamic && word.text === '-')) {
+      state.localShellOptions = true; // Bash versions differ; an altered trace mode is not a restoration proof.
+    }
     const exported = builtin && declaration ? functionExportSelection(info.name, info.args) : null;
     if (exported) {
       for (const name of exported.names) state.exportedFunctions.add(name);
@@ -2188,6 +2334,10 @@ function inspect(cmd, options = {}) {
         declOptions.some((option) => /^-[A-Za-z]*n[A-Za-z]*$/.test(option))) {
       state.valuesTainted = true;
       for (const name of state.identitySources.keys()) state.identitySources.set(name, null);
+      for (const word of info.args.slice(declOptions.length)) {
+        const name = /^([A-Za-z_][A-Za-z0-9_]*)(?:=|$)/.exec(word.text)?.[1];
+        if (name) state.promptRefNames.add(name);
+      }
     }
     const valueWords = c.words.filter((word) => info.assignRaws.includes(word.raw))
       .concat(declaration && !declarationQuery ? info.args : []);
@@ -2197,13 +2347,22 @@ function inspect(cmd, options = {}) {
       const valueConditional = conditional || (!!info.name && prefix);
       const canRemember = prefix ? ((!info.name && !info.dynamicName && !info.wrapped) || info.persistsEnv ||
         (builtin && SPECIAL_BUILTINS.has(info.name))) : persistentValues;
+      if (assignment && canRemember && state.promptRefNames.has(assignment.name)) state.identitySources.set('PS4', null);
       if (assignment && canRemember && TRACKED_VALUE_ENV.has(assignment.name)) {
         const prior = state.identityExports.get(assignment.name) ?? false;
         const selected = state.functionAutoExport === true ? true : state.functionAutoExport === false ? prior : prior === true ? true : null;
         state.identityExports.set(assignment.name, conditional && prior !== selected ? null : selected);
         const value = literalScalarWord(word, expansionState);
-        state.identitySources.set(assignment.name, conditional ? null :
-          commitInlineValue(value, value, value.text.slice(assignment.name.length + 1), assignment.name.length + 1));
+        const prefixLength = assignment.name.length + (assignment.name === 'PS4' && assignment.append ? 2 : 1);
+        let selectedWord = commitInlineValue(value, value, value.text.slice(prefixLength), prefixLength);
+        if (assignment.name === 'PS4' && assignment.append) {
+          const previous = state.identitySources.get('PS4');
+          const literal = w => w && (typeof w.literalValue === 'string' ? w.literalValue : !w.dynamic ? w.text : null);
+          const priorValue = literal(previous), addedValue = literal(selectedWord);
+          selectedWord = typeof priorValue === 'string' && typeof addedValue === 'string' ?
+            { ...selectedWord, text: priorValue + addedValue, literalValue: priorValue + addedValue, dynamic: false } : null;
+        }
+        state.identitySources.set(assignment.name, conditional ? null : selectedWord);
       }
       if (!assignment) {
         if (integerDeclaration && /^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) state.integers.add(word.text);
@@ -2273,6 +2432,7 @@ function inspect(cmd, options = {}) {
       if (info.name === 'read') {
         const read = readEnvironmentTargets(info.args);
         if (read.unknown) {
+          state.identitySources.set('PS4', null);
           // An unresolved target can replace config roots or command lookup, even for a later Git read.
           for (const root of CONFIG_ROOT_ENV) state.env.add(root);
           for (const name of HELPER_SOURCE_ENV) state.helperEnv.add(name);
@@ -2287,12 +2447,14 @@ function inspect(cmd, options = {}) {
         }
       }
       if (info.args.some((word) => word.dynamic)) { state.valuesTainted = true; state.associatives.clear(); }
+      if (info.name === 'unset' && info.args.some(word => word.dynamic)) state.identitySources.set('PS4', null);
       if (!info.args.length && info.name === 'read') state.values.set('REPLY', null);
       for (const word of info.args) {
         const target = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(word.text);
         if (!target) continue;
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('builtin が評価する配列の添字を検査できない');
         const identityTarget = info.name !== 'read' || readEnvironmentTargets(info.args).targets.includes(word);
+        if (info.name === 'read' && identityTarget && state.promptRefNames.has(target[1])) state.identitySources.set('PS4', null);
         if (identityTarget && TRACKED_VALUE_ENV.has(target[1])) {
           if (info.name === 'unset' && !conditional) { state.identitySources.delete(target[1]); state.identityExports.delete(target[1]); }
           else state.identitySources.set(target[1], null);
@@ -2311,8 +2473,15 @@ function inspect(cmd, options = {}) {
         res.problems.push('printf -v の代入先が不明で、配列の添字で評価する source を検査できない');
       }
       if (target) {
+        if (state.promptRefNames.has(target[1])) state.identitySources.set('PS4', null);
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('printf -v が評価する配列の添字を検査できない');
         if (GIT_IDENTITY_ENV.has(target[1])) state.identitySources.set(target[1], null);
+        if (target[1] === 'PS4') {
+          const offset = info.args[0].text === '-v' ? 2 : 1;
+          const format = invocation.args[offset], value = invocation.args[offset + 1];
+          state.identitySources.set('PS4', !conditional && format && !format.dynamic && format.text === '%s' &&
+            invocation.args.length === offset + 2 ? value : null);
+        }
         state.values.set(target[1], null);
         state.pathProofs.delete(target[1]);
         if (affectsGitEnvironment(target[1])) state.env.add(target[1]);
@@ -2325,7 +2494,9 @@ function inspect(cmd, options = {}) {
       const targetWord = info.args[1];
       const target = targetWord && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(targetWord.text);
       for (const name of ['OPTARG', 'OPTIND', ...(target ? [target[1]] : [])]) {
+        if (state.promptRefNames.has(name)) state.identitySources.set('PS4', null);
         if (GIT_IDENTITY_ENV.has(name)) state.identitySources.set(name, null);
+        if (name === 'PS4') state.identitySources.set(name, null);
         state.values.set(name, null); state.pathProofs.delete(name);
         if (affectsGitEnvironment(name)) state.env.add(name);
         if (HELPER_SOURCE_ENV.has(name)) state.helperEnv.add(name);
@@ -2399,6 +2570,9 @@ function inspect(cmd, options = {}) {
         selectsLocalFunction({ text: evalWords.map((word) => word.text).join(' '), dynamic: false }));
     if (mediatedFunction) res.problems.push('文字列の実行 source が選ぶ既存の関数の状態・body・呼出し条件を引き継いで検査できない');
     if (builtin && name === 'set') {
+      const trace = xtraceSet(invocation.args.map(word => typeof word.literalValue === 'string' ?
+        { ...word, text: word.literalValue, dynamic: false, dynamicMaySplit: false } : word), state.xtrace);
+      state.xtrace = conditional && trace !== state.xtrace ? null : trace;
       const mode = functionAutoExportSet(info.args, state.functionAutoExport);
       state.functionAutoExport = conditional && mode !== state.functionAutoExport ? null : mode;
       const change = positionalSet(info.args);
@@ -2407,6 +2581,10 @@ function inspect(cmd, options = {}) {
         updatePositionals(state, c, change.unknown ? null : knownPositionals(words));
       }
       return; // Stored positional operands are data until an executable expansion uses them.
+    }
+    if (builtin && name === 'shopt') {
+      const mode = promptvarsSet(invocation.args, state.promptvars);
+      state.promptvars = conditional && mode !== state.promptvars ? null : mode;
     }
     if (builtin && name === 'shift') {
       const count = info.args.length ? info.args[0] : { text: '1', dynamic: false };
@@ -2419,6 +2597,14 @@ function inspect(cmd, options = {}) {
       for (const script of trap.scripts) {
         const inner = inspectMediatedSource(script, sourceDepth);
         if (inner.problems.length) res.problems.push(`trap の action を検査できない（${inner.problems[0]}）`);
+        const trace = sourceTraceEffects(inner);
+        if (trace.prompt) state.identitySources.set('PS4', null);
+        if (trace.trace) state.xtrace = null;
+        if (trace.promptvars) state.promptvars = null;
+        if ((trace.prompt || trace.trace || trace.promptvars) && state.xtrace !== false && state.promptvars !== false &&
+            (!state.identitySources.get('PS4') || /[$`]/.test(state.identitySources.get('PS4').text))) {
+          res.problems.push('registered trap が変更する PS4/xtrace/promptvars の callback state と後続の prompt source を検査できない');
+        }
         if (sourceChangesValues(inner)) state.valuesTainted = true;
         if (inner.invocations.some((entry) =>
           (entry.name === 'set' && positionalSet(entry.args)) ||
@@ -2493,7 +2679,7 @@ function inspect(cmd, options = {}) {
             const inner = parseShell(h.body);
             for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
             res.async = res.async || inner.async;
-            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
               environmentFunctions, environmentFunctionUnknown,
               functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                 .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -2509,7 +2695,7 @@ function inspect(cmd, options = {}) {
                 const inner = parseShell(r.word.text);
                 for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
                 res.async = res.async || inner.async;
-                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
                   environmentFunctions, environmentFunctionUnknown,
                   functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                     .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -2603,6 +2789,7 @@ function inspect(cmd, options = {}) {
       return;
     }
     g.incomplete = info.incomplete;
+    g.outboundRole = gitOutboundRole(g);
     if (info.nameWord.ansiCQuoted && g.sub && !g.terminal && !READ_ONLY_SUBS.has(g.sub) && !readOnlyGitMode(g)) {
       res.problems.push('ANSI-C 引用で作った git の名前からの書込みは、直接の git guard の対象と確かめられない');
       return;
