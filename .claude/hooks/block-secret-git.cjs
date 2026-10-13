@@ -289,11 +289,13 @@ function pagerCanRun(g, invocation) {
   return enabled;
 }
 
-/** Identify command-selecting environment variables on calls that may launch those helpers. */
+/** Identify unsupported configuration effects separately from selected helper environment variables. */
 function helperVariable(g, invocation) {
+  const config = guard.preCommitConfigKey(g);
+  if (config) return { kind: 'config', name: config };
   if (g.terminal) return null;
-  if (g.gitEnvNames.includes('GIT_EXTERNAL_DIFF') && externalDiffCanRun(g)) return 'GIT_EXTERNAL_DIFF';
-  if (g.gitEnvNames.includes('GIT_PAGER') && pagerCanRun(g, invocation)) return 'GIT_PAGER';
+  if (g.gitEnvNames.includes('GIT_EXTERNAL_DIFF') && externalDiffCanRun(g)) return { kind: 'env', name: 'GIT_EXTERNAL_DIFF' };
+  if (g.gitEnvNames.includes('GIT_PAGER') && pagerCanRun(g, invocation)) return { kind: 'env', name: 'GIT_PAGER' };
   return null;
 }
 
@@ -353,9 +355,10 @@ if (commits.length) {
     const invocation = insp.invocations.find((entry) => entry.order === g.invocationOrder);
     const variable = invocation && helperVariable(g, invocation);
     if (variable) {
+      const selected = variable.kind === 'config' ? `設定 key ${variable.name}` : `環境変数 ${variable.name}`;
       deny(
-        `commit 前の git に環境変数 ${variable} を設定しています。外部 helper が検査後の index を書き換えうるためブロックしました (fail-closed)。\n` +
-        'helper を無効にするか、読取コマンドと commit を別々のコマンドとして実行してください。',
+        `commit 前の git に ${selected} を指定しています。外部 source や設定の効果を確認できず、検査後の index が維持されるか判断できないため停止しました (fail-closed)。\n` +
+        '同じ目的・対象・条件を保てる場合だけ、設定を使う読取を commit と分け、後の commit で再検査してください。それ以外は owner に対象・操作・cwd・env/config/source と不明点を確認してください。個別操作の承認は hook 無効化の承認ではありません。',
       );
     }
     const grep = guard.grepPagerEffect(g);

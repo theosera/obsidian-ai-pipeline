@@ -290,3 +290,87 @@ test('editor capability consumes commit and merge argv values before recognizing
   assert.equal(merge('git merge -- --no-edit'), true);
   assert.equal(merge('git merge --no-edit $TOPIC'), true);
 });
+
+test('coproc reserved source stops while quoted/help/initializer DATA retains its role', () => {
+  const { parseShell } = require('../lib/git-guard-common.cjs');
+  for (const source of ['coproc printf DUMMY', 'coproc job { printf DUMMY; }',
+    '! coproc printf DUMMY', 'co\\\nproc printf DUMMY', 'printf %s "$(coproc printf DUMMY)"']) {
+    assert.deepEqual(parseShell(source).unsupportedSources.map(x => x.kind), ['coproc']);
+    assert.ok(inspect(source).problems.length > 0);
+  }
+  for (const source of ['help coproc', 'printf coproc', "'coproc' printf DUMMY",
+    'command coproc printf DUMMY', 'a=(coproc printf DUMMY); printf %s "${a[@]}"']) {
+    assert.deepEqual(parseShell(source).unsupportedSources, []);
+    assert.deepEqual(inspect(source).problems, []);
+  }
+});
+
+test('command terminator selects its executable while -v/-V stays a query', () => {
+  for (const source of ['command -- printf DUMMY', 'command -p -- printf DUMMY',
+    'command -- command -- printf DUMMY']) {
+    const analysis = inspect(source);
+    assert.deepEqual(analysis.problems, []);
+    assert.equal(analysis.invocations[0].name, 'printf');
+    assert.deepEqual(analysis.invocations[0].args.map(word => word.text), ['DUMMY']);
+  }
+  for (const source of ['command -v -- curl', 'command -V -- git', 'command -pv -- printf']) {
+    assert.equal(inspect(source).invocations[0].nonExec, true);
+    assert.deepEqual(inspect(source).gits, []);
+  }
+});
+
+test('unresolved named array and scalar executables stop while proven positional tuples remain supported', () => {
+  for (const source of ['a=(printf DUMMY); "${a[@]}"', 'a=(printf); "${a[0]}" DUMMY',
+    'EXE=printf; "$EXE" DUMMY', '"$(printf printf)" DUMMY']) {
+    const analysis = inspect(source);
+    assert.equal(analysis.invocations.at(-1).dynamicName, true);
+    assert.ok(analysis.problems.length > 0);
+  }
+  for (const source of ['set -- printf DUMMY; "$@"', 'set -- printf; "$1" DUMMY',
+    'set -- printf DUMMY; command -- "$@"']) {
+    const analysis = inspect(source);
+    assert.deepEqual(analysis.problems, []);
+    assert.equal(analysis.invocations.at(-1).name, 'printf');
+  }
+  assert.deepEqual(inspect('a=(printf); printf %s "${a[@]}"').problems, []);
+});
+
+test('hash-object distinguishes database writes, terminal help and consumed or terminated DATA', () => {
+  const { gitObjectInputDecision } = require('../lib/git-guard-common.cjs');
+  for (const [source, mode, writesObject] of [
+    ['git hash-object -t commit -w public.commit', 'write', true],
+    ['git hash-object -wtblob a.txt', 'write', true],
+    ['git hash-object -t -w a.txt', 'query', false],
+    ['git hash-object --path -w a.txt', 'query', false],
+    ['git hash-object -- -w', 'query', false],
+    ['git hash-object -- --help', 'query', false],
+    ['git hash-object --stdin --literally', 'query', false],
+    ['git hash-object -w --help', 'terminal', true],
+    ['git hash-object "$OPTION" a.txt', 'unknown', false],
+  ]) {
+    const git = singleGit(source);
+    const route = parseGitObjectRoute(git);
+    assert.equal(route.mode, mode);
+    assert.equal(route.writesObject, writesObject);
+    assert.equal(gitObjectInputDecision(git)?.category || null,
+      ['write', 'unknown'].includes(mode) ? 'UNKNOWN' : null);
+  }
+});
+
+test('pre-commit config metadata checks keys rather than values and exempts supported display and identity settings or stdout usage', () => {
+  const { preCommitConfigKey } = require('../lib/git-guard-common.cjs');
+  assert.equal(preCommitConfigKey(singleGit('git -c color.ui=false status')), null);
+  assert.equal(preCommitConfigKey(singleGit('git -c core.quotePath=false status')), null);
+  assert.equal(preCommitConfigKey(singleGit('git -c advice.statusHints=false status')), null);
+  assert.equal(preCommitConfigKey(singleGit('git -c user.name=core.editor status')), null);
+  assert.equal(preCommitConfigKey(singleGit('git --config-env=user.email=EDITOR status')), null);
+  assert.equal(preCommitConfigKey(singleGit('git -c diff.external=false status')), 'diff.external');
+  assert.equal(preCommitConfigKey(singleGit('git --config-env=core.pager=PAGER status')), 'core.pager');
+  assert.equal(preCommitConfigKey(singleGit('git -c core.editor=printf commit -h')), null);
+  const manual = inspect('git -c core.editor=printf commit --help').gits[0];
+  assert.equal(manual.terminal, true);
+  assert.equal(manual.helpKind, 'manual');
+  assert.equal(preCommitConfigKey(manual), 'core.editor');
+  assert.deepEqual(inspect('git -c author.name=DUMMY -c author.email=dummy@example.invalid -c committer.name=DUMMY -c committer.email=dummy@example.invalid commit -m DUMMY').problems, []);
+  assert.equal(preCommitConfigKey({ configs: ['=DUMMY'], configEnvs: [] }), '不明な config key');
+});

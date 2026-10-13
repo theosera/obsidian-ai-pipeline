@@ -437,6 +437,12 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=~/.test(cur.braceSource);
     delete cur.braceSource;
     if (cur.braceExpanded) { cur.dynamic = true; cur.dynamicMaySplit = true; }
+    // coproc is reserved syntax only in the original, unquoted command position.
+    // Its asynchronous body and optional name are outside the supported source/scope proof.
+    if (!redirNext && !scope.arrayInitializer && !cur.quoted && !cur.dynamic &&
+        cur.text === 'coproc' && atCmdPos(words)) {
+      (out.unsupportedSources ||= []).push({ kind: 'coproc', start: cur.start });
+    }
     if (!redirNext && !cur.quoted && !cur.dynamic && atCmdPos(words)) {
       const close = { if: 'fi', while: 'done', until: 'done', for: 'done', select: 'done', case: 'esac' }[cur.text];
       if (close) {
@@ -752,7 +758,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
 
 /** Parse shell source without executing it, retaining errors and isolated child scopes. */
 function parseShell(src) {
-  const out = { cmds: [], errors: [], scope: { parent: null }, async: false, evaluationUnknown: false };
+  const out = { cmds: [], errors: [], unsupportedSources: [], scope: { parent: null }, async: false, evaluationUnknown: false };
   parseSeq(src, 0, out, 0, false, out.scope);
   return out;
 }
@@ -847,6 +853,7 @@ const WRAPPERS = {
       if (/[vV]/.test(rest[k].text)) return -1; // command -v は実行しない
       k++;
     }
+    if (rest[k]?.text === '--' && !rest[k].dynamic) k++;
     return k;
   },
   builtin: () => 0,
@@ -1139,12 +1146,25 @@ const COMMAND_SEARCH_MUTATORS = new Set(['alias', 'unalias', 'hash', 'rehash', '
 // 設定の中には、git に別のプログラムを走らせるものがある。そのため、ここに無い鍵は
 // commit や add と同じコマンドでは検査できないとして拒む。足すときは、表示や名前だけを
 // 変える鍵に限る。
-const CONFIG_KEY_ALLOW = [/^core\.quotepath$/, /^color\./, /^advice\./, /^user\.name$/, /^user\.email$/];
+const CONFIG_KEY_ALLOW = [/^core\.quotepath$/, /^color\./, /^advice\./,
+  /^(?:user|author|committer)\.(?:name|email)$/];
 /** Extract the case-insensitive Git configuration key from a key=value argument. */
 const configKey = (v) => v.split('=')[0].toLowerCase();
 /** Only display and identity settings are safe beside staging or commit commands. */
 const configKeyAllowed = (v) => CONFIG_KEY_ALLOW.some((re) => re.test(configKey(v)));
 const STAGING_OR_COMMIT = new Set(['commit', 'add', 'stage']);
+
+/** Report unsupported per-invocation configuration keys; consumers select pre-commit order. */
+function preCommitConfigKey(g) {
+  if (g.terminal && g.helpKind === 'stdout') return null;
+  for (const entry of [...(g.configs || []), ...(g.configEnvs || [])]) {
+    if (typeof entry !== 'string') return '不明な config key';
+    const key = entry.split('=', 1)[0].toLowerCase();
+    if (!key || key.includes(DYN) || /[\r\n]/.test(key)) return '不明な config key';
+    if (!configKeyAllowed(key)) return key;
+  }
+  return null;
+}
 
 /** Match Git as a word rather than as a substring of names such as digit. */
 const hasGitText = (s) => /(^|[^a-z])git([^a-z]|$)/i.test(s);
@@ -1572,21 +1592,20 @@ function inspect(cmd, options = {}) {
   }
   const parsed = parseShell(cmd);
   if (parsed.evaluationUnknown) res.problems.push('Bash の実行する置換の source 境界を読みきれない');
+  if (parsed.unsupportedSources.some(source => source.kind === 'coproc')) {
+    res.problems.push('Bash coproc の非同期 source・実行条件は対応範囲外で、実行先と副作用を確認できません。同目的を保てる対応済みの同期形式がなければ、owner に対象・操作・cwd/env/config/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
+  }
   res.async = parsed.async;
   if (parsed.errors.length && gitContext) {
     res.problems.push(`コマンドの引用符や括弧が閉じていない（${parsed.errors[0]}）`);
   }
-  const assignRawsAll = [];
   const queue = parsed.cmds.map((c) => ({ c, origin: 'top' }));
   const resolved = [];
   for (let qi = 0; qi < queue.length; qi++) {
     const { c } = queue[qi];
     const info = resolveCommand(c.words);
     resolved.push({ c, info });
-    assignRawsAll.push(...info.assignRaws);
   }
-  // 代入の値に git の語がある（`G=git` のように、後で変数からコマンドを作りうる）。
-  const gitInAssign = assignRawsAll.some((raw) => hasGitText(raw.slice(raw.indexOf('=') + 1).replace(/['"\\]/g, '')));
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
@@ -1889,10 +1908,8 @@ function inspect(cmd, options = {}) {
     if (info.dynamicName) {
       if (info.executableExpansionUnknown) {
         res.problems.push('実行ファイル名に pathname・brace・tilde の展開があり、展開後の実行先と引数を確認できません。目的を保てる literal の実行ファイル名を使い、必要なら owner に対象・操作・cwd/env/config/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
-      } else if (wordHasGit(info.nameWord) || gitInAssign ||
-          info.args.some((w) => !w.dynamic && path.posix.basename(w.text) === 'git') ||
-          info.args.some((w) => !w.dynamic && RISKY_SUBS.has(w.text))) {
-        res.problems.push('コマンドの名前が変数や置換で作られていて、git かどうかを決められない');
+      } else {
+        res.problems.push('実行ファイル名が変数・置換・named array などの未確定の展開で作られていて、実行先と argv を確認できません。同目的を保てる literal の実行ファイル名と対応済み引数を使い、必要なら owner に対象・操作・cwd/env/config/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
       }
       return;
     }
@@ -2153,6 +2170,8 @@ function inspect(cmd, options = {}) {
       res.problems.push(`commit や add と同じコマンドの git に、pathspec の当て方を変える global option（${psf.pathspecFlags[0]}）がある`);
     }
     for (const g of res.gits) {
+      // Actual stdout usage does not execute the subcommand; other independent gates still apply.
+      if (g.terminal && g.helpKind === 'stdout') continue;
       const cfgs = g.configs.concat(g.configEnvs);
       if (cfgs.some((v) => v.includes(DYN))) {
         res.problems.push('commit や add と同じコマンドの git の -c / --config-env の値が変数や置換で作られていて、読みきれない');
@@ -2162,7 +2181,7 @@ function inspect(cmd, options = {}) {
       if (bad) {
         res.problems.push(
           `commit や add と同じコマンドの git の -c / --config-env の鍵（${configKey(bad)}）は、allowlist の外なので検査できない` +
-          '（使える鍵: core.quotepath・color.*・advice.*・user.name・user.email）',
+          '（使える鍵: core.quotepath・color.*・advice.*・user/author/committer の name/email）',
         );
         break;
       }
@@ -2752,8 +2771,58 @@ function readOnlyGitMode(g, allowHelp = true, scalarConfigOnly = false) {
   return (reader || (g.sub === 'branch' && positional === 0)) && !(scalarConfigOnly && g.sub === 'config' && mayPage);
 }
 
-/** Select supported notes/tag/stash queries and the file operands of object writers. */
+/** Classify hash-object option roles without executing input or configured filters. */
+function parseHashObjectRoute(g) {
+  let unknown = !!(g.incomplete || g.dynamicOpt);
+  let write = false;
+  let terminal = false;
+  let afterDD = false;
+  const flags = new Set(['stdin', 'no-stdin', 'stdin-paths', 'no-stdin-paths',
+    'filters', 'no-filters', 'literally', 'no-literally', 'no-path']);
+  const longNames = [...flags, 'path', 'help'];
+  const uncertain = word => !word || word.dynamic || word.dynamicMaySplit || word.ansiCUnknown ||
+    word.braceExpanded || word.globExpanded || word.tildeExpanded;
+  for (let i = 0; i < g.args.length; i++) {
+    const word = g.args[i];
+    const text = word.text;
+    if (uncertain(word)) unknown = true;
+    if (afterDD) continue;
+    if (text === '--') { afterDD = true; continue; }
+    if (text === '-h' || text === '--help') { terminal = true; break; }
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = longNames.filter(option => option.startsWith(name));
+      const option = longNames.includes(name) ? name : matches.length === 1 ? matches[0] : null;
+      if (!option) { unknown = true; continue; }
+      if (option === 'help') { terminal = true; if (eq >= 0) unknown = true; break; }
+      if (option === 'path') {
+        if (eq < 0 && uncertain(g.args[++i])) unknown = true;
+      } else if (eq >= 0) unknown = true;
+      continue;
+    }
+    if (text.startsWith('-') && text !== '-') {
+      for (let j = 1; j < text.length; j++) {
+        const option = text[j];
+        if (option === 'w') write = true;
+        else if (option === 'h') { terminal = true; break; }
+        else if (option === 't') {
+          if (j + 1 === text.length && uncertain(g.args[++i])) unknown = true;
+          break; // The rest of this bundle, or the next word, is the type value.
+        } else unknown = true;
+      }
+      if (terminal) break;
+    }
+  }
+  const mode = unknown ? 'unknown' : terminal ? 'terminal' : write ? 'write' : 'query';
+  return { mode, action: 'hash-object', writesObject: write, messageFiles: [],
+    messageFileUnknown: unknown, messageFileSelectionUnknown: unknown,
+    reason: mode === 'unknown' ? 'hash-object の argv・option 境界や object 書込みの選択を確認できない' : null };
+}
+
+/** Select supported object-route queries and the file operands of object writers. */
 function parseGitObjectRoute(g, parseMessages = parseCommitArgs) {
+  if (g.sub === 'hash-object') return parseHashObjectRoute(g);
   if (g.sub === 'stash') return parseStashRoute(g);
   if (!['notes', 'tag'].includes(g.sub)) return null;
   const words = g.args;
@@ -2877,6 +2946,7 @@ function gitObjectInputDecision(g) {
   if (!parsed || parsed.terminal || ['query', 'terminal'].includes(parsed.mode)) return null;
   const files = parsed.messageFiles;
   if (!objectRoute && Array.isArray(files) && files.length === 0 && !parsed.messageFileUnknown) return null;
+  if (objectRoute && g.sub === 'hash-object') return { category: 'UNKNOWN', reason: 'git hash-object の object database 書込み、または書込みを選べる未確定の argv は staged 検査の対象外で、blob/tree/commit/tag の入力内容・対象・実行条件を確認できません。hash-only 形式は書込みと同目的の代替ではありません。書込みが必要なら owner に対象・操作・cwd/env/config/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' };
   if (objectRoute && g.sub === 'stash') return { category: 'UNKNOWN', reason: 'git stash の snapshot・更新・未対応 action は staged 検査の対象外で、入力 tree/object/ref・内容・実行条件を確認できません。対応する static list/show/help 以外の操作が必要なら owner に対象・操作・cwd/env/config/source と不明点を確認してください。同目的の writer 代替は未対応で、個別操作の了承は hook 無効化の了承ではありません。' };
   if (!Array.isArray(files) || parsed.mode === 'unknown' || parsed.messageFileUnknown || parsed.messageFileSelectionUnknown ||
       g.incomplete || g.cdLikeBefore || g.unknownContextBefore || g.dynamicOpt) {
@@ -2902,6 +2972,7 @@ module.exports = {
   parseMergeMessageArgs,
   parseGitObjectRoute,
   gitObjectInputDecision,
+  preCommitConfigKey,
   messageFileSource,
   grepPagerEffect,
   parseAddArgs,

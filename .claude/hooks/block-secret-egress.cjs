@@ -492,20 +492,27 @@ function arrayReaderCallback(invocation) {
   return unknown;
 }
 
-/** A selected rsync remote shell is opaque local executable source; a proven local copy does not select it. */
-function rsyncRemoteHelper(invocation) {
-  if (invocation.name !== 'rsync') return false;
-  const values = new Set(['rsh', 'rsync-path', 'filter', 'include', 'exclude', 'include-from', 'exclude-from', 'files-from',
+// rsync uses popt: these value options can also appear after copy operands.
+// Destination and selected-helper inspection must consume exactly the same values.
+const RSYNC_VALUE_LONG = new Set(['rsh', 'rsync-path', 'filter', 'include', 'exclude', 'include-from', 'exclude-from', 'files-from',
     'compare-dest', 'copy-dest', 'link-dest', 'password-file', 'address', 'port', 'timeout', 'contimeout', 'bwlimit',
     'chown', 'chmod', 'usermap', 'groupmap', 'out-format', 'log-file', 'backup-dir', 'suffix', 'temp-dir', 'remote-option',
     'block-size', 'max-size', 'min-size', 'max-delete', 'modify-window', 'sockopts', 'skip-compress', 'compress-level']);
-  const flags = new Set(['archive', 'recursive', 'links', 'copy-links', 'copy-unsafe-links', 'safe-links', 'copy-dirlinks',
+const RSYNC_FLAG_LONG = new Set(['archive', 'recursive', 'links', 'copy-links', 'copy-unsafe-links', 'safe-links', 'copy-dirlinks',
     'keep-dirlinks', 'perms', 'executability', 'acls', 'xattrs', 'owner', 'group', 'devices', 'specials', 'hard-links',
     'times', 'omit-dir-times', 'super', 'fake-super', 'sparse', 'dry-run', 'whole-file', 'no-whole-file', 'one-file-system',
     'existing', 'ignore-existing', 'remove-source-files', 'delete', 'delete-before', 'delete-during', 'delete-delay',
     'delete-after', 'delete-excluded', 'ignore-errors', 'force', 'partial', 'delay-updates', 'checksum', 'update',
     'inplace', 'append', 'append-verify', 'relative', 'no-implied-dirs', 'dirs', 'quiet', 'verbose', 'progress', 'stats',
     'numeric-ids', 'human-readable', 'itemize-changes', 'cvs-exclude', 'ignore-times', 'size-only', 'ipv4', 'ipv6', 'list-only']);
+const RSYNC_VALUE_SHORT = 'efBMT';
+const RSYNC_FLAG_SHORT = 'avrlpgoDHtOUJSLkKNnWxuzqsIbcdRACEXyih46';
+
+/** A selected rsync remote shell is opaque local executable source; a proven local copy does not select it. */
+function rsyncRemoteHelper(invocation) {
+  if (invocation.name !== 'rsync') return false;
+  const values = RSYNC_VALUE_LONG;
+  const flags = RSYNC_FLAG_LONG;
   let selected = (invocation.helperEnvNames || []).includes('RSYNC_RSH');
   let unknown = Boolean(invocation.incomplete);
   let remote = false;
@@ -513,7 +520,7 @@ function rsyncRemoteHelper(invocation) {
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k];
     const text = typeof word.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word.text;
-    if (word.dynamic && typeof word.literalValue !== 'string' && !quotedAttachedOptionValue(word, text, 'efBMT', [...values]) ||
+    if (word.dynamic && typeof word.literalValue !== 'string' && !quotedAttachedOptionValue(word, text, RSYNC_VALUE_SHORT, [...values]) ||
         word.ansiCUnknown || word.globExpanded || word.braceExpanded) unknown = true;
     if (!afterDD && text === '--') { afterDD = true; continue; }
     if (!afterDD && ['--help', '--version'].includes(text)) return selected && unknown;
@@ -529,13 +536,13 @@ function rsyncRemoteHelper(invocation) {
     }
     if (!afterDD && text.startsWith('-')) {
       for (let p = 1; p < text.length; p++) {
-        if ('efBMT'.includes(text[p])) {
+        if (RSYNC_VALUE_SHORT.includes(text[p])) {
           if (text[p] === 'e') selected = true;
           const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
           if (value?.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
           break;
         }
-        if (!'avrlpgoDHtOUJSLkKNnWxuzqsIbcdRACEXyih46'.includes(text[p])) unknown = true;
+        if (!RSYNC_FLAG_SHORT.includes(text[p])) unknown = true;
       }
       continue;
     }
@@ -653,10 +660,13 @@ const CURL_FLAG_LONG = new Set([
 const CURL_LONG_NAMES = [...CURL_VALUE_LONG, ...CURL_FLAG_LONG];
 
 /** Recognize curl file payloads and opaque config input without reading either file. */
-function curlReadsUpload(words, incomplete = false) {
+function curlReadsUpload(words, incomplete = false, actualClient = false) {
+  // Additional words from splitting or pathname/brace expansion can introduce payload options,
+  // including from a value consumed by a visible option. Never infer the unseen argv from env.
+  if (actualClient && words.some(word => word.dynamic && word.dynamicMaySplit !== false || word.globExpanded || word.braceExpanded)) return 'UNKNOWN';
   // xargs/find can provide an unseen filename to a trailing file-reading option.
   const fileOptions = new Set(['upload-file', 'data', 'data-ascii', 'data-binary', 'json',
-    'header', 'proxy-header', 'data-urlencode', 'url-query', 'form', 'variable']);
+    'header', 'proxy-header', 'data-urlencode', 'url-query', 'form', 'variable', 'cookie']);
   const variables = new Map();
   let definitionVersion = 0;
   let unknownFileVersion = 0;
@@ -710,6 +720,7 @@ function curlReadsUpload(words, incomplete = false) {
   const payload = (option, value) => {
     if (option === 'config') return true; // config can supply upload options or a destination
     if (option === 'upload-file') return Boolean(value);
+    if (option === 'cookie') return Boolean(value) && !value.includes('=');
     if (['data', 'data-ascii', 'data-binary', 'json', 'header', 'proxy-header'].includes(option)) return value.startsWith('@');
     if (option === 'data-urlencode') return value.includes('@');
     // curl's url_query() selects raw '+' first, then data_urlencode() selects '=' before '@'.
@@ -721,13 +732,21 @@ function curlReadsUpload(words, incomplete = false) {
     const optionWord = words[k];
     const t = optionWord.text;
     if (t === '--') break;
+    // At an actual argv boundary a prefix-free scalar may be a URL or an upload/cookie flag.
+    // Known option values are consumed below and do not reach this boundary as option words.
+    if (actualClient && optionWord.dynamic && t.startsWith('\0')) return 'UNKNOWN';
     if (t.startsWith('--')) {
       const eq = t.indexOf('=');
       const fullName = t.slice(2, eq < 0 ? undefined : eq);
       const expanding = fullName.startsWith('expand-');
       const name = expanding ? fullName.slice(7) : fullName;
+      if (optionWord.dynamic && name.includes('\0')) {
+        const prefix = name.split('\0')[0];
+        if ('cookie'.startsWith(prefix) || prefix.startsWith('cookie')) return 'UNKNOWN';
+      }
       if (optionWord.dynamic && /^url-(?:query)?\0/.test(name)) return 'UNKNOWN';
       const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter((option) => option.startsWith(name));
+      if (matches.length !== 1 && matches.includes('cookie')) return 'UNKNOWN';
       if (matches.length !== 1 || !CURL_VALUE_LONG.has(matches[0])) continue;
       const option = matches[0];
       if (option === 'config') return 'UNKNOWN';
@@ -737,18 +756,28 @@ function curlReadsUpload(words, incomplete = false) {
         const source = expanding ? expanded(value.text) : { text: value.text, file: false };
         const verdict = !incomplete && knownWord(optionWord) && knownWord(value) && !source.unknown &&
           (option !== 'url-query' || name === option) ? 'FORBIDDEN' : 'UNKNOWN';
+        // Cookie's '=' proves inline syntax only within one actual scalar argument. Its file form
+        // reads local bytes; unknown/split input must never be mistaken for empty or inline DATA.
+        if (option === 'cookie' && ((value.dynamic && value.dynamicMaySplit !== false) ||
+            value.globExpanded || value.braceExpanded || value.tildeExpanded || value.ansiCUnknown ||
+            source.unknown || (!source.file && source.text.includes('\0') && !source.text.includes('=')))) return 'UNKNOWN';
         // A scalar '+' or '=' proves inline query syntax; an unknown prefix or argv count does not.
         if (option === 'url-query' && ((value.dynamic && value.dynamicMaySplit !== false) ||
             (!source.file && !source.text.startsWith('+') && !source.text.includes('=') && source.text.includes('\0')))) return 'UNKNOWN';
         if (expanding && outbound.has(option) && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) return verdict;
         if ((source.file && outbound.has(option)) || payload(option, source.text)) return verdict;
-      } else if (incomplete && fileOptions.has(option)) return 'UNKNOWN';
+      } else if (option === 'cookie' || incomplete && fileOptions.has(option)) return 'UNKNOWN';
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
+        if (actualClient && optionWord.dynamic && t[p] === '\0') return 'UNKNOWN';
         const option = CURL_VALUE_SHORT[t[p]];
         if (!option) continue;
         if (option === 'config') return 'UNKNOWN';
         const value = p + 1 < t.length ? { ...optionWord, text: t.slice(p + 1) } : words[++k];
+        if (option === 'cookie' && !value) return 'UNKNOWN';
+        if (option === 'cookie' && value && ((value.dynamic && value.dynamicMaySplit !== false) ||
+            value.globExpanded || value.braceExpanded || value.tildeExpanded || value.ansiCUnknown ||
+            (value.text.includes('\0') && !value.text.includes('=')))) return 'UNKNOWN';
         if (value ? payload(option, value.text) : incomplete && fileOptions.has(option)) {
           return !incomplete && knownWord(optionWord) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
         }
@@ -808,31 +837,47 @@ function wgetReadsUpload(words) {
 
 /** Extract copy operands without mistaking an SSH/proxy option value for a destination. */
 function remoteCopyDestination(invocation) {
-  const shortValues = { scp: 'cDFiJloPSX', sftp: 'BcDFiJloPRSs', rsync: 'efBMT' };
-  const longValues = new Set(['rsh', 'rsync-path', 'filter', 'include', 'exclude', 'include-from', 'exclude-from',
-    'files-from', 'compare-dest', 'copy-dest', 'link-dest', 'password-file', 'address', 'port', 'timeout',
-    'contimeout', 'bwlimit', 'chown', 'chmod', 'usermap', 'groupmap', 'out-format', 'log-file',
-    'backup-dir', 'suffix', 'temp-dir']);
+  const shortValues = { scp: 'cDFiJloPSX', rsync: RSYNC_VALUE_SHORT };
+  const shortFlags = { scp: '346ABCOpqRrsTv', rsync: RSYNC_FLAG_SHORT };
+  const longValues = invocation.name === 'rsync' ? RSYNC_VALUE_LONG : new Set();
+  const longFlags = invocation.name === 'rsync' ? RSYNC_FLAG_LONG : new Set();
+  const literal = word => Boolean(word && !word.ansiCUnknown && !word.globExpanded && !word.braceExpanded && !word.tildeExpanded &&
+    (knownWord(word) || typeof word.literalValue === 'string' && word.dynamicMaySplit === false));
+  const textOf = word => typeof word.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word.text;
   const operands = [];
+  let unknown = Boolean(invocation.incomplete);
   let afterDD = false;
   for (let k = 0; k < invocation.args.length; k++) {
-    const t = invocation.args[k].text;
+    const word = invocation.args[k];
+    const t = textOf(word);
+    if (!literal(word) && !quotedAttachedOptionValue(word, t, shortValues[invocation.name], [...longValues])) unknown = true;
     if (!afterDD && t === '--') { afterDD = true; continue; }
     if (!afterDD && t.startsWith('--')) {
       const eq = t.indexOf('=');
-      if (eq < 0 && longValues.has(t.slice(2))) k++;
+      const name = t.slice(2, eq < 0 ? undefined : eq);
+      if (['help', 'version'].includes(name) && eq < 0 && !unknown) return false;
+      if (longValues.has(name)) {
+        const value = eq < 0 ? invocation.args[++k] : { ...word, text: t.slice(eq + 1) };
+        if (!value || value.dynamicMaySplit && value.dynamic || value.globExpanded || value.braceExpanded) unknown = true;
+      } else if (!longFlags.has(name) || eq >= 0) unknown = true;
       continue;
     }
-    if (!afterDD && t.startsWith('-')) {
+    if (!afterDD && t.startsWith('-') && t !== '-') {
       for (let p = 1; p < t.length; p++) {
-        if (shortValues[invocation.name].includes(t[p])) { if (p === t.length - 1) k++; break; }
+        if (shortValues[invocation.name].includes(t[p])) {
+          const value = p + 1 < t.length ? { ...word, text: t.slice(p + 1) } : invocation.args[++k];
+          if (!value || value.dynamicMaySplit && value.dynamic || value.globExpanded || value.braceExpanded) unknown = true;
+          break;
+        }
+        if (!shortFlags[invocation.name].includes(t[p])) unknown = true;
       }
       continue;
     }
-    operands.push(invocation.args[k]);
+    operands.push(word);
   }
   const destination = operands[operands.length - 1];
-  return destination && destinationArg(destination.text) ? knownWord(destination) ? 'FORBIDDEN' : 'UNKNOWN' : false;
+  if (unknown || !literal(destination) || operands.length < 2) return 'UNKNOWN';
+  return destinationArg(textOf(destination)) ? 'FORBIDDEN' : false;
 }
 
 /** Identify an executable network verb using parsed command names, never names printed as data. */
@@ -1181,12 +1226,19 @@ function collectNetworkInvocations(inspection, depth = 0) {
   for (const g of inspection.gits) {
     const decision = guard.gitObjectInputDecision(g);
     if (decision) deny(decision.reason, gitVerdict(g, decision.category));
+    if (g.sub === 'difftool' && !g.terminal) {
+      deny('Git difftool の extcmd・既定 tool・env/config が選ぶ外部実行 source と副作用を検査できません。helper を呼ばない対応済み diff が同目的・同条件を保てる場合に検討し、保てなければ owner に確認してください。' + UNKNOWN_OWNER_GATE);
+    }
     if (gitEditorCanRun(g)) {
       deny('Git の message / sequence editor を呼べる操作で、実際に編集を抑止する対応済み argv 条件を確認できません。既定・env/config override の editor source は内部を検査できません。同目的を保つ actual inline/file/reuse message や no-edit 形式を検討し、保てなければ owner に対象・操作・cwd/env/config/source を確認してください。個別操作の承認は hook 無効化の承認ではありません。');
     }
     const pager = guard.grepPagerEffect(g);
     const beforeCommit = activeCommits.some(commit => !Number.isInteger(g.invocationOrder) ||
       !Number.isInteger(commit.invocationOrder) || g.invocationOrder <= commit.invocationOrder);
+    const configKey = beforeCommit && guard.preCommitConfigKey(g);
+    if (configKey) {
+      deny(`commit 前または当該 commit の Git config key (${configKey}) が選ぶ実行条件・外部 source と index の維持を検査できません。key 自体を危険と断定したものではありません。対応済みの表示・identity key 以外の override を除いて同目的・同条件を保てなければ owner に確認してください。` + UNKNOWN_OWNER_GATE);
+    }
     if (beforeCommit && (pager.opensFiles || pager.unknown)) {
       deny('commit 前の git grep が開く外部 pager または argv/source の選択を検査できず、index の維持を確認できません。pager を開かない対応済みの同目的形式にできなければ owner に対象・操作・cwd/env/config/source を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
     }
@@ -1241,10 +1293,13 @@ function collectNetworkInvocations(inspection, depth = 0) {
 
 /** Return a typed refusal for the same executable egress shapes, including uninspectable source variants. */
 function parsedExfil(invocation) {
+  // xargs/find can supply both the operation and every payload argument. Even a visible
+  // query/help word cannot prove what the generated argv will select for these clients.
+  if (invocation.incomplete && ['curl', 'wget', 'gh'].includes(invocation.name)) return 'UNKNOWN';
   let verdict = false;
   if (invocation.name === 'gh') verdict = invocation.args[0]?.text === 'gist' ?
     knownWord(invocation.args[0]) ? 'FORBIDDEN' : 'UNKNOWN' : ghApiUpload(invocation);
-  if (invocation.name === 'curl') verdict = curlReadsUpload(invocation.args, invocation.incomplete);
+  if (invocation.name === 'curl') verdict = curlReadsUpload(invocation.args, invocation.incomplete, true);
   if (invocation.name === 'wget') verdict = wgetReadsUpload(invocation.args);
   if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
   // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.

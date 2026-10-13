@@ -83,7 +83,13 @@ R12 の実行 source 条件では、既定 editor も含めて editor の起動�
 
 同じ R12 で、どの実行名でも active glob / brace / tilde 展開を検査不能として止め、実際の mapfile / readarray `-C` callback、Bash `/dev/tcp` / `/dev/udp` redirection、remote rsync の `-e` / `--rsh` / RSYNC_RSH も停止する。download でも helper はローカルで動き得る。callback-free 読取、単なる印字 DATA、helper が使われないと確認した local rsync は別の対照である。動的 Git config writer の key / action と、push が選ぶ include 設定も UNKNOWN とする。正確な literal `>&1` / `>&-` の FD 操作と `/dev/null` 出力は index への file 書込みと区別し、`>1` / `&>1`、未知 target や group の別条件は引き続き停止する。
 
-R12 の試験結果は、その source で取得した L1 / L2 / L3 の記録で確認する。下記ガイドの R11 測定や過去の CLI dispatch の成功を、新しい条件の実測として持ち越さない。
+R13 は、実 coproc の非同期 source、未確定の動的 executable（named array tuple / element、scalar 等）、hash-object の全 `-w` object database 書込み、active difftool の外部 source を UNKNOWN とする。引数のない query / actual help、literal 実行名の DATA、既に対応する proven positional executable は別の対照である。`command --` は実 option terminator を正しく消費して child executable を検査する精度修正であり、新しい一律禁止ではない。`command -v` / `-V` の query は実行と区別する。
+
+network 側では incomplete な curl / wget / gh の生成 argv、curl の bare dynamic option / URL・語分割 / glob / brace、rsync / scp の未確定 destination / operand 数を UNKNOWN とする。直接の対応 query、確定 local copy、curl の対応 option が消費する quoted scalar DATA 等は別扱い。curl `-b` / `--cookie` の nonempty かつ `=` を含まない実値は file 入力であり、確定 argv / context の file-upload 禁止を適用する。empty / inline `key=value` と、option 名を印字する DATA を file 入力にしない。
+
+commit 前と当該 commit の Git `-c` / `--config-env` は、対応する `core.quotePath` / `color.*` / `advice.*`、user / author / committer の name / email、実 stdout terminal usage を除き UNKNOWN とする。旧 common の staging / commit を含む Bash 全体に対する key 条件も独立して残るため、未対応 override を commit 後へ移すだけでは許可にならない。false 値・未使用に見える key・設定 query の名前だけで効果がないとは推定しない。既存 alias / include / hook / root 等の停止も解除しない。
+
+試験結果は、その source で取得した L1 / L2 / L3 の記録で確認する。下記ガイドの R11 / R12 測定や過去の CLI dispatch の成功を、R13 の新しい条件の実測として持ち越さない。
 
 停止理由の `[禁止]` は確認した policy 禁止、`[判断不能]` は対象・設定・source などの必要情報不足を表す。raw pattern の一致だけで実際の秘密送信を確認したとは扱わない。無出力も操作全体の安全認証や owner 承認ではなく、範囲外の経路を保護済みと記録しない。対応済みの代替がない操作は対象・実行条件・不明点を owner に確認し、hook の無効化や別の場所での実行を自動的な代替にしない。
 

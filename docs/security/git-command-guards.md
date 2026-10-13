@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の R12 で採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。R11 の取得時刻・source を付した測定は履歴として残し、R12 の実測と区別する。
+この文書は PR #191 の R13 で採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。R11 / R12 の取得時刻・source を付した測定は履歴として残し、R13 の実測と区別する。
 
 ## 判定の意味
 
@@ -33,7 +33,7 @@
 | MCP | この 3 本の担当なし | 接続先と別の permission / owner approval gate が必要。担当が確認できない経路は未被覆 |
 | 起動後の子プログラム内部・任意の設定ファイル内の処理 | 個別の hook は付かない | 選択して解析する source 以外を包括的に検査しない。担当が確認できない処理は未被覆 |
 
-設定の `if` 記述だけから、任意の入力での実 dispatch を推測しない。旧 a464 時点の CLI 2.1.296 の実入口 3 例では、引用した `g''it` の例も含めて全 3 wrapper が起動した。条件付き 2 本が省略されたという証拠ではない。この観測を R11 / R12 の新 source、全変形入力や他版へ一般化せず、対応する変形経路は常時 Bash の egress 自身の停止も fixture の `denyBy` で確認する。hook に直接 JSON を渡す fixture 自体は dispatch の証明ではなく、L3 の代表実測と分ける。
+設定の `if` 記述だけから、任意の入力での実 dispatch を推測しない。旧 a464 時点の CLI 2.1.296 の実入口 3 例では、引用した `g''it` の例も含めて全 3 wrapper が起動した。条件付き 2 本が省略されたという証拠ではない。この観測を R11 / R12 / R13 の新 source、全変形入力や他版へ一般化せず、対応する変形経路は常時 Bash の egress 自身の停止も fixture の `denyBy` で確認する。hook に直接 JSON を渡す fixture 自体は dispatch の証明ではなく、L3 の代表実測と分ける。
 
 方式は全面的な command allowlist ではない。危険な操作を検出する条件と、その近傍で必要情報を確認できなければ止める条件を置く。任意の Bash、external executable の実体、呼び出したプログラム内部をすべて評価できるとはしない。
 
@@ -85,6 +85,22 @@ FD / device 行以外の担当条件は常時 Bash の egress でも検査する
 | heredoc の body / suffix source 境界 | delimiter の unquoted backslash + LF は両方を除去し、引用された delimiter とは判定しない。他の引用・escape・body 条件を保持 | 境界や選択 source が不明な protected route は既存 UNKNOWN。line continuation 自体を新禁止にしない | malformed / 未対応境界を持つ protected script。対応 continuation の通常入力を保つ | 同じ delimiter / body / suffix の意味を保つ対応形式へ。意味を確定できなければ source と不明境界を owner へ | delimiter text / quotedness、body 展開、後続 invocation の保存 | continuation の後続禁止を取りこぼさず、対応 body DATA / 後続 ordinary command を過剰停止しない | R12 未測定 |
 | shell が選ぶ executable | どの実行位置でも active glob / brace / tilde による executable 選択を停止。quoted literal executable と argument 側の展開は別役割 | filesystem を列挙して推測せず UNKNOWN。Git らしい綴りの有無に限定しない | `/usr/bin/g?t`、brace / tilde で実行名を作る通常 command | 実体と同じ目的を確認した対応 literal executable へ。解決できなければ実行対象・cwd / env / argv を owner へ | executable expansion marker、wrapper 位置、quoted literal / argument DATA | active executable UNKNOWN / quoted literal・argument 対照。egress 必須 | R12 未測定 |
 | remote rsync の local helper | actual `-e` / `--rsh` / RSYNC_RSH と remote / local operand を確認。download でも helper は local 実行 source | helper を選ぶ remote rsync、または helper / remote 条件が未確定なら UNKNOWN。確認済み local-only copy の未使用 selector はこの条件の対象外 | custom RSH での download / remote query、未知 operand | 同目的を満たす確認済み local copy の場合だけ対応形式へ。remote helper 自体が必要なら source・対象・argv・cwd / env / config を owner へ | helper selector scope、option arity と consumed DATA、remote operand | remote helper UNKNOWN / local unused helper・actual help / version 対照。egress 必須 | R12 未測定 |
+
+### R13 の追加条件と精度修正
+
+対応範囲・判定・通常作業への影響・出口を担当への指示で先に定め、その後に実装を分けた。scope JSON と refinement の記録は後から集約したものもあり、その記録時刻を最初の方針決定時刻と読み替えない。pre-commit config の identity-only 案は、既存の表示 DATA を維持する条件へ候補段階で修正した。表の試験欄は検査する役割と対照であり、R13 の全 suite / API / L3 の合格数ではない。
+
+| 守る対象 | 対応範囲・必要条件 | FORBIDDEN / UNKNOWN | 止まる通常作業 | 対応済みの代替・owner への出口 | L1: 意味・metadata | L2: permission と理由 | L3: 実入口・副作用 |
+|---|---|---|---|---|---|---|---|
+| coproc の非同期 source と副作用 | 元の command 位置の unquoted reserved word としての実 coproc。simple / optional name / group を通常 argv DATA と区別 | Git らしい文字列の有無や benign body によらず UNKNOWN。async の実行条件・source は未対応 | 普通の coprocess job、array reader を並列にする script | 同目的・同条件を保つ場合だけ対応 synchronous 形式。async 自体が必要なら source・対象・cwd / env / config・副作用を owner へ | reserved marker と quoted / help / array assignment DATA | actual coproc UNKNOWN / 印字・help・inert array DATA 対照。egress 必須 | 実 coproc 1 回を UNKNOWN で停止。egress のみ起動、DUMMY 状態・object inventory 不変 |
+| command wrapper の child と argv | 実 `command` の認識済み option の後の `--` を消費し child を解析。実 `-v` / `-V` は nonexecuting query | literal `--` 自体は新 UNKNOWN / 禁止ではない。復元 child の既存禁止・UNKNOWN を適用 | この精度修正による新しい一律停止なし。child 自身の禁止操作は停止 | 同目的の literal child / 対応 argv を維持。不明条件が残れば対象と source を owner へ | terminator、`-p` / query、child name / args | reconstructed Git / curl 禁止と ordinary / query DATA 対照。egress 担当も確認 | `command -- git status --short` 1 回成功。egress のみ起動、状態・object inventory 不変 |
+| 動的 executable の実行 identity | 未確定 scalar / named-array element・tuple / slice / indirect expansion は一般評価しない。既存 proven positional tuple / scalar の対応 proof は維持 | すべての unresolved dynamic executable は UNKNOWN。raw Git / network らしい綴りに限定しない | ordinary command を変数・named array から起動する script | 同じ executable / argv と確認できる場合だけ対応 literal へ。一般 array / source が必要なら対象・argv・cwd / env / config を owner へ | dynamicName と cardinality、proven positional、assignment / printf argument DATA | named-array / scalar executable UNKNOWN / literal DATA・proven positional 対照。egress 必須 | named-array 実行 1 回を UNKNOWN で停止。3 本起動、DUMMY 状態・object inventory 不変 |
+| hash-object の object database | 実 `-w` の全 object 書込みと、書込みを選び得る不明 argv。`-t` / `--path` の消費値、`--`、stdin / literally と static hash-only / actual help を区別 | blob / tree / commit / tag、公開入力を含む全 write / unknown mode は UNKNOWN | 通常の blob 保存、stdin object 作成、raw object writer | no-write hashing は write と目的が異なり自動代替にしない。必要な write は input / object 対象・argv・cwd / env / config / source を owner へ | object route mode、actual write vs consumed DATA / operand | write / unknown UNKNOWN、static no-write / help 対照。secret-git と egress 必須 | `git hash-object -w a.txt` 1 回を UNKNOWN で停止。3 本起動、未登録の新しい DUMMY 内容を用い object inventory 不変 |
+| difftool の external source | active difftool は extcmd / 既定 tool / env / config を含む外部 source。確定 actual help は別役割 | ordinary difftool も内部と副作用を検査できず UNKNOWN | 公開 file 同士の通常 difftool、既定 tool の diff viewer | 同目的・同条件を保てる場合だけ helper を呼ばない対応 diff。viewer が必要なら source・対象・cwd / env / config を owner へ | active / terminal と option arity | active difftool UNKNOWN / static actual help・ordinary diff 対照。egress 必須 | active difftool 1 回を UNKNOWN で停止。3 本起動、marker / 状態不変。同 revision 対照なので逃げた場合の helper 起動は実証しない |
+| curl cookie の local file 入力 | 実 `-b` / `--cookie` の nonempty かつ `=` を含まない値は filename。empty / inline key=value と consumed DATA を区別 | 確定した対応 argv / context の file-upload は FORBIDDEN。未知 prefix / source / cardinality は UNKNOWN | 公開 cookie file の利用、動的 cookie input | 同目的・同条件を保つ確認済み非秘密 inline DATA の場合だけ対応形式。file input 自体が必要なら source・target・env / config を owner へ | option value、empty / `=` / file、variable provenance | cookie file FORBIDDEN / unknown UNKNOWN / empty・inline・消費値 DATA 対照 | R13 の実入口は未測定。L1 補助 / 直接入力と区別 |
+| network client の生成 argv と curl 境界 | incomplete な curl / wget / gh は未見の argv / payload を含む。curl actual boundary の bare dynamic prefix・語分割 / glob / brace も検査不能 | visible upload flag がなくても incomplete client は UNKNOWN。curl の未確定 option / URL role・追加 argv も UNKNOWN | xargs / find で生成する普通の query、bare `$URL` / `$OPTIONS`、展開 argv の client | 同目的・条件を保つ場合だけ直接の対応 fixed argv。対応 option の quoted scalar DATA 等は対照。生成条件が必要なら source・対象・argv・cwd / env / config を owner へ | incomplete marker、actual option vs consumed scalar、terminator / cardinality | generated query UNKNOWN / direct query・quoted header DATA・固定 https scalar prefix・実 `--` 後 quoted scalar URL 対照。egress 必須 | R13 の実入口は未測定。L1 補助 / 直接入力と区別 |
+| rsync / scp の実 destination | option value を消費して残る actual operands の最後を宛先とする。shared rsync long / short value arity を揃え cardinality を確認 | 確定 remote destination の禁止は FORBIDDEN。未知 destination / operand 数・未対応 option / missing value は UNKNOWN | 変数 / split source・destination の copy、未対応 copy option | 同目的が確認済み local copy の場合だけ対応 literal argv。remote transfer 自体が必要なら対象・宛先・argv・helper・cwd / env / config を owner へ | actual last operand、trailing option value、colon-shaped consumed DATA | unknown destination / cardinality UNKNOWN / known remote FORBIDDEN / local・消費値 DATA 対照。RSH 条件も独立 | R13 の実入口は未測定。L1 補助 / 直接入力と区別 |
+| commit に関わる Git config の実行条件 / index | pre-commit と当該 commit の `-c` / `--config-env` key を共有 API で検査。対応 display key、6 identity、実 stdout usage は例外。旧 whole-chain key 条件も独立 | 対応外 / 不明 key は UNKNOWN。false / unused / 設定 query という名称だけでは効果なしと推定しない | 未対応設定を伴う query と commit、configured commit。post-commit 移動だけでも旧条件で停止し得る | 同目的・条件を保つ対応 unconfigured / supported-key 形式へ。分離するなら後の index を再検査。設定自体が必要なら対象・source・cwd / env / config を owner へ | key vs value / env、pre-commit order、stdout vs manual help | unsupported config UNKNOWN / display・6 identity・stdout 対照。alias / include / hook / root 等は維持。egress 必須 | 対応 color 設定 + inline commit 1 回成功。3 本起動、a.txt のみと期待する tree / commit objects を記録 |
 
 pipeline の filename 判定は参照できた operand に基づく。任意 reader の内部、実行時 cwd / 設定 / filesystem のすべてを解決した証明ではない。通常名や `/bin` / `/usr/bin` の対応 reader でも、内容が非秘密だと認証する検査ではない。SSH や API client の parsed name の判定も、任意 executable の実体と内部動作を認証するものではない。
 
@@ -193,6 +209,38 @@ secret-git の index 維持条件では、literal `2>&1` / `>&-` は FD 複製 /
 
 動的 config writer の key / action は、送信先や helper 設定を選び得るため UNKNOWN とする。確定した protected destination key の禁止、対応 static public setter / getter、option に消費される DATA は分ける。push の明示 include source を UNKNOWN とする条件は egress の担当を明示する追加防御である。review で示された exact `git -c include.path=... push ...` は旧 source の共通解析でも既に全 guard が停止しており、その例を新しい抜け穴の成立証拠とは扱わない。
 
+### R13 の coproc / command / 動的 executable
+
+coproc は元の unquoted command 位置で予約語として選ばれる場合を止める。非同期 body の source / 実行先 / 副作用が未対応であるため、benign な単純 command、名前付き、group のいずれも UNKNOWN とする。`help coproc`、印字、quoted argument、実行しない array initializer の DATA を予約語と混同しない。同期形式へ変更すると並列性や入出力が変わる場合は、同目的の代替として自動採用しない。
+
+`command -- git ...` では実 `--` を wrapper の terminator として消費し、その後の child と argv を既存 policy で判定する。`-p` 等の認識済み wrapper option と、nonexecuting `-v` / `-V` query を区別する。`--` 自体を禁止する修正ではなく、通常の literal child の過剰停止と protected child の取りこぼしを直す。同じ文字列が printf / message の消費値なら child command ではない。
+
+未確定 dynamic executable は綴りの推測で許可しない。named array tuple / element / slice / indirect expansion や scalar の一般状態・argv 数は証明できず UNKNOWN。assignment と、literal printf の argument に渡した array DATA は実行名と別の役割で扱う。既存の対応 proof で解決した positional executable tuple / scalar は維持するが、それを一般 named-array evaluator へ広げない。
+
+### R13 の object writer と difftool
+
+[git-hash-object の `-w`](https://git-scm.com/docs/git-hash-object)は object database に実際に書き込む。blob を含む全 write、`--stdin` の write、または write 選択が未確定な argv を UNKNOWN とする。staged inventory にない object 内容・対象・実行条件は確認できない。`-t` / `--path` の消費値や `--` 後の filename を実 `-w` と混同せず、対応 static no-write query / actual help は区別する。no-write の hash 計算は保存操作と目的が異なるため、writer を止めたときの自動代替にはしない。hash-only が通ることも、filter / object 内容や任意設定内部の安全認証ではない。
+
+active `git difftool` は、明示 extcmd がなくても既定 tool / env / config による外部 source を選べるため UNKNOWN とする。ordinary public file の viewer も停止し、対応 static actual help は別役割とする。対応 diff を案内できるのは、helper が不要で同じ対象・目的・実行条件を維持できる場合に限る。viewer 自体が必要なら owner に外部 source と対象・条件を渡す。
+
+### R13 の cookie / client argv / copy destination
+
+[curl の `-b` / `--cookie`](https://curl.se/docs/manpage.html#-b)では、nonempty で `=` のない実値を local filename として扱う。`-` は stdin 入力、empty は cookie engine のみ、inline `key=value` は DATA と区別する。確定した対応 argv / context の file-input 形は既存の upload 禁止として FORBIDDEN、未知 prefix / file provenance / 引数個数は UNKNOWN。ファイルが存在する、有効 cookie が送られるという成立確認ではない。macOS curl 8.7 の native 照合で未対応だった `--cookie=...` の形を、同版で file 読取が成立した証拠にはしない。
+
+xargs / find 等による incomplete curl / wget / gh は、見えていない argv が option・payload を追加できるため、visible upload flag がなくても UNKNOWN とする。普通の generated query も停止し、direct な対応 fixed query は別対照である。見えている argv に help と書かれていても、incomplete な実 client を一律 query と推定しない。
+
+curl の actual argv 境界で bare な未知 `$URL` / `$OPTIONS` 等は、option と URL の役割を選び得るため UNKNOWN。語分割 / glob / brace による追加 argv も停止する。対応 `--header "$H"` の quoted scalar 消費値、固定 https prefix の scalar URL、実 `--` 後の quoted scalar URL は、この新しい境界条件の対照である。quoted scalar を通すことは、値・宛先・内容や default client 設定の安全認証ではない。他の file-input 禁止や source / context の UNKNOWN は独立して残る。
+
+rsync / scp は option value を除いた actual operands の最後を destination として判定する。未知 source / destination の語分割や expansion、missing value、未対応 option、引数個数が不明なら UNKNOWN。rsync の trailing `--block-size` 等の value を宛先と誤認せず、colon-shaped option DATA と actual remote destination を区別する。確定した remote destination は既存の禁止、確認済み local destination は他条件下の対照である。remote RSH の local helper 条件も独立して適用する。
+
+### R13 の pre-commit config と既存 whole-chain 条件
+
+shared `preCommitConfigKey` は、Git の `-c` / `--config-env` の key と value / env 名を区別する。consumer は active commit より前と当該 commit の順序で検査する。例外は対応する `core.quotePath` / `color.*` / `advice.*`、user / author / committer の各 name / email、実 terminal stdout usage である。表示 key を維持する根拠は、[Git 公式 config 文書](https://git-scm.com/docs/git-config)の pathname quoting・色・optional advice の役割と、既存対応条件である。初期 identity-only 案のまま既存 display DATA をさらに止める方針は採用していない。
+
+その他 / 不明 key は UNKNOWN。false 値、未使用に見える helper、read query の名称だけから実行効果・index 維持を証明しない。対応 metadata の value に helper 名が書かれたときは、それを key や executable source と混同しない。API の例外は global permission ではなく、alias / include / hook / root / target / env / source の独立した停止を解除しない。
+
+旧 common には staging / commit を含む Bash 全体の key 条件もある。consumer が pre-commit order を見ることと、この旧条件は別であり、対応外 `-c` を commit 後に移すだけでは許可にならない。review の exact `git -c diff.external=./x.sh diff; git commit -m m` は df / c7 / d684 の全 3 guard でも停止していた。R13 ではこの例を新穴と数えず、config key と env の分類・共有 API・担当理由の整合を明確にする。設定を外す / operation を分離する出口も、同目的・同条件を保てる場合だけであり、後続 commit の index は改めて検査する。
+
 ## 停止したときの出口
 
 まず、禁止対象が確定したのか、必要情報が不足したのかを理由と入力から確認する。UNKNOWN は、危険な操作が成立したと断定した記録ではない。
@@ -203,9 +251,17 @@ secret-git の index 維持条件では、literal `2>&1` / `>&-` は FD 複製 /
 
 ## 試験を 3 層に分ける
 
-R12 は上記の条件ごとに L1 の意味、L2 の ALLOW / FORBIDDEN / UNKNOWN と担当、L3 の実 dispatch と副作用を別々に確認する。方針決定時点の R12 全 suite・API 契約・L3 は未取得だった。後から取得した R12 の結果と、取得時刻・source を固定した R11 の履歴を以下に分ける。
+上記の条件ごとに L1 の意味、L2 の ALLOW / FORBIDDEN / UNKNOWN と担当、L3 の実 dispatch と副作用を別々に確認する。新しい source の結果を取得するまで、過去の合格数や dispatch を持ち越さない。
 
-### R12 の凍結 source に対する測定
+### R13 の測定欄
+
+2026-10-13 14:15:51 JST の凍結 source 直接入力 suite は **3250/3250、broken 0、source hash 不変**。公開 d6844f7 の 2860 ID と command / stdin / cwd / project をすべて保持し、22 定義の期待だけを ALLOW から UNKNOWN / egress 必須へ変更した（未確定 executable 12、未確定 curl URL 境界 8、生成された incomplete curl argv 2）。2838 定義は不変、390 件を追加した。同じ 3250 入力に対する旧 d684 の結果は、最終期待で再評価して decision / 担当 hook 不一致 **215**、理由だけの不一致 **1**、broken 0、source 不変。旧 source の実行時刻は 14:06:09 JST であり、期待の再評価は別時刻である。case の不一致数を独立した脆弱性や実漏えいの件数としない。L1 公開解析契約は **25/25**、deny API / lib 不在契約は **6/6**。
+
+14:07:48 JST の CLI 2.1.296 による最終 source L3 は **6 試行 / 6 PASS / 0 FAIL / 0 NOT_EXERCISED**。上表の 2 正常実行と 4 UNKNOWN 停止を、fresh independent DUMMY fixture ごとに actual Bash / hook dispatch と結果から確認した。negative は HEAD / refs / index / status、DUMMY file / helper marker に加え、object database の file 名・内容 hash も不変。hash-object の input は staged object と異なる未登録 DUMMY 内容を使った。正常 commit は a.txt のみと期待する tree / commit objects を追加した。difftool は同 revision なので actual deny を証明するが、逃げた場合に helper が呼ばれるとは証明しない。
+
+source は common `71a6fed4`、secret `a78a0acd`、add-all `210a9bcb`、egress `a868934b` で固定。元の PreToolUse matcher / if / timeout と permission deny を保持し、user defaults を有効にした。trust 変更、model override、bypass は使用しない。DUMMY workspace は未 trust、project Skill allow は無視され得る。production lifecycle hooks / project plugin と fully trusted session は再現していない。cookie / xargs / rsync の R13 実入口と実 network 接続は未測定。DUMMY native と直接入力を L3 に加えず、file:// の照合を実 network 送信の証明にもしない。新 head の CI / fresh review は公開後に別に取得する。
+
+### R12 の凍結 source に対する測定履歴
 
 2026-10-13 13:10:20 JST の直接入力 suite は **2860/2860、broken 0、source hash 不変**。旧 c7 の 2530 ID と command / stdin / cwd / project をすべて保持し、editor 条件で 37 定義の期待を ALLOW から UNKNOWN / egress 必須に変更した。2493 定義は不変、330 件を追加した。通常形式の actual no-edit 対照 20 件も含む。L1 公開解析 API は **20/20**、deny API / lib 不在の契約は **6/6**。同じ 2860 入力を c7 に渡すと decision / 担当 hook 不一致 180、理由だけの不一致 0。初回並列比較の timeout 1 件は履歴に保持し、c7 の単独追試と最終追加 22 件を別測定で補完した集計では broken 0。case 不一致を独立した漏えい件数とはしない。
 
