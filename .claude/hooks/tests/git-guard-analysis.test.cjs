@@ -18,6 +18,100 @@ function singleGit(source) {
   return analysis.gits[0];
 }
 
+test('R20 identity selection requires export; later export preserves the original producer span', () => {
+  const source = 'GIT_AUTHOR_NAME="$(cat .env)"; git commit -m ordinary';
+  assert.deepEqual(singleGit(source).gitIdentitySources, []);
+  const selected = singleGit('GIT_AUTHOR_NAME="$(cat .env)"; export GIT_AUTHOR_NAME; git commit -m ordinary').gitIdentitySources[0];
+  assert.equal(selected.name, 'GIT_AUTHOR_NAME');
+  assert.equal(selected.word.raw, 'GIT_AUTHOR_NAME="$(cat .env)"');
+  assert.equal(selected.word.start, 0);
+});
+
+test('R20 inherited identity has unproved provenance until actual export removal or env unset', () => {
+  const options = { initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME'] };
+  const identity = (source) => inspect(source, options).gits[0].gitIdentitySources;
+  assert.deepEqual(identity('git commit -m ordinary'), [{ name: 'GIT_AUTHOR_NAME', word: null }]);
+  assert.deepEqual(identity('export -n GIT_AUTHOR_NAME; GIT_AUTHOR_NAME="$(cat .env)"; git commit -m ordinary'), []);
+  assert.deepEqual(identity('env -u GIT_AUTHOR_NAME git commit -m ordinary'), []);
+});
+
+test('R20 query and attribute-removal builtins do not export a shell local', () => {
+  for (const action of ['export -p GIT_AUTHOR_NAME', 'export -n GIT_AUTHOR_NAME', 'declare +x GIT_AUTHOR_NAME']) {
+    assert.deepEqual(singleGit(`GIT_AUTHOR_NAME="$(cat .env)"; ${action}; git commit -m ordinary`).gitIdentitySources, []);
+  }
+  assert.equal(singleGit('GIT_AUTHOR_NAME="$(cat .env)"; declare -x GIT_AUTHOR_NAME; git commit -m ordinary').gitIdentitySources[0].word.start, 0);
+});
+
+test('R20 allexport preserves existing attributes but does not export assignments made after disable', () => {
+  const selected = singleGit('set -a; GIT_AUTHOR_NAME="$(cat .env)"; set +a; git commit -m ordinary');
+  assert.equal(selected.gitIdentitySources[0].name, 'GIT_AUTHOR_NAME');
+  assert.deepEqual(singleGit('set -a; set +a; GIT_AUTHOR_NAME="$(cat .env)"; git commit -m ordinary').gitIdentitySources, []);
+});
+
+test('R20 conditional export and unresolved target keep selection uncertain without asserting secret use', () => {
+  for (const action of ['maybe && export GIT_AUTHOR_NAME', 'export "$TARGET"', 'export "$OPT" GIT_AUTHOR_NAME']) {
+    const selected = singleGit(`GIT_AUTHOR_NAME="$(cat .env)"; ${action}; git commit -m ordinary`).gitIdentitySources;
+    assert.deepEqual(selected, [{ name: 'GIT_AUTHOR_NAME', word: null }]);
+  }
+  assert.deepEqual(singleGit('export GIT_AUTHOR_NAME="$(cat .env)"; export -n "$TARGET"; git commit -m ordinary').gitIdentitySources, [{ name: 'GIT_AUTHOR_NAME', word: null }]);
+});
+
+test('R20 a proven scalar target selects or removes only the named export attribute', () => {
+  const selected = singleGit('GIT_AUTHOR_NAME="$(cat .env)"; TARGET=GIT_AUTHOR_NAME; export "$TARGET"; git commit -m ordinary').gitIdentitySources;
+  assert.equal(selected[0].word.raw, 'GIT_AUTHOR_NAME="$(cat .env)"');
+  assert.equal(selected[0].word.start, 0);
+  assert.deepEqual(singleGit('GIT_AUTHOR_NAME="$(cat .env)"; TARGET=ORDINARY; ORDINARY=x; export "$TARGET"; git commit -m ordinary').gitIdentitySources, []);
+  assert.deepEqual(singleGit('export GIT_AUTHOR_NAME=ordinary; TARGET=GIT_AUTHOR_NAME; export -n "$TARGET"; git commit -m ordinary').gitIdentitySources, []);
+});
+
+test('R20 child identity selection excludes parent locals and preserves a known prefix value', () => {
+  const gitIn = (source) => inspect(source).gits.at(-1);
+  assert.deepEqual(gitIn('GIT_AUTHOR_NAME="$(cat .env)"; bash <<\'EOF\'\ngit commit -m ordinary\nEOF').gitIdentitySources, []);
+  const known = gitIn('VALUE=Ordinary; GIT_AUTHOR_NAME="$VALUE" bash <<\'EOF\'\ngit commit -m ordinary\nEOF').gitIdentitySources[0].word;
+  assert.equal(known.literalValue, 'Ordinary');
+  assert.equal(known.raw, 'GIT_AUTHOR_NAME="$VALUE"');
+  assert.deepEqual(gitIn('GIT_AUTHOR_NAME="$(cat .env)" bash <<\'EOF\'\ngit commit -m ordinary\nEOF').gitIdentitySources, [{ name: 'GIT_AUTHOR_NAME', word: null }]);
+});
+
+test('R20 function local identity restores its outer value and nonlocal export keeps the source', () => {
+  const selectedGit = (source) => inspect(source).invocations.filter((invocation) => invocation.name === 'git').at(-1);
+  const local = selectedGit('export GIT_AUTHOR_NAME=ordinary; f() { local GIT_AUTHOR_NAME="$(cat .env)"; }; f; git commit -m ordinary');
+  assert.equal(local.gitIdentitySources[0].word.text, 'ordinary');
+  assert.equal(local.unknownContextBefore, true);
+  const nonlocal = selectedGit('f() { export GIT_AUTHOR_NAME="$(cat .env)"; }; f; git commit -m ordinary');
+  assert.equal(nonlocal.gitIdentitySources[0].word.raw, 'GIT_AUTHOR_NAME="$(cat .env)"');
+  assert.equal(nonlocal.unknownContextBefore, true);
+  assert.deepEqual(selectedGit('export GIT_AUTHOR_NAME=ordinary; f() { export -n GIT_AUTHOR_NAME; }; f; git commit -m ordinary').gitIdentitySources, []);
+});
+
+test('R20 active chroot retains an unknown launcher instead of guessing its child identity', () => {
+  for (const source of ['chroot / true', 'chroot / --help', 'chroot --userspec=--help / true']) {
+    const invocation = inspect(source).invocations[0];
+    assert.equal(invocation.launcherUnknown, true);
+    assert.notEqual(invocation.name, 'true');
+  }
+  for (const source of ['chroot --help', 'chroot --version']) {
+    assert.equal(inspect(source).invocations[0].launcherUnknown, false);
+  }
+});
+
+test('R20 pager values require export and actual env removal preserves only the fallback source', () => {
+  assert.deepEqual(singleGit('GIT_PAGER=helper; git log -1').gitPagerEnvSources, []);
+  const selected = singleGit('export GIT_PAGER=helper; git log -1').gitPagerEnvSources[0];
+  assert.equal(selected.name, 'GIT_PAGER');
+  assert.equal(selected.word.raw, 'GIT_PAGER=helper');
+  const inherited = inspect('env -u GIT_PAGER git log -1', { initialPagerEnvNames: ['GIT_PAGER', 'PAGER'] }).gits[0].gitPagerEnvSources;
+  assert.deepEqual(inherited, [{ name: 'PAGER', word: null }]);
+});
+
+test('R20 actual Git paging flags remain distinct from consumed directory DATA', () => {
+  assert.equal(singleGit('GIT_PAGER=helper git --paginate log -1').pagerForced, true);
+  assert.equal(singleGit('GIT_PAGER=helper git --no-pager log -1').pagerDisabled, true);
+  const consumed = singleGit('GIT_PAGER=helper git -C --no-pager log -1');
+  assert.equal(consumed.pagerDisabled, false);
+  assert.deepEqual(consumed.cdirs, ['--no-pager']);
+});
+
 test('R19 mktag keeps stdin DATA while selecting an object writer; actual help terminates it', () => {
   const analysis = inspect("g''it mktag < public.tag");
   const git = analysis.gits[0];

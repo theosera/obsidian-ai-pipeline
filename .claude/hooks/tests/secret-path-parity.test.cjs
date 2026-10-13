@@ -27,6 +27,18 @@ assert.ok(gitExecutable, 'Git is available on the test process PATH');
 const fixtureEnv = { PATH: toolPath, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull };
 const shellQuote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 
+// The production predicates explicitly use C. Other caller locales exercise
+// that isolation only when installed; minimal Linux images may omit UTF-8
+// locale data, and Bash's startup warning is not a filename-parity mismatch.
+const callerLocaleCandidates = ['C', 'C.UTF-8', 'en_US.UTF-8'];
+const localeListing = spawnSync('locale', ['-a'], { encoding: 'utf8', env: { ...fixtureEnv, LC_ALL: 'C' } });
+const localeKey = locale => locale.toLowerCase().replace(/[-_.]/g, '');
+const localeListingAvailable = !localeListing.error && localeListing.status === 0;
+const installedLocaleNames = new Map(localeListingAvailable ? localeListing.stdout.split(/\r?\n/).filter(Boolean).map(locale => [localeKey(locale), locale]) : []);
+// Use the installed spelling (for example C.utf8 on Linux), not an assumed alias.
+const callerLocales = callerLocaleCandidates.map(locale => locale === 'C' ? 'C' : installedLocaleNames.get(localeKey(locale))).filter(Boolean);
+const unavailableCallerLocales = callerLocaleCandidates.filter(locale => locale !== 'C' && !installedLocaleNames.has(localeKey(locale)));
+
 
 const scriptPath = process.env.SECRET_PATH_PARITY_SCRIPT_SOURCE ||
   path.resolve(__dirname, '../../skills/vault-ops/scripts/safe-vault-push-perm.sh');
@@ -77,12 +89,12 @@ function runReader(dir, options = {}) {
     `else\n[ "\${#SECRET_OFFENDERS[@]}" -eq 0 ] || exit 9\nexit 7\nfi`;
   return spawnSync('/bin/bash', ['--noprofile', '--norc', '-c', `set -euo pipefail\n${commands}`], {
     cwd: dir, encoding: 'utf8', env: { ...fixtureEnv, PATH: options.bin ? `${options.bin}${path.delimiter}${toolPath}` : toolPath,
-      TMPDIR: path.join(dir, 'tmp'), LC_ALL: 'en_US.UTF-8', ...options.env },
+      TMPDIR: path.join(dir, 'tmp'), LC_ALL: 'C', ...options.env },
   });
 }
 function nulFields(text) { return text ? text.split('\0').slice(0, -1) : []; }
 
-function shellSecret(filename, locale = 'C.UTF-8', literalLFProbe = false) {
+function shellSecret(filename, locale = 'C', literalLFProbe = false) {
   assert.ok((literalLFProbe || !filename.includes('\n')) && !filename.includes('\0'), 'filename DATA or explicit LF predicate probe');
   const result = spawnSync('/bin/bash', ['--noprofile', '--norc', '-c', `${assignments}\n${filter} || true`], {
     input: `${filename}\n`, encoding: 'utf8', env: { ...fixtureEnv, LC_ALL: locale },
@@ -100,7 +112,7 @@ function parity(cases, locale) {
     const actual = shellSecret(filename, locale);
     if (actual !== expected) mismatches.push({ filename, expected, actual });
   }
-  assert.deepEqual(mismatches, [], `production filter parity (${locale || 'C.UTF-8'}): ${scriptPath}`);
+  assert.deepEqual(mismatches, [], `production filter parity (${locale || 'C'}): ${scriptPath}`);
 }
 
 test('ASCII boundary controls use the actual production shell filter', () => {
@@ -145,11 +157,14 @@ test('template exception is exact across case and subdirectories', () => {
   ]);
 });
 
-test('production C locale preserves ECMAScript whitespace and ASCII case across caller locales', () => {
+test('production C locale preserves ECMAScript whitespace and ASCII case across caller locales', t => {
   assert.match(filter, /^LC_ALL=C grep -ivE .* \| LC_ALL=C grep -iE /);
+  for (const locale of unavailableCallerLocales) {
+    t.diagnostic(`Skipped caller locale ${locale}: ${localeListingAvailable ? 'not installed (locale -a)' : 'locale enumeration unavailable'}; production C predicates remain tested`);
+  }
   const cases = [['.ENV?backup', true], ['notes/SECRETS', true], ['.env\tbackup', true],
     ['.envébackup', false], ['sécrets/file.txt', false], ['credentials-é.json', true]];
-  for (const locale of ['C', 'C.UTF-8', 'en_US.UTF-8']) parity(cases, locale);
+  for (const locale of callerLocales) parity(cases, locale);
   // Full ECMAScript whitespace set; LF is only a literal predicate-byte probe.
   // Actual LF filenames are rejected by the reader before classification.
   // Literal alternatives must match whole UTF-8 sequences, not individual bytes.
@@ -159,12 +174,12 @@ test('production C locale preserves ECMAScript whitespace and ASCII case across 
     const suffix = String.fromCodePoint(codePoint);
     const filename = `.env${suffix}backup`;
     assert.equal(isSecretPath(filename), true);
-    for (const locale of ['C', 'C.UTF-8', 'en_US.UTF-8']) assert.equal(shellSecret(filename, locale, codePoint === 0x0a), true);
+    for (const locale of callerLocales) assert.equal(shellSecret(filename, locale, codePoint === 0x0a), true);
   }
   for (const codePoint of [0x85, 0x180e, 0x200b, 0x2060, 0x1f600, 0xe9, 0xc0]) {
     const filename = `.env${String.fromCodePoint(codePoint)}backup`;
     assert.equal(isSecretPath(filename), false);
-    for (const locale of ['C', 'C.UTF-8', 'en_US.UTF-8']) assert.equal(shellSecret(filename, locale), false);
+    for (const locale of callerLocales) assert.equal(shellSecret(filename, locale), false);
   }
 });
 

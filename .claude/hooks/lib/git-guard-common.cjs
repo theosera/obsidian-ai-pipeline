@@ -1027,6 +1027,12 @@ function launcherArgs(rest, info, name) {
 }
 
 const WRAPPERS = {
+  chroot: (rest, info) => {
+    info.launcherArgs.push(...rest);
+    if (rest[0] && !rest[0].dynamic && ['--help', '--version'].includes(rest[0].text)) return -1;
+    info.launcherUnknown = true;
+    return 0;
+  },
   setsid: (rest, info) => launcherArgs(rest, info, 'setsid'),
   taskset: (rest, info) => launcherArgs(rest, info, 'taskset'),
   ionice: (rest, info) => launcherArgs(rest, info, 'ionice'),
@@ -1298,11 +1304,28 @@ const CD_LIKE = new Set(['cd', 'pushd', 'popd']);
 const EXPORT_LIKE = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 const CONFIG_ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME']);
 // Track explicit external-helper selectors separately from Git target/config variables.
-const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS', 'ENV', 'GIT_EXTERNAL_DIFF', 'SHELLOPTS', 'POSIXLY_CORRECT']);
+const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS', 'ENV', 'GIT_EXTERNAL_DIFF', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_PAGER', 'PAGER']);
 /** Include Git's configuration-root variables in per-invocation environment effects. */
 const affectsGitEnvironment = (name) => /^GIT_/.test(name) || CONFIG_ROOT_ENV.has(name);
 const GIT_IDENTITY_ENV = new Set(['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE',
   'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL']);
+const GIT_PAGER_ENV = new Set(['GIT_PAGER', 'PAGER']);
+const TRACKED_VALUE_ENV = new Set([...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV]);
+/** A stored shell value enters a child environment only with a selected export attribute. */
+function identityEnvironmentSources(state) {
+  return new Map([...state.identitySources].flatMap(([name, word]) => {
+    const exported = state.identityExports.get(name);
+    return exported === false ? [] : [[name, exported === true ? word : null]];
+  }));
+}
+/** A child receives the invocation's selected environment, not unexported shell values. */
+function childIdentityState(sources) {
+  return {
+    identitySources: new Map([...sources].map(([name, word]) => [name,
+      word && (!word.dynamic || typeof word.literalValue === 'string') ? word : null])),
+    identityExports: new Map([...sources.keys()].map(name => [name, true])),
+  };
+}
 /** Shell declaration options stop at the first operand; later strings are variable names or values. */
 function declarationOptions(args) {
   const options = [];
@@ -1862,8 +1885,8 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), identitySources: new Map() });
-  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources) });
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), identitySources: new Map(), identityExports: new Map() });
+  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
       scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
@@ -1873,6 +1896,19 @@ function inspect(cmd, options = {}) {
   const seedScope = (scope, env, cd, inherited) => scopeStates.set(scope, copyState({ ...emptyState(), ...inherited, env: new Set(env), cd }));
   if (Array.isArray(options.initialHelperEnvNames)) {
     for (const name of options.initialHelperEnvNames) if (HELPER_SOURCE_ENV.has(name)) stateFor(parsed.scope).helperEnv.add(name);
+  }
+  if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames)) {
+    const initial = stateFor(parsed.scope);
+    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || [])]) if (TRACKED_VALUE_ENV.has(name)) {
+      initial.identitySources.set(name, null); initial.identityExports.set(name, true);
+    }
+  }
+  if (Array.isArray(options.initialGitIdentitySources) || Array.isArray(options.initialPagerSources)) {
+    const initial = stateFor(parsed.scope);
+    const selected = childIdentityState(new Map([...(options.initialGitIdentitySources || []), ...(options.initialPagerSources || [])]
+      .filter(source => TRACKED_VALUE_ENV.has(source.name)).map(source => [source.name, source.word])));
+    initial.identitySources = selected.identitySources;
+    initial.identityExports = selected.identityExports;
   }
   const sourcePlaceholder = (name) => ({ definitionName: name, redirs: [], heredocBodies: [], functionBody: null });
   const seedFunctionNames = (names, add) => {
@@ -1974,7 +2010,7 @@ function inspect(cmd, options = {}) {
       }
     }
     const env = new Set(state.env);
-    const identitySources = new Map(state.identitySources);
+    const identitySources = identityEnvironmentSources(state);
     const helperEnv = new Set(state.helperEnv);
     const exportedFunctions = new Set(state.exportedFunctions);
     let exportedFunctionUnknown = state.exportedFunctionUnknown;
@@ -1992,7 +2028,7 @@ function inspect(cmd, options = {}) {
         if (op.unset === 'PATH') pathChanged = false;
       }
       if (op.set && affectsGitEnvironment(op.set)) env.add(op.set);
-      if (op.set && GIT_IDENTITY_ENV.has(op.set)) {
+      if (op.set && TRACKED_VALUE_ENV.has(op.set)) {
         const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(op.set + '='));
         const value = carrier && literalScalarWord(carrier, expansionState);
         identitySources.set(op.set, value ? commitInlineValue(value, value, value.text.slice(op.set.length + 1), op.set.length + 1) : null);
@@ -2026,7 +2062,8 @@ function inspect(cmd, options = {}) {
       functionBodyUnknown: !!c.functionBodyUnknown || !!c.functionBody?.unknown,
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
       helperEnvNames: [...helperEnv],
-      gitIdentitySources: [...identitySources].map(([name, word]) => ({ name, word })),
+      gitIdentitySources: [...identitySources].filter(([name]) => GIT_IDENTITY_ENV.has(name)).map(([name, word]) => ({ name, word })),
+      gitPagerEnvSources: [...identitySources].filter(([name]) => GIT_PAGER_ENV.has(name)).map(([name, word]) => ({ name, word })),
       exportedFunctionNames: importedFunctionNames, exportedFunctionUnknown: exportedFunctionUnknown || environmentFunctionUnknown.size > 0,
       pathChangedBefore: pathChanged || state.searchChanged,
       unknownContextBefore: state.unknownContext,
@@ -2115,6 +2152,13 @@ function inspect(cmd, options = {}) {
         state.searchChanged ||= after.searchChanged;
         state.gitShadowed ||= after.gitShadowed;
         state.unknownContext ||= after.unknownContext;
+        for (const name of new Set([...state.identitySources.keys(), ...after.identitySources.keys()])) {
+          if (local(name)) continue;
+          if (after.identitySources.has(name)) state.identitySources.set(name, after.identitySources.get(name));
+          else state.identitySources.delete(name);
+          if (after.identityExports.has(name)) state.identityExports.set(name, after.identityExports.get(name));
+          else state.identityExports.delete(name);
+        }
         state.valuesTainted = true;
         state.pathProofs.clear();
       }
@@ -2153,7 +2197,10 @@ function inspect(cmd, options = {}) {
       const valueConditional = conditional || (!!info.name && prefix);
       const canRemember = prefix ? ((!info.name && !info.dynamicName && !info.wrapped) || info.persistsEnv ||
         (builtin && SPECIAL_BUILTINS.has(info.name))) : persistentValues;
-      if (assignment && canRemember && GIT_IDENTITY_ENV.has(assignment.name)) {
+      if (assignment && canRemember && TRACKED_VALUE_ENV.has(assignment.name)) {
+        const prior = state.identityExports.get(assignment.name) ?? false;
+        const selected = state.functionAutoExport === true ? true : state.functionAutoExport === false ? prior : prior === true ? true : null;
+        state.identityExports.set(assignment.name, conditional && prior !== selected ? null : selected);
         const value = literalScalarWord(word, expansionState);
         state.identitySources.set(assignment.name, conditional ? null :
           commitInlineValue(value, value, value.text.slice(assignment.name.length + 1), assignment.name.length + 1));
@@ -2174,6 +2221,37 @@ function inspect(cmd, options = {}) {
         }
         if (canRemember) rememberValue(state, { ...assignment, value: '0' }, valueConditional);
       } else if (canRemember) rememberValue(state, assignment, valueConditional);
+    }
+    if (declaration && !declarationQuery) {
+      const attributeArgs = info.name === 'export' ? info.args.map(word => {
+        const value = literalScalarWord(word, expansionState);
+        return typeof value.literalValue === 'string' && value.dynamicMaySplit === false
+          ? { ...value, text: value.literalValue, dynamic: false } : value;
+      }) : info.args;
+      const attributeOptions = declarationOptions(attributeArgs);
+      const has = (sign, flag) => attributeOptions.some(option => option[0] === sign && option.slice(1).includes(flag));
+      const functionMode = has('-', 'f') || has('-', 'F');
+      const query = has('-', 'p') || info.name === 'export' && info.args.length === 0;
+      const exportOptionUnknown = info.name === 'export' &&
+        (attributeOptions.some(option => option[0] !== '-' || /[^fnp]/.test(option.slice(1))) ||
+          (attributeArgs[attributeOptions.length]?.dynamic &&
+            !/^[A-Za-z_][A-Za-z0-9_]*(?:=|$)/.test(attributeArgs[attributeOptions.length].text)));
+      const selection = info.name === 'export' ? exportOptionUnknown ? null : !has('-', 'n') : has('-', 'x') ? true : has('+', 'x') ? false : undefined;
+      if (!functionMode && !query && selection !== undefined) {
+        let start = attributeOptions.length;
+        if (attributeArgs[start]?.text === '--') start++;
+        for (const word of attributeArgs.slice(start)) {
+          if (info.name === 'export' && word.dynamic && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word.text)) {
+            for (const name of state.identitySources.keys()) state.identityExports.set(name, null);
+            continue;
+          }
+          const name = /^([A-Za-z_][A-Za-z0-9_]*)(?:=|$)/.exec(word.text)?.[1];
+          if (!TRACKED_VALUE_ENV.has(name)) continue;
+          const prior = state.identityExports.get(name) ?? false;
+          state.identityExports.set(name, conditional && prior !== selection ? null : selection);
+          if (!state.identitySources.has(name)) state.identitySources.set(name, null);
+        }
+      }
     }
     if (builtin && info.name === 'let') {
       for (const word of info.args) {
@@ -2215,8 +2293,8 @@ function inspect(cmd, options = {}) {
         if (!target) continue;
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('builtin が評価する配列の添字を検査できない');
         const identityTarget = info.name !== 'read' || readEnvironmentTargets(info.args).targets.includes(word);
-        if (identityTarget && GIT_IDENTITY_ENV.has(target[1])) {
-          if (info.name === 'unset' && !conditional) state.identitySources.delete(target[1]);
+        if (identityTarget && TRACKED_VALUE_ENV.has(target[1])) {
+          if (info.name === 'unset' && !conditional) { state.identitySources.delete(target[1]); state.identityExports.delete(target[1]); }
           else state.identitySources.set(target[1], null);
         }
         state.values.set(target[1], null);
@@ -2282,7 +2360,7 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot'].includes(name)))) {
       res.problems.push('launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
@@ -2415,7 +2493,7 @@ function inspect(cmd, options = {}) {
             const inner = parseShell(h.body);
             for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
             res.async = res.async || inner.async;
-            seedScope(inner.scope, env, cdBefore, { ...state, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
               environmentFunctions, environmentFunctionUnknown,
               functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                 .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -2431,7 +2509,7 @@ function inspect(cmd, options = {}) {
                 const inner = parseShell(r.word.text);
                 for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
                 res.async = res.async || inner.async;
-                seedScope(inner.scope, env, cdBefore, { ...state, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
                   environmentFunctions, environmentFunctionUnknown,
                   functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                     .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -2567,6 +2645,7 @@ function inspect(cmd, options = {}) {
     g.gitEnvNames = [...env];
     g.helperEnvNames = [...helperEnv];
     g.gitIdentitySources = invocation.gitIdentitySources;
+    g.gitPagerEnvSources = invocation.gitPagerEnvSources;
     for (const config of g.configSelections) if (config.mode === 'env') {
       const variable = config.text.slice(config.text.indexOf('=') + 1);
       const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(variable + '='));

@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の R18 までの保護範囲と、R19 の未公開修正の条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の保護範囲、R19 / R20 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -19,6 +19,40 @@
 既存 main 由来の raw backstop も残す。文字列の形だけが一致し、実 argv・操作と message / コメント / DATA を区別できない停止は **UNKNOWN** である。この一致を、秘密ファイルが実際に送信されることの証明として扱わない。
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
+
+## R20: 修正の条件・結果・例外
+
+R19 公開 head `387688f25e9a23b7cbb37f49060df1d8f1583545` への fresh Codex review は、2026-10-14 **06:29:21 JST** に P1 4件と P2 1件を返した。06:30:33 JST の全ページ取得では thread **117 / resolved 112 / open 5**、CodeRabbit 0 / Codex 5、PR は OPEN / BLOCKED、auto-merge なしである。以下は、修正前に決めた対応範囲・結果・例外である。新 source の試験、公開後の CI と両 fresh review、thread の状態は別に取得し、旧 head の成功を持ち越さない。
+
+| 対象・停止条件 | 結果と理由 | 維持する例外・DATA | 通常作業への影響と owner への出口 |
+|---|---|---|---|
+| **active `chroot` launcher** | root / uid / cwd / executable と子の実行条件を検査できず UNKNOWN。実際の root 権限や子の起動成功を推定しない | 対応する先頭の実 terminal help / version。子の引数に現れる `--help` を launcher の query とせず、外側 shell の展開も独立して検査する | 公開ファイルを使う通常の chroot も停止する。別 root へ移すことは同じ実行条件の代替ではない。root / uid / cwd / 子 argv と不明点を owner へ |
+| **Git の active pager selector**: 同じ入力で選択する `GIT_PAGER` / `core.pager` / `PAGER` と、pager を使う operation / paging mode | 選択された未検査 helper は UNKNOWN。TTY 条件が不明なら、実行されないと推定しない。selector の存在だけで全 Git を停止しない | 対応する実 `-P` / `--no-pager`、unused operation / getter、実 unset / `env -u`、prefix / export / 継承の選択と上書き順序。消費された `--no-pager` DATA は解除ではない | custom pager を使う log 等も停止する。同目的の出力を helper なしで読める場合だけ actual disable と対応 argv で再検査。pager が必要なら operation / TTY / env / config / source を owner へ |
+| **GH `secret set` / `variable set` の body・env-file・stdin** | 確定した file-backed payload は既存 file-upload policy の FORBIDDEN。secret 由来の body も FORBIDDEN。生成元や argv / stdin が未検査なら UNKNOWN。空の body が stdin を選ぶ条件も区別する。secret の実 `--no-store` は payload を保存しない別 mode なので未検査の local 暗号化処理として UNKNOWN、file 送信確定とはしない | 対応する既知 ordinary literal / scalar body、実 help / list / query、repo / org / environment / app / visibility 等の消費 DATA。先頭 `-R` / `--repo` の値も DATA として消費し、既存対応群の payload 分類へ渡す。独立した context / raw 条件は残る | 公開 env-file と未知 stdin による登録、未検査の no-store 処理も停止する。同じ目的・値・条件を保つ確認済み inline DATA の対応形式がある場合だけ再検査。file / stdin / 暗号化処理自体が必要なら owner へ |
+| **Git `imap-send` の送信 stdin** | 同じ pipeline / redirection で結び付いた secret filename 入力は FORBIDDEN。未検査 mail input、設定・destination・認証 source は UNKNOWN。mbox の有効性や実 IMAP 通信は認証しない | 実 stdout usage 等の対応 terminal query。無関係な reader を送信 source とせず、消費 DATA と実 option を区別する | 通常の公開 mail 送信も、必要条件を検査できない範囲では停止する。表示 query は同目的の送信代替ではない。mail source / destination / 認証 / cwd / env / config と不明点を owner へ |
+| **commit identity の export 属性と選択 source** | 値の生成元と外部 Git へ渡る export 属性を分ける。選択された secret 由来値は FORBIDDEN、export target / field 優先 / child source の証明不足は UNKNOWN。未 export の親 shell local を Git identity としない | literal / 対応 scalar、実 export / export解除 / unset / allexport、prefix、scope と非 local の関数更新を区別。`EMAIL` は既定 config による fallback 選択が未証明なら secret 由来の使用を確定せず UNKNOWN | 動的 export target、未知 fallback、未対応 child の値生成は停止し得る。同じ identity と実行条件を保持する対応指定で表せる場合だけ再検査し、source / export / config の不明点を owner へ |
+
+### 修正前の取り残しと、公開修正が生んだ過剰停止
+
+新 P1 4件の正確な入力は、`df463a91` / `4f0ff56` / `5d50164` / `387688f` の固定 source へ DATA として渡すと、4入力×4 head の16件すべてで全3 hook が ALLOW、broken 0 だった。この有限比較では、4経路は今回の修正が新設した穴ではなく、以前から未分類だった実行・送信経路である。chroot の権限、pager の TTY、GH の書込権限、IMAP 設定・通信の成功や被害を確認したという意味ではない。
+
+一方、`GIT_AUTHOR_NAME="$(cat .env)"; git commit -m ordinary` は、旧 `5d50164` では ALLOW、R19 公開 source では egress FORBIDDEN となった。未 export の shell local を Git へ渡る identity と誤認した公開退行であり、R20 で値と export 属性を分けて修復する。隔離 DUMMY の read-only `git var` では、未 export / export解除は configured name、export / allexport / prefix は assigned name を選ぶことを照合した。初期 child / EMAIL / export target 対照の不一致と、私有記録の上書き・再取得も監査記録へ残し、最終 source の成功へ書き換えない。
+
+filename parity の P2 は、Linux にない `en_US.UTF-8` を試験 caller に強制して Bash 起動 warning を比較した試験器の問題である。production の `LC_ALL=C` と filename 規則は変更せず、caller は保証された C を基準に、`locale -a` で利用可能な optional locale だけを実行する。不在 variant は diagnostic で記録し、stderr の空出力を要求する検査を緩めない。Mac native 8/8 と C/POSIX 限定の controlled inventory 8/8 を、Linux native での再現や全 locale の保証と区別する。
+
+[Git の pager 仕様](https://git-scm.com/docs/git-var)は `GIT_PAGER` / `core.pager` / `PAGER` の優先と shell 解釈を示す。[GH secret set](https://cli.github.com/manual/gh_secret_set) / [variable set](https://cli.github.com/manual/gh_variable_set) は body、stdin、dotenv file の入力経路を持つ。[Git imap-send](https://git-scm.com/docs/git-imap-send) は stdin の mailbox を送る。新しい版の `--list` も IMAP 通信を行うので、local stdout help と同じ許可 query にはしない。これらの仕様と、実機版・DUMMY fixture で測った事実は区別する。
+
+### R20 の検証状態
+
+最終凍結 source は common `e3d49e812554ef688dda96af418f0c0a4fb953e534bdc088611f204fc5674d60` / egress `4719d0798abd44250d290b567cb91d260c78b038a2634197c56aa8c779067d28`。add-all / secret-git は下記 R19 の hash と同じである。途中 export-state の直接45件 / 私有 L1 24件 / reverse 10試行は、追加 P1 修正後の source の新測定へ持ち越さない。関数非 local merge の reverse は独立した context 停止が残り、単一 edge の必要性未証明として記録する。
+
+- **L1 / API:** 公開解析66・filename parity8・私有deny API6の80契約が成功。私有 API6 は公開解析へ加算しない。新 P1 に関する私有 parser / provenance 20契約と export 24契約も、同じ最終 source で成功した。初回の80契約指定は私有APIのfilenameを誤り74だけを実行したため、原出力を残し正しい6を含めて再取得した。
+- **L2:** 旧4021入力・旧期待は、固定387 sourceでは4021一致、最終 sourceでは4018一致・3不一致、broken0・source不変。R7SG19 / R7SG21はactive pagerのALLOW→UNKNOWN、R19Xenv-EMAILは未知fallback選択のFORBIDDEN→UNKNOWNで、入力を変えず根拠付きで期待を更新した。新105入力の own-hook 対照は105/105、重複3入力はaliasとして残しunique102を公開suiteへ追加し、別preamble variantを保持したままIMAPの元レビュー入力1件も追加した。**最終統合4124件は2026-10-14 07:07:30 JSTに4124/4124、broken0・source不変。** 同じ4124入力・期待を387へ渡すと57のassertion不一致。実decision差46・hook / reasonだけの差15は別の集計で、脆弱性件数ではない。
+- **L3:** CLIの新DUMMY5試行は06:57:57 JSTに3 PASS / 0 FAIL / 2 NOT_EXERCISED、source不変。chrootとGH stdinはegressだけがdispatchされ停止、imap-sendは全3 hookがdispatchされegress UNKNOWNで停止し、いずれもHEAD / refs / index / objects / file / markerは不変。pagerと未export identityはAPI cyber refusalでBash / hook前に停止、再試行せず未検証として残す。identityの予定commit条件がfalseだったことを、望まない副作用が発生した意味にしない。両NOTの状態も不変だった。旧sourceの実入口成功を、この2項目へ持ち越さない。
+
+最終 source の新 P1 reverse 8試行と export reverse 10試行も期待を維持した。新 P1 の target effect は8、有限対照でのaggregate拒否への必要性は6で、precisionの作用と区別する。export target effectは9で、関数非local更新は独立したcontext停止のため必要性未証明のままである。
+
+公開後の同じ head の required CI、両 fresh review、thread 解決はPR本文・監査記録で確認する。ローカル測定だけで受入・goal達成とはしない。
 
 ## R19: 修正の条件・結果・例外
 

@@ -201,6 +201,8 @@ const inheritedFunctionNames = [...new Set(Object.entries(process.env).flatMap((
 const insp = guard.inspect(cmd, {
   initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_EXTERNAL_DIFF', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
     .filter(name => process.env[name] !== undefined),
+  initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL'].filter(name => process.env[name] !== undefined),
+  initialPagerEnvNames: ['GIT_PAGER', 'PAGER'].filter(name => process.env[name] !== undefined),
   initialFunctionSourceNames: inheritedFunctionNames,
   initialExportedFunctionNames: inheritedFunctionNames,
 });
@@ -746,9 +748,55 @@ function gitIndexHelperActive(g) {
   return indexOperations.has(g.sub);
 }
 
+/** Selected pager programs are executable source only for an operation which can page. */
+function gitPagerSource(g, invocation) {
+  if (g.pagerDisabled || g.terminal && g.helpKind === 'stdout') return false;
+  const config = g.configs.filter(value => value.split('=')[0].toLowerCase() === 'pager.' + g.sub).at(-1);
+  const commandSelection = config ? config.slice(config.indexOf('=') + 1) : null;
+  const commandEnv = g.configEnvs.some(value => value.split('=')[0].toLowerCase() === 'pager.' + g.sub);
+  const defaultPager = ['log', 'show', 'diff', 'branch', 'tag', 'help', 'shortlog', 'blame', 'grep', 'whatchanged', 'range-diff'].includes(g.sub);
+  const active = g.pagerForced || commandEnv || commandSelection !== null && !/^(?:false|no|off|0)$/i.test(commandSelection) ||
+    defaultPager && (commandSelection === null || !/^(?:false|no|off|0)$/i.test(commandSelection));
+  if (!active) return false;
+  const env = new Map((invocation.gitPagerEnvSources || []).map(source => [source.name, source.word]));
+  const enabledProgram = word => { const literal = literalSourceWord(word); return !literal || !['', 'cat'].includes(literal.text); };
+  if (env.has('GIT_PAGER')) return enabledProgram(env.get('GIT_PAGER'));
+  if (commandEnv) return true;
+  if (commandSelection !== null && !/^(?:true|yes|on|1|false|no|off|0)$/i.test(commandSelection)) {
+    return !['', 'cat'].includes(commandSelection);
+  }
+  const core = g.configs.filter(value => value.split('=')[0].toLowerCase() === 'core.pager').at(-1);
+  if (g.configEnvs.some(value => value.split('=')[0].toLowerCase() === 'core.pager')) return true;
+  if (core !== undefined) return !['', 'cat'].includes(core.slice(core.indexOf('=') + 1));
+  if (env.has('PAGER')) return enabledProgram(env.get('PAGER'));
+  return commandSelection !== null;
+}
+
+/** IMAP folder values consume option-like DATA; only a proven stdout help flag is terminal. */
+function imapSendRole(g) {
+  let unknown = Boolean(g.incomplete || g.dynamicOpt);
+  let terminal = false;
+  let afterDD = false;
+  const folders = [];
+  for (let k = 0; k < g.args.length; k++) {
+    const word = g.args[k], literal = literalSourceWord(word), text = literal?.text || word.text;
+    if (!afterDD && text === '--' && literal) { afterDD = true; continue; }
+    if (afterDD || !text.startsWith('-')) { unknown = true; continue; }
+    if (text === '-h' && literal) { terminal = true; continue; }
+    if (text === '--folder' || text.startsWith('--folder=') || /^-f/.test(text)) {
+      const value = text === '--folder' || text === '-f' ? g.args[++k] :
+        { ...word, text: text.startsWith('--folder=') ? text.slice(9) : text.slice(2) };
+      folders.push(value);
+      if (!literal || !literalSourceWord(value)) unknown = true;
+    } else if (!literal || !['-q', '-v', '--quiet', '--verbose', '--curl', '--no-curl', '--draft', '--no-draft', '--list'].includes(text)) unknown = true;
+  }
+  return { terminal: terminal && !unknown, stdin: !(terminal && !unknown), unknown, folders };
+}
+
 /** Positive selectors of local Git execution must be gated for their actual operation. */
 function gitExecutableSource(g, invocation) {
   if (g.terminal && g.helpKind === 'stdout' && knownInvocationContext(invocation)) return false;
+  if (gitPagerSource(g, invocation)) return true;
   if (g.sub === 'config' && configOperation(g.args).read) return false;
   const diff = ['diff', 'show', 'log', 'diff-tree', 'diff-index', 'diff-files', 'format-patch', 'whatchanged'].includes(g.sub);
   const modes = diff ? gitDiffModes(g) : null;
@@ -772,8 +820,6 @@ function gitExecutableSource(g, invocation) {
       (!['rev-parse', 'ls-files', 'ls-tree', 'config', 'version', 'show-ref', 'for-each-ref', 'merge-base', 'count-objects'].includes(g.sub) || uncertain)) return true;
   if (keys.some(key => /^core\.hookspath$/.test(key)) &&
       (!['log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'config', 'version'].includes(g.sub) || uncertain)) return true;
-  if (!g.pagerDisabled && (g.pagerForced || ['log', 'show', 'diff', 'branch', 'tag', 'help'].includes(g.sub)) &&
-      (keys.includes('core.pager') || keys.includes('pager.' + g.sub))) return true;
   return keys.some(key => /^include(?:if\..+)?\.path$/.test(key));
 }
 
@@ -1380,14 +1426,35 @@ function ghApiUpload(invocation) {
 /** Bounded GH writes share file/stdin payload roles while keeping literal option values as DATA. */
 function ghFilePayload(invocation) {
   const words = invocation.args;
-  if (!literalSourceWord(words[0])) return words.length ? 'UNKNOWN' : false;
-  const group = words[0].text;
-  if (!['release', 'issue', 'pr', 'ssh-key', 'repo'].includes(group)) return false;
+  let start = 0;
+  let prefixUnknown = false;
+  while (start < words.length) {
+    const literal = literalSourceWord(words[start]), text = literal?.text || words[start].text;
+    if (literal && ['--help', '-h'].includes(text)) return false;
+    if (text === '--repo' || text.startsWith('--repo=') || text === '-R' || /^-R./.test(text)) {
+      const value = text === '--repo' || text === '-R' ? words[++start] :
+        { ...words[start], text: text.startsWith('--repo=') ? text.slice(7) : text.slice(2) };
+      if (!literal || !literalSourceWord(value)) prefixUnknown = true;
+      start++;
+    } else break;
+  }
+  const groupWord = literalSourceWord(words[start]);
+  if (!groupWord) return words.length ? 'UNKNOWN' : false;
+  const group = groupWord.text;
+  if (group.startsWith('-') && words.some((word, index) => ['secret', 'variable'].includes(literalSourceWord(word)?.text) &&
+      literalSourceWord(words[index + 1])?.text === 'set')) return 'UNKNOWN';
+  if (!['release', 'issue', 'pr', 'ssh-key', 'repo', 'secret', 'variable'].includes(group)) return false;
   if (group === 'repo') {
-    if (!literalSourceWord(words[1])) return 'UNKNOWN';
-    if (words[1].text !== 'deploy-key') return false;
+    if (!literalSourceWord(words[start + 1])) return 'UNKNOWN';
+    if (literalSourceWord(words[start + 1]).text !== 'deploy-key') return false;
   }
   const specFor = action => {
+    if (['secret', 'variable'].includes(group)) return action === 'set' ? {
+      values: ['body', 'env', 'env-file', 'org', 'repos', 'visibility', ...(group === 'secret' ? ['app'] : [])],
+      short: { b: 'body', e: 'env', f: 'env-file', o: 'org', r: 'repos', v: 'visibility', ...(group === 'secret' ? { a: 'app' } : {}) },
+      files: ['env-file'], flags: group === 'secret' ? ['user', 'no-repos-selected', 'no-store'] : [],
+      shortFlags: group === 'secret' ? 'u' : '', min: 0, max: 1, assetStart: Infinity, setValue: true,
+    } : null;
     if (group === 'ssh-key' && action === 'add' || group === 'repo' && action === 'add') return {
       values: group === 'ssh-key' ? ['title', 'type'] : ['title'], short: { t: 'title' }, files: [],
       flags: group === 'repo' ? ['allow-write'] : [], shortFlags: group === 'repo' ? 'w' : '', min: 0, max: 1, assetStart: 0, implicitStdin: true,
@@ -1432,15 +1499,18 @@ function ghFilePayload(invocation) {
   let spec;
   let afterDD = false;
   const operands = [];
-  let unknown = !!invocation.incomplete;
+  let unknown = !!invocation.incomplete || prefixUnknown;
   let sourceUnknown = false;
   let payload = false;
+  let bodyWord = null;
+  let envFileStdin = false;
+  let noStore = false;
   const transmittedValueWords = [];
   const dataBoundary = word => Boolean(word && word.dynamicMaySplit === false && !word.ansiCUnknown &&
     !word.globExpanded && !word.braceExpanded && !word.tildeExpanded);
-  for (let k = group === 'repo' ? 2 : 1; k < words.length; k++) {
+  for (let k = start + (group === 'repo' ? 2 : 1); k < words.length; k++) {
     const word = words[k];
-    const text = word.text;
+    const text = literalSourceWord(word)?.text || word.text;
     if (!afterDD && text === '--') { afterDD = true; continue; }
     if (!afterDD && ['-h', '--help'].includes(text) && !unknown) return false;
     if (!afterDD && text.startsWith('-')) {
@@ -1449,16 +1519,19 @@ function ghFilePayload(invocation) {
       if (text.startsWith('--')) {
         const eq = text.indexOf('=');
         option = text.slice(2, eq < 0 ? undefined : eq);
-        if (option === 'repo' || spec?.values.includes(option)) value = eq < 0 ? words[++k] : { ...word, text: text.slice(eq + 1) };
+        if (option === 'repo' || spec?.values.includes(option)) value = eq < 0 ? words[++k] : { ...word, text: text.slice(eq + 1),
+          literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(eq + 1) : word.literalValue };
         else if (option === 'help' || spec?.flags.includes(option)) {
           if (!knownWord(word) || eq >= 0 && !['true', 'false'].includes(text.slice(eq + 1))) unknown = true;
           if (option === 'help' && text.slice(eq + 1) === 'true' && !unknown) return false;
+          if (spec?.setValue && option === 'no-store') noStore = eq < 0 || text.slice(eq + 1) !== 'false';
           continue;
         } else { unknown = true; continue; }
       } else {
         for (let p = 1; p < text.length; p++) {
           option = text[p] === 'R' ? 'repo' : spec?.short[text[p]];
-          if (option) { value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : words[++k]; break; }
+          if (option) { value = p + 1 < text.length ? { ...word, text: text.slice(p + 1),
+            literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(p + 1) : word.literalValue } : words[++k]; break; }
           if (text[p] === 'h' && knownWord(word) && !unknown) return false;
           if (!knownWord(word) || !spec?.shortFlags.includes(text[p])) unknown = true;
         }
@@ -1467,9 +1540,11 @@ function ghFilePayload(invocation) {
       if (!value || !dataBoundary(word) || !dataBoundary(value)) unknown = true;
       if (spec?.files.includes(option)) {
         const file = literalSourceWord(value);
-        if (!file || file.text === '-') sourceUnknown = true;
+        if (spec.setValue && file?.text === '-') envFileStdin = true;
+        else if (!file || file.text === '-') sourceUnknown = true;
         else payload = true;
-      } else if (spec && ['body', 'notes', 'title'].includes(option)) transmittedValueWords.push(value);
+      } else if (spec?.setValue && option === 'body') bodyWord = value;
+      else if (spec && ['body', 'notes', 'title'].includes(option)) transmittedValueWords.push(value);
       else if (!literalSourceWord(value)) sourceUnknown = true;
       continue;
     }
@@ -1486,6 +1561,15 @@ function ghFilePayload(invocation) {
   }
   if (!spec) return unknown ? 'UNKNOWN' : false;
   if (unknown || sourceUnknown || operands.length < spec.min || operands.length > spec.max) return 'UNKNOWN';
+  if (spec.setValue) {
+    if (noStore) return 'UNKNOWN';
+    if (payload) return 'FORBIDDEN';
+    if (envFileStdin || !bodyWord || literalSourceWord(bodyWord)?.text === '') {
+      return stdinPayloadVerdict(invocation, invocationSources.get(invocation) || [], true) || 'UNKNOWN';
+    }
+    if (!operands.length) return 'UNKNOWN';
+    return outboundPayloadVerdict(invocation, [bodyWord]);
+  }
   if (spec.implicitStdin && !operands.length || spec.implicitStdin && operands[0]?.text === '-') return 'UNKNOWN';
   return payload || operands.length > spec.assetStart ? 'FORBIDDEN' :
     outboundPayloadVerdict(invocation, transmittedValueWords);
@@ -1661,11 +1745,10 @@ function pipelineInput(invocation) {
 }
 
 /** Retain refusals for related input, distinguishing proven file operands from opaque source/context. */
-function unsafeNetworkInput(invocation, all) {
-  if (!networkReadsStdin(invocation)) return false;
+function stdinPayloadVerdict(invocation, all, allFiles = false) {
   const refs = invocation.redirs.filter((redir) => ['<', '<>'].includes(redir.op)).map((redir) => redir.word);
   if (refs.some((word) => word.dynamic)) return 'UNKNOWN';
-  if (SECRET_FILE_RE.test(withoutTemplateTokens(refs.map((word) => parserLiteral(word.text)).join(' ')))) {
+  if (allFiles && refs.length || SECRET_FILE_RE.test(withoutTemplateTokens(refs.map((word) => parserLiteral(word.text)).join(' ')))) {
     return contextualVerdict(invocation, 'FORBIDDEN');
   }
   if (invocation.redirs.some((redir) => redir.op === '<<<' && redir.word.dynamic) ||
@@ -1676,12 +1759,17 @@ function unsafeNetworkInput(invocation, all) {
   for (const producer of producers) {
     const source = pipelineInput(producer);
     if (source.unknown) return 'UNKNOWN';
-    if (SECRET_FILE_RE.test(withoutTemplateTokens(source.refs.map((word) => parserLiteral(word.text)).join(' ')))) {
+    if (allFiles && source.refs.length || SECRET_FILE_RE.test(withoutTemplateTokens(source.refs.map((word) => parserLiteral(word.text)).join(' ')))) {
       // The boolean guard did not establish cwd across a cd-like operation; classification must not claim it did.
       return knownInvocationContext(producer) && knownInvocationContext(invocation) ? 'FORBIDDEN' : 'UNKNOWN';
     }
   }
   return false;
+}
+
+/** Keep the existing network-client selection separate from the reusable stdin DATA role. */
+function unsafeNetworkInput(invocation, all) {
+  return networkReadsStdin(invocation) ? stdinPayloadVerdict(invocation, all) : false;
 }
 
 const invocationSources = new WeakMap();
@@ -1834,6 +1922,8 @@ function sourceInspectionOptions(invocation, extra = {}) {
   const privileged = ['bash', 'sh'].includes(invocation.name) && invocation.shellPrivileged === true;
   return {
     initialHelperEnvNames: invocation.helperEnvNames,
+    initialGitIdentitySources: invocation.gitIdentitySources || [],
+    initialPagerSources: invocation.gitPagerEnvSources || [],
     initialFunctionSourceNames: privileged ? [] : invocation.exportedFunctionNames || [],
     // -p suppresses this child's imports, but preserves encoded environment entries
     // which a later nonprivileged child can import again.
@@ -2011,7 +2101,7 @@ function gitCommitObjectWords(g, parsed) {
       else if (field !== 'date') {
         const key = configs.has(person + '.' + field) ? person + '.' + field : 'user.' + field;
         if (configs.has(key)) selected.push({ kind: key, word: configs.get(key) });
-        else if (field === 'email' && env.has('EMAIL')) selected.push({ kind: 'EMAIL', word: env.get('EMAIL') });
+        else if (field === 'email' && env.has('EMAIL')) selected.push({ kind: 'EMAIL', word: env.get('EMAIL'), uncertainSelection: true });
       }
     }
   }
@@ -2022,7 +2112,9 @@ for (const g of inspectedGits) {
   const parsed = guard.parseCommitArgs(g.args);
   if (parsed.terminal) continue;
   const invocation = gitInvocationContexts.get(g);
-  const verdict = outboundPayloadVerdict(invocation, gitCommitObjectWords(g, parsed).map(source => source.word));
+  const sources = gitCommitObjectWords(g, parsed);
+  const verdict = outboundPayloadVerdict(invocation, sources.filter(source => !source.uncertainSelection).map(source => source.word)) ||
+    (outboundPayloadVerdict(invocation, sources.filter(source => source.uncertainSelection).map(source => source.word)) ? 'UNKNOWN' : false);
   if (verdict) deny(verdict === 'FORBIDDEN' ?
     'Git commit の message・trailer・identity を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。staged path とは独立して commit object に入る DATA です。内容の妥当性や実送信の成立を確認したものではありません。' :
     'Git commit の message・trailer・identity を生成する source・program・stdout・argv/context を確定できません。staged filename 検査だけでは commit metadata DATA を検査できません。' + UNKNOWN_OWNER_GATE, gitVerdict(g, verdict));
@@ -2124,6 +2216,14 @@ for (const g of inspectedGits) {
   }
   if (['send-pack', 'http-push'].includes(g.sub)) {
     deny(`git ${g.sub} の送信先と対象履歴は、このガードの supported inspection 外で確認できません (fail-closed)。owner に対象・操作・source と不明点を確認してください。`);
+  }
+  if (g.sub === 'imap-send' && !imapSendRole(g).terminal) {
+    const invocation = gitInvocationContexts.get(g);
+    const verdict = stdinPayloadVerdict(invocation, invocationSources.get(invocation) || []) || 'UNKNOWN';
+    deny(verdict === 'FORBIDDEN' ?
+      'Git imap-send が読む stdin の同じ source 内に、禁止された secret filename の読取が結び付いています。mail の妥当性や実送信の成立を確認したものではありません。' :
+      'Git imap-send の stdin・mail input・設定・宛先・認証の実行条件を検査できません。同目的・同条件を保つ対応済みの送信形式がなければ owner に対象・操作・cwd/env/config/source と不明点を確認してください。' + UNKNOWN_OWNER_GATE,
+    gitVerdict(g, verdict));
   }
   if (g.sub === 'push' && g.incomplete) {
     deny('xargs / find などの入力から git push に追加される引数は、egress ガードで宛先を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
