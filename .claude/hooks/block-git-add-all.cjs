@@ -45,47 +45,91 @@ function isNoVerifyOption(text) {
 }
 
 /**
- * Find no-verify options in non-commit calls without confusing known push/merge/config values with flags.
- * Required option values stay values even when quoted text begins with --no-veri; -- ends options.
- * Other subcommands retain conservative checking where no option-value grammar is available.
+ * Classify non-commit no-verify arguments as FORBIDDEN, UNKNOWN, or no matching refusal.
+ * Trust only proven single-word scalar values; required option values remain DATA and -- ends options.
+ * Unresolved option names, splitting values, and optional-empty short attachments leave argv unknown.
  */
 function hasNoVerifyOption(g) {
   const longValues = g.sub === 'push' ? ['repo', 'receive-pack', 'exec', 'recurse-submodules', 'push-option']
     : g.sub === 'merge' ? ['message', 'file', 'strategy', 'strategy-option', 'cleanup', 'into-name']
-      : g.sub === 'config' ? ['default'] : [];
-  const shortValues = g.sub === 'push' ? 'o' : g.sub === 'merge' ? 'mFsX' : '';
+      : g.sub === 'config' ? ['file', 'blob', 'type', 'default', 'value', 'url', 'comment']
+        : g.sub === 'branch' ? ['format', 'sort', 'set-upstream-to']
+          : ['add', 'stage'].includes(g.sub) ? ['chmod', 'unified', 'inter-hunk-context', 'pathspec-from-file'] : [];
+  const shortValues = g.sub === 'push' ? 'o' : g.sub === 'merge' ? 'mFsX'
+    : g.sub === 'config' ? 'fbt' : g.sub === 'branch' ? 'u' : ['add', 'stage'].includes(g.sub) ? 'U' : '';
+  // These built-in operations do not expose a no-verify hook bypass. Their unresolved
+  // values remain the responsibility of the existing config/path/action guards.
+  const unknownCanSkipHooks = !['config', 'branch', 'remote', 'add', 'stage'].includes(g.sub);
+  const maySplit = (word) => word && (word.dynamic || word.text.includes('\0')) && word.dynamicMaySplit !== false;
   for (let k = 0; k < g.args.length; k++) {
-    const text = g.args[k].text;
-    if (text === '--') break;
-    if (isNoVerifyOption(text)) return true;
+    const original = g.args[k];
+    const proven = typeof original.literalValue === 'string' && original.dynamicMaySplit === false &&
+      !original.literalValue.includes('\0');
+    const word = proven ? { ...original, text: original.literalValue, dynamic: false } : original;
+    const text = word.text;
+    const unknown = word.dynamic || text.includes('\0');
+    if (maySplit(word)) {
+      if (unknownCanSkipHooks) return 'UNKNOWN';
+      continue;
+    }
+    if (text === '--' && !unknown) break;
+    if (isNoVerifyOption(text)) {
+      if (!unknown) return 'FORBIDDEN';
+      if (unknownCanSkipHooks) return 'UNKNOWN';
+      continue;
+    }
     if (text.startsWith('--')) {
       const eq = text.indexOf('=');
       const name = text.slice(2, eq < 0 ? undefined : eq);
       const matches = longValues.filter((option) => option.startsWith(name));
-      if (eq < 0 && (longValues.includes(name) || matches.length === 1)) k++;
+      if (!name.includes('\0') && (longValues.includes(name) || matches.length === 1)) {
+        if (eq < 0) {
+          if (unknownCanSkipHooks && (unknown || maySplit(g.args[k + 1]))) return 'UNKNOWN';
+          k++;
+        }
+        continue; // An attached =value keeps its value slot even when empty.
+      }
+      if (unknown && unknownCanSkipHooks) return 'UNKNOWN';
       continue;
     }
     if (text.startsWith('-')) {
+      let consumed = false;
       for (let p = 1; p < text.length; p++) {
+        if (text[p] === '\0') {
+          if (unknownCanSkipHooks) return 'UNKNOWN';
+          break;
+        }
         // merge -S consumes an optional attached key, so later letters are not short flags.
-        if (g.sub === 'merge' && text[p] === 'S') break;
+        if (g.sub === 'merge' && text[p] === 'S') { consumed = true; break; }
         if (shortValues.includes(text[p])) {
-          if (p === text.length - 1) k++;
+          if (p === text.length - 1) {
+            if (unknownCanSkipHooks && maySplit(g.args[k + 1])) return 'UNKNOWN';
+            k++;
+          } else if (text[p + 1] === '\0') {
+            // -o"$VALUE" may become -o and consume the next word if VALUE is empty.
+            if (unknownCanSkipHooks) return 'UNKNOWN';
+          }
+          consumed = true;
           break;
         }
       }
+      if (unknown && !consumed && unknownCanSkipHooks) return 'UNKNOWN';
+      continue;
     }
+    if (unknown && text.startsWith('\0') && unknownCanSkipHooks) return 'UNKNOWN';
   }
-  return false;
+  return null;
 }
 
 // shell の引用・escape を戻した語でも見る（--no-'verify' なども同じ option）。
 // 読取 subcommand の検索文字列等は hook 回避 option ではない。既存の raw 判定は上に残す。
 for (const g of insp.gits) {
-  const noVerify = g.sub === 'commit' ? guard.parseCommitArgs(g.args).noVerify :
+  const category = g.sub === 'commit' ? guard.parseCommitArgs(g.args).noVerify ? 'FORBIDDEN' : null :
     !guard.READ_ONLY_SUBS.has(g.sub) && hasNoVerifyOption(g);
-  if (noVerify) {
-    deny('解析した `--no-verify` option は禁止です（hook バイパス防止 / CLAUDE.md）。フックを通して実行してください。', 'FORBIDDEN');
+  if (category) {
+    deny(category === 'FORBIDDEN'
+      ? '解析した `--no-verify` option は禁止です（hook バイパス防止 / CLAUDE.md）。フックを通して実行してください。'
+      : 'git の引数が option か、消費値から追加 argv が生まれるかを確定できません。対象・操作・引数と不明点を owner へ確認してください。', category);
   }
 }
 

@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の R15 までに採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。R11 / R12 / R13 / R14 の取得時刻・source を付した測定は履歴として残し、R15 の新 source の確認へ持ち越さない。
+この文書は PR #191 の R18 までに採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -319,6 +319,28 @@ CodeRabbitが追加指摘した試験器具の固定 `/private/tmp` / `/usr/bin/
 R16の固定source（common `addb1e95` / egress `5233b213`）は2026-10-13 20:06:20 JSTに **3795/3795、broken 0、hash不変**。旧3764定義の入力・期待値をすべて保持し31件を追加した。同じ3795入力で旧5eaは18判定差、理由だけの差0、broken 0。公開L1 45 / deny API 6 / filename parity 8も全59契約が成功。3つの正確なGH生成値witnessはegress自身がFORBIDDENで停止し、共通value edgeだけを外すとALLOWへ戻った。literal / file / stdin / metadata対照を維持した。差は独立した漏えい件数ではない。
 
 新sourceのCLI2.1.296は **5試行 / 4実入口PASS / 0FAIL / 1NOT_EXERCISED**。literal本文とexact scalar本文は許可され、networkを使わないGH stubのDUMMY markerだけが期待どおり増えた。file本文はFORBIDDEN、未確定selector sourceはUNKNOWNで停止し、HEAD / refs / index / status / DUMMY files / object inventories / 他markersは不変。秘密filenameの生成本文1例はAPI safeguardがBash / hookより前に止めたためguard成功へ加えない。実GH送信・auth・server・production全lifecycleは測っていない。R15の10試行 / 8PASSを新sourceへ持ち越さない。新head CI / fresh reviewは別に取得する。
+
+## R18: no-verify の実 option と未確定 argv の境界
+
+R18 の変更対象は、既存の非commit側の no-verify scanner である。commit の `-n` と長い no-verify option、read-only の DATA、raw backstop は既存の役割を維持する。scanner は shell parser が保持した word の見かけだけでなく、NUL を含まない string の `literalValue` と `dynamicMaySplit === false` の値の証明も使う。実 option を読める、split / glob / brace 等で追加 argv にならない条件に限り、引用を戻した値で option・消費値・terminator の役割を決める。たとえば `OPT=--no-veri; git push origin "$OPT"` のような prior assignment は、既知の単一語が hook 回避 option になる入力として扱う。`OPT=… git push … "$OPT"` という同じ command の prefix assignment は、argument 展開がその新値を見る証明にはならないため、この例の代わりに使わない。
+
+| 条件 | no-verify 判定 | 通常作業への影響・出口 |
+|---|---|---|
+| 実 option の役割で確認した `--no-veri` 等の guarded no-verify 形 | FORBIDDEN / `[禁止]` | hook を維持して同じ操作を行う。hook 回避を含む目的に対応する代替はない |
+| push / merge 等で未解決の argv が hook 回避 option・terminator・別の境界を選び得る | UNKNOWN / `[判断不能]` | quoted `"$REF"` も、単一語というだけでは option でない証明にならない。同じ ref・対象・実行条件を保てる literal、または対応する既知値の証明へ書き換えられる場合だけ再検査する |
+| literal または値の証明がある、実 option terminator `--` | この後の operand を no-verify option としない | DATA の中に `--` が見えるだけでは terminator の証明にしない。他の target / source / payload 条件は残る |
+| 対応する option が消費する、確認した単一語 DATA | no-verify option と混同しない | DATA の綴りが option に見えても、実役割を保つ。他の message / helper / push-option DATA の検査は別に必要 |
+| 未解決の短い attached `-o"$VALUE"` と、長い `--push-option="$VALUE"` | 前者は空値で裸の `-o` になり次の語を消費し得るため UNKNOWN。後者は `=` が value slot を固定するため、この scanner では DATA | 同じ値・option の役割を保てる正確な長い形式、または非空の既知値の証明を検討する。push option の outbound DATA の検査を解除する例外ではない |
+| 消費値が語分割・glob / brace 等で追加 argv を作り得る | UNKNOWN / `[判断不能]` | 最初の語が option に消費されても、余分な語が hook 回避 option になり得る。単一語を保ち同じ値を確認できる対応形式がなければ owner へ |
+| config / branch / remote / add / stage の未解決値 | これらの built-in は no-verify hook 回避を提供しないため、この未知値の条件では新しく停止しない | 既存の設定・action・path 等の担当条件に残す。確認した明示 no-verify の禁止は維持し、他のガードの ALLOW や保護成立を推定しない |
+
+これは no-verify の境界に対する局所的な fail-closed であり、全 push や全 shell の一括禁止を加えるものではない。通常の `git push origin "$REF"` でも未解決値が `--no-veri` を選び得るため停止する場合がある。実 `--` を置く対応形式を検討する場合も、その位置・対象・目的が同じであることを確認し、cwd / env / config / source / transport、他の protected operation の判定を解除しない。既存の raw backstop が UNKNOWN で先に停止する形も維持するため、表の FORBIDDEN を必ず最初の理由として返す約束ではない。
+
+同じ目的を対応形式にできなければ、対象・操作・argv・cwd・env / config / source と未確認点を owner に渡す。個別操作の了承を hook 無効化の了承へ広げず、別場所へのコピーや別ツール経由を承認済みの代替にしない。担当は既存の add-all module の no-verify 判定であり、設定の conditional Git 入口と全 Bash egress の担当関係は変更しない。必要な egress 自身の停止と実 dispatch は、新 source の L2 / L3 で別に確認する。
+
+**R18 の直接入力測定（2026-10-13 23:09:38 JST）:** 新 source の統合 suite は **3834/3834、broken 0、hash 不変**。source は add-all `215ca77a`、common `addb1e95`、egress `5233b213`、secret `a78a0acd`。旧3795件の入力を保持し、3793定義は不変、39件を追加した。最初の比較で旧期待との不一致が28対照あり、26対照の候補過剰停止は既存の DATA / 非hook回避 operation の役割を保つよう修復した。`EGN16` / `EGN18` の2対照は、未解決 push argv が option を選び得るため、ALLOW から UNKNOWN へ採用方針を変更した。公開 L1 45・filename parity 8と別実行の deny API 6が成功し、使い捨て source の単一判定を外す18対照も成功した。既知値の option 判定だけを外すと正確な witness が通り、未確定語の判定だけを外すと対応する UNKNOWN 入力が通る。静的な禁止・正常対照・他の独立した判定は保持した。比較の差を独立した脆弱性・実漏えいの件数にしない。CI / fresh review は公開後に別に取得する。
+
+**R18 の実入口:** CLI2.1.296、同じ固定 source で、未確定 push argv は実際の全3 hook dispatch と add-all の UNKNOWN、保護対象の状態不変を確認した。既知 ref と消費値 DATA の2正常対照は exact Bash・全3 hook ALLOW・Git push の local DUMMY marker を確認したが、最初の試験は予期しない GH marker により FAIL と記録した。追加 trace（23:23:29 JST）は Claude 自身の `gh pr view --json url` を、呼出し元と4引数の hash で特定した。この特定の metadata query だけを fixture の期待値へ加え、保存済み2対照を23:32:12 JSTに再評価した結果は PASS。元の FAIL を保存し、再実行の成功と数えない。その他の marker、HEAD / refs / index / status / DUMMY files / object database は不変である。実 Git push / GH / transport は起動せず、stub はローカル DUMMY 応答だけを返す。正確な既知 no-verify witness は API safeguard が Bash / hook より前に停止したため NOT_EXERCISED。再評価後に行った正常対照の追加試行も、Bash dispatch 前に時間上限へ達したものは NOT_EXERCISED として別に残す。trust / model / bypass の変更は行わない。上記 R16 の結果は履歴であり、R18 の試験結果へ持ち越さない。
 
 ## 試験を 3 層に分ける
 
