@@ -443,7 +443,7 @@ const CURL_LONG_NAMES = [...CURL_VALUE_LONG, ...CURL_FLAG_LONG];
 function curlReadsUpload(words, incomplete = false) {
   // xargs/find can provide an unseen filename to a trailing file-reading option.
   const fileOptions = new Set(['upload-file', 'data', 'data-ascii', 'data-binary', 'json',
-    'header', 'proxy-header', 'data-urlencode', 'form', 'variable']);
+    'header', 'proxy-header', 'data-urlencode', 'url-query', 'form', 'variable']);
   const variables = new Map();
   let definitionVersion = 0;
   let unknownFileVersion = 0;
@@ -499,6 +499,8 @@ function curlReadsUpload(words, incomplete = false) {
     if (option === 'upload-file') return Boolean(value);
     if (['data', 'data-ascii', 'data-binary', 'json', 'header', 'proxy-header'].includes(option)) return value.startsWith('@');
     if (option === 'data-urlencode') return value.includes('@');
+    // curl's url_query() selects raw '+' first, then data_urlencode() selects '=' before '@'.
+    if (option === 'url-query') return !value.startsWith('+') && !value.includes('=') && value.includes('@');
     if (option === 'form') return /=\s*[@<]/.test(value);
     return false;
   };
@@ -511,6 +513,7 @@ function curlReadsUpload(words, incomplete = false) {
       const fullName = t.slice(2, eq < 0 ? undefined : eq);
       const expanding = fullName.startsWith('expand-');
       const name = expanding ? fullName.slice(7) : fullName;
+      if (optionWord.dynamic && /^url-(?:query)?\0/.test(name)) return 'UNKNOWN';
       const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter((option) => option.startsWith(name));
       if (matches.length !== 1 || !CURL_VALUE_LONG.has(matches[0])) continue;
       const option = matches[0];
@@ -519,7 +522,11 @@ function curlReadsUpload(words, incomplete = false) {
       if (value) {
         if (option === 'variable') { variableDefinition(value.text, expanding, value); continue; }
         const source = expanding ? expanded(value.text) : { text: value.text, file: false };
-        const verdict = !incomplete && knownWord(optionWord) && knownWord(value) && !source.unknown ? 'FORBIDDEN' : 'UNKNOWN';
+        const verdict = !incomplete && knownWord(optionWord) && knownWord(value) && !source.unknown &&
+          (option !== 'url-query' || name === option) ? 'FORBIDDEN' : 'UNKNOWN';
+        // A scalar '+' or '=' proves inline query syntax; an unknown prefix or argv count does not.
+        if (option === 'url-query' && ((value.dynamic && value.dynamicMaySplit !== false) ||
+            (!source.file && !source.text.startsWith('+') && !source.text.includes('=') && source.text.includes('\0')))) return 'UNKNOWN';
         if (expanding && outbound.has(option) && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) return verdict;
         if ((source.file && outbound.has(option)) || payload(option, source.text)) return verdict;
       } else if (incomplete && fileOptions.has(option)) return 'UNKNOWN';
@@ -956,6 +963,17 @@ function collectNetworkInvocations(inspection, depth = 0) {
   inspectedGits.push(...inspection.gits);
   for (const g of inspection.gits) gitInvocationContexts.set(g,
     inspection.invocations.find((invocation) => invocation.order === g.invocationOrder));
+  const activeCommits = inspection.gits.filter(g => g.sub === 'commit' && !guard.parseCommitArgs(g.args).terminal);
+  for (const g of inspection.gits) {
+    const decision = guard.gitObjectInputDecision(g);
+    if (decision) deny(decision.reason, gitVerdict(g, decision.category));
+    const pager = guard.grepPagerEffect(g);
+    const beforeCommit = activeCommits.some(commit => !Number.isInteger(g.invocationOrder) ||
+      !Number.isInteger(commit.invocationOrder) || g.invocationOrder <= commit.invocationOrder);
+    if (beforeCommit && (pager.opensFiles || pager.unknown)) {
+      deny('commit 前の git grep が開く外部 pager または argv/source の選択を検査できず、index の維持を確認できません。pager を開かない対応済みの同目的形式にできなければ owner に対象・操作・cwd/env/config/source を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
+    }
+  }
   const result = [];
   for (const invocation of inspection.invocations) {
     if (invocation.nonExec || invocation.definitionName) continue;

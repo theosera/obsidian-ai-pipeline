@@ -8,7 +8,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { inspect, parseCommitArgs, parseAddArgs, isSecretPath } = require('../lib/git-guard-common.cjs');
+const { inspect, parseCommitArgs, parseAddArgs, isSecretPath, grepPagerEffect, parseGitObjectRoute, parseMergeMessageArgs } = require('../lib/git-guard-common.cjs');
 
 /** Obtain the single supported Git invocation without selecting a fallback or guessing its target. */
 function singleGit(source) {
@@ -17,6 +17,29 @@ function singleGit(source) {
   assert.equal(analysis.gits.length, 1);
   return analysis.gits[0];
 }
+
+test('merge file-source metadata respects consumed DATA, end-of-options and source ambiguity', () => {
+  const file = parseMergeMessageArgs(singleGit('git merge -qF.env topic').args);
+  assert.equal(file.messageFiles[0].word.text, '.env');
+  assert.equal(file.messageFileUnknown, false);
+  assert.deepEqual(parseMergeMessageArgs(singleGit('git merge -m .env topic').args).messageFiles, []);
+  assert.deepEqual(parseMergeMessageArgs(singleGit('git merge -s -F.env -- topic -F .env').args).messageFiles, []);
+  const stdin = parseMergeMessageArgs(singleGit('git merge -F - topic').args);
+  assert.equal(stdin.messageFiles[0].stdin, true);
+  assert.equal(stdin.messageFileUnknown, true);
+  const mixed = parseMergeMessageArgs(singleGit('git merge -F public.txt -m ordinary topic').args);
+  assert.equal(mixed.messageFileSelectionUnknown, true);
+});
+
+test('stash route metadata separates selected queries from snapshots and consumed help-like DATA', () => {
+  assert.equal(parseGitObjectRoute(singleGit('git stash')).mode, 'write');
+  assert.equal(parseGitObjectRoute(singleGit('git stash push -a')).mode, 'write');
+  assert.equal(parseGitObjectRoute(singleGit('git stash list --format --help')).mode, 'query');
+  assert.equal(parseGitObjectRoute(singleGit('git stash show stash@{0}')).mode, 'query');
+  assert.equal(parseGitObjectRoute(singleGit('git stash list --output=public.txt')).mode, 'unknown');
+  assert.equal(parseGitObjectRoute(singleGit('git stash push -m --help')).mode, 'write');
+  assert.equal(parseGitObjectRoute(singleGit('git stash push --help')).mode, 'terminal');
+});
 
 test('global directory and consumed commit messages retain their roles', () => {
   const git = singleGit('git -C /analysis/repo commit --message "--no-verify" -- a.txt');
@@ -165,4 +188,42 @@ test('actual blanket flags differ from chmod values, negation and operands after
   assert.equal(consumed.actualBlanket, false);
   assert.equal(consumed.runtimeBlanket, false);
   assert.deepEqual(consumed.pathspecs.map((word) => word.literalPath), ['a.txt']);
+});
+
+test('message-file metadata selects file argv without promoting inline DATA or Git pathspec escapes', () => {
+  const file = parseCommitArgs(singleGit('git commit -qF.env').args);
+  assert.equal(file.messageFiles[0].kind, 'file');
+  assert.equal(file.messageFiles[0].word.text, '.env');
+  assert.equal(file.messageFileUnknown, false);
+  assert.equal(file.messageFileSelectionUnknown, false);
+  assert.deepEqual(parseCommitArgs(singleGit('git commit -m .env').args).messageFiles, []);
+  const literal = parseCommitArgs(singleGit(String.raw`git commit -F "\.env"`).args);
+  assert.equal(literal.messageFiles[0].word.text, '\\.env');
+  const stdin = parseCommitArgs(singleGit('git commit -F /dev//stdin').args);
+  assert.equal(stdin.messageFiles[0].stdin, true);
+  assert.equal(stdin.messageFileUnknown, true);
+  const mixed = parseCommitArgs(singleGit('git commit -t .env -m ordinary').args);
+  assert.equal(mixed.messageFileSelectionUnknown, true);
+});
+
+test('grep opener metadata distinguishes selected helpers, consumed patterns and a proven reset', () => {
+  assert.equal(grepPagerEffect(singleGit('git grep -O/bin/echo -e ordinary')).opensFiles, true);
+  assert.equal(grepPagerEffect(singleGit('git -P grep -O ordinary')).opensFiles, false);
+  assert.equal(grepPagerEffect(singleGit('git -P grep -O/bin/echo ordinary')).opensFiles, true);
+  assert.equal(grepPagerEffect(singleGit('git grep -e --open-files-in-pager -- a.txt')).opensFiles, false);
+  const reset = grepPagerEffect(singleGit('git grep -O/bin/echo --no-open-files-in-pager ordinary'));
+  assert.equal(reset.opensFiles, false);
+  assert.equal(reset.unknown, false);
+});
+
+test('notes/tag metadata retains selected file sources and exact query boundaries', () => {
+  const note = parseGitObjectRoute(singleGit('git notes --ref refs/notes/check add -F.env HEAD'));
+  assert.equal(note.mode, 'write');
+  assert.equal(note.messageFiles[0].word.text, '.env');
+  assert.equal(parseGitObjectRoute(singleGit('git tag --list --format=-F.env')).mode, 'query');
+  assert.equal(parseGitObjectRoute(singleGit('git tag --list -F.env')).mode, 'unknown');
+  assert.equal(parseGitObjectRoute(singleGit('git notes --ref -h add -m ordinary HEAD')).mode, 'write');
+  const dash = parseGitObjectRoute(singleGit('git tag -a -F-h dummy'));
+  assert.equal(dash.mode, 'write');
+  assert.equal(dash.messageFiles[0].word.text, '-h');
 });

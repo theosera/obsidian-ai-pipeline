@@ -40,6 +40,11 @@ if (!cmd) process.exit(0);
 const insp = guard.inspect(cmd);
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'secret ガード'));
 const gits = insp.gits;
+for (const g of gits) {
+  const decision = guard.gitObjectInputDecision(g);
+  if (decision) deny(decision.reason, decision.category);
+}
+
 /**
  * config / branch / remote の、引数で決まる読取 action を判定する。
  * 知っている読取 action / option の組合せだけ通し、書込 option や option にも
@@ -340,6 +345,16 @@ if (commits.length) {
       deny(
         `commit 前の git に環境変数 ${variable} を設定しています。外部 helper が検査後の index を書き換えうるためブロックしました (fail-closed)。\n` +
         'helper を無効にするか、読取コマンドと commit を別々のコマンドとして実行してください。',
+      );
+    }
+    const grep = guard.grepPagerEffect(g);
+    if (grep.opensFiles || grep.unknown) {
+      deny(
+        (grep.unknown
+          ? 'commit 前の git grep の argv から、file-opening pager の選択・実行条件を確かめられません。検査後の index が維持されるか判断できないため停止しました。'
+          : 'commit 前の git grep が matching file を開く外部 pager の副作用を検査できません。検査後の index が維持されるか判断できないため停止しました。') +
+        '\n検索結果を読む同じ目的を保てる場合だけ、pager を開かない対応形に直してください。それ以外は対象・操作・cwd・env/config/source と不明点を owner に確認してください。個別操作の承認は hook 無効化の許可ではありません。',
+        'UNKNOWN',
       );
     }
   }

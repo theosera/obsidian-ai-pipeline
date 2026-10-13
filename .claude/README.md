@@ -71,9 +71,13 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
-`block-secret-git.cjs` と `block-git-add-all.cjs` は `if: "Bash(git *)"` に該当する入力だけで動き、`block-secret-egress.cjs` は全 Bash 入力で動く。共通 parser で引用・escape・選ばれた実行 source を検査し、確定できない pathspec、設定 root、送信先や実行 source は該当経路を fail-closed とする。
+`block-secret-git.cjs` と `block-git-add-all.cjs` の設定には `if: "Bash(git *)"` の記述があり、`block-secret-egress.cjs` は全 Bash 入力を対象にする。共通 parser で引用・escape・選ばれた実行 source を検査し、確定できない pathspec、設定 root、送信先や実行 source は該当経路を fail-closed とする。設定の記述と実際の dispatch 測定を分ける。旧 a464 の CLI 2.1.296 測定では、引用 Git の例も含めて全 3 wrapper が起動した。
 
 従来許可されていた未知の変数 / glob による add、環境の消去・差替えを伴う Git の書込みなども拒否される場合がある。許可する入力、安全な書換え、対応範囲と test command は [Git ガードの説明](../docs/security/git-command-guards.md)を参照する。
+
+R11 では、通常の release tag 作成・削除・署名・検証と notes 更新も `[判断不能]` で停止する。対応 static query は別扱いだが、同目的の writer 代替は未対応である。commit の `-F` / `-t` と merge の実 `-F` / `--file` は単一対応 literal filename を検査し、未知 path・stdin / FD・複数 source / override は停止する。単一 public filename の許可は内容の安全認証ではない。commit 前の grep pager と curl `--url-query` の file 入力にも制限がある。必要な更新・source を対応形式にできなければ、対象と条件を owner に確認する。
+
+通常の stash push / save / apply / pop や作成・管理・削除も、input / object / ref / index / working tree の効果が staged 検査の範囲外のため `[判断不能]` で停止する。対応 static list / show / actual help は読取対照であり、同目的の snapshot / writer 代替は未対応である。必要な操作は input / tree / ref の対象・操作・cwd / env / config / source と未確認内容を owner に渡し、個別操作承認を hook 無効化の承認に広げない。
 
 停止理由の `[禁止]` は確認した policy 禁止、`[判断不能]` は対象・設定・source などの必要情報不足を表す。raw pattern の一致だけで実際の秘密送信を確認したとは扱わない。無出力も操作全体の安全認証や owner 承認ではなく、範囲外の経路を保護済みと記録しない。対応済みの代替がない操作は対象・実行条件・不明点を owner に確認し、hook の無効化や別の場所での実行を自動的な代替にしない。
 

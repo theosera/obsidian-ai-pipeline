@@ -432,6 +432,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
     if (!cur) return;
     cur.raw = src.slice(cur.start, i);
     cur.braceExpanded = hasBraceExpansion(cur.braceSource);
+    cur.globExpanded = /[*?\[]/.test(cur.braceSource);
     cur.tildeExpanded = /^~/.test(cur.braceSource) ||
       /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=~/.test(cur.braceSource);
     delete cur.braceSource;
@@ -2200,9 +2201,33 @@ function resolveCommitLong(name) {
   return c.length === 1 ? c[0] : null;
 }
 
+/** Describe a selected message-file argv value without reading it or applying Git pathspec escapes. */
+function messageFileSource(kind, value, attached = false) {
+  const word = value && typeof value.literalValue === 'string'
+    ? { ...value, text: value.literalValue, dynamic: false, dynamicMaySplit: false } : value || null;
+  const text = word && word.text;
+  const normalized = typeof text === 'string' ? path.posix.normalize(text) : null;
+  const descriptor = normalized && /^(?:\/dev\/fd|\/proc\/(?:self|thread-self|[0-9]+)\/fd)\/[0-9]+$/.test(normalized);
+  const stdin = !!word && !word.dynamic && ((kind === 'file' && text === '-') ||
+    normalized === '/dev/stdin' || (descriptor && /\/0$/.test(normalized)));
+  const unknown = !word || word.dynamic || word.dynamicMaySplit || word.ansiCUnknown ||
+    word.braceExpanded || word.tildeExpanded || word.globExpanded || stdin || descriptor;
+  return { kind, word, stdin, attached, unknown: !!unknown };
+}
+
 /** Identify commit-time staging and pathspecs while accepting single-word dynamic option values. */
 function parseCommitArgs(words) {
-  const r = { all: false, patch: false, fromFile: false, noVerify: false, terminal: false, dynamic: false, unknown: [], pathspecs: [] };
+  const r = { all: false, patch: false, fromFile: false, noVerify: false, terminal: false, dynamic: false, unknown: [], pathspecs: [],
+    messageFiles: [], messageFileUnknown: false, messageFileSelectionUnknown: false };
+  let inlineMessage = false;
+  let reusedMessage = false;
+  let sourceOverride = false;
+  const finish = () => {
+    r.messageFileUnknown = r.dynamic || r.unknown.length > 0 || r.messageFiles.some((source) => source.unknown);
+    r.messageFileSelectionUnknown = r.messageFiles.length > 1 ||
+      (r.messageFiles.length > 0 && (inlineMessage || reusedMessage || sourceOverride));
+    return r;
+  };
   let k = 0;
   let afterDD = false;
   while (k < words.length) {
@@ -2219,7 +2244,7 @@ function parseCommitArgs(words) {
     if (t === '--') { afterDD = true; k++; continue; }
     if (t === '--help' && !w.dynamic) {
       if (!r.dynamic && !r.unknown.length) { r.terminal = true; r.helpKind = 'manual'; }
-      return r;
+      return finish();
     }
     if (t.startsWith('--')) {
       const eq = t.indexOf('=');
@@ -2229,12 +2254,19 @@ function parseCommitArgs(words) {
       if (!full) { r.unknown.push(t); k++; continue; }
       const base = full.startsWith('no-') && !COMMIT_LONG[full] ? full.slice(3) : full;
       const kind = COMMIT_LONG[base] || 'f';
+      if (full === 'message') inlineMessage = true;
+      if (['reedit-message', 'reuse-message'].includes(full)) reusedMessage = true;
+      if (['no-file', 'no-template', 'no-message', 'no-reedit-message', 'no-reuse-message'].includes(full)) sourceOverride = true;
       if (full === 'all') r.all = true;
       if (full === 'patch' || full === 'interactive') r.patch = true;
       if (full === 'pathspec-from-file') r.fromFile = true;
       if (full === 'no-verify') r.noVerify = true;
       const takesValue = !full.startsWith('no-') && (kind.startsWith('v') || kind.startsWith('o'));
       if (w.dynamic && !takesValue) r.dynamic = true;
+      if (full === 'file' || full === 'template') {
+        const value = eq < 0 ? words[k + 1] : { ...w, text: t.slice(eq + 1) };
+        r.messageFiles.push(messageFileSource(full, value, eq >= 0));
+      }
       if (kind.startsWith('v') && !full.startsWith('no-') && eq < 0) {
         if (words[k + 1] && words[k + 1].dynamicMaySplit) r.dynamic = true;
         k += 2; continue;
@@ -2249,6 +2281,12 @@ function parseCommitArgs(words) {
         // 不明な先行引数が -m 等になると、この -h は値として消費されうる。
         if (ch === 'h') { if (!r.dynamic && !r.unknown.length) { r.terminal = true; r.helpKind = 'stdout'; } break; }
         if (COMMIT_SHORT_VALUE.has(ch)) {
+          if (ch === 'm') inlineMessage = true;
+          if (ch === 'c' || ch === 'C') reusedMessage = true;
+          if (ch === 'F' || ch === 't') {
+            const value = p + 1 < t.length ? { ...w, text: t.slice(p + 1) } : words[k + 1];
+            r.messageFiles.push(messageFileSource(ch === 'F' ? 'file' : 'template', value, p + 1 < t.length));
+          }
           if (p === t.length - 1) {
             if (words[k + 1] && words[k + 1].dynamicMaySplit) r.dynamic = true;
             k++; // 値は次の語
@@ -2270,7 +2308,131 @@ function parseCommitArgs(words) {
     if (w.dynamic) r.dynamic = true; else r.pathspecs.push(t);
     k++;
   }
-  return r;
+  return finish();
+}
+
+/** Select merge's real file-message operands while keeping option values and refs as DATA. */
+function parseMergeMessageArgs(words) {
+  const r = { terminal: false, messageFiles: [], messageFileUnknown: false, messageFileSelectionUnknown: false };
+  const required = new Set(['file', 'message', 'strategy', 'strategy-option', 'into-name', 'cleanup']);
+  const optional = new Set(['log', 'gpg-sign']);
+  const flags = new Set(['stat', 'summary', 'compact-summary', 'squash', 'commit', 'edit', 'ff', 'ff-only',
+    'rerere-autoupdate', 'verify-signatures', 'abort', 'quit', 'continue', 'allow-unrelated-histories',
+    'progress', 'autostash', 'overwrite-ignore', 'signoff', 'no-verify', 'quiet', 'verbose']);
+  const names = [...required, ...optional, ...flags];
+  names.push(...names.filter((name) => !['file', 'ff-only'].includes(name)).map((name) =>
+    name.startsWith('no-') ? name.slice(3) : `no-${name}`));
+  let unknown = false;
+  let inlineMessage = false;
+  let sourceOverride = false;
+  let afterDD = false;
+  const finish = () => {
+    r.messageFileUnknown = unknown || r.messageFiles.some((source) => source.unknown);
+    r.messageFileSelectionUnknown = r.messageFiles.length > 1 ||
+      (r.messageFiles.length > 0 && (inlineMessage || sourceOverride));
+    return r;
+  };
+  const consume = (option, value, carrier, attached, emptyCanShift = false) => {
+    if (!value || value.dynamicMaySplit || value.braceExpanded || value.globExpanded || value.tildeExpanded) unknown = true;
+    if (option === 'message') inlineMessage = true;
+    if (option === 'file') {
+      const selected = value && attached ? { ...value } : value;
+      if (selected && attached) delete selected.literalValue;
+      r.messageFiles.push(messageFileSource('file', selected, attached));
+    }
+    // An attached empty expansion can leave a required short option without its value.
+    if (emptyCanShift && carrier.dynamic && !value.text.replaceAll(DYN, '')) unknown = true;
+  };
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const t = w.text;
+    if (afterDD) continue;
+    if (w.dynamicMaySplit || w.ansiCUnknown || w.braceExpanded || w.globExpanded || w.tildeExpanded) {
+      unknown = true;
+      continue;
+    }
+    if (t === '--') { afterDD = true; continue; }
+    if (t === '--help' && !w.dynamic) { if (!unknown) r.terminal = true; return finish(); }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = t.slice(2, eq < 0 ? undefined : eq);
+      const matches = names.filter((candidate) => candidate.startsWith(name));
+      const option = names.includes(name) ? name : matches.length === 1 ? matches[0] : null;
+      if (!option || name.includes(DYN)) { unknown = true; continue; }
+      if (option === 'no-message') sourceOverride = true;
+      if (required.has(option)) {
+        if (eq >= 0) consume(option, { ...w, text: t.slice(eq + 1) }, w, true);
+        else consume(option, words[++i], w, false);
+      } else if (optional.has(option)) {
+        if (eq >= 0 && (w.dynamicMaySplit || w.ansiCUnknown)) unknown = true;
+      } else if (eq >= 0 || w.dynamic) unknown = true;
+      continue;
+    }
+    if (t.startsWith('-') && t !== '-') {
+      for (let j = 1; j < t.length; j++) {
+        const ch = t[j];
+        if (ch === 'h') { if (!unknown) r.terminal = true; return finish(); }
+        const option = { F: 'file', m: 'message', s: 'strategy', X: 'strategy-option' }[ch];
+        if (option) {
+          if (j + 1 < t.length) consume(option, { ...w, text: t.slice(j + 1) }, w, true, i + 1 < words.length);
+          else consume(option, words[++i], w, false);
+          break;
+        }
+        if (ch === 'S') break; // Its key is optional and attached only.
+        if (!['n', 'e', 'q', 'v'].includes(ch) || w.dynamic) { unknown = true; break; }
+      }
+    } else if (w.dynamic) unknown = true;
+  }
+  return finish();
+}
+
+/** Limit stash queries to static, understood read options; every other action stays unsupported. */
+function parseStashRoute(g) {
+  const words = g.args;
+  const empty = { messageFiles: [], messageFileUnknown: false, messageFileSelectionUnknown: false };
+  if (!words.length) return { ...empty, mode: 'write', action: 'push' };
+  const staticWord = (word) => word && !word.dynamic && !word.dynamicMaySplit && !word.ansiCUnknown &&
+    !word.braceExpanded && !word.globExpanded && !word.tildeExpanded;
+  const help = (word) => staticWord(word) && ['-h', '--help'].includes(word.text);
+  if (help(words[0])) return { ...empty, mode: 'terminal', action: null };
+  if (!staticWord(words[0])) return { ...empty, mode: 'unknown', action: null };
+  const action = words[0].text;
+  const writers = new Set(['push', 'save', 'create', 'store', 'import', 'drop', 'clear', 'apply', 'pop', 'branch']);
+  if (writers.has(action)) {
+    return { ...empty, mode: words.length === 2 && help(words[1]) ? 'terminal' : 'write', action };
+  }
+  if (!['list', 'show'].includes(action)) return { ...empty, mode: 'unknown', action };
+  const required = new Set(action === 'list'
+    ? ['format', 'max-count', 'skip', 'date', 'since', 'until', 'author', 'committer', 'grep'] : []);
+  const optional = new Set(action === 'list' ? ['pretty'] : []);
+  const flags = new Set(action === 'list'
+    ? ['oneline', 'reverse', 'no-decorate', 'no-abbrev-commit', 'abbrev-commit', 'all']
+    : ['include-untracked', 'only-untracked', 'no-include-untracked', 'stat', 'shortstat', 'numstat',
+      'name-only', 'name-status', 'summary', 'patch', 'no-patch', 'raw', 'no-ext-diff', 'no-textconv']);
+  let positional = 0;
+  let afterDD = false;
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (!staticWord(w)) return { ...empty, mode: 'unknown', action };
+    const t = w.text;
+    if (afterDD) { positional++; continue; }
+    if (help(w)) return { ...empty, mode: 'terminal', action };
+    if (t === '--') { afterDD = true; continue; }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const option = t.slice(2, eq < 0 ? undefined : eq);
+      if (required.has(option)) {
+        if (eq < 0 && !staticWord(words[++i])) return { ...empty, mode: 'unknown', action };
+      } else if (!optional.has(option) && (!flags.has(option) || eq >= 0)) return { ...empty, mode: 'unknown', action };
+      continue;
+    }
+    if (t.startsWith('-') && t !== '-') {
+      if (action === 'list' && /^-n(?:\d+)?$/.test(t)) {
+        if (t === '-n' && (!staticWord(words[++i]) || !/^\d+$/.test(words[i].text))) return { ...empty, mode: 'unknown', action };
+      } else if (!(action === 'show' && /^-[puz]+$/.test(t))) return { ...empty, mode: 'unknown', action };
+    } else positional++;
+  }
+  return { ...empty, mode: positional > (action === 'show' ? 1 : 0) ? 'unknown' : 'query', action };
 }
 
 const SECRET_PATH_RE = [
@@ -2367,6 +2529,97 @@ function parseAddArgs(words) {
   return result;
 }
 
+/**
+ * Inspect Git grep's file-opening pager selection without executing a search or helper.
+ * Values consumed by -e/-f/context options remain DATA; -O's optional value is attached only.
+ * Git stops parsing options at the first bare operand. Unknown expansion cannot prove that
+ * a later reset/help flag remains an option. A global no-pager disables only the default
+ * file-opening pager, not a pager selected by an explicit -Ovalue/--open-files-in-pager=value.
+ */
+function grepPagerEffect(g) {
+  const result = { opensFiles: false, unknown: false, terminal: false };
+  if (!g || g.sub !== 'grep') return result;
+  if (g.terminal) { result.terminal = true; return result; }
+  if (!Array.isArray(g.args)) { result.unknown = true; return result; }
+  const required = new Set(['context', 'before-context', 'after-context', 'threads', 'max-depth', 'max-count', 'parent-basename']);
+  const flags = [
+    'cached', 'index', 'no-index', 'untracked', 'exclude-standard', 'recurse-submodules',
+    'invert-match', 'ignore-case', 'word-regexp', 'text', 'textconv', 'recursive',
+    'extended-regexp', 'basic-regexp', 'fixed-strings', 'perl-regexp', 'line-number',
+    'column', 'full-name', 'files-with-matches', 'name-only', 'files-without-match',
+    'null', 'only-matching', 'count', 'break', 'heading', 'show-function',
+    'function-context', 'and', 'or', 'not', 'quiet', 'all-match', 'ext-grep', 'debug',
+  ];
+  const names = [...new Set([...flags, ...required, 'color', 'open-files-in-pager',
+    ...[...flags, 'context', 'threads', 'max-count', 'color', 'open-files-in-pager'].map((name) => 'no-' + name)])];
+  const shortFlags = new Set('viaIriwE G F PnhHlLzo cpWq'.replace(/ /g, ''));
+  let selection = null;
+  result.unknown = Boolean(g.incomplete);
+  const value = (word) => {
+    if (!word || word.ansiCUnknown || word.globExpanded || (word.dynamic && word.dynamicMaySplit !== false)) result.unknown = true;
+  };
+  for (let k = 0; k < g.args.length; k++) {
+    const original = g.args[k];
+    const word = typeof original.literalValue === 'string'
+      ? { ...original, text: original.literalValue, dynamic: false, dynamicMaySplit: false } : original;
+    const text = word.text;
+    if (text === '--' && !word.dynamic) break;
+    if (!word.dynamic && ['(', ')'].includes(text)) continue; // Git's nondash expression operators
+    if (word.ansiCUnknown || word.globExpanded) result.unknown = true;
+    if (!word.dynamic && ['--help', '--help-all'].includes(text)) {
+      if (!result.unknown) return { opensFiles: false, unknown: false, terminal: true };
+      break;
+    }
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = names.includes(name) ? [name] : names.filter((candidate) => candidate.startsWith(name));
+      if (!name || matches.length !== 1) { result.unknown = true; continue; }
+      const full = matches[0];
+      if (word.dynamic && word.dynamicMaySplit !== false) result.unknown = true;
+      if (full === 'open-files-in-pager') {
+        selection = eq < 0 ? 'default' : 'explicit';
+      } else if (full === 'no-open-files-in-pager') {
+        if (word.dynamic || eq >= 0) result.unknown = true;
+        else selection = null;
+      } else if (required.has(full)) {
+        value(eq < 0 ? g.args[++k] : word);
+      } else if (full === 'color') {
+        if (eq >= 0) value(word); // optional attached value; the next word remains an operand
+      } else if (word.dynamic || eq >= 0) result.unknown = true;
+      continue;
+    }
+    if (/^-[^-]/.test(text)) {
+      if (/^-\d+$/.test(text) && !word.dynamic) continue;
+      for (let j = 1; j < text.length; j++) {
+        const flag = text[j];
+        if (/\d/.test(flag)) continue; // numeric context shorthand can share a short bundle
+        if ('efABCm'.includes(flag)) {
+          if (j + 1 < text.length) {
+            value(word);
+            if (word.dynamic && !text.slice(j + 1).replaceAll(DYN, '') && k + 1 < g.args.length) result.unknown = true;
+          } else value(g.args[++k]);
+          break;
+        }
+        if (flag === 'O') {
+          selection = j + 1 < text.length ? 'explicit' : 'default';
+          if (word.dynamic && word.dynamicMaySplit !== false) result.unknown = true;
+          break;
+        }
+        if (word.dynamic || !shortFlags.has(flag)) { result.unknown = true; break; }
+      }
+      continue;
+    }
+    if (word.dynamic && (word.dynamicMaySplit !== false || !text || text.startsWith(DYN))) {
+      result.unknown = true;
+      continue;
+    }
+    break; // first proven bare pattern/ref closes Git's option parser
+  }
+  result.opensFiles = selection === 'explicit' || (selection === 'default' && g.pagerDisabled !== true);
+  return result;
+}
+
 /** Recognize config/branch/remote read actions using their option arity, including terminal help. */
 function readOnlyGitMode(g, allowHelp = true, scalarConfigOnly = false) {
   // unquoted expansion や "$@" は追加の action / option を作れる。古い metadata も安全と決めつけない。
@@ -2447,6 +2700,142 @@ function readOnlyGitMode(g, allowHelp = true, scalarConfigOnly = false) {
   return (reader || (g.sub === 'branch' && positional === 0)) && !(scalarConfigOnly && g.sub === 'config' && mayPage);
 }
 
+/** Select supported notes/tag/stash queries and the file operands of object writers. */
+function parseGitObjectRoute(g, parseMessages = parseCommitArgs) {
+  if (g.sub === 'stash') return parseStashRoute(g);
+  if (!['notes', 'tag'].includes(g.sub)) return null;
+  const words = g.args;
+  const files = [];
+  const kinds = [];
+  let unknown = false;
+  let terminal = false;
+  let afterDD = false;
+  let query = false;
+  let mutation = false;
+  let action = null;
+  let positional = 0;
+  let queryModifier = false;
+  let sourceOverride = false;
+  const required = new Set(g.sub === 'notes'
+    ? ['ref', 'file', 'message', 'reuse-message', 'reedit-message', 'separator', 'strategy']
+    : ['file', 'message', 'local-user', 'format', 'sort', 'points-at']);
+  const optional = new Set(g.sub === 'tag'
+    ? ['contains', 'no-contains', 'merged', 'no-merged', 'column', 'no-column', 'color', 'no-color'] : []);
+  const flags = new Set(g.sub === 'notes'
+    ? ['force', 'allow-empty', 'edit', 'stripspace', 'no-stripspace', 'no-separator', 'stdin', 'ignore-missing', 'dry-run', 'verbose', 'quiet', 'commit', 'abort']
+    : ['annotate', 'sign', 'no-sign', 'force', 'delete', 'verify', 'list', 'ignore-case', 'omit-empty', 'create-reflog']);
+  const noteQueries = new Set(['list', 'show', 'get-ref']);
+  const noteWrites = new Set(['add', 'append', 'copy', 'edit', 'merge', 'remove', 'prune']);
+
+  const value = (word, option, attached) => {
+    if (['file', 'message', 'reuse-message', 'reedit-message'].includes(option)) kinds.push(option);
+    if (option !== 'file') { if (word.dynamic) unknown = true; return; }
+    let selected = word;
+    if (attached !== undefined) {
+      selected = { ...word, text: attached };
+      delete selected.literalValue;
+      if (!word.dynamic) selected.literalValue = attached;
+    }
+    files.push(selected);
+  };
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const t = w.text;
+    if (w.dynamic || w.dynamicMaySplit || w.ansiCUnknown || w.braceExpanded || w.globExpanded || w.tildeExpanded) unknown = true;
+    if (afterDD) { positional++; continue; }
+    if (t === '--') { afterDD = true; continue; }
+    if (t === '--help' || t === '-h') { terminal = true; break; }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = t.slice(2, eq < 0 ? undefined : eq);
+      const supported = [...required, ...optional, ...flags, 'no-file', 'no-message', 'no-local-user'];
+      const matches = supported.filter(x => x.startsWith(name));
+      const option = supported.includes(name) ? name : matches.length === 1 ? matches[0] : null;
+      if (!option) { unknown = true; continue; }
+      if (['list'].includes(option)) query = true;
+      if (g.sub === 'notes' && option !== 'ref') queryModifier = true;
+      if (g.sub === 'notes' && option === 'ref' && action !== null) unknown = true;
+      if (['no-file', 'no-message', 'no-local-user'].includes(option)) sourceOverride = true;
+      if (['annotate', 'sign', 'force', 'delete', 'verify', 'create-reflog'].includes(option)) mutation = true;
+      if (required.has(option)) {
+        if (eq >= 0) value(w, option, t.slice(eq + 1));
+        else if (words[i + 1]) value(words[++i], option);
+        else unknown = true;
+      } else if (optional.has(option)) {
+        if (words[i + 1]?.dynamic) unknown = true;
+        if (eq < 0 && !['column', 'no-column', 'color', 'no-color'].includes(option) && words[i + 1] && !words[i + 1].text.startsWith('-')) i++;
+      } else if (eq >= 0) unknown = true;
+      continue;
+    }
+    if (t.startsWith('-') && t !== '-') {
+      for (let j = 1; j < t.length; j++) {
+        const ch = t[j];
+        if (g.sub === 'notes') queryModifier = true;
+        const requiredShort = g.sub === 'notes'
+          ? { F: 'file', m: 'message', c: 'reedit-message', C: 'reuse-message', s: 'strategy' }
+          : { F: 'file', m: 'message', u: 'local-user' };
+        if (requiredShort[ch]) {
+          if (j + 1 < t.length) value(w, requiredShort[ch], t.slice(j + 1));
+          else if (words[i + 1]) value(words[++i], requiredShort[ch]);
+          else unknown = true;
+          break;
+        }
+        if (g.sub === 'tag' && ch === 'l') query = true;
+        else if (g.sub === 'tag' && ['a', 's', 'f', 'd', 'v'].includes(ch)) mutation = true;
+        else if (g.sub === 'tag' && ch === 'n') {
+          if (j + 1 < t.length && !/^\d+$/.test(t.slice(j + 1))) unknown = true;
+          break;
+        } else if (!(g.sub === 'notes' ? ['f', 'e', 'n', 'v', 'q'] : ['i']).includes(ch)) unknown = true;
+      }
+      continue;
+    }
+    if (g.sub === 'notes' && action === null) {
+      action = t;
+      if (!noteQueries.has(action) && !noteWrites.has(action)) unknown = true;
+    } else positional++;
+  }
+
+  let mode;
+  if (terminal && !unknown) mode = 'terminal';
+  else if (unknown) mode = 'unknown';
+  else if (g.sub === 'notes') {
+    const selected = action || 'list';
+    const limit = selected === 'get-ref' ? 0 : 1;
+    mode = noteQueries.has(selected) && !kinds.length && !queryModifier && positional <= limit ? 'query' : 'write';
+    if (noteQueries.has(selected) && (kinds.length || queryModifier || positional > limit)) mode = 'unknown';
+  } else {
+    mode = !mutation && !kinds.length && (query || positional === 0) ? 'query' : 'write';
+    if (query && (mutation || kinds.length)) mode = 'unknown';
+  }
+  const synthetic = files.flatMap(word => [{ text: '-F', dynamic: false }, word]);
+  const metadata = synthetic.length ? parseMessages(synthetic) : { messageFiles: [], messageFileUnknown: false, messageFileSelectionUnknown: false };
+  return { mode, action, messageFiles: metadata.messageFiles,
+    messageFileUnknown: unknown || metadata.messageFileUnknown || !Array.isArray(metadata.messageFiles),
+    messageFileSelectionUnknown: unknown || metadata.messageFileSelectionUnknown || kinds.length > 1 || files.length > 0 && sourceOverride,
+    reason: mode === 'unknown' ? 'notes/tag の action・option 境界・source 選択を確認できない' : null };
+}
+
+
+/** Refuse known secret message files, or unsupported source/object/ref routes. */
+function gitObjectInputDecision(g) {
+  const objectRoute = parseGitObjectRoute(g);
+  const parsed = objectRoute || (g.sub === 'commit' ? parseCommitArgs(g.args)
+    : g.sub === 'merge' ? parseMergeMessageArgs(g.args) : null);
+  if (!parsed || parsed.terminal || ['query', 'terminal'].includes(parsed.mode)) return null;
+  const files = parsed.messageFiles;
+  if (!objectRoute && Array.isArray(files) && files.length === 0 && !parsed.messageFileUnknown) return null;
+  if (objectRoute && g.sub === 'stash') return { category: 'UNKNOWN', reason: 'git stash の snapshot・更新・未対応 action は staged 検査の対象外で、入力 tree/object/ref・内容・実行条件を確認できません。対応する static list/show/help 以外の操作が必要なら owner に対象・操作・cwd/env/config/source と不明点を確認してください。同目的の writer 代替は未対応で、個別操作の了承は hook 無効化の了承ではありません。' };
+  if (!Array.isArray(files) || parsed.mode === 'unknown' || parsed.messageFileUnknown || parsed.messageFileSelectionUnknown ||
+      g.incomplete || g.cdLikeBefore || g.unknownContextBefore || g.dynamicOpt) {
+    return { category: 'UNKNOWN', reason: 'Git message の file/stdin/source 選択や argv・対象条件を確認できません。対応済みの非秘密 inline message で同目的を保てなければ、owner に対象・操作・cwd/env/config/source と不明点を確認してください。' };
+  }
+  const secret = files.filter(source => !source.unknown && typeof source.word?.text === 'string' && isSecretPath(source.word.text));
+  if (secret.length) return { category: 'FORBIDDEN', reason: 'Git message の対応済み file operand が禁止された secret filename に当たります: ' + secret.map(source => source.word.text).join(', ') + '。内容や実行成立を確認したものではありません。非秘密の同目的 message に変更し、必要なら owner に確認してください。' };
+  if (objectRoute) return { category: 'UNKNOWN', reason: 'git notes/tag/stash の object/ref 更新・未対応形式は staged 検査の対象外で、source/内容・実行条件を確認できません。通常の読取/list/show/help は対応形式を使い、更新自体が必要なら owner に対象・操作・cwd/env/config/source を確認してください。個別操作の了承は hook 無効化の了承ではありません。' };
+  return null;
+}
+
 module.exports = {
   DYN,
   deny,
@@ -2458,6 +2847,11 @@ module.exports = {
   aliasProblem,
   resolveDir,
   parseCommitArgs,
+  parseMergeMessageArgs,
+  parseGitObjectRoute,
+  gitObjectInputDecision,
+  messageFileSource,
+  grepPagerEffect,
   parseAddArgs,
   isSecretPath,
   readOnlyGitMode,
