@@ -1301,6 +1301,8 @@ const CONFIG_ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME']);
 const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS', 'ENV', 'GIT_EXTERNAL_DIFF', 'SHELLOPTS', 'POSIXLY_CORRECT']);
 /** Include Git's configuration-root variables in per-invocation environment effects. */
 const affectsGitEnvironment = (name) => /^GIT_/.test(name) || CONFIG_ROOT_ENV.has(name);
+const GIT_IDENTITY_ENV = new Set(['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE',
+  'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL']);
 /** Shell declaration options stop at the first operand; later strings are variable names or values. */
 function declarationOptions(args) {
   const options = [];
@@ -1371,7 +1373,7 @@ const wordHasGit = (w) => hasGitText(w.raw) || hasGitText(w.text) || hasGitText(
 function parseGit(args) {
   const g = {
     sub: null, args: [], cdirs: [], configs: [], configEnvs: [], gitDir: false, workTree: false,
-    dynamicOpt: false, terminal: false, problems: [], pathspecFlags: [], pagerForced: false, pagerDisabled: false,
+    dynamicOpt: false, terminal: false, problems: [], pathspecFlags: [], pagerForced: false, pagerDisabled: false, configWords: [], configSelections: [],
   };
   let k = 0;
   while (k < args.length) {
@@ -1387,7 +1389,8 @@ function parseGit(args) {
       if (!v) { g.problems.push(`git の ${t} に値が無い`); return g; }
       if (v.dynamicMaySplit) { g.problems.push(`git の ${t} の値が複数の語になりうるため、subcommand を決められない`); return g; }
       if (v.dynamic) g.dynamicOpt = true;
-      if (t === '-C') g.cdirs.push(v.text); else g.configs.push(v.text);
+      if (t === '-C') g.cdirs.push(v.text); else { g.configs.push(v.text); g.configWords.push(v);
+        g.configSelections.push({ mode: 'value', text: v.text, word: v }); }
       k += 2;
       continue;
     }
@@ -1419,7 +1422,7 @@ function parseGit(args) {
       }
       if (name === '--git-dir') g.gitDir = true;
       if (name === '--work-tree') g.workTree = true;
-      if (name === '--config-env') g.configEnvs.push(value);
+      if (name === '--config-env') { g.configEnvs.push(value); g.configSelections.push({ mode: 'env', text: value }); }
       if (name === '--list-cmds') { g.terminal = true; g.helpKind = 'stdout'; return g; }
       continue;
     }
@@ -1713,10 +1716,10 @@ function sourceChangesValues(inner) {
 
 /** Reuse an exact quoted scalar proof without rewriting the shell word or evaluating its contents. */
 function literalScalarWord(word, state) {
-  const variable = /^"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"$/.exec(word.raw);
-  const name = variable && (variable[1] || variable[2]);
+  const variable = /^([A-Za-z0-9_./=:-]*)"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"$/.exec(word.raw);
+  const name = variable && (variable[2] || variable[3]);
   const known = name && state.pathProofs.has(name) && !state.valuesTainted && state.values.get(name);
-  return typeof known === 'string' ? { ...word, literalValue: known } : word;
+  return typeof known === 'string' ? { ...word, literalValue: variable[1] + known } : word;
 }
 
 /** Track allexport only in set's option region; positional operands and queries are data. */
@@ -1859,8 +1862,8 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set() });
-  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs) });
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), identitySources: new Map() });
+  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
       scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
@@ -1971,6 +1974,7 @@ function inspect(cmd, options = {}) {
       }
     }
     const env = new Set(state.env);
+    const identitySources = new Map(state.identitySources);
     const helperEnv = new Set(state.helperEnv);
     const exportedFunctions = new Set(state.exportedFunctions);
     let exportedFunctionUnknown = state.exportedFunctionUnknown;
@@ -1978,15 +1982,21 @@ function inspect(cmd, options = {}) {
     const environmentFunctionUnknown = new Set(state.environmentFunctionUnknown);
     let pathChanged = state.pathChanged;
     for (const op of info.envOps) {
-      if (op.clear) { env.clear(); helperEnv.clear(); exportedFunctions.clear(); exportedFunctionUnknown = false;
+      if (op.clear) { identitySources.clear(); env.clear(); helperEnv.clear(); exportedFunctions.clear(); exportedFunctionUnknown = false;
         environmentFunctions.clear(); environmentFunctionUnknown.clear(); for (const root of CONFIG_ROOT_ENV) env.add(root); pathChanged = false; }
       if (op.unset) {
+        identitySources.delete(op.unset);
         if (CONFIG_ROOT_ENV.has(op.unset)) env.add(op.unset); else env.delete(op.unset);
         helperEnv.delete(op.unset);
         environmentFunctions.delete(op.unset); environmentFunctionUnknown.delete(op.unset);
         if (op.unset === 'PATH') pathChanged = false;
       }
       if (op.set && affectsGitEnvironment(op.set)) env.add(op.set);
+      if (op.set && GIT_IDENTITY_ENV.has(op.set)) {
+        const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(op.set + '='));
+        const value = carrier && literalScalarWord(carrier, expansionState);
+        identitySources.set(op.set, value ? commitInlineValue(value, value, value.text.slice(op.set.length + 1), op.set.length + 1) : null);
+      }
       if (op.set && HELPER_SOURCE_ENV.has(op.set)) helperEnv.add(op.set);
       if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
       if (op.functionEnvironment) {
@@ -2016,6 +2026,7 @@ function inspect(cmd, options = {}) {
       functionBodyUnknown: !!c.functionBodyUnknown || !!c.functionBody?.unknown,
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
       helperEnvNames: [...helperEnv],
+      gitIdentitySources: [...identitySources].map(([name, word]) => ({ name, word })),
       exportedFunctionNames: importedFunctionNames, exportedFunctionUnknown: exportedFunctionUnknown || environmentFunctionUnknown.size > 0,
       pathChangedBefore: pathChanged || state.searchChanged,
       unknownContextBefore: state.unknownContext,
@@ -2130,7 +2141,10 @@ function inspect(cmd, options = {}) {
     const integerDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*i[A-Za-z]*$/.test(option));
     const associativeDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*A[A-Za-z]*$/.test(option));
     if (builtin && !declarationQuery && ['declare', 'typeset', 'local'].includes(info.name) &&
-        declOptions.some((option) => /^-[A-Za-z]*n[A-Za-z]*$/.test(option))) state.valuesTainted = true;
+        declOptions.some((option) => /^-[A-Za-z]*n[A-Za-z]*$/.test(option))) {
+      state.valuesTainted = true;
+      for (const name of state.identitySources.keys()) state.identitySources.set(name, null);
+    }
     const valueWords = c.words.filter((word) => info.assignRaws.includes(word.raw))
       .concat(declaration && !declarationQuery ? info.args : []);
     for (const word of valueWords) {
@@ -2139,6 +2153,11 @@ function inspect(cmd, options = {}) {
       const valueConditional = conditional || (!!info.name && prefix);
       const canRemember = prefix ? ((!info.name && !info.dynamicName && !info.wrapped) || info.persistsEnv ||
         (builtin && SPECIAL_BUILTINS.has(info.name))) : persistentValues;
+      if (assignment && canRemember && GIT_IDENTITY_ENV.has(assignment.name)) {
+        const value = literalScalarWord(word, expansionState);
+        state.identitySources.set(assignment.name, conditional ? null :
+          commitInlineValue(value, value, value.text.slice(assignment.name.length + 1), assignment.name.length + 1));
+      }
       if (!assignment) {
         if (integerDeclaration && /^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) state.integers.add(word.text);
         if (associativeDeclaration && !conditional && /^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) state.associatives.add(word.text);
@@ -2195,6 +2214,11 @@ function inspect(cmd, options = {}) {
         const target = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(word.text);
         if (!target) continue;
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('builtin が評価する配列の添字を検査できない');
+        const identityTarget = info.name !== 'read' || readEnvironmentTargets(info.args).targets.includes(word);
+        if (identityTarget && GIT_IDENTITY_ENV.has(target[1])) {
+          if (info.name === 'unset' && !conditional) state.identitySources.delete(target[1]);
+          else state.identitySources.set(target[1], null);
+        }
         state.values.set(target[1], null);
         if (info.name === 'unset') state.associatives.delete(target[1]);
         for (const key of state.values.keys()) if (key.startsWith(target[1] + '[')) state.values.set(key, null);
@@ -2210,6 +2234,7 @@ function inspect(cmd, options = {}) {
       }
       if (target) {
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('printf -v が評価する配列の添字を検査できない');
+        if (GIT_IDENTITY_ENV.has(target[1])) state.identitySources.set(target[1], null);
         state.values.set(target[1], null);
         state.pathProofs.delete(target[1]);
         if (affectsGitEnvironment(target[1])) state.env.add(target[1]);
@@ -2222,6 +2247,7 @@ function inspect(cmd, options = {}) {
       const targetWord = info.args[1];
       const target = targetWord && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(targetWord.text);
       for (const name of ['OPTARG', 'OPTIND', ...(target ? [target[1]] : [])]) {
+        if (GIT_IDENTITY_ENV.has(name)) state.identitySources.set(name, null);
         state.values.set(name, null); state.pathProofs.delete(name);
         if (affectsGitEnvironment(name)) state.env.add(name);
         if (HELPER_SOURCE_ENV.has(name)) state.helperEnv.add(name);
@@ -2474,7 +2500,12 @@ function inspect(cmd, options = {}) {
       }
       return;
     }
-    const g = parseGit(info.args);
+    const g = parseGit(info.args.map((word, index) => {
+      const proven = literalScalarWord(word, state);
+      return info.args[index - 1]?.text === '-c' && typeof proven.literalValue === 'string' &&
+        /^(?:user|author|committer)\.(?:name|email)=/i.test(proven.literalValue)
+        ? { ...proven, text: proven.literalValue, dynamic: false, dynamicMaySplit: false } : word;
+    }));
     if (g.problems.length) { res.problems.push(...g.problems); return; }
     g.args = g.args.map(word => literalScalarWord(word, state));
     if (g.sub === 'commit') {
@@ -2535,6 +2566,18 @@ function inspect(cmd, options = {}) {
     g.unsafeGroupSetup = invocation.unsafeGroupSetup;
     g.gitEnvNames = [...env];
     g.helperEnvNames = [...helperEnv];
+    g.gitIdentitySources = invocation.gitIdentitySources;
+    for (const config of g.configSelections) if (config.mode === 'env') {
+      const variable = config.text.slice(config.text.indexOf('=') + 1);
+      const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(variable + '='));
+      if (carrier) {
+        const value = literalScalarWord(carrier, expansionState);
+        config.word = commitInlineValue(value, value, value.text.slice(variable.length + 1), variable.length + 1);
+      } else {
+        const value = !state.valuesTainted && state.values.get(variable);
+        config.word = typeof value === 'string' ? { text: value, dynamic: false, dynamicMaySplit: false, literalValue: value } : null;
+      }
+    }
     g.cdLikeBefore = cdBefore;
     res.gits.push(g);
   };
@@ -2644,10 +2687,21 @@ function messageFileSource(kind, value, attached = false) {
   return { kind, word, stdin, attached, unknown: !!unknown };
 }
 
+/** Preserve a message value's exact source span and strip only its known option carrier. */
+function commitInlineValue(carrier, value, attached, prefixLength) {
+  if (!value || attached === null) return value || null;
+  const selected = { ...value, text: attached };
+  if (typeof value.literalValue === 'string') selected.literalValue = value.literalValue.slice(prefixLength);
+  // raw/start still cover the original word so substitution producers remain associated.
+  return selected;
+}
+
 /** Identify commit-time staging and pathspecs while accepting single-word dynamic option values. */
 function parseCommitArgs(words) {
   const r = { all: false, patch: false, fromFile: false, noVerify: false, terminal: false, dynamic: false, unknown: [], pathspecs: [],
-    messageFiles: [], messageFileUnknown: false, messageFileSelectionUnknown: false, editorMayRun: true };
+    messageFiles: [], inlineMessageWords: [], inlineObjectWords: [], messageFileUnknown: false, messageFileSelectionUnknown: false, editorMayRun: true };
+  const identityWords = new Map();
+  const trailerWords = [];
   let inlineMessage = false;
   let reusedMessage = false;
   let sourceOverride = false;
@@ -2656,6 +2710,8 @@ function parseCommitArgs(words) {
   let editorSourceUnknown = false;
   let dryRun = false;
   const finish = () => {
+    r.inlineObjectWords = [...r.inlineMessageWords.map(word => ({ kind: 'message', word })),
+      ...[...identityWords].map(([kind, word]) => ({ kind, word })), ...trailerWords];
     r.messageFileUnknown = r.dynamic || r.unknown.length > 0 || r.messageFiles.some((source) => source.unknown);
     r.messageFileSelectionUnknown = r.messageFiles.length > 1 ||
       (r.messageFiles.length > 0 && (inlineMessage || reusedMessage || sourceOverride));
@@ -2689,7 +2745,15 @@ function parseCommitArgs(words) {
       if (!full) { r.unknown.push(t); k++; continue; }
       const base = full.startsWith('no-') && !COMMIT_LONG[full] ? full.slice(3) : full;
       const kind = COMMIT_LONG[base] || 'f';
-      if (full === 'message') inlineMessage = true;
+      if (full === 'message') {
+        inlineMessage = true;
+        r.inlineMessageWords.push(commitInlineValue(w, eq < 0 ? words[k + 1] : w, eq < 0 ? null : t.slice(eq + 1), eq < 0 ? 0 : eq + 1));
+      }
+      if (['author', 'date', 'trailer'].includes(full)) {
+        const value = commitInlineValue(w, eq < 0 ? words[k + 1] : w, eq < 0 ? null : t.slice(eq + 1), eq < 0 ? 0 : eq + 1);
+        if (full === 'trailer') trailerWords.push({ kind: 'trailer', word: value });
+        else identityWords.set(full, value);
+      }
       if (['reedit-message', 'reuse-message'].includes(full)) reusedMessage = true;
       if (['no-file', 'no-template', 'no-message', 'no-reedit-message', 'no-reuse-message'].includes(full)) sourceOverride = true;
       if (full === 'all') r.all = true;
@@ -2725,7 +2789,10 @@ function parseCommitArgs(words) {
         // 不明な先行引数が -m 等になると、この -h は値として消費されうる。
         if (ch === 'h') { if (!r.dynamic && !r.unknown.length) { r.terminal = true; r.helpKind = 'stdout'; } break; }
         if (COMMIT_SHORT_VALUE.has(ch)) {
-          if (ch === 'm') inlineMessage = true;
+          if (ch === 'm') {
+            inlineMessage = true;
+            r.inlineMessageWords.push(commitInlineValue(w, p + 1 < t.length ? w : words[k + 1], p + 1 < t.length ? t.slice(p + 1) : null, p + 1 < t.length ? p + 1 : 0));
+          }
           if (ch === 'c' || ch === 'C') reusedMessage = true;
           if (['m', 'F', 'C', 'c'].includes(ch)) {
             const value = p + 1 < t.length ? { ...w, text: t.slice(p + 1) } : words[k + 1];
@@ -3208,6 +3275,8 @@ function parseHashObjectRoute(g) {
 function parseGitObjectRoute(g, parseMessages = parseCommitArgs) {
   if (g.sub === 'hash-object') return parseHashObjectRoute(g);
   if (g.sub === 'stash') return parseStashRoute(g);
+  if (g.sub === 'mktag') return { mode: g.terminal && g.helpKind === 'stdout' ? 'terminal' : 'write',
+    action: 'mktag', messageFiles: [], messageFileUnknown: false, messageFileSelectionUnknown: false };
   if (!['notes', 'tag'].includes(g.sub)) return null;
   const words = g.args;
   const files = [];
@@ -3330,6 +3399,7 @@ function gitObjectInputDecision(g) {
   if (!parsed || parsed.terminal || ['query', 'terminal'].includes(parsed.mode)) return null;
   const files = parsed.messageFiles;
   if (!objectRoute && Array.isArray(files) && files.length === 0 && !parsed.messageFileUnknown) return null;
+  if (objectRoute && g.sub === 'mktag') return { category: 'UNKNOWN', reason: 'git mktag は stdin から未検査の tag object を object database に書き込みます。staged filename 検査では message・入力 object・実行条件を確認できません。必要なら owner に対象・操作・cwd/env/config/source と不明点を確認してください。個別操作の承認は hook 無効化の承認ではありません。' };
   if (objectRoute && g.sub === 'hash-object') return { category: 'UNKNOWN', reason: 'git hash-object の object database 書込み、または書込みを選べる未確定の argv は staged 検査の対象外で、blob/tree/commit/tag の入力内容・対象・実行条件を確認できません。hash-only 形式は書込みと同目的の代替ではありません。書込みが必要なら owner に対象・操作・cwd/env/config/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' };
   if (objectRoute && g.sub === 'stash') return { category: 'UNKNOWN', reason: 'git stash の snapshot・更新・未対応 action は staged 検査の対象外で、入力 tree/object/ref・内容・実行条件を確認できません。対応する static list/show/help 以外の操作が必要なら owner に対象・操作・cwd/env/config/source と不明点を確認してください。同目的の writer 代替は未対応で、個別操作の了承は hook 無効化の了承ではありません。' };
   if (!Array.isArray(files) || parsed.mode === 'unknown' || parsed.messageFileUnknown || parsed.messageFileSelectionUnknown ||

@@ -139,6 +139,10 @@ for (const g of insp.gits) {
 // ⇒ 短縮形の判定は `git commit` の引数だけに限定する (長い `--no-verify` は上で全 git 禁止)。
 for (const g of insp.gits) {
   if (g.sub !== 'commit') continue;
+  const parsed = guard.parseCommitArgs(g.args);
+  // A proven -m value may contain "n" without making it a short option.
+  // Confirmed no-verify was handled above; retain this backstop for unknown roles.
+  if (!parsed.dynamic && parsed.unknown.length === 0) continue;
   if (g.args.some((w) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(w.text))) {
     deny('commit の語に `-n` の候補がありますが、option と消費値の境界をこの判定で確定できないため停止します。dry-run は対応済みの `--dry-run` を確認してください。');
   }
@@ -212,6 +216,14 @@ for (const g of insp.gits) {
 const projectDir = (process.env.CLAUDE_PROJECT_DIR || process.cwd()).replace(/\/+$/, '');
 for (const g of insp.gits) {
   if (g.sub !== 'add' && g.sub !== 'stage') continue;
+  const parsed = guard.parseAddArgs(g.args);
+  // A static absolute -C resets cwd; it does not restore unknown source/environment context.
+  const independentCwd = g.cdirs.some((dir) => path.isAbsolute(dir));
+  if (!g.terminal && !parsed.terminal && !parsed.actualBlanket &&
+      (parsed.pathspecs.length > 0 || parsed.unsafePathspec) &&
+      (g.unknownContextBefore || (g.cdLikeBefore && !independentCwd))) {
+    deny('git add / stage の前に cwd または実行 context が変わり、pathspec を一括追加の対象 root と照合できません。対象・cwd・静的 -C と不明点を owner へ確認してください。', 'UNKNOWN');
+  }
   const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
   const roots = new Set([projectDir, baseDir, inspectCwd].map((p) => path.resolve(p)));
   // `"$PWD"` のような変数の語は、引用符を外した元の文字で見る。
@@ -240,7 +252,6 @@ for (const g of insp.gits) {
     return roots.has(path.resolve(inspectCwd, value));
   });
   if (blanket || normalizedRoot) {
-    const parsed = guard.parseAddArgs(g.args);
     const confirmed = !parsed.terminal && !parsed.unsafePathspec && (parsed.actualBlanket ||
       parsed.pathspecs.some((word) => ['.', './', '..', '../'].includes(word.literalPath) ||
         roots.has(path.resolve(inspectCwd, word.literalPath))));

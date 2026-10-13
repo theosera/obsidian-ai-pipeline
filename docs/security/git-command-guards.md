@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の R18 までに採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の R18 までの保護範囲と、R19 の未公開修正の条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -20,15 +20,82 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+## R19: 未公開修正の条件・結果・例外
+
+公開 head `5d50164a1774df4c75f472a1f2873e21d207c186` の取得履歴は、2026-10-13 **23:52:57 JST** に required CI 成功、review thread **112 / resolved 103 / open 9**（CodeRabbit Major 2、Codex P1 7）、PR は OPEN / BLOCKED、auto-merge なしである。以下はこの9指摘と同じ原因の近接経路に対応する手元の修正条件であり、公開 head の指摘解消や新 head の CI / fresh review 成功を意味しない。9指摘には GH key の2形式と Git helper の2形式があるため、正確な再現入力は11件となる。
+
+各行の ALLOW は、その行の境界で停止を追加しない条件である。既存の index / filename、hook、editor、cwd / env / config / source、raw backstop の独立した条件を残す。raw backstop が先に停止すれば、解析側の FORBIDDEN があっても返る理由は UNKNOWN になり得る。
+
+| 対象・停止条件 | 結果と理由 | 維持する例外・DATA | 通常作業への影響と owner への出口 |
+|---|---|---|---|
+| **add / stage の実 pathspec と cwd / source**: 先行 `cd` / `pushd` 等で cwd が変わり、静的な絶対 `-C` で再指定していない、または `unknownContextBefore` が残る | active / unsafe pathspec は UNKNOWN。確認した一括 option / root は既存どおり FORBIDDEN | 実 stdout help、対象のない対応 option、option が消費した DATA を active path としない。静的な絶対 `-C` と後続の確定 `-C` は cwd の再指定に使えるが、未知 source / environment の証明は回復しない | `cd sub; git add a.txt` も停止する。同じ repository・file を確認して対応する絶対 `git -C` で表せる場合だけ再検査する。source 等が不明なら対象・cwd・argv と不明点を owner へ |
+| **legacy `git config` の最初の operand**: key 後の `--get` / `--list` は DATA。例: `git config core.fsmonitor ./x.sh --get; git commit -m m` | config write を read-only とせず、commit 前の writer として UNKNOWN。helper の実起動を確認した判定ではない | option 領域の実 getter、対応する `config get` / `list`、消費 value / pattern を維持。commit がない単独 config write は、この pre-commit 条件だけでは停止しない | 通常の identity 設定と commit の連結にも影響する。同目的の設定・commit を個別に検査できる場合だけ分け、後続 commit の index を再確認する。必要な先行処理を検査できなければ owner へ |
+| **`git mktag` の object 書込み**: stdin の tag object は staged filename 検査の対象外 | 公開 message / object も UNKNOWN。内容・入力 object・実行条件を検査できない | 実 stdout usage `git mktag -h` を維持 | 通常の tag object 作成も停止する。同目的の対応 writer 代替はない。入力 object・message・cwd / env / config / source と不明点を owner へ |
+| **Wget `--load-cookies` の選択 file** | 確定した file / argv / context は既存の file 送信禁止で FORBIDDEN。未証明の file / source / argv は UNKNOWN | `--user-agent=--load-cookies` 等の消費 DATA、`--save-cookies` の出力と区別。既存の実 `--no-config` 条件も必要 | 公開 cookie file も停止する。同じ目的・条件を保つ確認済み非秘密 inline DATA の対応形式がある場合だけ再検査し、file 入力自体が必要なら owner へ |
+| **GH `ssh-key add` / `repo deploy-key add` の file / stdin payload** | 確定した key-file は既存の全 file-upload 禁止で FORBIDDEN。file 未確定、引数省略・`-` による未検査 stdin は UNKNOWN | 対応する実 help / list、title / type / repository の消費 DATA を維持 | 通常の公開鍵 upload も禁止範囲に含む。公開鍵を許可するには別の policy と検証条件が必要で、秘密 filename の例外や個別操作承認から許可を推定しない。file / stdin 登録に同目的の対応代替はなく owner へ |
+| **Git の active `core.fsmonitor` / `tar.<format>.command`**: fsmonitor は対応 index 消費・更新操作、archive は実 format / output filename の選択を確認 | active fsmonitor 値 / 未確定 config-env、選択 archive command / 未確定 format は UNKNOWN。`rm` / `mv` / `am` も index 読取や条件付き処理で callback を起動し得る操作として対象 | 最後の確定 fsmonitor 値が `false` / `no` / `off` / `0` の disabled 条件、対応する非 index query・getter・実 stdout help、未使用 archive format / 実 list を区別。消費値の `--list` は option としない | `/usr/bin/true` を指定した status と `core.fsmonitor=true` も UNKNOWN。通常の rm / mv / am にも影響する。helper を呼ばない同目的・同条件の対応形にできる場合だけ再検査し、helper が必要なら対象・selector・source と不明点を owner へ |
+| **remote rsync の実 `--files-from`**: remote operand がある場合、両方向で local file の要求 filename が相手へ渡る | 確定した local filename list は既存の outbound file 禁止で FORBIDDEN。stdin `-`、remote list `:`、未知 file / argv / source は UNKNOWN | 完全 local copy、実 help / version、`--out-format=--files-from` 等の消費 DATAを区別。remote destination / RSH 条件も独立 | remote download でも公開 filename list は停止する。local copy は同じ目的の場合だけ対応例となり、remote transfer の代替とはしない。remote file list が必要なら owner へ |
+| **commit の message / author / date / trailer の生成元**: 値の役割と元の source span を保持し、その値を作る reader / stdout を関連付ける | 関連する対応 reader の secret filename operand は FORBIDDEN。未証明の変数・producer・stdout / argv / context は UNKNOWN。staged path とは別の commit object DATA 判定 | literal / 対応する既知 quoted scalar、確認した literal stdout / 非秘密 filename readerを維持。message の単一 quoted fd0 heredoc `cat` は引数・別 redirection / pipeline がない対応形。消費値と実 `--` 後の operand、無関係な先行 readerを区別 | 未証明の MSG と AUTHOR、内側で cd / status / export を伴う未対応生成も停止する。内側 cd が外側 cwd を変えるとの判定ではない。同じ目的・bytes・条件を保つ literal / 対応 proof にできる場合だけ再検査し、できなければ owner へ |
+| **commit が選ぶ identity env / config の生成値**: 同じ入力の `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` / `GIT_AUTHOR_DATE`、対応する3つの `GIT_COMMITTER_` 名、選択された `EMAIL` fallback、`-c` / `--config-env` の user / author / committer name・email | 選択値に結び付いた secret reader は FORBIDDEN。選択 source / scalar を証明できなければ UNKNOWN。単なる env 存在や全 Git config を一律停止しない | prefix / 永続代入の元の word、対応 literal / scalar proof、実 unset / env unset、上書き順序と field ごとの優先を保持。author / date option が対応 env field を上書きし、未使用 query の値は commit DATA にしない | 変数から作る identity / config-env にも影響する。確認済みの同じ identity・条件を対応 literal / scalar で指定できる場合だけ再検査し、必要な生成処理・設定を検査できなければ owner へ |
+| **nameref による選択 identity の証明喪失** | 既存の nameref taint により、すでに保持している identity source word を未証明にして UNKNOWN。参照先や実漏えいを推測しない | identity が選択されていない nameref はこの追加条件の対象外。新しい literal prefix の identity は、その invocation 自身の値の証明を回復する | 間接変数で identity を更新する通常処理も停止し得る。同じ値・目的を確認できる直接の対応指定へ表せなければ、参照先・source・条件と不明点を owner へ |
+| **curl `--netrc-file` の明示 credential file** | 確定した nonempty filename / argv / context は既存の outbound file 禁止で FORBIDDEN。未証明の filename / source / argv は UNKNOWN | option が消費した `--netrc-file` という DATA と区別。実 first literal `-q` / `--disable` は必要。`--no-netrc` は明示 file の選択を消さない | 通常の credential file 利用も停止する。同じ目的・条件を保つ確認済み非秘密 inline DATA の対応形式がある場合だけ再検査し、file 入力自体が必要なら owner へ |
+| **curl `-n` / `--netrc` / `--netrc-optional` の暗黙 file 選択** | 実 argv / context で有効な選択は、既定 `.netrc` からの credential 入力として既存の file 送信禁止で FORBIDDEN。選択・argv / source が未確定なら UNKNOWN | `--no-netrc` と `--no-netrc-optional` は対応する各 flag だけを解除する。両 flag は別々に追跡し、消費 DATA、実 terminator / 対応 terminal query を区別。`-A-n` は user-agent DATA | 既定 credential file を使う通常 request も停止する。`.netrc` の存在・内容・認証 header の成立を確認した判定ではない。file に依存しない同目的・同条件の対応形がなければ source・宛先・設定を owner へ |
+
+### commit object の DATA と selector
+
+message と trailer は複数の値を保持する。author / date は最後の scalar を選択し、env / config も実際の順序と field の優先で使われる値を選ぶ。選択した word は option / assignment の既知 carrier だけを外し、`raw` / `start` と producer の scope / order を保って既存の payload provenance 判定へ渡す。literal prefix がある生成値も、それだけで非秘密とはしない。この追跡は同じ入力で選択した値の経路に限り、既定 config file や実行環境内の任意 identity 値の内容を包括的に監査するものではない。
+
+| 役割 | R19 の扱い |
+|---|---|
+| `-m` / `--message`、`--trailer`、`--author`、`--date` と選択 identity env / config | object に入る値の生成元を検査する。secret filename 読取が対応する値と結び付けば FORBIDDEN、未証明なら UNKNOWN。author / date / trailer として有効な bytes であることや実際の object 保存・送信は確認していない |
+| commit の `-C` / `-c` による reuse / reedit-message、fixup 等の既存 object selector | object の選択と編集条件を既存の担当へ残す。selector の文字列を、新しく読んだ file bytes と同一視しない。Git global `-c key=value` とは役割が異なる |
+| `mktag` / hash-object 等の未検査 object writer | 入力 object / 内容・副作用を検査できないため UNKNOWN。公開入力でも自動許可せず、対応 query は同目的の writer 代替とはしない |
+| literal / 証明済みの scalar identity、無関係な reader と静的 metadata、消費された option-like DATA | この生成元の境界では停止を追加しない。他の index・writer・helper・raw 条件は残る |
+
+[Git commit の仕様](https://git-scm.com/docs/git-commit)は author / date / message / trailer を区別する。Git の [mktag](https://git-scm.com/docs/git-mktag)、[core.fsmonitor](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corefsmonitor)、[archive](https://git-scm.com/docs/git-archive) の仕様と、ガードが未検査 source を UNKNOWN にする採用条件は分ける。`rm` / `mv` / `am` の callback 条件は、Git の index 読取が fsmonitor を調整する [read-cache](https://github.com/git/git/blob/master/read-cache.c) と、必要に応じて callback を呼ぶ [fsmonitor](https://github.com/git/git/blob/master/fsmonitor.c) の経路に基づく潜在実行条件であり、この検証で helper を実行した観測ではない。
+
+[curl の netrc 仕様](https://curl.se/docs/manpage.html#-n)と、確認した installed curl 8.7.1 の [実装](https://github.com/curl/curl/blob/curl-8_7_1/src/tool_operate.c)では optional flag、required flag、明示 netrc file を別々に扱う。`--netrc-optional --no-netrc` は optional を残し、`--netrc --no-netrc-optional` は required を残す。`--netrc-file ordinary.txt --no-netrc` も file 選択を残す。各解除を行って選択がなくなった対照と、option に消費された印字 DATA を維持する。
+
+### R19 で修復した通常対照と残る独立条件
+
+追加64対照は成功したが、拡張した84対照の初回では2件の通常対照が過剰停止した。`VALUE=ordinary; export VALUE; git --config-env=user.name=VALUE commit -m ordinary` は純粋な export の後に path proof が失われ、known scalar を UNKNOWN とした。選択 config-env に既存の未 taint の scalar value proof を使うよう修正した。`read -p GIT_AUTHOR_NAME VALUE` は prompt DATA を identity の代入先と誤認したため、実 read target の役割だけを新しい identity source 無効化へ使うよう修正した。期待を書き換えて隠さず、元の失敗を保存して再検査した。
+
+後者の完全な対照 `export GIT_AUTHOR_NAME=ordinary; read -p GIT_AUTHOR_NAME VALUE <<< ordinary; git commit -m ordinary` は、修正後に egress が ALLOW となる一方、既存 secret-git の先行 writer 条件は UNKNOWN のままである。これは旧版でも残っていた独立した停止であり、全3 hook の ALLOW としない。nameref 経由の更新で旧 identity literal を保持してしまった実装上の穴も別に検出し、選択 identity の proof を無効化する修正・fresh prefix と未選択 nameref の対照を加えた。
+
+元の quoted heredoc message（N06）は維持する。未証明 message / author、active fsmonitor、内側 context を伴う生成値は、同じ入力を保持して UNKNOWN への方針変更として記録する。既存の raw backstop は残り、対応する parsed DATA でも UNKNOWN が先に出る形がある。個別 operation の owner approval を hook 無効化の承認へ広げず、別場所へのコピー、実行名の変形、別ツール経由を承認済みの出口にしない。
+
+### R19 の証拠と未取得の測定
+
+最終凍結4 source は以下で固定する。旧 source の測定をこの組へ持ち越さない。
+
+| module | SHA-256 |
+|---|---|
+| add-all | `88d0c56bb53168c5c6aa5a4361644e44f21f84c4a2ce88d7f33b5942384e0fd8` |
+| secret-git | `273f6be441ba85cb295303b929a8427e2a88e5f883800f9cd1d0f51f875c9664` |
+| egress | `fc24f905fc33a699a79f78c08ab74ddc3145b4671f4e41240e94a7b3c19b17aa` |
+| common | `33515814a05a63fed6565c5f03ab19e1b697916349f7b5bdd256d981a992f86e` |
+
+- **L1（意味・metadata）:** 最終 source の既存解析45契約と、私有の source / role / priority / consumption / nameref / netrc / index-operation 契約14件が、それぞれ成功した。私有14は内部 analyzer の定義を変えず、私用コピーの input dispatcher と最後の exit だけを置き換えて metadata を取り出した検査である。公開解析へR19の10契約を追加した55・filename parity 8・L2 deny API 6の一括69契約が成功し、旧59契約の途中測定も保持し、deny API 6を L1 へ加算しない。これらを直接入力 suite の件数へ加算しない。
+- **L2（permission・理由・担当）:** 最終4 source に旧3834入力・旧期待を渡した比較（2026-10-14 **05:38:48.185 JST**）は **3821一致 / 13不一致、broken 0、source hash 不変**。13件とも旧 ALLOW が egress 自身の UNKNOWN になった。最終 source の追加私有87入力は **87/87、broken 0、source不変**（05:36:31.406 JST）。公開9指摘の正確な11入力・通常対照と、拡張した12入力・通常対照は、私用 source の一つの原因 edge だけを反転して拒否が外れることを確認した。各 reverse は broken 0・必要性未証明0であり、他の guard をまとめて外した結果ではない。さらに最終4sourceの使い捨てコピーでconfig first-operandとadd-contextのedgeを個別に外した14対照を取得し、正確な2入力だけがALLOWへ戻り、getter / independent絶対-C / static禁止 / ordinaryの対照を維持した（05:53:09.735 JST）。**旧入力の期待13件を採用し、新規187入力（add / stage 25、config 14、egress 61、extension 87）を加えた統合suiteは、05:48:39.125 JSTに4021/4021・broken 0・source不変。旧3834のID / command / stdin / cwd / project / envは保持した。同じ4021入力を公開5dへ渡すと96の期待不一致、broken 0・source不変。実判定差は92件、担当hook・理由等だけの差は9件で、96のassertion不一致と区別する。** 私有87の ALLOW は egress 境界の対照であり、read prompt 対照の既存 secret-git 停止は別に保持する。
+- **L3（実入口・副作用）:** **最終 R19 source のCLI 2.1.296実入口は、独立したDUMMY fixtureの2試行で2 PASS、FAIL / NOT_EXERCISED 0、source不変。** `git mktag < public.tag` は正確なBashと3 hookが起動し、egress自身がUNKNOWNで停止、HEAD / refs / index / object database / DUMMY file / markerは不変。`MSG=ordinary; git commit -m "$MSG"` は正確なBashと3 hookが許可し、予定のa.txt commit、commit/treeの2objectだけを追加、事前の未追跡状態と他のfile / markerを維持した。最初のsandboxed4試行は150秒・code143、公開protocolのAPI retryとBash前停止で4 NOT_EXERCISED。通信可能な別batchではconfig入力がAPI cyber refusalで1 NOT_EXERCISED、通常commitは試験器が事前のuntracked curlhome/を許容せずstrict FAILだった。元のFAILを保存し、期待を事前状態の維持へ修正して上記2試行を新たに取得した。API停止や旧traceの再解釈を新PASSに加算しない。 curl の解除条件は空の dummy netrc と隔離 HOME の local `file://` / `--libcurl` で5組の option 設定を照合した。外部通信・本物の認証・secret・Git helper の実行ではなく、L3 へ加算しない。旧 source の全3 hook dispatch や PASS / FAIL / NOT_EXERCISED は持ち越さない。**R19 は未公開で、新 head の CI / fresh review も未取得。**
+
+旧期待から UNKNOWN を採用する13 ID は **N28、N35、SC09、SC11、P191P12、P191P14、P191P15、P191P16、P191P26、P191P36、S4G24、R11P057、R12X046**。内訳は未証明 MSG の6形式、未証明 AUTHOR（P191P15）の1形式、active 外部 fsmonitor の1形式、内側で cd / Git status / export を使う未対応 context / stdout producer の5形式である。command / stdin / cwd / project / env の入力は正確に保持し、変更するのは `expect`・required egress `denyBy`・UNKNOWN prefix の期待だけとする。5生成形式も通常操作への追加制限として採用したもので、secret reader の禁止や外側 cwd の変更を実証した対照ではない。不一致13を独立した脆弱性・漏えい件数にしない。全ケース成功・全 green は、この旧期待との比較や局所的な契約の成功から主張しない。
+
+途中 R19 の初回比較（05:15:30.026 JST）は add-all `200a0e6a` / secret-git `273f6be4` / egress `f11b2ded` / common `59905f15` に対する **3822一致 / 12不一致**だった。author の境界と近接経路を加えた最終 source の13不一致と区別する。config 14入力 / reverse 8対照、add / stage 25入力、旧 egress / common の61入力は途中測定として保存し、最終4021件の成功へ加算しない。R18 の3834 / 59契約 / reverse18も、下記の旧 source に対する履歴のまま残す。
+
+履歴比較では、正確な `cd sub; git add ../sub/..` 入力は df / f2 / 4f / 5ea / 724 / 5d の6 source すべてで ALLOW だったため preexisting と記録する。一方、正確な config writer-before-commit 入力は `df463a91` で deny、直後の `3e8bbcaadd9950e6e4e4601238efadffbda33710` と後続15 head で ALLOW、broken 0だったため regression と記録する（2026-10-14 00:20:07 JST）。isolated DUMMY の native config write / readback と cwd の native `ls-files` は意味の照合であり、helper・commit・add / stage・外部送信の成立確認ではない。
+
+測定の識別子は `pr191-r12-full-r19-extended-existing-3834.json`、`pr191-r19-extension-final.json`、`pr191-r19-extension-exact-verify.json`、`pr191-r19-extension-reverse.json`、`pr191-r19-extension-l1.json`、`pr191-r19-extension-manifest.json`。最終 source、取得時刻、途中失敗、processor の訂正を付した実測と、未取得の統合 / 実入口 / CI / review を分けて追跡する。
+
 ## 誰が、どの入口を担当するか
 
 `PreToolUse(Bash)` の入力を共通 parser `.claude/hooks/lib/git-guard-common.cjs` で読む。引用・escape・選ばれた source を解析するが、解析対象のコマンドを試しに実行して安全性を決めることはしない。
 
 | 設定の入口記述 | 担当 | 対応範囲と限界 |
 |---|---|---|
-| `Bash`、`if: "Bash(git *)"` の記述 | `block-secret-git.cjs` | add / commit、index、対象 repository、commit 前の検査条件 |
-| 同じ `Bash(git *)` の記述 | `block-git-add-all.cjs` | 一括 add、解析した no-verify option、hook path の変更 |
-| すべての `Bash` | `block-secret-egress.cjs` | 対応する upload・送信先・ネットワーク入力・実行 source と、解析した Git の対応経路 |
+| `Bash`、`if: "Bash(git *)"` の記述 | `block-secret-git.cjs` | add / commit、index、対象 repository、commit 前の検査条件。R19 の config first-operand はこの writer 判定に反映 |
+| 同じ `Bash(git *)` の記述 | `block-git-add-all.cjs` | 一括 add、解析した no-verify option、hook path の変更。R19 の add / stage path と cwd / source の条件も担当 |
+| すべての `Bash` | `block-secret-egress.cjs` | 対応する upload・送信先・ネットワーク入力・実行 source と、解析した Git の対応経路。R19 の client file / 暗黙 netrc、active helper、mktag、commit metadata の生成値は egress 自身が停止を担当。common は typed argv / identity source / config 順序と object 判定を共有 |
 | Read / Write / Edit | この 3 本の担当なし | 別の permission rules が設定された対象だけを担当する。これらの hook による保護ではない |
 | MCP | この 3 本の担当なし | 接続先と別の permission / owner approval gate が必要。担当が確認できない経路は未被覆 |
 | 起動後の子プログラム内部・任意の設定ファイル内の処理 | 個別の hook は付かない | 選択して解析する source 以外を包括的に検査しない。担当が確認できない処理は未被覆 |

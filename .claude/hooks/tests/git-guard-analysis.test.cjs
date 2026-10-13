@@ -18,6 +18,81 @@ function singleGit(source) {
   return analysis.gits[0];
 }
 
+test('R19 mktag keeps stdin DATA while selecting an object writer; actual help terminates it', () => {
+  const analysis = inspect("g''it mktag < public.tag");
+  const git = analysis.gits[0];
+  assert.equal(parseGitObjectRoute(git).mode, 'write');
+  assert.equal(parseGitObjectRoute(git).action, 'mktag');
+  assert.equal(analysis.invocations[0].redirs[0].word.text, 'public.tag');
+  assert.equal(parseGitObjectRoute(singleGit('git mktag -h')).mode, 'terminal');
+});
+
+test('R19 prior cd taints relative add context while an absolute -C retains its location', () => {
+  const relative = singleGit('cd sub; git add ../sub/..');
+  assert.equal(relative.cdLikeBefore, true);
+  assert.deepEqual(relative.cdirs, []);
+  assert.deepEqual(singleGit('cd sub; git -C /analysis/repo add a.txt').cdirs, ['/analysis/repo']);
+});
+
+test('R19 object DATA retains all messages and trailers, and last author/date values', () => {
+  const parsed = parseCommitArgs(singleGit('git commit --author=old --author=new --date=old --date=new --trailer=X=first --trailer=Y=second -m first -m second').args);
+  assert.deepEqual(parsed.inlineObjectWords.map(({ kind, word }) => [kind, word.text]), [
+    ['message', 'first'], ['message', 'second'], ['author', 'new'], ['date', 'new'],
+    ['trailer', 'X=first'], ['trailer', 'Y=second'],
+  ]);
+});
+
+test('R19 option-looking object values remain DATA and words after -- remain paths', () => {
+  const parsed = parseCommitArgs(singleGit('git commit -m --author --author --date --trailer --author -m ordinary').args);
+  assert.deepEqual(parsed.inlineObjectWords.map(({ kind, word }) => [kind, word.text]), [
+    ['message', '--author'], ['message', 'ordinary'], ['author', '--date'], ['trailer', '--author'],
+  ]);
+  assert.deepEqual(parseCommitArgs(singleGit('git commit -m ordinary -- --author=.env').args).inlineObjectWords.map(({ kind }) => kind), ['message']);
+});
+
+test('R19 attached object DATA keeps the original producer span and descendant scope', () => {
+  const source = 'git commit --author="$(cat .env)" --trailer="X=$(cat a.txt)" -m ordinary';
+  const analysis = inspect(source);
+  const git = analysis.gits[0];
+  const invocation = analysis.invocations.find(({ order }) => order === git.invocationOrder);
+  for (const { word } of parseCommitArgs(git.args).inlineObjectWords.filter(({ word }) => word.dynamic)) {
+    assert.equal(source.slice(word.start, word.start + word.raw.length), word.raw);
+    const producer = analysis.invocations.find(({ name, nameWord }) => name === 'cat' && nameWord.start > word.start && nameWord.start < word.start + word.raw.length);
+    assert.ok(producer);
+    assert.equal(producer.scope.parent, invocation.scope);
+  }
+});
+
+test('R19 identity prefix selection does not persist into the next command', () => {
+  const analysis = inspect('GIT_AUTHOR_NAME=ordinary git status; git commit -m ordinary');
+  assert.equal(analysis.gits[0].gitIdentitySources[0].word.text, 'ordinary');
+  assert.deepEqual(analysis.gits[1].gitIdentitySources, []);
+});
+
+test('R19 exported identity retains its source while a fresh prefix overrides only its invocation', () => {
+  const analysis = inspect('export GIT_AUTHOR_NAME="$(cat .env)"; GIT_AUTHOR_NAME=ordinary git commit -m ordinary; git commit -m ordinary');
+  assert.equal(analysis.gits[0].gitIdentitySources[0].word.text, 'ordinary');
+  assert.equal(analysis.gits[1].gitIdentitySources[0].word.raw, 'GIT_AUTHOR_NAME="$(cat .env)"');
+});
+
+test('R19 unset clears the selected identity in its actual shell or env scope', () => {
+  assert.deepEqual(singleGit('export GIT_AUTHOR_NAME=ordinary; unset GIT_AUTHOR_NAME; git commit -m ordinary').gitIdentitySources, []);
+  const analysis = inspect('export GIT_AUTHOR_NAME=ordinary; env -u GIT_AUTHOR_NAME git commit -m ordinary; git commit -m ordinary');
+  assert.deepEqual(analysis.gits[0].gitIdentitySources, []);
+  assert.equal(analysis.gits[1].gitIdentitySources[0].word.text, 'ordinary');
+});
+
+test('R19 read target loses identity proof while a consumed prompt preserves it', () => {
+  assert.equal(singleGit('export GIT_AUTHOR_NAME=ordinary; read GIT_AUTHOR_NAME <<< unknown; git commit -m ordinary').gitIdentitySources[0].word, null);
+  assert.equal(singleGit('export GIT_AUTHOR_NAME=ordinary; read -p GIT_AUTHOR_NAME VALUE <<< ordinary; git commit -m ordinary').gitIdentitySources[0].word.text, 'ordinary');
+});
+
+test('R19 nameref mutation invalidates stored identity; a fresh prefix restores its own proof', () => {
+  assert.equal(singleGit('export GIT_AUTHOR_NAME=ordinary; declare -n ref=GIT_AUTHOR_NAME; ref="$(cat .env)"; git commit -m ordinary').gitIdentitySources[0].word, null);
+  assert.equal(singleGit('export GIT_AUTHOR_NAME=ordinary; declare -n ref=GIT_AUTHOR_NAME; ref="$(cat .env)"; GIT_AUTHOR_NAME=ordinary git commit -m ordinary').gitIdentitySources[0].word.text, 'ordinary');
+  assert.deepEqual(singleGit('declare -n ref=ordinary; git commit -m ordinary').gitIdentitySources, []);
+});
+
 test('merge file-source metadata respects consumed DATA, end-of-options and source ambiguity', () => {
   const file = parseMergeMessageArgs(singleGit('git merge -qF.env topic').args);
   assert.equal(file.messageFiles[0].word.text, '.env');

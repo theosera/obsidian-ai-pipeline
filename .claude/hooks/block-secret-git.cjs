@@ -97,7 +97,11 @@ function readOnlyMode(g) {
     if (t === '--') { endOptions = true; continue; }
     if (!t.startsWith('-')) {
       if (g.sub === 'config' && !reader && positional === 0 && ['get', 'list'].includes(t)) reader = true;
-      else positional++;
+      else {
+        positional++;
+        // Legacy config stops options at its first operand; later --get is DATA.
+        if (g.sub === 'config') endOptions = true;
+      }
       continue;
     }
     const eq = t.indexOf('=');

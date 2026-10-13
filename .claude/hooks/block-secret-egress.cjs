@@ -701,6 +701,51 @@ function gitDiffModes(g) {
   return { terminal: g.terminal && g.helpKind === 'stdout', external: external || unknown, textconv: textconv || unknown };
 }
 
+/** Select an archive format only from real argv roles; filenames and config values remain DATA. */
+function gitArchiveFormat(g) {
+  let format = 'tar';
+  let explicit = false;
+  let output = null;
+  let terminal = false;
+  let unknown = Boolean(g.incomplete);
+  let afterDD = false;
+  const values = new Set(['format', 'prefix', 'output', 'remote', 'exec', 'add-file', 'add-virtual-file']);
+  for (let k = 0; k < g.args.length; k++) {
+    const word = g.args[k];
+    const literal = literalSourceWord(word);
+    const text = literal ? literal.text : word.text;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (afterDD || !text.startsWith('-')) continue;
+    if (!afterDD && ['-l', '--list', '-h'].includes(text) && literal) { terminal = true; continue; }
+    let option;
+    let value;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      option = text.slice(2, eq < 0 ? undefined : eq);
+      if (values.has(option)) value = eq < 0 ? g.args[++k] : { ...word, text: text.slice(eq + 1), literalValue: literal ? text.slice(eq + 1) : undefined };
+      else if (!['verbose', 'worktree-attributes'].includes(option) && !/^-?[0-9]+$/.test(option)) unknown = true;
+    } else if (/^-[o]/.test(text)) {
+      option = 'output';
+      value = text.length > 2 ? { ...word, text: text.slice(2), literalValue: literal ? text.slice(2) : undefined } : g.args[++k];
+    } else if (!/^-(?:v|[0-9])+$/.test(text)) unknown = true;
+    if (option && values.has(option) && !value) unknown = true;
+    if (option === 'format') { explicit = true; if (literalSourceWord(value)) format = literalSourceWord(value).text; else unknown = true; }
+    if (option === 'output') { if (literalSourceWord(value)) output = literalSourceWord(value).text; else if (!explicit) unknown = true; }
+    if (!literal && !(option && value && word.dynamicMaySplit === false)) unknown = true;
+  }
+  if (!explicit && output) format = output.endsWith('.tar.gz') || output.endsWith('.tgz') ? 'tar.gz' :
+    output.endsWith('.tar') ? 'tar' : output.includes('.') ? output.slice(output.lastIndexOf('.') + 1) : 'tar';
+  return { format, unknown, terminal: terminal && !unknown };
+}
+
+/** Fsmonitor callback selections only matter for operations which consume or refresh an index. */
+function gitIndexHelperActive(g) {
+  const indexOperations = new Set(['status', 'diff', 'diff-files', 'diff-index', 'add', 'stage', 'commit',
+    'update-index', 'checkout', 'switch', 'restore', 'reset', 'merge', 'pull', 'rebase', 'cherry-pick',
+    'revert', 'stash', 'clean', 'ls-files', 'read-tree', 'write-tree', 'apply', 'rm', 'mv', 'am']);
+  return indexOperations.has(g.sub);
+}
+
 /** Positive selectors of local Git execution must be gated for their actual operation. */
 function gitExecutableSource(g, invocation) {
   if (g.terminal && g.helpKind === 'stdout' && knownInvocationContext(invocation)) return false;
@@ -710,6 +755,16 @@ function gitExecutableSource(g, invocation) {
   if (modes?.terminal && knownInvocationContext(invocation)) return false;
   const keys = [...g.configs, ...g.configEnvs].map(config => config.split('=')[0].toLowerCase());
   const uncertain = !knownInvocationContext(invocation) || g.dynamicOpt || g.incomplete;
+  if (gitIndexHelperActive(g)) {
+    const monitors = g.configs.filter(config => /^core\.fsmonitor(?:=|$)/i.test(config));
+    const selected = monitors.at(-1);
+    if (g.configEnvs.some(config => /^core\.fsmonitor(?:=|$)/i.test(config)) ||
+        selected && (uncertain || !/^(?:false|no|off|0)$/i.test(selected.slice(selected.indexOf('=') + 1)))) return true;
+  }
+  if (g.sub === 'archive' && keys.some(key => /^tar\..+\.command$/.test(key))) {
+    const archive = gitArchiveFormat(g);
+    if (!archive.terminal && (uncertain || archive.unknown || keys.includes('tar.' + archive.format.toLowerCase() + '.command'))) return true;
+  }
   if (diff && (keys.some(key => /^diff\.(?:external|.+\.command)$/.test(key)) ||
       [...g.gitEnvNames, ...(invocation.helperEnvNames || [])].includes('GIT_EXTERNAL_DIFF')) && (modes.external || uncertain)) return true;
   if (diff && keys.some(key => /^diff\..+\.textconv$/.test(key)) && (modes.textconv || uncertain)) return true;
@@ -793,14 +848,54 @@ const CURL_FLAG_LONG = new Set([
 ]);
 const CURL_LONG_NAMES = [...CURL_VALUE_LONG, ...CURL_FLAG_LONG];
 
+/** Netrc toggles are independent; consume other options before interpreting a selector or reset. */
+function curlImplicitNetrc(words, incomplete) {
+  let required = false;
+  let optional = false;
+  let unknown = false;
+  for (let k = 0; k < words.length; k++) {
+    const word = words[k], t = word.text;
+    if (t === '--') break;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('='), name = t.slice(2, eq < 0 ? undefined : eq);
+      const base = name.startsWith('no-') ? name.slice(3) : name;
+      const matches = CURL_LONG_NAMES.includes(base) ? [base] : CURL_LONG_NAMES.filter(option => option.startsWith(base));
+      if (matches.length !== 1) { unknown ||= word.dynamic; continue; }
+      const option = matches[0];
+      if (['help', 'manual', 'version'].includes(option) && knownWord(word) && !unknown) return false;
+      if (option === 'next') {
+        if (required || optional) return unknown || incomplete ? 'UNKNOWN' : 'FORBIDDEN';
+        required = false; optional = false;
+      } else if (option === 'netrc' || option === 'netrc-optional') {
+        if (!knownWord(word) || eq >= 0) unknown = true;
+        else if (option === 'netrc') required = !name.startsWith('no-');
+        else optional = !name.startsWith('no-');
+      } else if (CURL_VALUE_LONG.has(option) && eq < 0) k++;
+    } else if (t.startsWith('-')) {
+      for (let p = 1; p < t.length; p++) {
+        if (t[p] === 'h' || t[p] === 'V' || t[p] === 'M') { if (knownWord(word) && !unknown) return false; }
+        if (t[p] === 'n') { if (knownWord(word)) required = true; else unknown = true; }
+        if (t[p] === ':') {
+          if (required || optional) return unknown || incomplete ? 'UNKNOWN' : 'FORBIDDEN';
+          required = false; optional = false;
+        }
+        if (CURL_VALUE_SHORT[t[p]]) { if (p === t.length - 1) k++; break; }
+      }
+    }
+  }
+  return required || optional ? unknown || incomplete ? 'UNKNOWN' : 'FORBIDDEN' : false;
+}
+
 /** Recognize curl file payloads and opaque config input without reading either file. */
 function curlReadsUpload(words, incomplete = false, actualClient = false) {
   // Additional words from splitting or pathname/brace expansion can introduce payload options,
   // including from a value consumed by a visible option. Never infer the unseen argv from env.
   if (actualClient && words.some(word => word.dynamic && word.dynamicMaySplit !== false || word.globExpanded || word.braceExpanded)) return 'UNKNOWN';
+  const implicitNetrc = curlImplicitNetrc(words, incomplete);
+  if (implicitNetrc) return implicitNetrc;
   // xargs/find can provide an unseen filename to a trailing file-reading option.
   const fileOptions = new Set(['upload-file', 'data', 'data-ascii', 'data-binary', 'json',
-    'header', 'proxy-header', 'data-urlencode', 'url-query', 'form', 'variable', 'cookie']);
+    'header', 'proxy-header', 'data-urlencode', 'url-query', 'form', 'variable', 'cookie', 'netrc-file']);
   const variables = new Map();
   let definitionVersion = 0;
   let unknownFileVersion = 0;
@@ -853,7 +948,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
   /** Match file references using the option's own value, not text printed inside another value. */
   const payload = (option, value) => {
     if (option === 'config') return true; // config can supply upload options or a destination
-    if (option === 'upload-file') return Boolean(value);
+    if (option === 'upload-file' || option === 'netrc-file') return Boolean(value);
     if (option === 'cookie') return Boolean(value) && !value.includes('=');
     if (['data', 'data-ascii', 'data-binary', 'json', 'header', 'proxy-header'].includes(option)) return value.startsWith('@');
     if (option === 'data-urlencode') return value.includes('@');
@@ -892,6 +987,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
           (option !== 'url-query' || name === option) ? 'FORBIDDEN' : 'UNKNOWN';
         // Cookie's '=' proves inline syntax only within one actual scalar argument. Its file form
         // reads local bytes; unknown/split input must never be mistaken for empty or inline DATA.
+        if (option === 'netrc-file' && !literalSourceWord(value)) return 'UNKNOWN';
         if (option === 'cookie' && ((value.dynamic && value.dynamicMaySplit !== false) ||
             value.globExpanded || value.braceExpanded || value.tildeExpanded || value.ansiCUnknown ||
             source.unknown || (!source.file && source.text.includes('\0') && !source.text.includes('=')))) return 'UNKNOWN';
@@ -900,7 +996,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
             (!source.file && !source.text.startsWith('+') && !source.text.includes('=') && source.text.includes('\0')))) return 'UNKNOWN';
         if (expanding && outbound.has(option) && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) return verdict;
         if ((source.file && outbound.has(option)) || payload(option, source.text)) return verdict;
-      } else if (option === 'cookie' || incomplete && fileOptions.has(option)) return 'UNKNOWN';
+      } else if (option === 'cookie' || option === 'netrc-file' || incomplete && fileOptions.has(option)) return 'UNKNOWN';
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
         if (actualClient && optionWord.dynamic && t[p] === '\0') return 'UNKNOWN';
@@ -1003,7 +1099,7 @@ function wgetSourceBoundary(invocation) {
 
 /** Reject Wget's file bodies or opaque config while skipping literal values of other options. */
 function wgetReadsUpload(words) {
-  const opaque = new Set(['post-file', 'body-file', 'config', 'execute']);
+  const opaque = new Set(['post-file', 'body-file', 'load-cookies', 'config', 'execute']);
   for (let k = 0; k < words.length; k++) {
     const t = words[k].text;
     if (t === '--') break;
@@ -1014,7 +1110,7 @@ function wgetReadsUpload(words) {
       if (matches.length !== 1) continue;
       if (opaque.has(matches[0])) {
         const value = eq < 0 ? words[k + 1] : { ...words[k], text: t.slice(eq + 1) };
-        return ['post-file', 'body-file'].includes(matches[0]) && knownWord(words[k]) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
+        return ['post-file', 'body-file', 'load-cookies'].includes(matches[0]) && knownWord(words[k]) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
       }
       // --use-askpass has an optional attached value; the following word remains an option/URL.
       if (eq < 0 && matches[0] !== 'use-askpass') k++;
@@ -1073,6 +1169,48 @@ function remoteCopyDestination(invocation) {
   const destination = operands[operands.length - 1];
   if (unknown || !literal(destination) || operands.length < 2) return 'UNKNOWN';
   return destinationArg(textOf(destination)) ? 'FORBIDDEN' : false;
+}
+
+/** A local rsync file list transmits requested names on both upload and download routes. */
+function rsyncFileListPayload(invocation) {
+  if (invocation.name !== 'rsync') return false;
+  const files = [];
+  let remote = false;
+  let unknown = Boolean(invocation.incomplete);
+  let afterDD = false;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    const literal = literalSourceWord(word);
+    const text = literal ? literal.text : word.text;
+    if (!literal && !quotedAttachedOptionValue(word, text, RSYNC_VALUE_SHORT, [...RSYNC_VALUE_LONG])) unknown = true;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (!afterDD && ['--help', '--version'].includes(text) && !unknown) return false;
+    if (!afterDD && text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      if (RSYNC_VALUE_LONG.has(name)) {
+        const value = eq < 0 ? invocation.args[++k] : { ...word, text: text.slice(eq + 1), literalValue: literal ? text.slice(eq + 1) : undefined };
+        if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+        if (name === 'files-from') files.push(value);
+      } else if (!RSYNC_FLAG_LONG.has(name) && name !== 'from0' || eq >= 0) unknown = true;
+      continue;
+    }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      for (let p = 1; p < text.length; p++) {
+        if (RSYNC_VALUE_SHORT.includes(text[p])) {
+          const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+          if (!literalSourceWord(value)) unknown = true;
+          break;
+        }
+        if (!RSYNC_FLAG_SHORT.includes(text[p]) && text[p] !== '0') unknown = true;
+      }
+      continue;
+    }
+    if (destinationArg(text) || /^rsync:\/\//i.test(text)) remote = true;
+  }
+  if (!files.length || !remote && !unknown) return false;
+  if (unknown || files.some(word => !literalSourceWord(word) || literalSourceWord(word).text === '-' || literalSourceWord(word).text.startsWith(':'))) return 'UNKNOWN';
+  return 'FORBIDDEN';
 }
 
 /** scp -S is local executable source even for downloads; only proven entirely local copies ignore it. */
@@ -1244,8 +1382,16 @@ function ghFilePayload(invocation) {
   const words = invocation.args;
   if (!literalSourceWord(words[0])) return words.length ? 'UNKNOWN' : false;
   const group = words[0].text;
-  if (!['release', 'issue', 'pr'].includes(group)) return false;
+  if (!['release', 'issue', 'pr', 'ssh-key', 'repo'].includes(group)) return false;
+  if (group === 'repo') {
+    if (!literalSourceWord(words[1])) return 'UNKNOWN';
+    if (words[1].text !== 'deploy-key') return false;
+  }
   const specFor = action => {
+    if (group === 'ssh-key' && action === 'add' || group === 'repo' && action === 'add') return {
+      values: group === 'ssh-key' ? ['title', 'type'] : ['title'], short: { t: 'title' }, files: [],
+      flags: group === 'repo' ? ['allow-write'] : [], shortFlags: group === 'repo' ? 'w' : '', min: 0, max: 1, assetStart: 0, implicitStdin: true,
+    };
     if (group === 'release' && action === 'upload') return {
       values: [], short: {}, files: [], flags: ['clobber'], shortFlags: '', min: 2, max: Infinity, assetStart: 1,
     };
@@ -1292,7 +1438,7 @@ function ghFilePayload(invocation) {
   const transmittedValueWords = [];
   const dataBoundary = word => Boolean(word && word.dynamicMaySplit === false && !word.ansiCUnknown &&
     !word.globExpanded && !word.braceExpanded && !word.tildeExpanded);
-  for (let k = 1; k < words.length; k++) {
+  for (let k = group === 'repo' ? 2 : 1; k < words.length; k++) {
     const word = words[k];
     const text = word.text;
     if (!afterDD && text === '--') { afterDD = true; continue; }
@@ -1340,6 +1486,7 @@ function ghFilePayload(invocation) {
   }
   if (!spec) return unknown ? 'UNKNOWN' : false;
   if (unknown || sourceUnknown || operands.length < spec.min || operands.length > spec.max) return 'UNKNOWN';
+  if (spec.implicitStdin && !operands.length || spec.implicitStdin && operands[0]?.text === '-') return 'UNKNOWN';
   return payload || operands.length > spec.assetStart ? 'FORBIDDEN' :
     outboundPayloadVerdict(invocation, transmittedValueWords);
 }
@@ -1563,7 +1710,11 @@ function outboundPayloadVerdict(invocation, words) {
       // A function/callback or arbitrary program has no supported stdout proof. Output
       // redirection likewise prevents treating a coincident read as transmitted data.
       if (producer.functionCallName || input.unknown || !knownInvocationContext(producer) ||
-          producer.redirs.some(redir => !['<', '<>'].includes(redir.op)) || producer.heredocBodies.length) return 'UNKNOWN';
+          producer.redirs.some(redir => !['<', '<>'].includes(redir.op)) ||
+          producer.heredocBodies.length && !(producer.name === 'cat' && !producer.args.length &&
+            !producer.redirs.length && !producer.pipelineParticipant && producer.heredocBodies.length === 1 &&
+            producer.heredocBodies[0].quoted && producer.heredocBodies[0].fdKnown &&
+            [null, '0'].includes(producer.heredocBodies[0].fd))) return 'UNKNOWN';
       if (input.refs.some(ref => knownWord(ref) && guard.isSecretPath(ref.text))) secret = true;
     }
     if (secret) return contextualVerdict(invocation, 'FORBIDDEN');
@@ -1713,7 +1864,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
     const decision = guard.gitObjectInputDecision(g);
     if (decision) deny(decision.reason, gitVerdict(g, decision.category));
     if (gitExecutableSource(g, gitInvocationContexts.get(g))) {
-      deny('当該 Git 操作の config / environment が選ぶ外部 diff・変換・filter・hook・include の実行 source を検査できません。commit の有無とは独立に、active helper の本文と副作用は判断不能です。' + UNKNOWN_OWNER_GATE);
+      deny('当該 Git 操作の config / environment が選ぶ外部 diff・変換・filter・hook・fsmonitor・archive・include の実行 source を検査できません。commit の有無とは独立に、active helper の本文と副作用は判断不能です。' + UNKNOWN_OWNER_GATE);
     }
     if (g.sub === 'difftool' && !g.terminal) {
       deny('Git difftool の extcmd・既定 tool・env/config が選ぶ外部実行 source と副作用を検査できません。helper を呼ばない対応済み diff が同目的・同条件を保てる場合に検討し、保てなければ owner に確認してください。' + UNKNOWN_OWNER_GATE);
@@ -1823,7 +1974,8 @@ function parsedExfil(invocation) {
   if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
   // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.
   if (invocation.name === 'sftp') verdict = sftpSession(invocation.args) ? 'UNKNOWN' : false;
-  if (['scp', 'rsync'].includes(invocation.name)) verdict = invocation.incomplete ? 'UNKNOWN' : remoteCopyDestination(invocation);
+  if (['scp', 'rsync'].includes(invocation.name)) verdict = invocation.incomplete ? 'UNKNOWN' :
+    rsyncFileListPayload(invocation) || remoteCopyDestination(invocation);
   return contextualVerdict(invocation, verdict);
 }
 
@@ -1836,6 +1988,44 @@ for (const invocation of invocations) {
       'SSH remote command の引数を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-n による stdin 抑止とは独立した送信データです。内容や実送信の成立を確認したものではありません。' :
       'SSH remote command の引数を生成する source・program・stdout・argv/context を確定できません。-n は remote command DATA の検査を省略する条件ではありません。' + UNKNOWN_OWNER_GATE, verdict);
   }
+}
+/** Select only identity values which can enter this commit object, preserving scalar precedence. */
+function gitCommitObjectWords(g, parsed) {
+  const selected = [...parsed.inlineObjectWords];
+  const env = new Map((g.gitIdentitySources || []).map(source => [source.name, source.word]));
+  const configs = new Map();
+  for (const config of g.configSelections || []) {
+    const carrier = config.word;
+    const eq = config.text.indexOf('='), key = config.text.slice(0, eq < 0 ? undefined : eq).toLowerCase();
+    if (/^(?:user|author|committer)\.(?:name|email)$/.test(key)) {
+      const word = config.mode === 'env' ? carrier : eq < 0 ? null : { ...carrier, text: carrier.text.slice(eq + 1) };
+      if (config.mode !== 'env' && word && typeof word.literalValue === 'string') word.literalValue = word.literalValue.slice(eq + 1);
+      configs.set(key, word);
+    }
+  }
+  for (const person of ['author', 'committer']) {
+    for (const field of ['name', 'email', 'date']) {
+      if (person === 'author' && selected.some(source => source.kind === (field === 'date' ? 'date' : 'author'))) continue;
+      const variable = 'GIT_' + person.toUpperCase() + '_' + field.toUpperCase();
+      if (env.has(variable)) selected.push({ kind: variable, word: env.get(variable) });
+      else if (field !== 'date') {
+        const key = configs.has(person + '.' + field) ? person + '.' + field : 'user.' + field;
+        if (configs.has(key)) selected.push({ kind: key, word: configs.get(key) });
+        else if (field === 'email' && env.has('EMAIL')) selected.push({ kind: 'EMAIL', word: env.get('EMAIL') });
+      }
+    }
+  }
+  return selected;
+}
+for (const g of inspectedGits) {
+  if (g.sub !== 'commit') continue;
+  const parsed = guard.parseCommitArgs(g.args);
+  if (parsed.terminal) continue;
+  const invocation = gitInvocationContexts.get(g);
+  const verdict = outboundPayloadVerdict(invocation, gitCommitObjectWords(g, parsed).map(source => source.word));
+  if (verdict) deny(verdict === 'FORBIDDEN' ?
+    'Git commit の message・trailer・identity を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。staged path とは独立して commit object に入る DATA です。内容の妥当性や実送信の成立を確認したものではありません。' :
+    'Git commit の message・trailer・identity を生成する source・program・stdout・argv/context を確定できません。staged filename 検査だけでは commit metadata DATA を検査できません。' + UNKNOWN_OWNER_GATE, gitVerdict(g, verdict));
 }
 for (const g of inspectedGits) {
   if (g.sub !== 'push' || g.terminal && g.helpKind === 'stdout') continue;
