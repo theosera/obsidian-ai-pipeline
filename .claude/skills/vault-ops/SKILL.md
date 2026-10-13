@@ -97,8 +97,9 @@ CLAUDE.md の「`git add -A` 禁止」は **obsidian-ai-pipeline 自身の commi
 
 ## Secret-pattern 同期 SLA (第 4 系統)
 
-`safe-vault-push-perm.sh` の `SECRET_ERE` は `.claude/hooks/block-secret-git.cjs` の
-`SECRET_RE` (12 パターン + allowlist `.env.example`) の shell 転記。**新トークン形式・
+`safe-vault-push-perm.sh` の `SECRET_ERE` は `.claude/hooks/lib/git-guard-common.cjs` の
+`SECRET_PATH_RE` (12 パターン + allowlist `.env.example`) の shell 転記。Git / egress hook は
+同じ `isSecretPath` を使う。**新トークン形式・
 新 secret ファイル名を追加するときは同一 PR で両方を更新する** (CLAUDE.md
 「Secret-pattern の維持」節の 4 系統目 / 四半期レビュー対象 =
 `docs/security/handover-residual-tasks.md` #16)。
@@ -143,5 +144,5 @@ CLAUDE.md の「`git add -A` 禁止」は **obsidian-ai-pipeline 自身の commi
 
 - `docs/security/llm-sec-weekly-automation.md` §5/§6 — CI 側の失敗表とローカル並行運用
 - `.github/workflows/llm-sec-weekly.yml` — CI writer の実体 (rebase 戦略の対向側)
-- `.claude/hooks/block-secret-git.cjs` — SECRET_RE の原本 (第 1 系統)
+- `.claude/hooks/lib/git-guard-common.cjs` — SECRET_PATH_RE の原本 (第 1 系統)
 - `docs/security/handover-residual-tasks.md` #16 (パターン同期) / #17 (iCloud .git 分離・保留)

@@ -20,7 +20,7 @@ try {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: 'git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。git ガードを通せないため実行をブロックします。',
+      permissionDecisionReason: '[判断不能] git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。git ガードを通せないため実行をブロックします。',
     },
   }));
   process.exit(0);
@@ -32,7 +32,7 @@ if (!cmd) process.exit(0);
 
 // --no-verify はどの git サブコマンドでも禁止（commit / push の hook バイパス防止）。
 if (/(^|\s)--no-verify(\s|=|$)/.test(cmd)) {
-  deny('`--no-verify` は禁止です（commit / secret-scan hook をバイパスしない / CLAUDE.md）。フックを通して実行してください。');
+  deny('入力に `--no-verify` の文字列候補があります。実際の option か DATA かをこの旧判定で確定できないため停止します。hook を無効にせず、対応済みの入力を確認してください。');
 }
 
 const insp = guard.inspect(cmd);
@@ -85,7 +85,7 @@ for (const g of insp.gits) {
   const noVerify = g.sub === 'commit' ? guard.parseCommitArgs(g.args).noVerify :
     !guard.READ_ONLY_SUBS.has(g.sub) && hasNoVerifyOption(g);
   if (noVerify) {
-    deny('`--no-verify` は禁止です（commit / secret-scan hook をバイパスしない / CLAUDE.md）。フックを通して実行してください。');
+    deny('解析した `--no-verify` option は禁止です（hook バイパス防止 / CLAUDE.md）。フックを通して実行してください。', 'FORBIDDEN');
   }
 }
 
@@ -96,20 +96,20 @@ for (const g of insp.gits) {
 for (const g of insp.gits) {
   if (g.sub !== 'commit') continue;
   if (g.args.some((w) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(w.text))) {
-    deny('`-n` は `git commit` の `--no-verify` 短縮形なので禁止です（hook バイパス防止 / CLAUDE.md）。dry-run が目的なら `--dry-run` と明示してください。');
+    deny('commit の語に `-n` の候補がありますが、option と消費値の境界をこの判定で確定できないため停止します。dry-run は対応済みの `--dry-run` を確認してください。');
   }
 }
 
 // `core.hooksPath` の差し替えは committed hook を丸ごと無効化する（= --no-verify の一般化）。
 // 読取 (`git config --get core.hooksPath`) は許可し、代入形だけを禁止する。
 if (/core\.hooksPath\s*=/i.test(cmd) || /git\s+config\b[^;&|]*\bcore\.hooksPath\s+[^\s;&|<>]/i.test(cmd)) {
-  deny('`core.hooksPath` の変更は禁止です（リポジトリの committed hook を丸ごと無効化するため / CLAUDE.md）。');
+  deny('入力の文字列が `core.hooksPath` の変更候補に一致しました。実際の変更か DATA かをこの旧判定で確定できないため停止します。hook の変更は個別操作の了承と別に owner へ確認してください。');
 }
 
 /** Read reconstructed config operands while preserving getters and consumed option values. */
 function changesHooksPath(g) {
-  if (g.configs.concat(g.configEnvs).some((value) => value.split('=')[0].toLowerCase() === 'core.hookspath')) return true;
-  if (g.sub !== 'config' || g.terminal) return false;
+  if (g.configs.concat(g.configEnvs).some((value) => value.split('=')[0].toLowerCase() === 'core.hookspath')) return 'FORBIDDEN';
+  if (g.sub !== 'config' || g.terminal) return null;
   const valueOptions = ['file', 'blob', 'type', 'default', 'value', 'url', 'comment'];
   const readOptions = ['get', 'get-all', 'get-regexp', 'get-urlmatch', 'get-color', 'get-colorbool', 'list'];
   const writeOptions = ['add', 'replace-all', 'unset', 'unset-all', 'rename-section', 'remove-section', 'edit'];
@@ -122,7 +122,7 @@ function changesHooksPath(g) {
     const word = g.args[k];
     const t = word.text;
     if (!afterDD && t === '--') { afterDD = true; continue; }
-    if (!afterDD && (t === '--help' || t === '-h')) return false;
+    if (!afterDD && (t === '--help' || t === '-h')) return null;
     if (!afterDD && t.startsWith('--')) {
       const eq = t.indexOf('=');
       const name = t.slice(2, eq < 0 ? undefined : eq);
@@ -144,17 +144,22 @@ function changesHooksPath(g) {
     operands.push(word);
     afterDD = true; // A value such as "--get" after the key remains data.
   }
-  if (read) return false;
-  if (action === 'edit') return true; // An editor can change the hook path without inspectable operands.
+  if (read) return null;
+  if (action === 'edit') return 'UNKNOWN'; // An editor can change the hook path without inspectable operands.
   if (action === 'rename-section' || action === 'remove-section') {
-    return operands.some((word) => word.dynamic || /^core$/i.test(word.text));
+    return operands.some((word) => word.dynamic || /^core$/i.test(word.text)) ? 'UNKNOWN' : null;
   }
   const key = operands[0];
   const writes = operands.length > 1 || ['set', 'add', 'replace-all', 'unset', 'unset-all'].includes(action);
-  return writes && key && (key.dynamic || /^core\.hookspath$/i.test(key.text));
+  if (!writes || !key || (!key.dynamic && !/^core\.hookspath$/i.test(key.text))) return null;
+  return key.dynamic || g.incomplete || g.args.some((word) => word.dynamic && word.dynamicMaySplit !== false)
+    ? 'UNKNOWN' : 'FORBIDDEN';
 }
 for (const g of insp.gits) {
-  if (changesHooksPath(g)) deny('`core.hooksPath` を変更・削除しうる git config は禁止です（committed hook の無効化を防止 / CLAUDE.md）。読取の getter を使ってください。');
+  const category = changesHooksPath(g);
+  if (category) deny(category === 'FORBIDDEN'
+    ? '解析した git config が禁止された `core.hooksPath` の変更・削除を指定しています。対応済みの getter を使ってください。'
+    : 'git config が hook の設定を変えるか、編集内容や引数から確定できません。対象・操作・不明な条件を owner へ確認してください。', category);
 }
 
 // `git add` / `git stage` の blanket 形を禁止: -A / --all（`--al` 等の省略形含む）/ 単独の "." "./"
@@ -191,12 +196,19 @@ for (const g of insp.gits) {
     return roots.has(path.resolve(inspectCwd, value));
   });
   if (blanket || normalizedRoot) {
-    deny('`git add -A` / `git add .` / `--all`（`.` `..` `*` `:/` `:(top)` `$PWD` / リポジトリ root の絶対パス含む）は禁止です。CLAUDE.md の規約に従い、ファイルを個別に列挙して add してください（untracked secret の巻き込み防止）。');
+    const parsed = guard.parseAddArgs(g.args);
+    const confirmed = !parsed.terminal && !parsed.unsafePathspec && (parsed.actualBlanket ||
+      parsed.pathspecs.some((word) => ['.', './', '..', '../'].includes(word.literalPath) ||
+        roots.has(path.resolve(inspectCwd, word.literalPath))));
+    deny(confirmed
+      ? '解析した git add / stage が禁止された一括追加を指定しています。確認済みの個別ファイルを列挙してください。'
+      : '一括追加の候補がありますが、実際の option / pathspec と消費値の境界や対象を確定できません。確認済みの個別ファイルを指定し、無理なら owner へ確認してください。',
+    confirmed ? 'FORBIDDEN' : 'UNKNOWN');
   }
 }
 
-// v3.5.3: 今の main（ae10261）の同じ検査を、コマンドの文字の全体にもう一度当てる（和をとる）。
-// 上の読み方が取りこぼしても、今の main より緩めないため。ブロックの中は main の文字のまま（空行のほかは main の行と同じ）。
+// v3.5.3: main（ae10261）の停止条件を文字列全体へもう一度当てる（和をとる）。
+// 条件と順序を保ち、raw-only の候補は UNKNOWN の理由で記録する。
 const RECHECK_AS_MAIN = true;
 if (RECHECK_AS_MAIN) {
 // `git` と subcommand の間には global option (`-c k=v` / `-C <dir>` / `--git-dir=…`) を
@@ -220,7 +232,7 @@ const nMatch = cmd.match(gitSubRe('commit'));
 if (nMatch) {
   const nArgs = unquote(nMatch[1]).trim().split(/\s+/).filter(Boolean);
   if (nArgs.some((a) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(a))) {
-    deny('`-n` は `git commit` の `--no-verify` 短縮形なので禁止です（hook バイパス防止 / CLAUDE.md）。dry-run が目的なら `--dry-run` と明示してください。');
+    deny('旧文字列判定に commit の `-n` 候補があります。実際の option か DATA かを確定できないため停止します。dry-run は対応済みの `--dry-run` を確認してください。');
   }
 }
 
@@ -240,7 +252,7 @@ if (m) {
       || (/^-[a-z]*$/i.test(a) && a.includes('A')),
   );
   if (blanket) {
-    deny('`git add -A` / `git add .` / `--all`（`.` `..` `*` `:/` `:(top)` `$PWD` / リポジトリ root の絶対パス含む）は禁止です。CLAUDE.md の規約に従い、ファイルを個別に列挙して add してください（untracked secret の巻き込み防止）。');
+    deny('旧文字列判定に一括追加の候補があります。実際の add 対象か DATA かを確定できないため停止します。確認済みの個別ファイルを列挙し、無理なら owner へ確認してください。');
   }
 }
 }

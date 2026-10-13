@@ -24,32 +24,15 @@ try {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: 'git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。secret ガードを通せないため実行をブロックします。',
+      permissionDecisionReason: '[判断不能] git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。secret ガードを通せないため実行をブロックします。',
     },
   }));
   process.exit(0);
 }
 const { deny } = guard;
 
-// CLAUDE.md / settings.json の secret 一覧に対応。basename・相対パスのどちらでも当たる。
-const SECRET_RE = [
-  /(^|\/)\.env($|[.*?\s])/i,        // .env / .env.local / .env.production / glob の .env* ...
-  /(^|\/)x_tokens\.json$/i,
-  /(^|\/)data\/tokens\.json$/i,
-  /(^|\/)pkce_state\.json$/i,
-  /(^|\/)credentials[^/]*\.json$/i,
-  /(^|\/)service-account[^/]*\.json$/i,
-  /[^/]*token[^/]*\.json$/i,        // *token*.json
-  /(^|\/)pipeline_config\.json$/i,
-  /\.(key|pem)$/i,
-  /(^|\/)id_(rsa|ed25519)$/i,
-  /(^|\/)secrets\.(json|ya?ml)$/i,
-  /(^|\/)secrets(\/|$)/i,           // secrets/ 配下（末尾 / を伴わない裸のディレクトリ名も）
-];
-
-// .env.example だけは許可（テンプレート）。
-const isAllowlisted = (p) => /(^|\/)\.env\.example$/i.test(p);
-const isSecret = (p) => !!p && !isAllowlisted(p) && SECRET_RE.some((re) => re.test(p));
+// staging と egress が同じ secret 一覧・.env.example 例外を使う。
+const isSecret = guard.isSecretPath;
 
 const { cmd, baseDir } = guard.readInput('secret ガード');
 if (!cmd) process.exit(0);
@@ -212,17 +195,6 @@ if (envWriter) {
   );
 }
 
-/** Resolve unique prefixes of the file-sourced pathspec options without inspecting their file data. */
-function usesFilePathspec(args) {
-  const options = ['--pathspec-from-file', '--pathspec-file-nul'];
-  for (const word of args) {
-    if (word.text === '--') break;
-    const option = word.text.split('=')[0];
-    if (option.startsWith('--') && options.filter((name) => name.startsWith(option)).length === 1) return true;
-  }
-  return false;
-}
-
 /** Detect whether an external-diff command may execute, honoring explicit disable flags. */
 function externalDiffCanRun(g) {
   if (!['diff', 'diff-index', 'diff-files', 'diff-tree', 'log', 'show', 'whatchanged', 'rev-list'].includes(g.sub)) return false;
@@ -312,26 +284,24 @@ function helperVariable(g, invocation) {
 // ① `git add <paths>` / `git stage <paths>` — 明示パス引数を検査（同じコマンドの add はすべて）。
 const addGits = gits.filter((g) => g.sub === 'add' || g.sub === 'stage');
 for (const g of addGits) {
-  const words = g.args.map((w) => w.text);
-  // 追加パスが stdin 側にある形は本フックから検査できない → 検査不能として拒否する。
-  if (usesFilePathspec(g.args)) {
+  const add = guard.parseAddArgs(g.args);
+  if (add.terminal) { g.terminal = true; continue; }
+  if (add.unsafePathspec) {
     deny(
-      '`git add --pathspec-from-file` / `--pathspec-file-nul` は追加パスが stdin 側にあり、\n' +
-      'secret ガードから検査できません（検査不能なのでブロック）。追加するファイルをコマンドラインに列挙してください。',
+      `git add / stage の pathspec を実行前に検査できません（${add.reason}）(fail-closed)。\n` +
+      '変数・glob・pathspec magic・ファイル入力を使わず、追加するファイルを literal なパスで列挙してください。',
     );
   }
-  const magic = words.find((a) => a.startsWith(':'));
-  if (magic) {
-    deny(
-      `git add / stage の pathspec magic（${magic}）は、secret 名や対象範囲の解釈を変えるため検査できません (fail-closed)。\n` +
-      'pathspec magic を使わず、追加するファイルを相対パスまたは絶対パスで列挙してください。',
-    );
+  if (!Array.isArray(add.pathspecs) || add.pathspecs.some((word) => typeof word.literalPath !== 'string')) {
+    deny('git add / stage の literal pathspec を共通 parser から取得できないためブロックしました (fail-closed)。');
   }
-  const bad = words.filter((a) => a && !a.startsWith('-')).filter(isSecret);
+  // Git が解く backslash escape の後の literal を見る。option の消費値は pathspec ではない。
+  const bad = add.pathspecs.map((word) => word.literalPath).filter(isSecret);
   if (bad.length) {
     deny(
       `secret-looking file を git add しようとしています: ${bad.join(', ')}\n` +
-      'CLAUDE.md の Secrets 境界によりブロックしました（.gitignore 済みのはず）。本当に追跡が必要か再検討してください。',
+      'CLAUDE.md が追加を禁止するファイル名に当たります。対象を外して、確認済みの個別ファイルを指定してください。',
+      'FORBIDDEN',
     );
   }
 }
@@ -464,7 +434,8 @@ for (const g of commits) {
   if (bad.length) {
     deny(
       `staged に secret-looking file が含まれています: ${bad.join(', ')}\n` +
-      'このまま commit すると機密が履歴に入ります。`git restore --staged <file>` で外してから commit してください（CLAUDE.md ハードルール）。',
+      'CLAUDE.md が commit を禁止するファイル名に当たります。`git restore --staged <file>` で外してから commit してください。',
+      'FORBIDDEN',
     );
   }
   // pathspec を付けた commit（`-o` / `-i` / 素の pathspec）は、作業木の中身をその場で commit する。
@@ -472,7 +443,7 @@ for (const g of commits) {
   if (ca.pathspecs.length) {
     const badSpec = ca.pathspecs.filter(isSecret);
     if (badSpec.length) {
-      deny(`secret-looking file を pathspec に付けて commit しようとしています: ${badSpec.join(', ')}（CLAUDE.md ハードルール）。`);
+      deny(`commit の pathspec が禁止されたファイル名に当たります: ${badSpec.join(', ')}（CLAUDE.md ハードルール）。`, 'FORBIDDEN');
     }
     const magic = ca.pathspecs.find((p) => p.startsWith(':') || /[*?[]/.test(p));
     if (magic) {
@@ -490,7 +461,7 @@ for (const g of commits) {
     }
     const badListed = listed.split('\0').filter(isSecret);
     if (badListed.length) {
-      deny(`pathspec が secret-looking file に当たります: ${badListed.join(', ')}\nこのまま commit すると機密が履歴に入ります（CLAUDE.md ハードルール）。`);
+      deny(`pathspec の照合結果が commit 禁止のファイル名に当たります: ${badListed.join(', ')}（CLAUDE.md ハードルール）。`, 'FORBIDDEN');
     }
   }
 }
@@ -498,7 +469,7 @@ for (const g of commits) {
 // v3.5.3 の raw-text backstop を継続し、旧 main 由来の option / path 判定も当てる。
 // staged 照合は NUL 区切りへ変更し、実行しない commit の help を除いた。
 // 実行する commit を parser が読めた場合は、その呼び出しの cwd で staged を照合する。
-// main の「git の文字が無ければ exit」はブロックの条件にした。SECRET_RE と isSecret は上の同じもの（main と同じ文字）。
+// main の「git の文字が無ければ exit」はブロックの条件にした。ファイル名 inventory は共通 isSecretPath を使う。
 const RECHECK_AS_MAIN = true;
 if (RECHECK_AS_MAIN && /\bgit\b/.test(cmd)) {
 const path = require('node:path');
@@ -538,7 +509,7 @@ if (addMatch) {
   if (bad.length) {
     deny(
       `secret-looking file を git add しようとしています: ${bad.join(', ')}\n` +
-      'CLAUDE.md の Secrets 境界によりブロックしました（.gitignore 済みのはず）。本当に追跡が必要か再検討してください。',
+      '旧判定の文字列候補が禁止ファイル名に一致しました。実際の add 対象か DATA かを確定できないため停止します。',
     );
   }
 }
@@ -597,7 +568,9 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
   if (bad.length) {
     deny(
       `staged に secret-looking file が含まれています: ${bad.join(', ')}\n` +
-      'このまま commit すると機密が履歴に入ります。`git restore --staged <file>` で外してから commit してください（CLAUDE.md ハードルール）。',
+      (commits.length ? '実行対象の commit の index が禁止ファイル名を含みます。対象を staged から外してください。'
+        : '旧文字列判定の commit 候補と index の禁止名が一致しましたが、実際の commit 対象か確定できないため停止します。'),
+      commits.length ? 'FORBIDDEN' : 'UNKNOWN',
     );
   }
 }

@@ -16,6 +16,7 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/cli-reference.md](docs/cli-reference.md) | 実行コマンドリファレンス（フォルダルール同期 / X ブックマーク取り込み / ハンズオン生成 / 中断再開 / ナレッジ統合 / 対話型レビュー） |
 | [docs/SPECIFICATION.md](docs/SPECIFICATION.md) | 詳細仕様（X ブックマーク取得 / ファイル構成） |
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
+| [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
 ---
 
@@ -60,6 +61,7 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
   - 7段階パストラバーサル防御（URL デコード迂回 / 絶対パス拒否 / Unicode NFC 正規化 / `..` 即時拒否 / symlink 解決検証）
   - プロンプトインジェクション緩和（`sanitizeUntrustedText` + `<untrusted_content>` デリミタ + システムポリシープロンプト）
   - AI 出力パスの検証（`validateClassificationResult`）
+  - Claude Code の Bash / Git ガード: shell の引用・escape と実行 source を解析し、対応済み条件の充足、禁止操作の確認、判断不能を区別する。後二者は停止し、理由を `[禁止]` / `[判断不能]` と示す。対象や実行条件を確定できない変数・glob による add や設定を差し替えた Git も fail-closed とする（対応範囲、代替、owner 確認、試験3層: [Git ガード](docs/security/git-command-guards.md)）
   - security-guidance プラグイン（公式）: Claude Code が書くコードを編集時 / ターン終了時 / commit 時の 3 層で自動セキュリティレビュー。`.claude/claude-security-guidance.md` で本リポの脅威モデルをレビュー観点に注入（詳細・既存防御との棲み分け: `docs/security/security-guidance-plugin.md`）
 - **dry-run モード**: `--dry-run` は Vault へ一切書き込まない（分類レポート・失敗ログは Vault 外の一時ディレクトリへ出力し、スナップショット / `folder_rules.json` 昇格の永続化も抑止）。実行前後で Vault ツリーが不変であることをテストで保証
 - **Vault Root 外部化**: `pipeline_config.json` または環境変数 `VAULT_ROOT` で設定、ハードコードなし

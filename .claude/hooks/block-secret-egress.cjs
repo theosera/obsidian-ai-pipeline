@@ -28,12 +28,14 @@ try {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: 'git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。egress ガードを通せないため実行をブロックします。',
+      permissionDecisionReason: '[判断不能] git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。必要な検査ができないため実行をブロックします。owner に対象・操作とこの不明点を確認してください。',
     },
   }));
   process.exit(0);
 }
 const { deny } = guard;
+const path = require('node:path');
+const UNKNOWN_OWNER_GATE = ' owner に対象・操作・cwd・env/config/source と不明点を確認してください。個別操作の承認は hook 無効化の許可ではありません。';
 
 // (A) リテラル秘密。`$GITHUB_TOKEN` 等の env 参照は値ではないので **当たらない**
 // (値クラスに `$` を含めない / 代入値が `$` 始まりなら除外)。ops-logging の mask()
@@ -91,7 +93,7 @@ function withoutTemplateTokens(evidence, depth = 0) {
   const codeSources = new Map();
   const inspected = guard.inspect(evidence);
   for (const invocation of inspected.invocations) for (const script of invocation.trapScripts
-    .concat(invocation.aliasScripts || [], invocation.expansionScripts || [])) {
+    .concat(invocation.aliasScripts || [], invocation.expansionScripts || [], sshCommandSources(invocation))) {
     if (!script.dynamic) codeSources.set(`${script.start}:${script.raw}`, script.text);
   }
   for (const word of sourceWords) {
@@ -158,39 +160,66 @@ function withoutTemplateTokens(evidence, depth = 0) {
   return result;
 }
 
-const { cmd } = guard.readInput('egress ガード');
+const { cmd, baseDir } = guard.readInput('egress ガード');
 if (!cmd) process.exit(0);
 
 if (SECRET_LITERALS.some((re) => re.test(cmd))) {
   deny(
-    'コマンド内にリテラルの秘密 (token / key / client secret 等) が含まれています。\n' +
-    '自リポ外への秘密送信を防ぐためブロックしました (egress guard)。env 変数参照 ($VAR) を' +
-    '使うか、本当に必要なら手動で実行してください。',
+    'コマンド文字列が secret literal inventory の形 (token / key / client secret 等) に当たります。\n' +
+    '文字列だけでは実行内容を確認できないためブロックしました (egress guard)。対応する env 変数参照 ($VAR) を検討できますが、' +
+    '送信操作や hook 回避の許可ではありません。必要な操作は owner に対象・内容を確認してください。',
   );
 }
 
 if (EXFIL_SHAPES.some((re) => re.test(cmd))) {
   deny(
-    '外向き送信 (gist / 非 origin への push / reverse shell / ローカルファイル upload 等) を検出しました。\n' +
-    'スクショ型インジェクションによる秘密持ち出しを防ぐためブロックしました (egress guard)。' +
-    '正当な操作なら内容を確認のうえ手動で実行してください。',
+    '文字列に外向き送信に似た形 (gist / URL への push / reverse shell / ファイル upload 等) が含まれています。\n' +
+    '実際の操作・引数をこの照合だけでは確認できないためブロックしました (egress guard)。' +
+    '必要な操作は owner に対象・操作・cwd・env/config/source と不明点を確認してください。',
   );
 }
 
 if (SECRET_FILE_RE.test(withoutTemplateTokens(cmd)) && NET_VERB_RE.test(cmd)) {
   deny(
-    '秘密ファイル (.env / *token*.json / *.key 等) の読取とネットワーク送信が同一コマンドに含まれています。\n' +
-    '秘密の外部送信を防ぐためブロックしました (egress guard)。',
+    '秘密ファイル名の形 (.env / *token*.json / *.key 等) とネットワーク名が同じ文字列に含まれています。\n' +
+    '読取から送信への関係をこの照合だけでは確認できないためブロックしました (egress guard)。owner に対象・操作・cwd・source を確認してください。',
   );
 }
 
 // git の形を、git の呼び出しごとにも見る（global option や引用符を挟んだ形も同じに読む）。
 const insp = guard.inspect(cmd);
-if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'egress ガード'));
+if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
 const URL_ARG_RE = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)/;
 // Git は最初の `:` より前に `/` が無い宛先を scp 形と読む。`./a:b` はローカル。
 const SCP_ARG_RE = /^[^/:]+:/;
 const REMOTE_URL_KEY_RE = /^remote\..+\.(?:url|pushurl)$/i;
+/** Require a static word before treating an existing refusal as a confirmed prohibited form. */
+function knownWord(word) {
+  return Boolean(word && !word.dynamic && !word.ansiCUnknown && !word.text.includes('\0'));
+}
+
+/** Downgrade evidence when executable identity or preceding context is not established by this parser. */
+function knownInvocationContext(invocation) {
+  const executable = invocation.nameWord?.text || '';
+  return !invocation.dynamicName && !invocation.launcherUnknown && !invocation.incomplete &&
+    !invocation.pathChangedBefore && !invocation.unknownContextBefore && !invocation.cdLikeBefore &&
+    !invocation.envUnknown && !invocation.unsafeGroupSetup &&
+    (!executable.includes('/') || ['/usr/bin/' + invocation.name, '/bin/' + invocation.name].includes(executable));
+}
+
+/** Preserve a helper's refusal while making uncertain command context explicit. */
+function contextualVerdict(invocation, verdict) {
+  return verdict === 'FORBIDDEN' && !knownInvocationContext(invocation) ? 'UNKNOWN' : verdict;
+}
+
+/** Stop at the same first matching invocation as the previous boolean some() checks. */
+function firstVerdict(invocations, inspect) {
+  for (const invocation of invocations) {
+    const verdict = inspect(invocation);
+    if (verdict) return verdict;
+  }
+  return false;
+}
 /** Return whether a repository argument uses a network URL or Git's scp syntax. */
 function destinationArg(value) {
   return URL_ARG_RE.test(value) || (!/^file:\/\//i.test(value) && SCP_ARG_RE.test(value));
@@ -285,14 +314,21 @@ function configOperation(words) {
   return { read, rename, deletion, operands, operandWords };
 }
 
-/** Distinguish destination-config writes from getters without treating option values as actions. */
+/** Classify destination writes while keeping getters and consumed option values outside the refusal. */
 function writesDestinationConfig(words) {
   const { read, rename, deletion, operands, operandWords } = configOperation(words);
   // Removing a selected destination exposes fallback URLs/configuration just like replacing it.
-  if (deletion) return operands.length > 0 && (operandWords[0].dynamic ||
-    (deletion === 'key' ? destinationConfig(operands[0]) : destinationSection(operands[0])));
-  return !read && operands.length > 1 && (rename ?
-    operandWords[1].dynamic || destinationSection(operands[1]) : destinationConfig(operands[0]));
+  if (deletion) {
+    if (!(operands.length > 0 && (operandWords[0].dynamic ||
+        (deletion === 'key' ? destinationConfig(operands[0]) : destinationSection(operands[0]))))) return false;
+    if (deletion === 'section' || !knownWord(operandWords[0])) return 'UNKNOWN';
+  } else {
+    if (!(!read && operands.length > 1 && (rename ?
+        operandWords[1].dynamic || destinationSection(operands[1]) : destinationConfig(operands[0])))) return false;
+    if (rename || !knownWord(operandWords[0])) return 'UNKNOWN';
+  }
+  // An include or transport key selects executable/config source whose effect is not inspected here.
+  return transportConfig(operands[0]) || /^include(?:if\..+)?\.path$/i.test(operands[0]) ? 'UNKNOWN' : 'FORBIDDEN';
 }
 
 /** Reconstruct credential-helper shell commands only for consumers or persistent helper writes. */
@@ -306,7 +342,7 @@ function credentialHelperSources(g) {
   const values = [];
   if (consumes) {
     if (g.configEnvs.some((config) => helperKey(config.split('=')[0]))) {
-      deny('credential helper の source が --config-env の値から作られ、egress ガードで検査できません (fail-closed)。');
+      deny('credential helper の source が --config-env の値から作られ、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     }
     for (const config of g.configs) {
       const eq = config.indexOf('=');
@@ -324,7 +360,7 @@ function credentialHelperSources(g) {
     }
   }
   return values.filter(Boolean).map((helper) => {
-    if (helper.includes('\0')) deny('credential helper の source が変数・置換を含み、egress ガードで検査できません (fail-closed)。');
+    if (helper.includes('\0')) deny('credential helper の source が変数・置換を含み、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     // A neutral parser prefix represents Git's trusted named-helper dispatch while preserving shell suffix code.
     return { text: helper.startsWith('!') ? helper.slice(1) : helper.startsWith('/') ? helper : `__credential_helper__${helper}`,
       mediated: true,
@@ -418,12 +454,14 @@ function curlReadsUpload(words, incomplete = false) {
   /** Expand known inline values locally; file/env contents remain an unknown marker and are never read. */
   const expanded = (value) => {
     let file = false;
+    let unknown = false;
     const text = value.replace(/\{\{([A-Za-z0-9_]+)(?::([^}]*))?\}\}/g, (whole, name, transforms, offset) => {
       let escapes = 0;
       for (let p = offset - 1; p >= 0 && value[p] === '\\'; p--) escapes++;
       if (escapes % 2) return whole;
       const variable = variables.get(name);
       file ||= unknownFileVersion > (variable ? variable.version : 0);
+      unknown ||= unknownFileVersion > (variable ? variable.version : 0) || Boolean(variable?.unknown);
       if (!variable) return file ? '\0' : '';
       file ||= variable.file;
       let result = variable.text;
@@ -434,14 +472,14 @@ function curlReadsUpload(words, incomplete = false) {
         else if (transform === 'url') result = encodeURIComponent(result);
         else if (transform === 'b64') result = Buffer.from(result).toString('base64');
         else if (transform === '64dec') result = Buffer.from(result, 'base64').toString();
-        else return '\0';
+        else { unknown = true; return '\0'; }
       }
       return result;
     });
-    return { text, file };
+    return { text, file, unknown };
   };
   /** Track definitions in order so unused or overwritten file variables do not imply an upload. */
-  const variableDefinition = (value, expanding) => {
+  const variableDefinition = (value, expanding, word) => {
     const definition = /^%?([A-Za-z0-9_]+)(?:\[[0-9-]+\])?([=@])?(.*)$/s.exec(value);
     definitionVersion++;
     if (!definition) {
@@ -452,6 +490,7 @@ function curlReadsUpload(words, incomplete = false) {
     }
     const source = expanding ? expanded(definition[3]) : { text: definition[3], file: false };
     variables.set(definition[1], { file: definition[2] === '@' || source.file, version: definitionVersion,
+      unknown: !knownWord(word) || Boolean(source.unknown),
       text: definition[2] === '@' || !definition[2] || source.text.includes('\0') ? null : source.text });
   };
   /** Match file references using the option's own value, not text printed inside another value. */
@@ -464,7 +503,8 @@ function curlReadsUpload(words, incomplete = false) {
     return false;
   };
   for (let k = 0; k < words.length; k++) {
-    const t = words[k].text;
+    const optionWord = words[k];
+    const t = optionWord.text;
     if (t === '--') break;
     if (t.startsWith('--')) {
       const eq = t.indexOf('=');
@@ -474,21 +514,24 @@ function curlReadsUpload(words, incomplete = false) {
       const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter((option) => option.startsWith(name));
       if (matches.length !== 1 || !CURL_VALUE_LONG.has(matches[0])) continue;
       const option = matches[0];
-      if (option === 'config') return true;
-      const value = eq < 0 ? words[++k] : { text: t.slice(eq + 1) };
+      if (option === 'config') return 'UNKNOWN';
+      const value = eq < 0 ? words[++k] : { ...optionWord, text: t.slice(eq + 1) };
       if (value) {
-        if (option === 'variable') { variableDefinition(value.text, expanding); continue; }
+        if (option === 'variable') { variableDefinition(value.text, expanding, value); continue; }
         const source = expanding ? expanded(value.text) : { text: value.text, file: false };
-        if (expanding && outbound.has(option) && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) return true;
-        if ((source.file && outbound.has(option)) || payload(option, source.text)) return true;
-      } else if (incomplete && fileOptions.has(option)) return true;
+        const verdict = !incomplete && knownWord(optionWord) && knownWord(value) && !source.unknown ? 'FORBIDDEN' : 'UNKNOWN';
+        if (expanding && outbound.has(option) && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) return verdict;
+        if ((source.file && outbound.has(option)) || payload(option, source.text)) return verdict;
+      } else if (incomplete && fileOptions.has(option)) return 'UNKNOWN';
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
         const option = CURL_VALUE_SHORT[t[p]];
         if (!option) continue;
-        if (option === 'config') return true;
-        const value = p + 1 < t.length ? { text: t.slice(p + 1) } : words[++k];
-        if (value ? payload(option, value.text) : incomplete && fileOptions.has(option)) return true;
+        if (option === 'config') return 'UNKNOWN';
+        const value = p + 1 < t.length ? { ...optionWord, text: t.slice(p + 1) } : words[++k];
+        if (value ? payload(option, value.text) : incomplete && fileOptions.has(option)) {
+          return !incomplete && knownWord(optionWord) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
+        }
         break;
       }
     }
@@ -525,13 +568,16 @@ function wgetReadsUpload(words) {
       const name = t.slice(2, eq < 0 ? undefined : eq);
       const matches = WGET_VALUE_LONG.has(name) ? [name] : [...WGET_VALUE_LONG].filter((option) => option.startsWith(name));
       if (matches.length !== 1) continue;
-      if (opaque.has(matches[0])) return true;
+      if (opaque.has(matches[0])) {
+        const value = eq < 0 ? words[k + 1] : { ...words[k], text: t.slice(eq + 1) };
+        return ['post-file', 'body-file'].includes(matches[0]) && knownWord(words[k]) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
+      }
       // --use-askpass has an optional attached value; the following word remains an option/URL.
       if (eq < 0 && matches[0] !== 'use-askpass') k++;
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
         if (!WGET_VALUE_SHORT.includes(t[p])) continue;
-        if (t[p] === 'e') return true;
+        if (t[p] === 'e') return 'UNKNOWN';
         if (p === t.length - 1) k++;
         break;
       }
@@ -563,9 +609,10 @@ function remoteCopyDestination(invocation) {
       }
       continue;
     }
-    operands.push(t);
+    operands.push(invocation.args[k]);
   }
-  return operands.length > 0 && destinationArg(operands[operands.length - 1]);
+  const destination = operands[operands.length - 1];
+  return destination && destinationArg(destination.text) ? knownWord(destination) ? 'FORBIDDEN' : 'UNKNOWN' : false;
 }
 
 /** Identify an executable network verb using parsed command names, never names printed as data. */
@@ -574,19 +621,232 @@ function networkInvocation(invocation) {
     (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
 }
 
-/** Detect SSH sessions that can consume stdin, skipping option values and excluding explicit -n/-f. */
-function sshReadsInput(invocation) {
+/** Inspect gh api payload options, keeping raw fields and consumed option values as data. */
+function ghApiUpload(invocation) {
+  if (invocation.args[0]?.text !== 'api') return false;
+  const values = new Set(['field', 'raw-field', 'header', 'hostname', 'input', 'jq', 'method', 'preview', 'template', 'cache']);
+  const shortValues = { F: 'field', f: 'raw-field', H: 'header', q: 'jq', X: 'method', p: 'preview', t: 'template' };
+  let verdict = false;
+  for (let k = 1; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    const text = word.text;
+    if (text === '--') break;
+    if (word.dynamic && (word.dynamicMaySplit !== false || text.startsWith('\0'))) verdict ||= 'UNKNOWN';
+    let option;
+    let value;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      option = text.slice(2, eq < 0 ? undefined : eq);
+      if (option === 'help' && eq < 0) return false;
+      if (!values.has(option)) continue;
+      value = eq < 0 ? invocation.args[++k] : { ...word, text: text.slice(eq + 1) };
+    } else if (text.startsWith('-')) {
+      for (let p = 1; p < text.length; p++) {
+        option = shortValues[text[p]];
+        if (!option) continue;
+        value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+        break;
+      }
+    }
+    if (!option) continue;
+    if (value?.dynamic && value.dynamicMaySplit !== false) verdict ||= 'UNKNOWN';
+    if (option === 'input' && (value || invocation.incomplete)) {
+      verdict ||= !invocation.incomplete && knownWord(word) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
+    }
+    if (option === 'field') {
+      const eq = value ? value.text.indexOf('=') : -1;
+      const payload = eq < 0 ? '' : value.text.slice(eq + 1);
+      if ((!value && invocation.incomplete) || /^@/.test(payload) ||
+          Boolean(value?.dynamic && (value.dynamicMaySplit !== false || eq < 0 || payload.startsWith('\0')))) {
+        verdict ||= !invocation.incomplete && knownWord(word) && knownWord(value) && /^@/.test(payload) ? 'FORBIDDEN' : 'UNKNOWN';
+      }
+    }
+  }
+  return verdict;
+}
+
+/** Select SSH commands/config sources that run locally, retaining proven non-executing query and DATA options. */
+function sshCommandSources(invocation) {
+  return sshOperation(invocation).sources;
+}
+
+/** Read SSH's option boundary before and after the host, stopping at the actual remote command. */
+function sshOperation(invocation) {
+  if (invocation.name !== 'ssh') return { sources: [], stdin: false };
+  const options = new Map();
   const valueOptions = 'bcDEeFIiJLlmOopQRSWw';
+  let query = false;
+  let earlyQuery = false;
+  let requestedQuery = false;
+  let requestedEarlyQuery = false;
+  let argvUncertain = false;
+  let selectedConfig = false;
+  let configFile;
+  let unknown = false;
+  let host = false;
+  let detached = false;
   for (let k = 0; k < invocation.args.length; k++) {
-    const t = invocation.args[k].text;
-    if (t === '--') return Boolean(invocation.args[k + 1]);
-    if (!t.startsWith('-')) return true; // first positional argument is the remote destination
-    for (let p = 1; p < t.length; p++) {
-      if (t[p] === 'n' || t[p] === 'f' || t[p] === 'G') return false;
-      if (valueOptions.includes(t[p])) { if (p === t.length - 1) k++; break; }
+    const word = invocation.args[k];
+    const text = word.text;
+    if (text === '--') { host = host || Boolean(invocation.args[k + 1]); break; }
+    const provenOperand = typeof word.literalValue === 'string' && word.dynamicMaySplit === false && !word.literalValue.startsWith('-');
+    if (word.dynamic && !provenOperand && (word.dynamicMaySplit !== false || text.startsWith('\0'))) argvUncertain = true;
+    if (!text.startsWith('-')) { if (host) break; host = true; continue; }
+    for (let p = 1; p < text.length; p++) {
+      if (text[p] === 'G') { requestedQuery = true; if (!argvUncertain) query = true; }
+      if (text[p] === 'Q' || text[p] === 'V') { requestedEarlyQuery = true; if (!argvUncertain) earlyQuery = true; }
+      if (text[p] === 'n' || text[p] === 'f') detached = true;
+      if (!valueOptions.includes(text[p])) continue;
+      const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+      if (value?.dynamic && (value.dynamicMaySplit !== false || (p + 1 < text.length && value.text.startsWith('\0')))) argvUncertain = true;
+      if (text[p] === 'F') { selectedConfig = true; configFile = value; }
+      if (text[p] === 'o') {
+        const match = value && /^\s*([^=\s]+)\s*(?:=\s*|\s+)([\s\S]*)$/.exec(value.text);
+        if (!match || value.dynamicMaySplit && value.dynamic) unknown = true;
+        else if (!options.has(match[1].toLowerCase())) options.set(match[1].toLowerCase(), { ...value, text: match[2] });
+      }
+      if (text[p] === 'J' && value && !options.has('proxyjump')) options.set('proxyjump', value);
+      break;
+    }
+  }
+  if (selectedConfig ? earlyQuery : requestedEarlyQuery) return { sources: [], stdin: false };
+  if (selectedConfig && (argvUncertain || !configFile || configFile.dynamic || !['none', '/dev/null'].includes(configFile.text))) {
+    deny('SSH の -F config が未知の実行 source（Match exec 等）を選び、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+  }
+  if (selectedConfig ? query : requestedQuery) return { sources: [], stdin: false };
+  if (unknown) deny('SSH の -o option が動的で、ローカル実行 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+  const sources = [];
+  for (const key of ['proxycommand', 'knownhostscommand', 'localcommand']) {
+    const source = options.get(key);
+    if (!source || source.text.toLowerCase() === 'none') continue;
+    if (key === 'localcommand' && options.get('permitlocalcommand')?.text.toLowerCase() === 'no') continue;
+    if (key === 'proxycommand' && options.has('proxyjump') && [...options.keys()].indexOf('proxyjump') < [...options.keys()].indexOf(key)) continue;
+    // OpenSSH expands these bytes before execution; the shell parser cannot prove the resulting argv.
+    sources.push({ ...source, dynamic: source.dynamic || source.text.includes('%') || /\$\{/.test(source.text), mediated: true });
+  }
+  return { sources, stdin: host && !detached };
+}
+
+/** Identify network clients that actually consume pipeline/stdin data, excluding explicit query/receive-only modes. */
+function networkReadsStdin(invocation) {
+  if (invocation.name === 'ssh') return sshReadsInput(invocation);
+  if (!['nc', 'ncat', 'telnet'].includes(invocation.name)) return false;
+  const values = invocation.name === 'ncat' ? 'pwsidmgGqox' : 'piwsqmxXPTG';
+  const longValues = new Set(['source-port', 'source', 'wait', 'idle-timeout', 'delay', 'max-conns', 'proxy', 'proxy-type', 'proxy-auth']);
+  for (const name of ['output', 'hex-dump', 'allow', 'allowfile', 'deny', 'denyfile', 'proxy-dns', 'ssl-cert', 'ssl-key',
+    'ssl-trustfile', 'ssl-ciphers', 'ssl-servername', 'ssl-alpn']) longValues.add(name);
+  let operand = false;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const text = invocation.args[k].text;
+    if (text === '--') return invocation.args.length > k + 1;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      if (['help', 'version', 'recv-only'].includes(name)) return false;
+      if (eq < 0 && longValues.has(name)) k++;
+    } else if (text.startsWith('-')) {
+      for (let p = 1; p < text.length; p++) {
+        if ((invocation.name !== 'ncat' && text[p] === 'd') || ['h', 'z'].includes(text[p])) return false;
+        if (values.includes(text[p])) { if (p === text.length - 1) k++; break; }
+      }
+    } else operand = true;
+  }
+  return operand;
+}
+
+/** Recognize a small non-executing sed script subset; opaque scripts can read or execute hidden sources. */
+function simpleSedScript(text) {
+  if (/^\s*(?:[0-9]+(?:,[0-9]+)?\s*)?[pdq=]\s*$/.test(text)) return true;
+  if (text[0] !== 's' || !text[1]) return false;
+  const delimiter = text[1];
+  let count = 0;
+  for (let k = 2; k < text.length; k++) {
+    if (text[k] === '\\') { k++; continue; }
+    if (text[k] === delimiter && ++count === 2) return /^[gIp0-9]*$/.test(text.slice(k + 1));
+  }
+  return false;
+}
+
+/** Classify pipeline producers without treating sed/grep/awk program text or literal printf output as filenames. */
+function pipelineInput(invocation) {
+  const refs = invocation.redirs.filter((redir) => ['<', '<>'].includes(redir.op)).map((redir) => redir.word);
+  const name = invocation.name;
+  const executable = invocation.nameWord?.text || '';
+  let unknown = refs.some((word) => word.dynamic) || invocation.dynamicName || invocation.pathChangedBefore || invocation.unknownContextBefore ||
+    (executable.includes('/') && !['/usr/bin/' + name, '/bin/' + name].includes(executable));
+  if (['printf', 'echo', ':', 'true', 'false', 'pwd'].includes(name)) {
+    unknown = unknown || invocation.args.some((word) => word.dynamic) || (name === 'printf' && /^-v/.test(invocation.args[0]?.text || ''));
+    return { refs, unknown };
+  }
+  if (!['cat', 'head', 'tail', 'base64', 'xxd', 'sed', 'grep', 'awk'].includes(name)) return { refs, unknown: true };
+  let program = !['sed', 'grep', 'awk'].includes(name);
+  let afterDD = false;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k];
+    const text = word.text;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (!afterDD && text.startsWith('-')) {
+      if (['sed', 'grep'].includes(name)) {
+        const long = /^--(expression|regexp|file)(?:=([\s\S]*))?$/.exec(text);
+        const short = !text.startsWith('--') && /^-[A-Za-z]*?[ef]/.exec(text);
+        if (long || short) {
+          const option = long ? long[1] === 'file' ? 'f' : 'e' : short[0].slice(-1);
+          const value = long ? long[2] === undefined ? invocation.args[++k] : { ...word, text: long[2] } :
+            short[0].length < text.length ? { ...word, text: text.slice(short[0].length) } : invocation.args[++k];
+          program = true;
+          if (name === 'grep' && option === 'f' && value) refs.push(value);
+          unknown = unknown || !value || Boolean(value?.dynamic) || (name === 'sed' && (option === 'f' || !simpleSedScript(value?.text || '')));
+        } else if (name === 'grep' && /^-[ABCm]$/.test(text)) {
+          const value = invocation.args[++k];
+          unknown = unknown || !value || Boolean(value?.dynamic && value.dynamicMaySplit !== false);
+        } else if (!/^-[A-Za-z]+$/.test(text) || (name === 'sed' && /[^nEruaHl]/.test(text.slice(1)))) unknown = true;
+      } else if (['head', 'tail'].includes(name) && /^-[nc]$/.test(text)) {
+        const value = invocation.args[++k];
+        unknown = unknown || !value || Boolean(value?.dynamic && value.dynamicMaySplit !== false);
+      }
+      else if (name === 'awk' && text === '-F') k++;
+      else if (name === 'awk' && text === '-v') k++;
+      else if (!/^-[A-Za-z0-9]+$/.test(text) || (['sed', 'grep', 'awk'].includes(name) && /[fie]/.test(text.slice(1)))) unknown = true;
+      continue;
+    }
+    if (!program) {
+      program = true;
+      if (name === 'sed') unknown = unknown || word.dynamic || !simpleSedScript(text);
+      if (name === 'awk') unknown = unknown || word.dynamic || !/^\s*(?:1|\{\s*print(?:\s+\$0|\s+"[^"\\]*")?\s*;?\s*\})\s*$/.test(text);
+      continue;
+    }
+    refs.push(word);
+  }
+  return { refs, unknown: unknown || refs.some((word) => word.dynamic) };
+}
+
+/** Retain refusals for related input, distinguishing proven file operands from opaque source/context. */
+function unsafeNetworkInput(invocation, all) {
+  if (!networkReadsStdin(invocation)) return false;
+  const refs = invocation.redirs.filter((redir) => ['<', '<>'].includes(redir.op)).map((redir) => redir.word);
+  if (refs.some((word) => word.dynamic)) return 'UNKNOWN';
+  if (SECRET_FILE_RE.test(withoutTemplateTokens(refs.map((word) => parserLiteral(word.text)).join(' ')))) {
+    return contextualVerdict(invocation, 'FORBIDDEN');
+  }
+  if (invocation.redirs.some((redir) => redir.op === '<<<' && redir.word.dynamic) ||
+      invocation.heredocBodies.some((body) => !body.quoted && /[$`]/.test(body.body))) return 'UNKNOWN';
+  const ids = invocation.pipelineIds || [];
+  const producers = all.filter((other) => other !== invocation && other.order < invocation.order &&
+    (other.pipelineIds || []).some((id) => ids.includes(id)));
+  for (const producer of producers) {
+    const source = pipelineInput(producer);
+    if (source.unknown) return 'UNKNOWN';
+    if (SECRET_FILE_RE.test(withoutTemplateTokens(source.refs.map((word) => parserLiteral(word.text)).join(' ')))) {
+      // The boolean guard did not establish cwd across a cd-like operation; classification must not claim it did.
+      return knownInvocationContext(producer) && knownInvocationContext(invocation) ? 'FORBIDDEN' : 'UNKNOWN';
     }
   }
   return false;
+}
+
+/** Detect SSH sessions that can consume stdin, skipping option values and excluding explicit -n/-f. */
+function sshReadsInput(invocation) {
+  return sshOperation(invocation).stdin;
 }
 
 /** Fail closed for an unresolved executable when its arguments identify a possible upload. */
@@ -636,11 +896,17 @@ function reverseShell(invocation) {
     if (t.startsWith('--')) {
       const eq = t.indexOf('=');
       const option = t.slice(2, eq < 0 ? undefined : eq);
-      if (option === 'exec' || (invocation.name === 'ncat' && option === 'sh-exec')) return true;
+      if (option === 'exec' || (invocation.name === 'ncat' && option === 'sh-exec')) {
+        const value = eq < 0 ? invocation.args[k + 1] : { ...invocation.args[k], text: t.slice(eq + 1) };
+        return knownWord(invocation.args[k]) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
+      }
       if (eq < 0 && longValues.has(option)) k++;
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
-        if (t[p] === 'e' || (invocation.name === 'ncat' && t[p] === 'c')) return true;
+        if (t[p] === 'e' || (invocation.name === 'ncat' && t[p] === 'c')) {
+          const value = p + 1 < t.length ? { ...invocation.args[k], text: t.slice(p + 1) } : invocation.args[k + 1];
+          return knownWord(invocation.args[k]) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
+        }
         if (shortValues.includes(t[p])) { if (p === t.length - 1) k++; break; }
       }
     }
@@ -676,11 +942,20 @@ function envSplitInspection(invocation, script) {
 }
 
 const inspectedGits = [];
+const gitInvocationContexts = new Map();
+/** Classify only the evidence supported for this Git invocation, without changing its refusal. */
+function gitVerdict(g, verdict) {
+  const invocation = gitInvocationContexts.get(g);
+  return verdict === 'FORBIDDEN' && (!invocation || !knownInvocationContext(invocation) ||
+    g.unknownContextBefore || g.cdLikeBefore || g.dynamicOpt) ? 'UNKNOWN' : verdict;
+}
 /** Parse interpreter strings as code, retaining ordinary literal arguments as data. */
 function collectNetworkInvocations(inspection, depth = 0) {
-  if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。');
-  if (inspection.problems.length) deny(guard.problemMessage(inspection.problems, 'egress ガード'));
+  if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+  if (inspection.problems.length) deny(guard.problemMessage(inspection.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
   inspectedGits.push(...inspection.gits);
+  for (const g of inspection.gits) gitInvocationContexts.set(g,
+    inspection.invocations.find((invocation) => invocation.order === g.invocationOrder));
   const result = [];
   for (const invocation of inspection.invocations) {
     if (invocation.nonExec || invocation.definitionName) continue;
@@ -688,12 +963,13 @@ function collectNetworkInvocations(inspection, depth = 0) {
     const scripts = [];
     const gitCommand = inspection.gits.find((g) => g.invocationOrder === invocation.order);
     if (gitCommand) scripts.push(...credentialHelperSources(gitCommand));
+    scripts.push(...sshCommandSources(invocation));
     if (invocation.splitString) {
       for (const script of invocation.splitWords) result.push(...collectNetworkInvocations(envSplitInspection(invocation, script), depth + 1));
     }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
       if (invocation.shellCommandMode && invocation.shellSourceUnknown) {
-        deny('シェルの command mode の source が option の境界から確定できず、egress ガードで検査できません (fail-closed)。');
+        deny('シェルの command mode の source が option の境界から確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
       }
       scripts.push(...invocation.shellScripts.map((script) => ({ ...script, initialPositionals: invocation.shellPositionals })));
       if (!invocation.shellCommandMode && invocation.shellReadsStdin) {
@@ -704,9 +980,9 @@ function collectNetworkInvocations(inspection, depth = 0) {
       const args = invocation.args[0] && invocation.args[0].text === '--' ? invocation.args.slice(1) : invocation.args;
       scripts.push({ text: args.map((word) => word.text).join(' ') });
     }
-    if (invocation.trapSourceUnknown) deny('trap に登録する source が確定できず、egress ガードで検査できません (fail-closed)。');
+    if (invocation.trapSourceUnknown) deny('trap に登録する source が確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     scripts.push(...invocation.trapScripts.map((script) => ({ ...script, mediated: true })));
-    if (invocation.aliasSourceUnknown) deny('alias に登録する source が確定できず、egress ガードで検査できません (fail-closed)。');
+    if (invocation.aliasSourceUnknown) deny('alias に登録する source が確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     scripts.push(...(invocation.aliasScripts || []).map((script) => ({ ...script, mediated: true })));
     for (const script of scripts) {
       const nested = script.mediated ? guard.inspectMediatedSource(script) :
@@ -722,38 +998,55 @@ function collectNetworkInvocations(inspection, depth = 0) {
   return result;
 }
 
-/** Apply the classic egress shapes to executable names reconstructed by the shell parser. */
+/** Return a typed refusal for the same executable egress shapes, including uninspectable source variants. */
 function parsedExfil(invocation) {
-  if (invocation.name === 'gh') return invocation.args[0] && invocation.args[0].text === 'gist';
-  if (invocation.name === 'curl') return curlReadsUpload(invocation.args, invocation.incomplete);
-  if (invocation.name === 'wget') return wgetReadsUpload(invocation.args);
-  if (['nc', 'ncat'].includes(invocation.name)) return reverseShell(invocation);
+  let verdict = false;
+  if (invocation.name === 'gh') verdict = invocation.args[0]?.text === 'gist' ?
+    knownWord(invocation.args[0]) ? 'FORBIDDEN' : 'UNKNOWN' : ghApiUpload(invocation);
+  if (invocation.name === 'curl') verdict = curlReadsUpload(invocation.args, invocation.incomplete);
+  if (invocation.name === 'wget') verdict = wgetReadsUpload(invocation.args);
+  if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
   // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.
-  if (invocation.name === 'sftp') return sftpSession(invocation.args);
-  if (['scp', 'rsync'].includes(invocation.name)) return invocation.incomplete || remoteCopyDestination(invocation);
-  return false;
+  if (invocation.name === 'sftp') verdict = sftpSession(invocation.args) ? 'UNKNOWN' : false;
+  if (['scp', 'rsync'].includes(invocation.name)) verdict = invocation.incomplete ? 'UNKNOWN' : remoteCopyDestination(invocation);
+  return contextualVerdict(invocation, verdict);
 }
 
 const invocations = collectNetworkInvocations(insp);
+if (invocations.some((invocation) =>
+  ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh', 'ssh'].includes(invocation.name) &&
+  invocation.args.some((word) => word.ansiCUnknown))) {
+  deny('ネットワーク client の ANSI-C 引数が解読できず、送信 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+}
 // Reapply the same literal inventory after shell quote/escape concatenation; never expand variables.
 const parsedWords = insp.invocations.concat(invocations).flatMap((invocation) =>
   invocation.words.concat(invocation.redirs.map((redir) => redir.word)));
 if (parsedWords.some((word) => SECRET_LITERALS.some((pattern) => pattern.test(word.text)))) {
-  deny('シェルの引用符・escape を戻した引数にリテラルの秘密 (token / key / client secret 等) が含まれています (egress guard)。');
+  deny('シェルの引用符・escape を戻した引数が既存の secret literal inventory に当たります。値の有効性や実際の漏洩を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。', 'FORBIDDEN');
 }
-if (invocations.some(parsedExfil) || invocations.some(dynamicNetworkShape) || invocations.some(opaqueLauncherNetwork)) {
-  deny('シェルの引用符・escape を戻した実行コマンドに、外向き送信 (gist / reverse shell / ローカルファイル upload 等) を検出しました (egress guard)。');
+const parsedExfilVerdict = firstVerdict(invocations, parsedExfil);
+if (parsedExfilVerdict || invocations.some(dynamicNetworkShape) || invocations.some(opaqueLauncherNetwork)) {
+  const verdict = parsedExfilVerdict || 'UNKNOWN';
+  deny(verdict === 'FORBIDDEN' ?
+    '読み取れた実行コマンドが、既存の禁止形式 (gist / 実行付き network client / ファイル payload・copy 等) に当たります。実送信の成立を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。' :
+    'network client の config・argv・実行 source または context が不足し、送信形式を確認できません (egress guard, fail-closed)。owner に対象・操作・cwd・env/config/source と不明点を確認してください。', verdict);
+}
+const networkInputVerdict = firstVerdict(invocations, (invocation) => unsafeNetworkInput(invocation, invocations));
+if (networkInputVerdict) {
+  deny(networkInputVerdict === 'FORBIDDEN' ?
+    'stdin を消費する network client と、その入力の secret filename operand が同じ読取・pipeline 関係に当たり、既存の禁止形式です。ファイル内容や実送信の成立を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。' :
+    'stdin を消費する network client の入力について source・argv・実行 identity・cwd/context を確認できません (egress guard, fail-closed)。owner に対象・操作・cwd・env/config/source と不明点を確認してください。', networkInputVerdict);
 }
 const parsedFileRefs = invocations.flatMap((invocation) => {
   const readsFiles = ['cat', 'head', 'tail', 'base64', 'xxd'].includes(invocation.name);
-  return (readsFiles ? invocation.args : []).concat(invocation.redirs.map((redir) => redir.word)).map((word) => word.text);
+  return (readsFiles ? invocation.args : []).concat(invocation.redirs.filter((redir) => redir.op !== '<<<').map((redir) => redir.word)).map((word) => word.text);
 });
 const secretEvidence = [cmd, ...parsedFileRefs].join('\n');
 if (SECRET_FILE_RE.test(withoutTemplateTokens(secretEvidence)) &&
     invocations.some((invocation) => networkInvocation(invocation) || invocation.dynamicName || invocation.launcherUnknown)) {
-  deny('秘密ファイルの読取と、シェルの引用符・escape を戻したネットワーク送信コマンドが同一コマンドに含まれています (egress guard)。');
+  deny('secret filename evidence と network command が同一コマンドにありますが、読取から送信への関係を確認できません (egress guard)。owner に対象・操作・cwd・source と不明点を確認してください。');
 }
-// SSH identity/config options are authentication input; only local file readers/input redirects identify upload.
+// SSH identity options are authentication input; selected commands/config sources were inspected above.
 const sshReadEvidence = invocations.flatMap((invocation) => {
   const readsFiles = ['cat', 'head', 'tail', 'base64', 'xxd'].includes(invocation.name);
   return (readsFiles ? invocation.args : []).concat(invocation.redirs
@@ -762,22 +1055,55 @@ const sshReadEvidence = invocations.flatMap((invocation) => {
 }).join('\n');
 if (SECRET_FILE_RE.test(sshReadEvidence) &&
     invocations.some((invocation) => invocation.name === 'ssh' && sshReadsInput(invocation))) {
-  deny('秘密ファイルの読取と SSH セッションが同一コマンドに含まれ、SSH の stdin に秘密を送る可能性があります (egress guard)。');
+  deny('secret filename evidence と stdin を消費し得る SSH セッションが同一コマンドにありますが、送信への関係を確認できません (egress guard)。owner に対象・操作・cwd・source と不明点を確認してください。');
 }
 
 for (const g of inspectedGits) {
+  if (['add', 'stage'].includes(g.sub) && !g.terminal) {
+    const added = guard.parseAddArgs(g.args);
+    if (!added.terminal && added.unsafePathspec) {
+      deny(`git ${g.sub} の pathspec が実行時に決まり、秘密ファイルの追加を事前に確かめられません (${added.reason}, fail-closed)。` + UNKNOWN_OWNER_GATE);
+    }
+    if (!added.terminal && added.runtimeBlanket) {
+      deny('git add / stage の実行時 option が包括追加の -A / --all に解決され、既存の包括追加禁止に当たります。必要な操作は owner に対象・操作を確認してください。', gitVerdict(g, 'FORBIDDEN'));
+    }
+    if (!added.terminal) {
+      if (added.pathspecs.some((word) => guard.isSecretPath(word.literalPath))) {
+        deny('git add / stage の literal pathspec が既存の secret filename 禁止に当たります。ファイル内容を確認したものではありません。必要な操作は owner に対象・操作を確認してください。', gitVerdict(g, 'FORBIDDEN'));
+      }
+      const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
+      const roots = new Set([process.env.CLAUDE_PROJECT_DIR || process.cwd(), baseDir, inspectCwd].map((dir) => path.resolve(dir)));
+      if (added.pathspecs.some((word) => typeof word.literalValue === 'string' &&
+          (['.', '..'].includes(word.literalPath) || roots.has(path.resolve(inspectCwd, word.literalPath))))) {
+        deny('git add / stage の実行時 literal pathspec が既存の包括追加対象に解決されます。必要な操作は owner に対象・操作・cwd を確認してください。', gitVerdict(g, 'FORBIDDEN'));
+      }
+    }
+  }
   const a = g.args.map((w) => w.text);
   const firstWord = a.find((x) => !x.startsWith('-'));
+  if (g.sub === 'remote' && !g.terminal) {
+    let action;
+    let afterDD = false;
+    for (const word of g.args) {
+      if (!afterDD && word.text === '--') { afterDD = true; continue; }
+      if (!afterDD && word.text.startsWith('-') && !word.dynamic) continue;
+      action = word;
+      break;
+    }
+    if ((action && action.dynamic) || (!action && g.incomplete)) {
+      deny('git remote の action が動的で、宛先を書き換える操作かどうかを確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+    }
+  }
   const remoteWrite = g.sub === 'remote' && (firstWord === 'add' || firstWord === 'set-url');
   const configWrite = g.sub === 'config' && writesDestinationConfig(g.args);
   if (g.sub === 'fast-import' && !(g.args.length === 1 && !g.args[0].dynamic && ['-h', '--help'].includes(g.args[0].text))) {
-    deny('git fast-import は stdin のデータから未検査の履歴と ref を作るため、実行をブロックします (fail-closed)。');
+    deny('git fast-import の stdin から作られる履歴と ref を、このガードで検査できません (fail-closed)。owner に対象・操作・source と不明点を確認してください。');
   }
   if (['send-pack', 'http-push'].includes(g.sub)) {
-    deny(`git ${g.sub} は履歴を直接送る plumbing command で、egress ガードの検査対象外です。送信をブロックします (fail-closed)。`);
+    deny(`git ${g.sub} の送信先と対象履歴は、このガードの supported inspection 外で確認できません (fail-closed)。owner に対象・操作・source と不明点を確認してください。`);
   }
   if (g.sub === 'push' && g.incomplete) {
-    deny('xargs / find などの入力から git push に追加される引数は、egress ガードで宛先を確かめられません (fail-closed)。');
+    deny('xargs / find などの入力から git push に追加される引数は、egress ガードで宛先を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   }
   const push = g.sub === 'push' ? pushRepository(g.args) : null;
   const repo = push && push.repository;
@@ -786,15 +1112,20 @@ for (const g of inspectedGits) {
     g.configs.some((config) => transportConfig(config.split('=')[0])) ||
     g.gitEnvNames.some((name) => /^GIT_CONFIG(?:_|$)/.test(name) || /^GIT_(?:SSH(?:_COMMAND)?|PROXY_COMMAND)$/.test(name)));
   if (unknownPushDestination) {
-    deny('git push の宛先や transport command が変数・置換や config / GIT_CONFIG / GIT_SSH / GIT_PROXY_COMMAND の override で作られていて、egress ガードで確かめられません (fail-closed)。');
+    deny('git push の宛先や transport command が変数・置換や config / GIT_CONFIG / GIT_SSH / GIT_PROXY_COMMAND の override で作られていて、egress ガードで確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   }
   const pushUrl = g.sub === 'push' && (a.some((x) => URL_ARG_RE.test(x)) ||
     (repo && destinationArg(repo.text)) || g.configs.some(externalConfig));
   if (remoteWrite || configWrite || pushUrl) {
+    const verdict = gitVerdict(g, remoteWrite ?
+      g.args.every(knownWord) ? 'FORBIDDEN' : 'UNKNOWN' : configWrite ?
+      g.args.every(knownWord) ? configWrite : 'UNKNOWN' :
+      repo && knownWord(repo) && destinationArg(repo.text) ? 'FORBIDDEN' : 'UNKNOWN');
     deny(
-      '外向き送信 (gist / 非 origin への push / reverse shell / ローカルファイル upload 等) を検出しました。\n' +
-      'スクショ型インジェクションによる秘密持ち出しを防ぐためブロックしました (egress guard)。' +
-      '正当な操作なら内容を確認のうえ手動で実行してください。',
+      verdict === 'FORBIDDEN' ?
+        '読み取れた Git 操作が、既存の宛先変更・protected config key の書込/削除・外部 repository operand への push 禁止に当たります。実送信の成立を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。' :
+        'Git の宛先・section/config source・引数や context を確定できません。URL 文字列だけでは実際の送信を確認したものではありません (egress guard, fail-closed)。owner に対象・操作・cwd・env/config/source と不明点を確認してください。',
+      verdict,
     );
   }
 }

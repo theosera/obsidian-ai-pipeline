@@ -20,11 +20,14 @@ function readStdin() {
   try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
 }
 
-/** Flush a bounded deny response before exiting, so a pipe cannot truncate its JSON. */
-function deny(reason) {
+/** Emit an explicit policy/unknown reason on the existing deny wire, bounded and flushed before exit. */
+function deny(reason, category = 'UNKNOWN') {
   const message = typeof reason === 'string' ? reason : 'hook が入力を検査できないため実行をブロックします (fail-closed)。';
+  // Only an explicit enum and a usable reason may claim a confirmed policy prohibition.
+  const prefix = category === 'FORBIDDEN' && typeof reason === 'string' ? '[禁止] ' : '[判断不能] ';
+  const classified = prefix + message;
   // 512 UTF-16 units stay below 4 KiB even when JSON escapes every unit as \uXXXX.
-  const bounded = message.length > 512 ? message.slice(0, 511) + '…' : message;
+  const bounded = classified.length > 512 ? classified.slice(0, 511) + '…' : classified;
   fs.writeFileSync(1, JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
@@ -111,8 +114,66 @@ function alternateSubstitutionEnd(src, start) {
   return -1;
 }
 
+/** Decode Bash ANSI-C bytes without execution; uncertain encodings retain an explicit argument marker. */
+function decodeAnsiC(body) {
+  const chunks = [];
+  let unknown = false;
+  let truncated = false;
+  const append = (value) => {
+    const bytes = typeof value === 'number' ? Buffer.from([value & 255]) : Buffer.from(value, 'utf8');
+    const nul = bytes.indexOf(0);
+    chunks.push(nul < 0 ? bytes : bytes.subarray(0, nul));
+    if (nul >= 0) truncated = true;
+  };
+  const simple = { a: 7, b: 8, e: 27, E: 27, f: 12, n: 10, r: 13, t: 9, v: 11,
+    '\\': 92, "'": 39, '"': 34, '?': 63 };
+  for (let k = 0; k < body.length && !truncated; k++) {
+    const ch = body[k];
+    if (ch !== '\\') {
+      const codepoint = body.codePointAt(k);
+      append(String.fromCodePoint(codepoint));
+      if (codepoint > 65535) k++;
+      continue;
+    }
+    const escape = body[++k];
+    if (escape === undefined) { unknown = true; break; }
+    if (Object.hasOwn(simple, escape)) { append(simple[escape]); continue; }
+    if (/[0-7]/.test(escape)) {
+      const digits = /^[0-7]{1,3}/.exec(body.slice(k))[0];
+      append(parseInt(digits, 8)); k += digits.length - 1; continue;
+    }
+    if (escape === 'x' || escape === 'u' || escape === 'U') {
+      const width = { x: 2, u: 4, U: 8 }[escape];
+      const digits = new RegExp('^[0-9a-fA-F]{1,' + width + '}').exec(body.slice(k + 1));
+      if (!digits) { append('\\' + escape); continue; }
+      const value = parseInt(digits[0], 16);
+      k += digits[0].length;
+      if (escape === 'x') append(value);
+      else {
+        // Bash 3.2 preserves Unicode escapes, while newer Bash decodes them depending on LC_CTYPE.
+        // Raw UTF-8 and valid escaped byte sequences have deterministic argv bytes across versions.
+        unknown = true;
+      }
+      continue;
+    }
+    if (escape === 'c') {
+      if (k + 1 >= body.length) { unknown = true; break; }
+      let control = body[++k];
+      if (control === '?' || control === '\\' || control.charCodeAt(0) > 127) { unknown = true; continue; }
+      control = control.toUpperCase();
+      append(control === '?' ? 127 : control.charCodeAt(0) & 31);
+      continue;
+    }
+    append('\\' + escape); // Bash preserves unrecognized escapes as literal data.
+  }
+  const bytes = Buffer.concat(chunks);
+  const text = bytes.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(bytes)) unknown = true;
+  return { text, unknown };
+}
+
 /** Scan one expansion and collect executable substitutions in child shell scopes. */
-function scanExpansion(src, i, out, depth, scope, effects) {
+function scanExpansion(src, i, out, depth, scope, effects, inDoubleQuotes = false) {
   const n = src.length;
   // `${…}` と `$((…))` の入れ子は parseSeq を通らずに呼び合うので、ここでも深さを見る（v3）。
   if (depth > MAX_DEPTH) { out.errors.push('入れ子が深すぎる'); return { end: n, dynamic: true }; }
@@ -259,14 +320,16 @@ function scanExpansion(src, i, out, depth, scope, effects) {
     return { end: j + 1, dynamic: true, multiWord, evaluations };
   }
   if (c1 === "'") {
-    // $'…'（escape を解く文字列）。中身は実行されないが、語の文字は決めない。
+    if (inDoubleQuotes) return { end: i + 1, dynamic: false, literal: '$' };
     let j = i + 2;
     while (j < n && src[j] !== "'") {
       if (src[j] === '\\') j++;
       j++;
     }
     if (j >= n) { out.errors.push("閉じていない $'…'"); return { end: n, dynamic: true }; }
-    return { end: j + 1, dynamic: true, noSplit: true };
+    const decoded = decodeAnsiC(src.slice(i + 2, j));
+    return { end: j + 1, dynamic: decoded.unknown, ansiCUnknown: decoded.unknown,
+      literal: decoded.text, noSplit: true, quoted: true, ansiCQuoted: true };
   }
   if (c1 === '"') return { end: i + 1, dynamic: true }; // $"…": 続く "…" は呼び出し側が読む
   if (c1 !== undefined && /[A-Za-z_]/.test(c1)) {
@@ -369,12 +432,15 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
     if (!cur) return;
     cur.raw = src.slice(cur.start, i);
     cur.braceExpanded = hasBraceExpansion(cur.braceSource);
+    cur.tildeExpanded = /^~/.test(cur.braceSource) ||
+      /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=~/.test(cur.braceSource);
     delete cur.braceSource;
     if (cur.braceExpanded) { cur.dynamic = true; cur.dynamicMaySplit = true; }
     if (!redirNext && !cur.quoted && !cur.dynamic && atCmdPos(words)) {
       const close = { if: 'fi', while: 'done', until: 'done', for: 'done', select: 'done', case: 'esac' }[cur.text];
       if (close) {
         const group = newEffect();
+        group.kind = cur.text;
         group.conditional = true; // A conditional/loop body may never update positional parameters.
         compoundEffects.push({ close, inheritedEffects, pipeline, group });
         inheritedEffects = currentEffects().concat(group);
@@ -410,6 +476,9 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
   };
   const appendExpansion = (r, quoted = false) => {
     cur.evaluations.push(...(r.evaluations || []));
+    if (r.quoted) cur.quoted = true;
+    if (r.ansiCQuoted) cur.ansiCQuoted = true;
+    if (r.ansiCUnknown) cur.ansiCUnknown = true;
     if (r.dynamic) {
       cur.dynamic = true;
       cur.braceSource += DYN;
@@ -452,7 +521,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
           continue;
         }
         if (d === '$' || d === '`') {
-          const r = scanExpansion(src, i, out, depth, scope, currentEffects());
+          const r = scanExpansion(src, i, out, depth, scope, currentEffects(), true);
           appendExpansion(r, true);
           i = r.end;
           continue;
@@ -1040,6 +1109,18 @@ const RISKY_SUBS = new Set([
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish']);
 const CD_LIKE = new Set(['cd', 'pushd', 'popd']);
 const EXPORT_LIKE = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
+const CONFIG_ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME']);
+/** Include Git's configuration-root variables in per-invocation environment effects. */
+const affectsGitEnvironment = (name) => /^GIT_/.test(name) || CONFIG_ROOT_ENV.has(name);
+/** Shell declaration options stop at the first operand; later strings are variable names or values. */
+function declarationOptions(args) {
+  const options = [];
+  for (const word of args) {
+    if (word.dynamic || word.text === '--' || !/^[-+][A-Za-z]+$/.test(word.text)) break;
+    options.push(word.text);
+  }
+  return options;
+}
 // POSIX モードでは prefix の代入が、通常のコマンドと違い special builtin の後にも残る。
 const SPECIAL_BUILTINS = new Set([':', '.', 'break', 'continue', 'eval', 'exit', 'export', 'readonly', 'return', 'set', 'shift', 'times', 'trap', 'unset']);
 const COMMAND_SEARCH_MUTATORS = new Set(['alias', 'unalias', 'hash', 'rehash', 'enable', 'autoload', 'functions']);
@@ -1064,7 +1145,7 @@ const wordHasGit = (w) => hasGitText(w.raw) || hasGitText(w.text) || hasGitText(
 function parseGit(args) {
   const g = {
     sub: null, args: [], cdirs: [], configs: [], configEnvs: [], gitDir: false, workTree: false,
-    dynamicOpt: false, terminal: false, problems: [], pathspecFlags: [],
+    dynamicOpt: false, terminal: false, problems: [], pathspecFlags: [], pagerForced: false, pagerDisabled: false,
   };
   let k = 0;
   while (k < args.length) {
@@ -1085,11 +1166,19 @@ function parseGit(args) {
       continue;
     }
     if (GIT_FLAG_OPTS.has(t)) {
+      if (t === '-p' || t === '--paginate') g.pagerForced = true;
+      if (t === '-P' || t === '--no-pager') g.pagerForced = false;
+      if (t === '-p' || t === '--paginate') g.pagerDisabled = false;
+      if (t === '-P' || t === '--no-pager') g.pagerDisabled = true;
       if (PATHSPEC_FLAG_OPTS.has(t)) g.pathspecFlags.push(t);
       k++;
       continue;
     }
-    if (GIT_TERMINAL_OPTS.has(t)) { g.terminal = true; return g; }
+    if (GIT_TERMINAL_OPTS.has(t)) {
+      g.terminal = true;
+      g.helpKind = t === '--help' && k + 1 < args.length ? 'manual' : 'stdout';
+      return g;
+    }
     const eq = t.indexOf('=');
     const name = eq < 0 ? t : t.slice(0, eq);
     if (GIT_VALUE_OPTS.has(name) || (name === '--exec-path' && eq >= 0) || (name === '--list-cmds' && eq >= 0)) {
@@ -1105,7 +1194,7 @@ function parseGit(args) {
       if (name === '--git-dir') g.gitDir = true;
       if (name === '--work-tree') g.workTree = true;
       if (name === '--config-env') g.configEnvs.push(value);
-      if (name === '--list-cmds') { g.terminal = true; return g; }
+      if (name === '--list-cmds') { g.terminal = true; g.helpKind = 'stdout'; return g; }
       continue;
     }
     g.problems.push(`git の知らない global option（${t}）が subcommand の前にある`);
@@ -1242,7 +1331,7 @@ function aliasInvocation(args) {
 /** Read a variable assignment's cooked literal value, retaining an indexed target for arithmetic checks. */
 function scalarAssignment(word) {
   const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?(\+?=)(.*)$/s.exec(word.text);
-  return match && { name: match[1], index: match[2], append: match[3] === '+=', value: word.dynamic ? null : match[4] };
+  return match && { name: match[1], index: match[2], append: match[3] === '+=', value: word.dynamic || word.tildeExpanded ? null : match[4] };
 }
 
 /** Prove arithmetic contains only numbers, operators and recursively known numeric values; never evaluate it. */
@@ -1316,6 +1405,9 @@ function rememberValue(state, assignment, conditional) {
     ? state.values.get(key) + value : null;
   if (conditional && (!state.values.has(key) || state.values.get(key) !== value)) value = null;
   state.values.set(key, value);
+  if (assignment.index === undefined && typeof value === 'string' && !state.valuesTainted &&
+      !state.integers.has(key) && !state.associatives.has(key)) state.pathProofs.add(key);
+  else state.pathProofs.delete(assignment.name);
 }
 
 /** Read one arithmetic operand after a simple scalar expansion, without treating its value as shell text. */
@@ -1326,10 +1418,54 @@ function arithmeticOperand(word, state) {
   return null;
 }
 
+/** Select printf's assignment target and format; attached -v names have the same effects as -v names. */
+function printfValueEffect(args) {
+  const first = args[0];
+  const targetWord = first && first.text === '-v' ? args[1] : first && first.text.startsWith('-v')
+    ? { ...first, text: first.text.slice(2) } : null;
+  const format = first && first.text === '-v' ? args[2] : targetWord ? args[1]
+    : first && first.text === '--' ? args[1] : first;
+  const unknownFormat = !!format && (format.dynamic || /%[-+# 0]*(?:\*|\d+)?(?:\.(?:\*|\d+))?n/.test(format.text));
+  return { targetWord, unknownFormat };
+}
+
+/** Select read's variable targets without treating prompt/delimiter values as environment assignments. */
+function readEnvironmentTargets(args) {
+  let array = null;
+  let k = 0;
+  for (; k < args.length; k++) {
+    const word = args[k];
+    const text = word.text;
+    if (word.dynamic) return { targets: [], unknown: true };
+    if (text === '--help') return { targets: [], unknown: false };
+    if (text === '--') { k++; break; }
+    if (!text.startsWith('-')) break;
+    if (text.length < 2) return { targets: [], unknown: true };
+    for (let p = 1; p < text.length; p++) {
+      const option = text[p];
+      if ('eErs'.includes(option)) continue;
+      if (!'adinNptu'.includes(option)) return { targets: [], unknown: true };
+      const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : args[++k];
+      if (!value || (value.dynamic && value.dynamicMaySplit !== false)) return { targets: [], unknown: true };
+      if (option === 'a') array = value;
+      break;
+    }
+  }
+  const targets = array ? [array] : args.slice(k);
+  return { targets, unknown: targets.some((word) => word.dynamic) };
+}
+
 /** Delayed code which can assign shell values invalidates proofs made before registration. */
-const sourceChangesValues = (inner) => inner.invocations.some((entry) => entry.assignments.length ||
-  ['set', 'read', 'readarray', 'mapfile', 'printf', 'declare', 'typeset', 'local', 'readonly', 'unset', 'let'].includes(entry.name) &&
-    (entry.name !== 'printf' || entry.args.some((word) => word.text === '-v')));
+function sourceChangesValues(inner) {
+  return inner.invocations.some((entry) => {
+    if (entry.assignments.length) return true;
+    if (entry.name === 'printf') {
+      const effect = printfValueEffect(entry.args);
+      return !!effect.targetWord || effect.unknownFormat;
+    }
+    return ['set', 'read', 'readarray', 'mapfile', 'getopts', 'declare', 'typeset', 'local', 'readonly', 'unset', 'let'].includes(entry.name);
+  });
+}
 
 /** Read set's positional operands without confusing option queries or consumed -o names with argv. */
 function positionalSet(args) {
@@ -1406,9 +1542,13 @@ function trustedGitExecutable(word) {
   try { return trustedGitPaths.has(fs.realpathSync(word.text)); } catch { return false; }
 }
 
+let inspectionSerial = 0;
+
 /** Inspect executable Git invocations, associating preceding scope changes with each invocation. */
 function inspect(cmd, options = {}) {
   const sourceDepth = options.sourceDepth || 0;
+  const inspectionId = ++inspectionSerial;
+  const pipelineIds = new Map();
   const res = {
     gits: [], problems: [], cdLike: false, gitEnvNames: [], cmdCount: 0, invocations: [], async: false,
   };
@@ -1440,8 +1580,8 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false });
-  const copyState = (s) => ({ ...s, env: new Set(s.env), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives) });
+  const emptyState = () => ({ env: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set() });
+  const copyState = (s) => ({ ...s, env: new Set(s.env), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
       scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
@@ -1460,6 +1600,23 @@ function inspect(cmd, options = {}) {
   const visit = (c, info, depth) => {
     if (depth > MAX_DEPTH) { res.problems.push('入れ子が深すぎる'); return; }
     const state = stateFor(c.scope);
+    for (const [frame, name] of state.loopBindings) if (!(c.effects || []).includes(frame)) {
+      state.values.set(name, null); state.loopBindings.delete(frame); state.pathProofs.delete(name);
+    }
+    let loopBinding = false;
+    if (info.name === 'for' && info.args[0] && info.args[1]?.text === 'in') {
+      state.values.set(info.args[0].text, null); state.pathProofs.delete(info.args[0].text);
+    }
+    if (info.name === 'for' && info.args.length === 3 && !info.args.some((word) => word.dynamic) &&
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(info.args[0].text) && info.args[1].text === 'in' &&
+        !info.args[2].braceExpanded && !info.args[2].tildeExpanded &&
+        (info.args[2].quoted || !/[?*\[]/.test(info.args[2].text))) {
+      const frame = (c.effects || []).findLast((effect) => effect.kind === 'for');
+      if (frame) {
+        state.values.set(info.args[0].text, info.args[2].text); state.loopBindings.set(frame, info.args[0].text);
+        state.pathProofs.add(info.args[0].text); loopBinding = true;
+      }
+    }
     const conditional = (c.effects || []).some((effect) => effect.conditional || effect.pipeline);
     const checkEvaluation = (evaluation, valuesState) => {
       if (evaluation.kind === 'arithmetic' && !(evaluation.arrayName && valuesState.associatives.has(evaluation.arrayName)) &&
@@ -1483,6 +1640,7 @@ function inspect(cmd, options = {}) {
     // expansion is inspected. Do not certify a saved value from that reordered visit.
     if (c.words.some((word) => (word.evaluations || []).some((evaluation) => evaluation.kind === 'source'))) {
       expansionState.valuesTainted = true;
+      state.pathProofs.clear();
     }
     for (const word of c.words.concat(c.redirs.map((redir) => redir.word))) {
       for (const evaluation of word.evaluations || []) checkEvaluation(evaluation, expansionState);
@@ -1521,9 +1679,12 @@ function inspect(cmd, options = {}) {
     const env = new Set(state.env);
     let pathChanged = state.pathChanged;
     for (const op of info.envOps) {
-      if (op.clear) { env.clear(); pathChanged = false; }
-      if (op.unset) { env.delete(op.unset); if (op.unset === 'PATH') pathChanged = false; }
-      if (op.set && /^GIT_/.test(op.set)) env.add(op.set);
+      if (op.clear) { env.clear(); for (const root of CONFIG_ROOT_ENV) env.add(root); pathChanged = false; }
+      if (op.unset) {
+        if (CONFIG_ROOT_ENV.has(op.unset)) env.add(op.unset); else env.delete(op.unset);
+        if (op.unset === 'PATH') pathChanged = false;
+      }
+      if (op.set && affectsGitEnvironment(op.set)) env.add(op.set);
       if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
     }
     const cdBefore = state.cd || info.cdLike;
@@ -1544,6 +1705,10 @@ function inspect(cmd, options = {}) {
       pathChangedBefore: pathChanged || state.searchChanged,
       unknownContextBefore: state.unknownContext,
       pipelineParticipant: (c.effects || []).some((e) => e.pipeline),
+      pipelineIds: (c.effects || []).filter((effect) => effect.pipeline).map((effect) => {
+        if (!pipelineIds.has(effect)) pipelineIds.set(effect, `${inspectionId}:${pipelineIds.size}`);
+        return pipelineIds.get(effect);
+      }),
       unsafeGroupSetup: (c.effects || []).some((e) => e.unsafeSetup),
       shellScripts: shell ? shell.scripts : [], shellCommandMode: shell ? shell.commandMode : false,
       shellSourceUnknown: shell ? shell.unknown : false, shellReadsStdin: shell ? shell.readsStdin : false,
@@ -1562,30 +1727,37 @@ function inspect(cmd, options = {}) {
     const persistentValues = (!info.name && !info.dynamicName && !info.wrapped) ||
       info.persistsEnv || (builtin && (SPECIAL_BUILTINS.has(info.name) || EXPORT_LIKE.has(info.name)));
     const declaration = builtin && EXPORT_LIKE.has(info.name);
-    const integerDeclaration = declaration && info.args.some((word) => !word.dynamic && /^-[A-Za-z]*i[A-Za-z]*$/.test(word.text));
-    const associativeDeclaration = declaration && info.args.some((word) => !word.dynamic && /^-[A-Za-z]*A[A-Za-z]*$/.test(word.text));
-    if (builtin && ['declare', 'typeset', 'local'].includes(info.name) &&
-        info.args.some((word) => !word.dynamic && /^-[A-Za-z]*n[A-Za-z]*$/.test(word.text))) state.valuesTainted = true;
+    const declOptions = declaration ? declarationOptions(info.args) : [];
+    const declarationQuery = ['declare', 'typeset', 'local'].includes(info.name) &&
+      declOptions.some((option) => /^-[A-Za-z]*p[A-Za-z]*$/.test(option));
+    const integerDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*i[A-Za-z]*$/.test(option));
+    const associativeDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*A[A-Za-z]*$/.test(option));
+    if (builtin && !declarationQuery && ['declare', 'typeset', 'local'].includes(info.name) &&
+        declOptions.some((option) => /^-[A-Za-z]*n[A-Za-z]*$/.test(option))) state.valuesTainted = true;
     const valueWords = c.words.filter((word) => info.assignRaws.includes(word.raw))
-      .concat(declaration ? info.args : []);
+      .concat(declaration && !declarationQuery ? info.args : []);
     for (const word of valueWords) {
       const assignment = scalarAssignment(word);
+      const prefix = info.assignRaws.includes(word.raw) && !info.args.includes(word);
+      const valueConditional = conditional || (!!info.name && prefix);
+      const canRemember = prefix ? ((!info.name && !info.dynamicName && !info.wrapped) || info.persistsEnv ||
+        (builtin && SPECIAL_BUILTINS.has(info.name))) : persistentValues;
       if (!assignment) {
         if (integerDeclaration && /^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) state.integers.add(word.text);
         if (associativeDeclaration && !conditional && /^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) state.associatives.add(word.text);
         continue;
       }
-      if (associativeDeclaration && !conditional) state.associatives.add(assignment.name);
+      if (associativeDeclaration && !prefix && !conditional) state.associatives.add(assignment.name);
       if (assignment.index !== undefined && !state.associatives.has(assignment.name) && !numericArithmetic(assignment.index, state)) {
         res.problems.push('配列の添字が静的な数値と確かめられず、添字で評価する source を検査できない');
       }
-      if (integerDeclaration || state.integers.has(assignment.name)) {
+      if ((!prefix && integerDeclaration) || state.integers.has(assignment.name)) {
         state.integers.add(assignment.name);
         if (!numericArithmetic(assignment.value, state)) {
           res.problems.push('整数属性への代入が静的な数値と確かめられず、保存された source の再評価を検査できない');
         }
-        if (persistentValues) rememberValue(state, { ...assignment, value: '0' }, conditional);
-      } else if (persistentValues) rememberValue(state, assignment, conditional);
+        if (canRemember) rememberValue(state, { ...assignment, value: '0' }, valueConditional);
+      } else if (canRemember) rememberValue(state, assignment, valueConditional);
     }
     if (builtin && info.name === 'let') {
       for (const word of info.args) {
@@ -1604,6 +1776,20 @@ function inspect(cmd, options = {}) {
     }
     // Builtins which can assign/read unknown text invalidate cached literal proofs.
     if (builtin && ['read', 'readarray', 'mapfile', 'unset'].includes(info.name)) {
+      if (info.name === 'read') {
+        const read = readEnvironmentTargets(info.args);
+        if (read.unknown) {
+          // An unresolved target can replace config roots or command lookup, even for a later Git read.
+          for (const root of CONFIG_ROOT_ENV) state.env.add(root);
+          state.pathChanged = true;
+        }
+        for (const word of read.targets) {
+          const target = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?$/.exec(word.text);
+          if (!target) continue;
+          if (affectsGitEnvironment(target[1])) state.env.add(target[1]);
+          if (target[1] === 'PATH' || target[1] === 'FPATH') state.pathChanged = true;
+        }
+      }
       if (info.args.some((word) => word.dynamic)) { state.valuesTainted = true; state.associatives.clear(); }
       if (!info.args.length && info.name === 'read') state.values.set('REPLY', null);
       for (const word of info.args) {
@@ -1616,17 +1802,44 @@ function inspect(cmd, options = {}) {
       }
     }
     if (builtin && info.name === 'printf') {
-      const vi = info.args.findIndex((word) => word.text === '-v');
-      const target = vi >= 0 && info.args[vi + 1] && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(info.args[vi + 1].text);
-      if (vi >= 0 && (!target || info.args[vi + 1].dynamic)) state.valuesTainted = true;
+      const { targetWord, unknownFormat } = printfValueEffect(info.args);
+      if (unknownFormat) state.valuesTainted = true;
+      const target = targetWord && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(targetWord.text);
+      if (targetWord && (!target || targetWord.dynamic)) {
+        state.valuesTainted = true;
+        res.problems.push('printf -v の代入先が不明で、配列の添字で評価する source を検査できない');
+      }
       if (target) {
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('printf -v が評価する配列の添字を検査できない');
         state.values.set(target[1], null);
+        state.pathProofs.delete(target[1]);
+        if (affectsGitEnvironment(target[1])) state.env.add(target[1]);
+        if (target[1] === 'PATH' || target[1] === 'FPATH') state.pathChanged = true;
         for (const key of state.values.keys()) if (key.startsWith(target[1] + '[')) state.values.set(key, null);
       }
     }
+    if (builtin && info.name === 'getopts') {
+      const targetWord = info.args[1];
+      const target = targetWord && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(targetWord.text);
+      for (const name of ['OPTARG', 'OPTIND', ...(target ? [target[1]] : [])]) {
+        state.values.set(name, null); state.pathProofs.delete(name);
+        if (affectsGitEnvironment(name)) state.env.add(name);
+        if (name === 'PATH' || name === 'FPATH') state.pathChanged = true;
+      }
+      if (!target || targetWord.dynamic) { state.valuesTainted = true; res.problems.push('getopts の代入先を検査できない'); }
+      else if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('getopts の配列の添字を検査できない');
+    }
+    const literalBinding = valueWords.some((word) => {
+      const assignment = scalarAssignment(word);
+      return assignment && !word.dynamic && !conditional && !info.name;
+    }) || (declaration && !declarationQuery && valueWords.some((word) =>
+      info.args.includes(word) && scalarAssignment(word) && !word.dynamic));
+    if (info.name && info.name !== 'git' && !info.nonExec && !loopBinding && !literalBinding && !declarationQuery) state.pathProofs.clear();
+    if (info.name && !info.nonExec && !['git', 'for', ':', 'true', 'false', 'echo', 'printf', 'pwd', 'test', '[', '[[',
+      'cd', 'pushd', 'popd', 'export', 'declare', 'typeset', 'local', 'readonly', 'unset', 'read', 'readarray', 'mapfile',
+      'getopts', 'let', 'set', 'shift', 'trap', 'alias'].includes(info.name)) state.valuesTainted = true;
     if (info.cdLike) res.cdLike = true;
-    for (const a of info.assigns) if (/^GIT_/.test(a) && !res.gitEnvNames.includes(a)) res.gitEnvNames.push(a);
+    for (const a of info.assigns) if (affectsGitEnvironment(a) && !res.gitEnvNames.includes(a)) res.gitEnvNames.push(a);
     if (!info.name && !info.dynamicName && !info.wrapped) { state.env = env; state.pathChanged = pathChanged; }
     if (info.persistsEnv || (!info.wrapped && SPECIAL_BUILTINS.has(info.name))) {
       for (const a of env) state.env.add(a);
@@ -1719,11 +1932,19 @@ function inspect(cmd, options = {}) {
     }
     if (CD_LIKE.has(name)) { res.cdLike = true; state.cd = true; }
     if (EXPORT_LIKE.has(name)) {
+      const print = declOptions.some((option) => /^-[A-Za-z]*p[A-Za-z]*$/.test(option));
+      const query = ['declare', 'typeset', 'local'].includes(name) && print;
       for (const w of info.args) {
+        if (query) continue;
         const nm = w.text.split('=')[0];
-        if (/^GIT_/.test(nm)) { res.gitEnvNames.push(nm); state.env.add(nm); }
+        if (affectsGitEnvironment(nm) && (w.text.includes('=') || !print)) {
+          res.gitEnvNames.push(nm); state.env.add(nm);
+        }
         if (nm === 'PATH' || nm === 'FPATH') state.pathChanged = true;
       }
+    }
+    if (name === 'unset') for (const word of info.args) {
+      if (CONFIG_ROOT_ENV.has(word.text)) { state.env.add(word.text); res.gitEnvNames.push(word.text); }
     }
     // unset は && / || の分岐で実行されないことがあるので、永続状態からは消さない。
     if (SHELLS.has(name)) {
@@ -1795,7 +2016,8 @@ function inspect(cmd, options = {}) {
     }
     if (name !== 'git') {
       // Literal printf/echo argv is data, including in a tuple or inspected source string.
-      if ((positionalExec || sourceDepth > 0 || c.mediated) && ['echo', 'printf'].includes(name) &&
+      if ((positionalExec || sourceDepth > 0 || c.mediated || info.args.some((word) => word.ansiCQuoted)) &&
+          ['echo', 'printf'].includes(name) &&
           [name, '/bin/' + name, '/usr/bin/' + name].includes(info.nameWord.text)) return;
       // git 以外の名前で包んで git を走らせる形（`arch -arm64 git commit …` など・v3）。
       // `git` の語の後が書き込む側の subcommand（または読みきれない語の後に目印の subcommand）
@@ -1822,7 +2044,41 @@ function inspect(cmd, options = {}) {
     }
     const g = parseGit(info.args);
     if (g.problems.length) { res.problems.push(...g.problems); return; }
-    if (g.sub === 'commit' && parseCommitArgs(g.args).terminal) g.terminal = true;
+    g.args = g.args.map((word) => {
+      const variable = /^"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"$/.exec(word.raw);
+      const name = variable && (variable[1] || variable[2]);
+      const known = name && state.pathProofs.has(name) && !state.valuesTainted && state.values.get(name);
+      return typeof known === 'string' ? { ...word, literalValue: known } : word;
+    });
+    if (g.sub === 'commit') {
+      const parsedCommit = parseCommitArgs(g.args);
+      if (parsedCommit.terminal) { g.terminal = true; g.helpKind = parsedCommit.helpKind; }
+    }
+    if (['add', 'stage'].includes(g.sub)) {
+      const parsedAdd = parseAddArgs(g.args);
+      if (parsedAdd.terminal) { g.terminal = true; g.helpKind = parsedAdd.helpKind; }
+    }
+    if (BUILTIN_SUBS.has(g.sub) && g.args.length === 1 && !g.args[0].dynamic &&
+        ['-h', '--help'].includes(g.args[0].text)) {
+      g.terminal = true; g.helpKind = g.args[0].text === '-h' ? 'stdout' : 'manual';
+    }
+    if (info.args.some((word) => word.ansiCUnknown) && !g.terminal) {
+      res.problems.push('git の ANSI-C 引用の値を確定できず、option や pathspec を検査できない');
+      return;
+    }
+    g.incomplete = info.incomplete;
+    if (info.nameWord.ansiCQuoted && g.sub && !g.terminal && !READ_ONLY_SUBS.has(g.sub) && !readOnlyGitMode(g)) {
+      res.problems.push('ANSI-C 引用で作った git の名前からの書込みは、直接の git guard の対象と確かめられない');
+      return;
+    }
+    const rootSafe = !g.pagerForced && ((g.terminal && g.helpKind === 'stdout') ||
+      (g.sub === 'config' && !g.terminal && readOnlyGitMode(g, false, !g.pagerDisabled)) ||
+      (g.sub === 'version' && !g.terminal && (g.args.length === 0 ||
+        (g.args.length === 1 && !g.args[0].dynamic && g.args[0].text === '--build-options'))));
+    if ([...env].some((name) => CONFIG_ROOT_ENV.has(name)) && !rootSafe) {
+      res.problems.push('HOME / XDG_CONFIG_HOME の設定・解除で git の設定ファイルの場所が変わり、書込みや helper の実行を検査できない');
+      return;
+    }
     if (!trustedGitExecutable(info.nameWord) || pathChanged || state.searchChanged || state.gitShadowed) {
       res.problems.push('git の実行ファイルやコマンド探索が変わっていて、検査に使う git と同じ実行先か確かめられない');
       return;
@@ -1848,6 +2104,7 @@ function inspect(cmd, options = {}) {
     g.invocationOrder = invocation.order;
     g.unknownContextBefore = state.unknownContext;
     g.pipelineParticipant = invocation.pipelineParticipant;
+    g.pipelineIds = invocation.pipelineIds;
     g.unsafeGroupSetup = invocation.unsafeGroupSetup;
     g.gitEnvNames = [...env];
     g.cdLikeBefore = cdBefore;
@@ -1960,6 +2217,10 @@ function parseCommitArgs(words) {
     // 引用されていない展開は語分割で追加の引数になりうるため、値でも読みきれない。
     if (w.dynamicMaySplit) { r.dynamic = true; k++; continue; }
     if (t === '--') { afterDD = true; k++; continue; }
+    if (t === '--help' && !w.dynamic) {
+      if (!r.dynamic && !r.unknown.length) { r.terminal = true; r.helpKind = 'manual'; }
+      return r;
+    }
     if (t.startsWith('--')) {
       const eq = t.indexOf('=');
       const nm = eq < 0 ? t.slice(2) : t.slice(2, eq);
@@ -1986,7 +2247,7 @@ function parseCommitArgs(words) {
         const ch = t[p];
         if (ch === DYN) { r.dynamic = true; break; }
         // 不明な先行引数が -m 等になると、この -h は値として消費されうる。
-        if (ch === 'h') { if (!r.dynamic && !r.unknown.length) r.terminal = true; break; }
+        if (ch === 'h') { if (!r.dynamic && !r.unknown.length) { r.terminal = true; r.helpKind = 'stdout'; } break; }
         if (COMMIT_SHORT_VALUE.has(ch)) {
           if (p === t.length - 1) {
             if (words[k + 1] && words[k + 1].dynamicMaySplit) r.dynamic = true;
@@ -2012,6 +2273,180 @@ function parseCommitArgs(words) {
   return r;
 }
 
+const SECRET_PATH_RE = [
+  /(^|\/)\.env($|[.*?\s])/i,        // .env / .env.local / .env.production / glob の .env* ...
+  /(^|\/)x_tokens\.json$/i,
+  /(^|\/)data\/tokens\.json$/i,
+  /(^|\/)pkce_state\.json$/i,
+  /(^|\/)credentials[^/]*\.json$/i,
+  /(^|\/)service-account[^/]*\.json$/i,
+  /[^/]*token[^/]*\.json$/i,        // *token*.json
+  /(^|\/)pipeline_config\.json$/i,
+  /\.(key|pem)$/i,
+  /(^|\/)id_(rsa|ed25519)$/i,
+  /(^|\/)secrets\.(json|ya?ml)$/i,
+  /(^|\/)secrets(\/|$)/i,           // secrets/ 配下（末尾 / を伴わない裸のディレクトリ名も）
+];
+
+// .env.example だけは許可（テンプレート）。
+const secretTemplateAllowed = (p) => /(^|\/)\.env\.example$/i.test(p);
+/** Match the existing secret inventory, retaining the exact .env.example template exception. */
+const isSecretPath = (p) => !!p && !secretTemplateAllowed(p) && SECRET_PATH_RE.some((re) => re.test(p));
+
+const ADD_SHORT_FLAGS = new Set('nvip efuNA'.replace(/ /g, ''));
+const ADD_LONG = {
+  'dry-run': 'f', verbose: 'f', interactive: 'f', patch: 'f', 'auto-advance': 'f', edit: 'f',
+  force: 'f', update: 'f', renormalize: 'f', 'intent-to-add': 'f', all: 'f',
+  'ignore-removal': 'f', refresh: 'f', 'ignore-errors': 'f', 'ignore-missing': 'f', sparse: 'f',
+  'warn-embedded-repo': 'f', 'pathspec-file-nul': 'f', chmod: 'v', 'pathspec-from-file': 'v',
+  unified: 'v', 'inter-hunk-context': 'v',
+};
+const ADD_LONG_NAMES = Object.keys(ADD_LONG).concat(Object.keys(ADD_LONG)
+  .filter((name) => !['unified', 'inter-hunk-context'].includes(name)).map((name) => 'no-' + name));
+
+/** Parse add/stage option arity and expose literal paths while rejecting expanded or Git-glob pathspecs. */
+function parseAddArgs(words) {
+  const result = { terminal: false, unsafePathspec: false, reason: null, pathspecs: [], runtimeBlanket: false, actualBlanket: false };
+  const unsafe = (reason) => { result.unsafePathspec = true; if (!result.reason) result.reason = reason; };
+  const value = (word) => {
+    if (!word) unsafe('option の値が無い');
+    else if (word.dynamicMaySplit || word.ansiCUnknown) unsafe('option の値が複数の語や不明な ANSI-C 引用になりうる');
+  };
+  let afterDD = false;
+  for (let k = 0; k < words.length; k++) {
+    const original = words[k];
+    const word = typeof original.literalValue === 'string'
+      ? { ...original, text: original.literalValue, dynamic: false, dynamicMaySplit: false } : original;
+    const text = word.text;
+    if (!afterDD && text === '--' && !word.dynamic) { afterDD = true; continue; }
+    if (!afterDD && !word.dynamic && ['-h', '--help'].includes(text)) {
+      if (!result.unsafePathspec) { result.terminal = true; result.helpKind = text === '-h' ? 'stdout' : 'manual'; }
+      return result;
+    }
+    if (!afterDD && text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      const names = ADD_LONG_NAMES.includes(name) ? [name] : ADD_LONG_NAMES.filter((candidate) => candidate.startsWith(name));
+      if (names.length !== 1 || name.includes(DYN)) { unsafe('不明・曖昧な add option'); continue; }
+      const full = names[0];
+      const negative = full.startsWith('no-');
+      const base = negative ? full.slice(3) : full;
+      if (!word.dynamic && eq < 0 && !negative && base === 'all') result.actualBlanket = true;
+      if (typeof original.literalValue === 'string' && !negative && base === 'all') result.runtimeBlanket = true;
+      if (!negative && ['pathspec-from-file', 'pathspec-file-nul'].includes(base)) unsafe('file からの pathspec を検査できない');
+      if (!negative && ADD_LONG[base] === 'v') {
+        value(eq >= 0 ? { ...word, text: text.slice(eq + 1) } : words[++k]);
+      } else if (word.dynamic || eq >= 0) unsafe('値を取らない add option の引数を検査できない');
+      continue;
+    }
+    if (!afterDD && text.startsWith('-') && text.length > 1) {
+      for (let p = 1; p < text.length; p++) {
+        const ch = text[p];
+        if (ch === 'h') { if (!result.unsafePathspec) { result.terminal = true; result.helpKind = 'stdout'; } return result; }
+        if (ch === 'U') {
+          value(p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : words[++k]);
+          // A fully dynamic attached suffix can be empty, consuming the following word instead.
+          if (word.dynamic && !text.slice(p + 1).replaceAll(DYN, '') && k + 1 < words.length) unsafe('空になりうる attached option の値');
+          break;
+        }
+        if (ch === 'A' && !word.dynamic) result.actualBlanket = true;
+        if (ch === 'A' && typeof original.literalValue === 'string') result.runtimeBlanket = true;
+        if (word.dynamic || !ADD_SHORT_FLAGS.has(ch)) { unsafe('不明・動的な add option'); break; }
+      }
+      continue;
+    }
+    let literalPath = '';
+    let wildcard = false;
+    for (let p = 0; p < text.length; p++) {
+      if (text[p] === '\\' && p + 1 < text.length) literalPath += text[++p];
+      else { if ('*?['.includes(text[p])) wildcard = true; literalPath += text[p]; }
+    }
+    result.pathspecs.push({ ...word, literalPath });
+    if (word.dynamic || word.ansiCUnknown || word.tildeExpanded || wildcard || text.startsWith(':')) unsafe('動的・glob・magic の pathspec を検査できない');
+  }
+  return result;
+}
+
+/** Recognize config/branch/remote read actions using their option arity, including terminal help. */
+function readOnlyGitMode(g, allowHelp = true, scalarConfigOnly = false) {
+  // unquoted expansion や "$@" は追加の action / option を作れる。古い metadata も安全と決めつけない。
+  if (g.incomplete || g.args.some((w) => w.dynamic && w.dynamicMaySplit !== false)) return false;
+  let args = g.args;
+  let reader = false;
+  let mayPage = false;
+  const values = new Set();
+  let flags;
+  if (g.sub === 'config') {
+    flags = new Set([
+      '--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l',
+      '--get-color', '--get-colorbool', '--global', '--system', '--local', '--worktree',
+      '--includes', '--no-includes', '--show-origin', '--show-scope', '--name-only',
+      '--null', '-z', '--bool', '--int', '--bool-or-int', '--bool-or-str', '--path',
+      '--expiry-date', '--no-type', '--fixed-value', '--all', '--regexp',
+    ]);
+    for (const v of ['--file', '-f', '--blob', '-b', '--type', '-t', '--default', '--value']) values.add(v);
+  } else if (g.sub === 'branch') {
+    flags = new Set([
+      '--list', '-l', '--show-current', '--all', '-a', '--remotes', '-r',
+      '--verbose', '-v', '-vv', '--quiet', '-q', '--no-color', '--column', '--no-column',
+      '--color', '--abbrev', '--no-abbrev', '--ignore-case', '-i', '--omit-empty',
+    ]);
+    for (const v of ['--format', '--sort', '--contains', '--no-contains', '--merged', '--no-merged', '--points-at']) values.add(v);
+  } else if (g.sub === 'remote') {
+    // remote の action は option でなく最初の位置引数。get-url と show は設定を変えない。
+    const rest = args.slice();
+    while (rest.length && ['-v', '--verbose'].includes(rest[0].text) && !rest[0].dynamic) rest.shift();
+    if (!rest.length) return true;
+    if (rest[0].dynamic || !['get-url', 'show'].includes(rest[0].text)) return false;
+    const action = rest.shift().text;
+    args = rest;
+    flags = new Set(action === 'get-url' ? ['--push', '--all'] : ['-n']);
+    reader = true;
+  } else return false;
+
+  let positional = 0;
+  let configOperand = false;
+  let endOptions = false;
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k];
+    const t = w.text;
+    if (g.sub === 'config' && configOperand) { positional++; continue; }
+    if (endOptions) { positional++; continue; }
+    if (w.dynamic) return false;
+    if (t === '--') { endOptions = true; continue; }
+    if (!t.startsWith('-')) {
+      if (g.sub === 'config' && !reader && positional === 0 && ['get', 'list'].includes(t)) {
+        reader = true; if (t === 'list') mayPage = true;
+      }
+      else { positional++; if (g.sub === 'config') configOperand = true; }
+      continue;
+    }
+    if (['-h', '--help'].includes(t)) return allowHelp;
+    const eq = t.indexOf('=');
+    const option = eq < 0 ? t : t.slice(0, eq);
+    if (values.has(option)) {
+      if (eq < 0) {
+        const optional = g.sub === 'branch' && ['--contains', '--no-contains', '--merged', '--no-merged'].includes(option);
+        const value = args[k + 1];
+        // branch の filter は値なしなら HEAD。次の action option を値として飛ばさない。
+        if (!optional || (value && !value.text.startsWith('-'))) {
+          if (!value || (optional && value.dynamic) || (g.sub === 'branch' && value.text.startsWith('-'))) return false;
+          k++;
+        }
+      }
+      if (g.sub === 'branch' && ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at'].includes(option)) reader = true;
+      continue;
+    }
+    if (g.sub === 'branch' && eq >= 0 && ['--abbrev', '--color', '--column'].includes(option)) continue;
+    if (!flags.has(t)) return false;
+    if (g.sub === 'config' && ['--list', '-l', '--get-all', '--get-regexp', '--get-urlmatch', '--all', '--regexp'].includes(t)) mayPage = true;
+    if (g.sub === 'config' && /^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|--list|-l)$/.test(t)) reader = true;
+    if (g.sub === 'branch' && ['--list', '-l', '--show-current'].includes(t)) reader = true;
+  }
+  // branch の引数なし / 表示 option だけの形は一覧。裸の名前は branch 作成。
+  return (reader || (g.sub === 'branch' && positional === 0)) && !(scalarConfigOnly && g.sub === 'config' && mayPage);
+}
+
 module.exports = {
   DYN,
   deny,
@@ -2023,5 +2458,8 @@ module.exports = {
   aliasProblem,
   resolveDir,
   parseCommitArgs,
+  parseAddArgs,
+  isSecretPath,
+  readOnlyGitMode,
   READ_ONLY_SUBS,
 };

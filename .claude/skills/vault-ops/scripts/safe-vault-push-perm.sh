@@ -64,8 +64,8 @@ stage_and_gate() {
     die "内部エラー: _quarantine 配下が staged に含まれています。push を中止しました (untrusted 本文は commit しない設計)。"
   fi
 
-  # Staged secret gate — shell copy (4th system) of SECRET_RE in
-  # .claude/hooks/block-secret-git.cjs. SLA: when token/file patterns change,
+  # Staged secret gate — shell copy (4th system) of SECRET_PATH_RE in
+  # .claude/hooks/lib/git-guard-common.cjs. SLA: when token/file patterns change,
   # update both in the same PR (CLAUDE.md "Secret-pattern の維持").
   SECRET_ERE='(^|/)\.env(\.|$)|(^|/)x_tokens\.json$|(^|/)data/tokens\.json$|(^|/)pkce_state\.json$|(^|/)credentials[^/]*\.json$|(^|/)service-account[^/]*\.json$|[^/]*token[^/]*\.json$|(^|/)pipeline_config\.json$|\.(key|pem)$|(^|/)id_(rsa|ed25519)$|(^|/)secrets\.(json|ya?ml)$|(^|/)secrets/'
   ALLOW_ERE='(^|/)\.env\.example$'

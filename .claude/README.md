@@ -69,6 +69,14 @@ cat .env  # → permission denied (deny rule に該当)
 - 既追跡の secret 発見時の対応は CLAUDE.md「Secrets / sensitive files」節
 - Bash 側の予防は `.gitignore` (commit 段階) と本ファイル (read 段階) の二重防御
 
+### PreToolUse の Git / egress hook
+
+`block-secret-git.cjs` と `block-git-add-all.cjs` は `if: "Bash(git *)"` に該当する入力だけで動き、`block-secret-egress.cjs` は全 Bash 入力で動く。共通 parser で引用・escape・選ばれた実行 source を検査し、確定できない pathspec、設定 root、送信先や実行 source は該当経路を fail-closed とする。
+
+従来許可されていた未知の変数 / glob による add、環境の消去・差替えを伴う Git の書込みなども拒否される場合がある。許可する入力、安全な書換え、対応範囲と test command は [Git ガードの説明](../docs/security/git-command-guards.md)を参照する。
+
+停止理由の `[禁止]` は確認した policy 禁止、`[判断不能]` は対象・設定・source などの必要情報不足を表す。raw pattern の一致だけで実際の秘密送信を確認したとは扱わない。無出力も操作全体の安全認証や owner 承認ではなく、範囲外の経路を保護済みと記録しない。対応済みの代替がない操作は対象・実行条件・不明点を owner に確認し、hook の無効化や別の場所での実行を自動的な代替にしない。
+
 ## settings.local.json (gitignore 対象)
 
 個人マシン固有の上書き設定 (例: 自分の vault path や local model endpoint)。
