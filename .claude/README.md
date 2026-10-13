@@ -99,6 +99,12 @@ curl は実際の first literal argv が `-q` / `--disable`、Wget は actual op
 
 停止理由の `[禁止]` は確認した policy 禁止、`[判断不能]` は対象・設定・source などの必要情報不足を表す。raw pattern の一致だけで実際の秘密送信を確認したとは扱わない。無出力も操作全体の安全認証や owner 承認ではなく、範囲外の経路を保護済みと記録しない。対応済みの代替がない操作は対象・実行条件・不明点を owner に確認し、hook の無効化や別の場所での実行を自動的な代替にしない。
 
+R15 は、child shell の ENV startup と imported / exported function source を追加して検査する。interactive / noninteractive、実 terminal query、privileged / POSIX mode の確認を source 選択と分け、未知 mode を非実行の証明にしない。terminal help / version の例外は invocation context も確認できる場合に限る。関数定義後は既存の context 条件により、本文を実行しない `bash --help` でも UNKNOWN で止まることがある。明示 `export -f` / function attribute と `set -a` / `set -o allexport` による自動 export、`BASH_FUNC_name%%` 等の環境 import を名前だけで追跡し、child が選ぶ本文を確認できない場合は UNKNOWN。使われない既知関数・定義 DATA と区別し、実 `env -i` や export 解除もその呼出し・scope の条件で扱う。環境消去は cwd / config / Git target 等の別条件も変えるため、自動的な安全化手順にはしない。
+
+同じ R15 で、GNU timeout / nice / stdbuf の正確な value-taking option arity・duration / buffering mode・child 境界を検査し、動的 / missing / 未対応・省略形 option は UNKNOWN とする。単独 Git の positive `diff.external` / GIT_EXTERNAL_DIFF、textconv / filter / hook / pager / include selector は active operation の役割で検査する。実際に helper を使わない通常 log の format / grep DATA、対応 getter / stdout query、実 disable flag は別の対照であり、消費値の `--no-ext-diff` を disable としない。共通 gh operation / payload 分類の Release upload / create asset と edit notes file と Issue 本文 file / stdin の確定 payload は公開 artifact でも FORBIDDEN。SSH `-n` は stdin だけを抑止するため remote command の展開結果を省略せず、Git push option も index / named remote と別の outbound DATA として検査する。secret filename 読取との関連と argv / context が確認できれば FORBIDDEN、未確定の producer・source・送信先 / transport は UNKNOWN。通常作業への影響、同目的を保てる対応形式、owner へ渡す条件は [ガイドの R15 節](../docs/security/git-command-guards.md#r15-startup--exported-function--outbound-data-の境界)を参照する。
+
+Vault の `safe-vault-push-perm.sh` はこの PreToolUse 3 本とは別の staged gate である。R15 では canonical filename predicate との parity と、Git の `--name-only -z` の完全な読取を検査する。読取失敗・途中で切れた NUL record・LF filename は何も unstage せず停止し、非秘密の LF 名も通常作業の影響範囲になる。predicate は filename policy であり、file 内容の安全認証ではない。R15 の新 source の全 L1 / L2 / L3・CI は別に取得し、上記 R14 の成功数を持ち越さない。
+
 ## settings.local.json (gitignore 対象)
 
 個人マシン固有の上書き設定 (例: 自分の vault path や local model endpoint)。

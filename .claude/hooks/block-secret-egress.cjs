@@ -192,9 +192,17 @@ if (NET_VERB_RE.test(cmd) && SECRET_FILE_RE.test(withoutTemplateTokens(cmd))) {
 }
 
 // git の形を、git の呼び出しごとにも見る（global option や引用符を挟んだ形も同じに読む）。
+// Modern and legacy Bash function environment formats are positive source selectors.
+// Inspect only selector names here; never log or execute their environment bodies.
+const inheritedFunctionNames = [...new Set(Object.entries(process.env).flatMap(([name, value]) => {
+  const modern = /^BASH_FUNC_(.+)%%$/.exec(name);
+  return modern ? [modern[1]] : /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && /^\(\)\s*\{/.test(value) ? [name] : [];
+}))];
 const insp = guard.inspect(cmd, {
-  initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
+  initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_EXTERNAL_DIFF', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
     .filter(name => process.env[name] !== undefined),
+  initialFunctionSourceNames: inheritedFunctionNames,
+  initialExportedFunctionNames: inheritedFunctionNames,
 });
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
 const URL_ARG_RE = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)/;
@@ -269,6 +277,7 @@ function pushRepository(words) {
   let explicit;
   let afterDD = false;
   let indeterminate = false;
+  const payloadWords = [];
   const valueOpts = ['repo', 'receive-pack', 'exec', 'recurse-submodules', 'push-option'];
   for (let k = 0; k < words.length; k++) {
     const w = words[k];
@@ -280,9 +289,11 @@ function pushRepository(words) {
       const name = t.slice(2, eq < 0 ? undefined : eq);
       const matches = valueOpts.filter((option) => option.startsWith(name));
       if (matches.length === 1) {
-        const value = eq < 0 ? words[++k] : { text: t.slice(eq + 1), dynamic: w.dynamic };
+        const value = eq < 0 ? words[++k] : { ...w, text: t.slice(eq + 1) };
+        if (!value) indeterminate = true;
         if (!positional && eq < 0 && value && value.dynamic && value.dynamicMaySplit !== false) indeterminate = true;
         if (matches[0] === 'repo') explicit = value;
+        if (matches[0] === 'push-option') payloadWords.push(value);
       } else if (!positional && w.dynamic) indeterminate = true;
       continue;
     }
@@ -291,8 +302,10 @@ function pushRepository(words) {
       if (/^-[vqdnfu46]*o/.test(t)) {
         if (/^-[vqdnfu46]*o$/.test(t)) {
           const value = words[++k];
+          payloadWords.push(value);
+          if (!value) indeterminate = true;
           if (!positional && value && value.dynamic && value.dynamicMaySplit !== false) indeterminate = true;
-        }
+        } else payloadWords.push({ ...w, text: t.slice(t.indexOf('o') + 1) });
       } else if (!positional && w.dynamic) indeterminate = true;
       continue;
     }
@@ -300,7 +313,16 @@ function pushRepository(words) {
     if (!positional) positional = w;
   }
   // --repo は位置引数の repository が無い時だけ使われる。
-  return { repository: positional || explicit, indeterminate };
+  return { repository: positional || explicit, indeterminate, payloadWords };
+}
+
+/** Preserve the existing destination/transport uncertainty for every push payload decision. */
+function unknownPushDestination(g, push = pushRepository(g.args)) {
+  const repo = push.repository;
+  return push.indeterminate || Boolean(repo?.dynamic) ||
+    g.configEnvs.some(config => destinationConfig(config.split('=')[0])) ||
+    g.configs.some(config => transportConfig(config.split('=')[0]) || /^include(?:if\..+)?\.path$/i.test(config.split('=')[0])) ||
+    g.gitEnvNames.some(name => /^GIT_CONFIG(?:_|$)/.test(name) || /^GIT_(?:SSH(?:_COMMAND)?|PROXY_COMMAND)$/.test(name));
 }
 
 /** Read config actions and operands without treating option values or getter patterns as writes. */
@@ -632,6 +654,72 @@ function gitAskpassSource(g, invocation) {
     'diff-tree', 'diff-index', 'diff-files']);
   const local = localQueries.has(g.sub) || g.sub === 'config' && configOperation(g.args).read;
   return !local || !knownInvocationContext(invocation) || g.dynamicOpt || g.incomplete;
+}
+
+/** Establish disabling/query flags by option roles, never by a consumed value or pathspec. */
+function gitDiffModes(g) {
+  let external = g.sub === 'diff';
+  let textconv = ['diff', 'show', 'log'].includes(g.sub);
+  let unknown = !!(g.incomplete || g.dynamicOpt);
+  const values = new Set(['output', 'diff-filter', 'find-object', 'order-file', 'skip-to', 'rotate-to',
+    'src-prefix', 'dst-prefix', 'line-prefix', 'output-indicator-new', 'output-indicator-old', 'output-indicator-context',
+    'word-diff-regex', 'anchored', 'diff-algorithm', 'inter-hunk-context', 'ignore-submodules', 'submodule',
+    'format', 'pretty', 'max-count', 'author', 'committer', 'grep', 'since', 'until', 'date', 'decorate-refs', 'decorate-refs-exclude']);
+  const flags = new Set(['ext-diff', 'no-ext-diff', 'textconv', 'no-textconv', 'cached', 'staged', 'no-index',
+    'stat', 'numstat', 'shortstat', 'name-only', 'name-status', 'raw', 'patch', 'no-patch', 'quiet', 'exit-code',
+    'binary', 'full-index', 'check', 'relative', 'no-relative', 'color', 'no-color', 'word-diff', 'abbrev',
+    'no-renames', 'renames', 'minimal', 'patience', 'histogram', 'indent-heuristic', 'no-indent-heuristic']);
+  const attachedOnly = new Set(['format', 'pretty', 'ignore-submodules', 'submodule']);
+  const dataBoundary = word => Boolean(word && word.dynamicMaySplit === false && !word.ansiCUnknown &&
+    !word.globExpanded && !word.braceExpanded && !word.tildeExpanded);
+  for (let k = 0; k < g.args.length; k++) {
+    const word = g.args[k];
+    const text = word.text;
+    if (text === '--') break;
+    if (text === '-h' && !unknown) return { terminal: true, external: false, textconv: false };
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      if (values.has(name)) {
+        // Formatting values are optional and attached. A following --ext-diff is
+        // an actual selector; quoted scalar values inside --format= remain DATA.
+        const value = eq < 0 ? attachedOnly.has(name) ? word : g.args[++k] : word;
+        if (!dataBoundary(value) || !dataBoundary(word)) unknown = true;
+      } else if (!flags.has(name) || !knownWord(word)) unknown = true;
+      else if (eq < 0) {
+        if (name === 'ext-diff') external = true;
+        if (name === 'no-ext-diff') external = false;
+        if (name === 'textconv') textconv = true;
+        if (name === 'no-textconv') textconv = false;
+      }
+    } else if (text.startsWith('-') && text !== '-') {
+      if (/^-[nOSGU]$/.test(text)) { if (!knownWord(word) || !dataBoundary(g.args[++k])) unknown = true; }
+      else if (/^-[nOSG].+/.test(text)) { if (!dataBoundary(word)) unknown = true; }
+      else if (!knownWord(word) || !/^-(?:[puwsRabc]|[UMCB][0-9]*|[0-9]+)+$/.test(text)) unknown = true;
+    } else if (!knownWord(word)) unknown = true;
+  }
+  return { terminal: g.terminal && g.helpKind === 'stdout', external: external || unknown, textconv: textconv || unknown };
+}
+
+/** Positive selectors of local Git execution must be gated for their actual operation. */
+function gitExecutableSource(g, invocation) {
+  if (g.terminal && g.helpKind === 'stdout' && knownInvocationContext(invocation)) return false;
+  if (g.sub === 'config' && configOperation(g.args).read) return false;
+  const diff = ['diff', 'show', 'log', 'diff-tree', 'diff-index', 'diff-files', 'format-patch', 'whatchanged'].includes(g.sub);
+  const modes = diff ? gitDiffModes(g) : null;
+  if (modes?.terminal && knownInvocationContext(invocation)) return false;
+  const keys = [...g.configs, ...g.configEnvs].map(config => config.split('=')[0].toLowerCase());
+  const uncertain = !knownInvocationContext(invocation) || g.dynamicOpt || g.incomplete;
+  if (diff && (keys.some(key => /^diff\.(?:external|.+\.command)$/.test(key)) ||
+      [...g.gitEnvNames, ...(invocation.helperEnvNames || [])].includes('GIT_EXTERNAL_DIFF')) && (modes.external || uncertain)) return true;
+  if (diff && keys.some(key => /^diff\..+\.textconv$/.test(key)) && (modes.textconv || uncertain)) return true;
+  if (keys.some(key => /^filter\..+\.(?:clean|smudge|process)$/.test(key)) &&
+      (!['rev-parse', 'ls-files', 'ls-tree', 'config', 'version', 'show-ref', 'for-each-ref', 'merge-base', 'count-objects'].includes(g.sub) || uncertain)) return true;
+  if (keys.some(key => /^core\.hookspath$/.test(key)) &&
+      (!['log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'config', 'version'].includes(g.sub) || uncertain)) return true;
+  if (!g.pagerDisabled && (g.pagerForced || ['log', 'show', 'diff', 'branch', 'tag', 'help'].includes(g.sub)) &&
+      (keys.includes('core.pager') || keys.includes('pager.' + g.sub))) return true;
+  return keys.some(key => /^include(?:if\..+)?\.path$/.test(key));
 }
 
 /** Identify section names whose renamed contents can activate a destination or transport override. */
@@ -1151,6 +1239,106 @@ function ghApiUpload(invocation) {
   return verdict;
 }
 
+/** Bounded GH writes share file/stdin payload roles while keeping literal option values as DATA. */
+function ghFilePayload(invocation) {
+  const words = invocation.args;
+  if (!literalSourceWord(words[0])) return words.length ? 'UNKNOWN' : false;
+  const group = words[0].text;
+  if (!['release', 'issue', 'pr'].includes(group)) return false;
+  const specFor = action => {
+    if (group === 'release' && action === 'upload') return {
+      values: [], short: {}, files: [], flags: ['clobber'], shortFlags: '', min: 2, max: Infinity, assetStart: 1,
+    };
+    if (group === 'release' && action === 'create') return {
+      values: ['discussion-category', 'notes', 'notes-file', 'notes-start-tag', 'target', 'title'],
+      short: { n: 'notes', F: 'notes-file', t: 'title' }, files: ['notes-file'],
+      flags: ['draft', 'fail-on-no-commits', 'generate-notes', 'latest', 'notes-from-tag', 'prerelease', 'verify-tag'],
+      shortFlags: 'dp', min: 0, max: Infinity, assetStart: 1,
+    };
+    if (group === 'release' && action === 'edit') return {
+      values: ['discussion-category', 'notes', 'notes-file', 'tag', 'target', 'title'],
+      short: { n: 'notes', F: 'notes-file', t: 'title' }, files: ['notes-file'],
+      flags: ['draft', 'latest', 'prerelease', 'verify-tag'], shortFlags: '',
+      min: 1, max: 1, assetStart: Infinity,
+    };
+    if (group === 'release') return null;
+    if (action !== 'create' && action !== 'edit') return null;
+    const create = action === 'create';
+    const values = create ? ['assignee', 'attach', 'body', 'body-file', 'label', 'milestone', 'project', 'recover', 'title'] :
+      ['add-assignee', 'add-label', 'add-project', 'attach', 'body', 'body-file', 'milestone', 'remove-assignee', 'remove-label', 'remove-project', 'title'];
+    const short = create ? { a: 'assignee', b: 'body', F: 'body-file', l: 'label', m: 'milestone', p: 'project', t: 'title' } :
+      { b: 'body', F: 'body-file', m: 'milestone', t: 'title' };
+    let flags = create ? ['editor', 'web'] : ['remove-milestone'];
+    if (group === 'issue') {
+      values.push(...(create ? ['blocked-by', 'blocking', 'parent', 'template', 'type'] :
+        ['add-blocked-by', 'add-blocking', 'add-sub-issue', 'parent', 'remove-blocked-by', 'remove-blocking', 'remove-sub-issue', 'type']));
+      if (create) short.T = 'template';
+      else flags.push('remove-parent', 'remove-type');
+    } else {
+      values.push(...(create ? ['base', 'head', 'reviewer', 'template'] : ['base', 'add-reviewer', 'remove-reviewer']));
+      short.B = 'base';
+      if (create) { short.H = 'head'; short.r = 'reviewer'; short.T = 'template'; flags.push('draft', 'dry-run', 'fill', 'fill-first', 'fill-verbose', 'no-maintainer-edit'); }
+    }
+    return { values, short, files: ['body-file', 'attach'], flags, shortFlags: create ? group === 'issue' ? 'ew' : 'dewf' : '',
+      min: group === 'issue' && !create ? 1 : 0, max: create ? 0 : group === 'issue' ? Infinity : 1, assetStart: Infinity };
+  };
+  let action;
+  let spec;
+  let afterDD = false;
+  const operands = [];
+  let unknown = !!invocation.incomplete;
+  let payload = false;
+  const dataBoundary = word => Boolean(word && word.dynamicMaySplit === false && !word.ansiCUnknown &&
+    !word.globExpanded && !word.braceExpanded && !word.tildeExpanded);
+  for (let k = 1; k < words.length; k++) {
+    const word = words[k];
+    const text = word.text;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (!afterDD && ['-h', '--help'].includes(text) && !unknown) return false;
+    if (!afterDD && text.startsWith('-')) {
+      let option;
+      let value;
+      if (text.startsWith('--')) {
+        const eq = text.indexOf('=');
+        option = text.slice(2, eq < 0 ? undefined : eq);
+        if (option === 'repo' || spec?.values.includes(option)) value = eq < 0 ? words[++k] : { ...word, text: text.slice(eq + 1) };
+        else if (option === 'help' || spec?.flags.includes(option)) {
+          if (!knownWord(word) || eq >= 0 && !['true', 'false'].includes(text.slice(eq + 1))) unknown = true;
+          if (option === 'help' && text.slice(eq + 1) === 'true' && !unknown) return false;
+          continue;
+        } else { unknown = true; continue; }
+      } else {
+        for (let p = 1; p < text.length; p++) {
+          option = text[p] === 'R' ? 'repo' : spec?.short[text[p]];
+          if (option) { value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : words[++k]; break; }
+          if (text[p] === 'h' && knownWord(word) && !unknown) return false;
+          if (!knownWord(word) || !spec?.shortFlags.includes(text[p])) unknown = true;
+        }
+      }
+      if (!option) continue;
+      if (!value || !dataBoundary(word) || !dataBoundary(value)) unknown = true;
+      if (option === 'repo' && !knownWord(value)) unknown = true;
+      if (spec?.files.includes(option)) {
+        if (!knownWord(value) || value.text === '-') unknown = true;
+        else payload = true;
+      }
+      continue;
+    }
+    if (!action) {
+      if (!literalSourceWord(word)) return 'UNKNOWN';
+      action = text === 'new' ? 'create' : text;
+      spec = specFor(action);
+      if (!spec) return false; // Queries and other operations keep their existing guard conditions.
+    } else {
+      if (!knownWord(word)) unknown = true;
+      operands.push(word);
+    }
+  }
+  if (!spec) return unknown ? 'UNKNOWN' : false;
+  if (unknown || operands.length < spec.min || operands.length > spec.max) return 'UNKNOWN';
+  return payload || operands.length > spec.assetStart ? 'FORBIDDEN' : false;
+}
+
 /** Select SSH commands/config sources that run locally, retaining proven non-executing query and DATA options. */
 function sshCommandSources(invocation) {
   return sshOperation(invocation).sources;
@@ -1158,7 +1346,7 @@ function sshCommandSources(invocation) {
 
 /** Read SSH's option boundary before and after the host, stopping at the actual remote command. */
 function sshOperation(invocation) {
-  if (invocation.name !== 'ssh') return { sources: [], stdin: false };
+  if (invocation.name !== 'ssh') return { sources: [], stdin: false, remoteWords: [] };
   const options = new Map();
   const valueOptions = 'bcDEeFIiJLlmOopQRSWw';
   let query = false;
@@ -1171,17 +1359,28 @@ function sshOperation(invocation) {
   let unknown = false;
   let host = false;
   let detached = false;
+  let remoteWords = [];
+  let noRemoteCommand = false;
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k];
     const text = word.text;
-    if (text === '--') { host = host || Boolean(invocation.args[k + 1]); break; }
+    if (text === '--') {
+      remoteWords = invocation.args.slice(k + (host ? 1 : 2));
+      host = host || Boolean(invocation.args[k + 1]);
+      break;
+    }
     const provenOperand = typeof word.literalValue === 'string' && word.dynamicMaySplit === false && !word.literalValue.startsWith('-');
-    if (word.dynamic && !provenOperand && (word.dynamicMaySplit !== false || text.startsWith('\0'))) argvUncertain = true;
-    if (!text.startsWith('-')) { if (host) break; host = true; continue; }
+    if (word.dynamic && !provenOperand && (word.dynamicMaySplit !== false ||
+        text.startsWith('\0') && !(host && word.dynamicMaySplit === false))) argvUncertain = true;
+    if (!text.startsWith('-') || text === '-') {
+      if (host) { remoteWords = invocation.args.slice(k); break; }
+      host = true; continue;
+    }
     for (let p = 1; p < text.length; p++) {
       if (text[p] === 'G') { requestedQuery = true; if (!argvUncertain) query = true; }
       if (text[p] === 'Q' || text[p] === 'V') { requestedEarlyQuery = true; if (!argvUncertain) earlyQuery = true; }
       if (text[p] === 'n' || text[p] === 'f') detached = true;
+      if (text[p] === 'N') noRemoteCommand = true;
       if (!valueOptions.includes(text[p])) continue;
       const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
       if (value?.dynamic && (value.dynamicMaySplit !== false || (p + 1 < text.length && value.text.startsWith('\0')))) argvUncertain = true;
@@ -1195,11 +1394,11 @@ function sshOperation(invocation) {
       break;
     }
   }
-  if (selectedConfig ? earlyQuery : requestedEarlyQuery) return { sources: [], stdin: false };
+  if (selectedConfig ? earlyQuery : requestedEarlyQuery) return { sources: [], stdin: false, remoteWords: [] };
   if (selectedConfig && (argvUncertain || !configFile || configFile.dynamic || !['none', '/dev/null'].includes(configFile.text))) {
     deny('SSH の -F config が未知の実行 source（Match exec 等）を選び、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   }
-  if (selectedConfig ? query : requestedQuery) return { sources: [], stdin: false };
+  if (selectedConfig ? query : requestedQuery) return { sources: [], stdin: false, remoteWords: [] };
   if (unknown) deny('SSH の -o option が動的で、ローカル実行 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   const sources = [];
   for (const key of ['proxycommand', 'knownhostscommand', 'localcommand']) {
@@ -1210,7 +1409,10 @@ function sshOperation(invocation) {
     // OpenSSH expands these bytes before execution; the shell parser cannot prove the resulting argv.
     sources.push({ ...source, dynamic: source.dynamic || source.text.includes('%') || /\$\{/.test(source.text), mediated: true });
   }
-  return { sources, stdin: host && !detached };
+  if (options.get('sessiontype')?.text.toLowerCase() === 'none') noRemoteCommand = true;
+  if (noRemoteCommand) remoteWords = [];
+  else if (options.has('remotecommand')) remoteWords.push(options.get('remotecommand'));
+  return { sources, stdin: host && !detached, remoteWords, argvUncertain };
 }
 
 /** Identify network clients that actually consume pipeline/stdin data, excluding explicit query/receive-only modes. */
@@ -1330,6 +1532,49 @@ function unsafeNetworkInput(invocation, all) {
   return false;
 }
 
+const invocationSources = new WeakMap();
+/** Check only producers inside this exact payload word in this source and execution order. */
+function outboundPayloadVerdict(invocation, words) {
+  const source = invocationSources.get(invocation) || [];
+  const substitutionScope = (producer) => {
+    for (let scope = producer.scope; scope?.parent; scope = scope.parent) {
+      if (scope.parent === invocation.scope) return true;
+    }
+    return false;
+  };
+  for (const word of words) {
+    if (!word) return 'UNKNOWN';
+    if (literalSourceWord(word)) continue;
+    if (!word.dynamic || word.dynamicMaySplit !== false || !Number.isInteger(word.start) || !word.raw ||
+        /[<>]\(/.test(word.raw)) return 'UNKNOWN';
+    const end = word.start + word.raw.length;
+    const producers = source.filter(producer => producer !== invocation && !producer.definitionName &&
+      producer.order < invocation.order && substitutionScope(producer) &&
+      producer.nameWord?.start > word.start && producer.nameWord.start < end);
+    if (!producers.length) return 'UNKNOWN';
+    let secret = false;
+    for (const producer of producers) {
+      const input = pipelineInput(producer);
+      // A function/callback or arbitrary program has no supported stdout proof. Output
+      // redirection likewise prevents treating a coincident read as transmitted data.
+      if (producer.functionCallName || input.unknown || !knownInvocationContext(producer) ||
+          producer.redirs.some(redir => !['<', '<>'].includes(redir.op)) || producer.heredocBodies.length) return 'UNKNOWN';
+      if (input.refs.some(ref => knownWord(ref) && guard.isSecretPath(ref.text))) secret = true;
+    }
+    if (secret) return contextualVerdict(invocation, 'FORBIDDEN');
+  }
+  return false;
+}
+
+/** CLI options suppress configured push options; inspect selected config DATA by its original word. */
+function gitPushPayloadWords(g, invocation) {
+  const push = pushRepository(g.args);
+  if (push.payloadWords.length) return push.payloadWords;
+  if (g.configEnvs.some(config => /^push\.pushoption(?:=|$)/i.test(config))) return [null];
+  return (invocation?.args || []).filter(word => /^push\.pushoption=/i.test(word.text))
+    .map(word => ({ ...word, text: word.text.slice(word.text.indexOf('=') + 1) }));
+}
+
 /** Detect SSH sessions that can consume stdin, skipping option values and excluding explicit -n/-f. */
 function sshReadsInput(invocation) {
   return sshOperation(invocation).stdin;
@@ -1425,7 +1670,21 @@ function envSplitInspection(invocation, script) {
   const words = parsed.cmds.flatMap((command) => command.words);
   const tail = invocation.words.filter((word) => word.start > script.start);
   return guard.inspect(['env', ...words.map((word) => word.text), ...tail.map((word) => word.text)].map(parserLiteral).join(' '),
-    { initialHelperEnvNames: invocation.helperEnvNames });
+    sourceInspectionOptions(invocation, { initialFunctionSourceNames: [] }));
+}
+
+/** Carry exported function selectors into reparsed source before command lookup/unwrap. */
+function sourceInspectionOptions(invocation, extra = {}) {
+  const privileged = ['bash', 'sh'].includes(invocation.name) && invocation.shellPrivileged === true;
+  return {
+    initialHelperEnvNames: invocation.helperEnvNames,
+    initialFunctionSourceNames: privileged ? [] : invocation.exportedFunctionNames || [],
+    // -p suppresses this child's imports, but preserves encoded environment entries
+    // which a later nonprivileged child can import again.
+    initialExportedFunctionNames: invocation.exportedFunctionNames || [],
+    initialExportedFunctionUnknown: !!invocation.exportedFunctionUnknown,
+    ...extra,
+  };
 }
 
 const inspectedGits = [];
@@ -1441,12 +1700,16 @@ function collectNetworkInvocations(inspection, depth = 0) {
   if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   if (inspection.problems.length) deny(guard.problemMessage(inspection.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
   inspectedGits.push(...inspection.gits);
+  for (const invocation of inspection.invocations) invocationSources.set(invocation, inspection.invocations);
   for (const g of inspection.gits) gitInvocationContexts.set(g,
     inspection.invocations.find((invocation) => invocation.order === g.invocationOrder));
   const activeCommits = inspection.gits.filter(g => g.sub === 'commit' && !guard.parseCommitArgs(g.args).terminal);
   for (const g of inspection.gits) {
     const decision = guard.gitObjectInputDecision(g);
     if (decision) deny(decision.reason, gitVerdict(g, decision.category));
+    if (gitExecutableSource(g, gitInvocationContexts.get(g))) {
+      deny('当該 Git 操作の config / environment が選ぶ外部 diff・変換・filter・hook・include の実行 source を検査できません。commit の有無とは独立に、active helper の本文と副作用は判断不能です。' + UNKNOWN_OWNER_GATE);
+    }
     if (g.sub === 'difftool' && !g.terminal) {
       deny('Git difftool の extcmd・既定 tool・env/config が選ぶ外部実行 source と副作用を検査できません。helper を呼ばない対応済み diff が同目的・同条件を保てる場合に検討し、保てなければ owner に確認してください。' + UNKNOWN_OWNER_GATE);
     }
@@ -1487,8 +1750,17 @@ function collectNetworkInvocations(inspection, depth = 0) {
     }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
       if (terminalBashQuery(invocation)) continue;
-      if (invocation.name === 'bash' && (invocation.helperEnvNames || []).includes('BASH_ENV')) {
+      if (invocation.exportedFunctionUnknown && !(['bash', 'sh'].includes(invocation.name) && invocation.shellPrivileged === true)) {
+        deny('child shell に渡る exported function の名前・選択を確定できず、本文や実行条件を検査できません。対応する直接 source または実 env -i で同じ目的を保てる場合に検討してください。' + UNKNOWN_OWNER_GATE);
+      }
+      if (invocation.name === 'bash' && (invocation.helperEnvNames || []).includes('BASH_ENV') &&
+          invocation.shellInteractive !== true && invocation.shellPrivileged !== true && invocation.shellPosix !== true) {
         deny('child Bash の BASH_ENV が選ぶ startup filename / expansion / code source を検査できません。-c の本文が literal でも startup source は先に実行され得ます。' + UNKNOWN_OWNER_GATE);
+      }
+      if (['bash', 'sh', 'dash', 'ksh', 'mksh'].includes(invocation.name) &&
+          (invocation.helperEnvNames || []).includes('ENV') && invocation.shellInteractive !== false &&
+          invocation.shellPrivileged !== true) {
+        deny('interactive child shell の ENV が選ぶ startup filename・展開・本文を検査できません。literal な -c source も、それより先に実行され得る startup source を証明しません。' + UNKNOWN_OWNER_GATE);
       }
       if (invocation.shellSourceUnknown || invocation.incomplete) deny('シェルの option / argv 境界から実行する source を確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
       scripts.push(...invocation.shellScripts.map((script) => ({ ...script, initialPositionals: invocation.shellPositionals })));
@@ -1512,8 +1784,9 @@ function collectNetworkInvocations(inspection, depth = 0) {
     for (const script of scripts) {
       const literal = literalSourceWord(script);
       if (!literal) deny('interpreter / helper の executable source bytes または argv boundary を確定できません。' + UNKNOWN_OWNER_GATE);
-      const nested = script.mediated ? guard.inspectMediatedSource(script) :
-        guard.inspect(literal.text, { initialPositionals: script.initialPositionals, initialHelperEnvNames: invocation.helperEnvNames });
+      const options = sourceInspectionOptions(invocation, { initialPositionals: script.initialPositionals });
+      const nested = script.mediated ? guard.inspectMediatedSource(script, options) :
+        guard.inspect(literal.text, options);
       if (script.mediated) for (const nestedInvocation of nested.invocations) {
         nestedInvocation.helperEnvNames = [...new Set((nestedInvocation.helperEnvNames || []).concat(invocation.helperEnvNames || []))];
       }
@@ -1535,7 +1808,7 @@ function parsedExfil(invocation) {
   if (invocation.incomplete && ['curl', 'wget', 'gh'].includes(invocation.name)) return 'UNKNOWN';
   let verdict = false;
   if (invocation.name === 'gh') verdict = invocation.args[0]?.text === 'gist' ?
-    knownWord(invocation.args[0]) ? 'FORBIDDEN' : 'UNKNOWN' : ghApiUpload(invocation);
+    knownWord(invocation.args[0]) ? 'FORBIDDEN' : 'UNKNOWN' : ghApiUpload(invocation) || ghFilePayload(invocation);
   if (invocation.name === 'curl') {
     verdict = curlReadsUpload(invocation.args, invocation.incomplete, true);
     // Only the actual first literal argv -q/--disable prevents curl's implicit curlrc load.
@@ -1550,6 +1823,24 @@ function parsedExfil(invocation) {
 }
 
 const invocations = collectNetworkInvocations(insp);
+for (const invocation of invocations) {
+  const remote = sshOperation(invocation);
+  if (remote.remoteWords.length) {
+    const verdict = remote.argvUncertain ? 'UNKNOWN' : outboundPayloadVerdict(invocation, remote.remoteWords);
+    if (verdict) deny(verdict === 'FORBIDDEN' ?
+      'SSH remote command の引数を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-n による stdin 抑止とは独立した送信データです。内容や実送信の成立を確認したものではありません。' :
+      'SSH remote command の引数を生成する source・program・stdout・argv/context を確定できません。-n は remote command DATA の検査を省略する条件ではありません。' + UNKNOWN_OWNER_GATE, verdict);
+  }
+}
+for (const g of inspectedGits) {
+  if (g.sub !== 'push' || g.terminal && g.helpKind === 'stdout') continue;
+  const invocation = gitInvocationContexts.get(g);
+  let verdict = outboundPayloadVerdict(invocation, gitPushPayloadWords(g, invocation));
+  if (verdict === 'FORBIDDEN' && unknownPushDestination(g)) verdict = 'UNKNOWN';
+  if (verdict) deny(verdict === 'FORBIDDEN' ?
+    'Git push option の値を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。repository・ref・index とは独立して server に送る DATA です。内容や実送信の成立を確認したものではありません。' :
+    'Git push option の値を生成する source・program・stdout・argv/context を確定できません。repository・ref・index の判定だけでは送信データを検査できません。' + UNKNOWN_OWNER_GATE, gitVerdict(g, verdict));
+}
 if (invocations.some((invocation) =>
   ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh', 'ssh'].includes(invocation.name) &&
   invocation.args.some((word) => word.ansiCUnknown))) {
@@ -1644,14 +1935,7 @@ for (const g of inspectedGits) {
   }
   const push = g.sub === 'push' ? pushRepository(g.args) : null;
   const repo = push && push.repository;
-  const unknownPushDestination = g.sub === 'push' && (push.indeterminate || (repo && repo.dynamic) ||
-    g.configEnvs.some((config) => destinationConfig(config.split('=')[0])) ||
-    g.configs.some((config) => {
-      const key = config.split('=')[0];
-      return transportConfig(key) || /^include(?:if\..+)?\.path$/i.test(key);
-    }) ||
-    g.gitEnvNames.some((name) => /^GIT_CONFIG(?:_|$)/.test(name) || /^GIT_(?:SSH(?:_COMMAND)?|PROXY_COMMAND)$/.test(name)));
-  if (unknownPushDestination) {
+  if (g.sub === 'push' && unknownPushDestination(g, push)) {
     deny('git push の宛先や transport command が変数・置換や config / GIT_CONFIG / GIT_SSH / GIT_PROXY_COMMAND の override で作られていて、egress ガードで確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   }
   const pushUrl = g.sub === 'push' && (a.some((x) => URL_ARG_RE.test(x)) ||

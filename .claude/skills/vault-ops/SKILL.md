@@ -85,6 +85,7 @@ vault-push-perm() { PERM_NOTE_PATH='/path/to/vault' "$HOME/.claude/bin/safe-vaul
 4. **staged secret 検知** (該当ファイルは unstage 済みの状態で停止)
 5. オフラインで push 不能 (ローカル commit は完了済み = データは失われない)
 6. push 3 回失敗 (認証・ネットワーク異常)
+7. staged filename 読取の失敗・不完全な NUL 入力・LF を含む filename。判定不能として、secret ゲートでは何も unstage せず停止する。通常の非秘密 LF 名もこの境界で停止するため、対象と実行条件を owner に確認する。
 
 ## `git add -A` 例外の根拠 (明文化)
 
@@ -98,8 +99,17 @@ CLAUDE.md の「`git add -A` 禁止」は **obsidian-ai-pipeline 自身の commi
 ## Secret-pattern 同期 SLA (第 4 系統)
 
 `safe-vault-push-perm.sh` の `SECRET_ERE` は `.claude/hooks/lib/git-guard-common.cjs` の
-`SECRET_PATH_RE` (12 パターン + allowlist `.env.example`) の shell 転記。Git / egress hook は
-同じ `isSecretPath` を使う。**新トークン形式・
+`SECRET_PATH_RE` (12 パターン + allowlist `.env.example`) の対応 filename predicate を転記する。
+`.env` の境界は末尾・明示された `.*?`・ECMAScript `\s` であり、任意の nonword punctuation
+ではない。shell は `LC_ALL=C` に固定した ASCII term の大小文字照合と、Unicode 空白の
+完全な UTF-8 byte sequence の選択肢を使う。`.env?backup`、裸の `secrets`、case / subdir、
+template の完全一致を専用 parity test で比較する。任意の Unicode filename 全体を安全認証する説明ではない。
+
+実際の staged 名は `git diff --cached --name-only -z` の成功を確認して読取り、Git の quoted
+表示を正規表現へ渡さない。完全な NUL 入力を確認した後だけ offender 配列を公開し、該当名を
+`git restore --staged --` の単一引数として扱う。grep が LF で filename を分割するため、
+LF 名は本文の非秘密性に関係なく読取境界で停止し、何も unstage しない。これは全 filename に
+対する parity 保証ではない。Git / egress hook は同じ `isSecretPath` を使う。**新トークン形式・
 新 secret ファイル名を追加するときは同一 PR で両方を更新する** (CLAUDE.md
 「Secret-pattern の維持」節の 4 系統目 / 四半期レビュー対象 =
 `docs/security/handover-residual-tasks.md` #16)。
@@ -139,6 +149,7 @@ CLAUDE.md の「`git add -A` 禁止」は **obsidian-ai-pipeline 自身の commi
   新規 ref 許可 / リモートオブジェクト未取得→fail-closed 拒否) / wrapper (e2e / JSON 退避と非退避 / 自動 rebase / secret 停止と
   `.env.example` 通過 / ref 破損停止 / autostash 衝突停止 / rebase 衝突 abort /
   `_quarantine` 非 commit) / installer (初回 / 冪等 / `--copy`)
+- `node --test .claude/hooks/tests/secret-path-parity.test.cjs` — 実 production の shell assignment / filter / NUL reader を抽出し、共通 `isSecretPath` と比較する。12 families、template、ASCII 境界、全 ECMAScript 空白と隣接 Unicode DATA、caller locale、DUMMY Git の raw 名、Git / read 失敗、LF 停止、exact restore argv を確認する。全 wrapper や実 Vault の commit / push は実行しない。
 
 ## See also
 

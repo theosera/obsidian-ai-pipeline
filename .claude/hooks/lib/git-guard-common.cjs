@@ -863,6 +863,99 @@ const isAssignWord = (w) => /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/.test(w.
 /** Extract the variable name from an assignment, including the shell's += form. */
 const assignName = (w) => w.raw.split('=')[0].replace(/\+$/, '').replace(/\[.*$/, '');
 
+/** Retain only names for Bash's positive imported-function environment protocols. */
+function functionEnvironmentAssignment(word, name, value) {
+  const modern = /^BASH_FUNC_([A-Za-z_][A-Za-z0-9_]*)%%$/.exec(name);
+  const protocol = /^BASH_FUNC_.*%%$/.test(name);
+  const header = /^\(\)[ \t\n]*\{/.test(value);
+  if (!protocol && !header) return null;
+  const callee = modern ? modern[1] : !protocol && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : null;
+  return { environment: name, callee: header ? callee : null,
+    unknown: !header || !callee || !!word.dynamic || !!word.dynamicMaySplit };
+}
+
+/** GNU timeout options precede duration; value-taking options consume argv before child lookup. */
+function timeoutArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  const values = new Set(['signal', 'kill-after']);
+  const flags = new Set(['foreground', 'preserve-status', 'verbose']);
+  const duration = word => word && !word.dynamic && !word.dynamicMaySplit &&
+    /^\+?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[smhd]?$/.test(word.text);
+  let k = 0;
+  let terminal = false;
+  while (k < rest.length && rest[k].text.startsWith('-')) {
+    const word = rest[k];
+    if (word.dynamic || word.dynamicMaySplit) info.launcherUnknown = true;
+    if (word.text === '--') { k++; break; }
+    if (word.text.startsWith('--')) {
+      const eq = word.text.indexOf('=');
+      const option = word.text.slice(2, eq < 0 ? undefined : eq);
+      if (['help', 'version'].includes(option) && eq < 0) {
+        if (!info.launcherUnknown) return -1;
+        terminal = true;
+      }
+      else if (values.has(option)) {
+        const value = eq < 0 ? rest[++k] : { ...word, text: word.text.slice(eq + 1) };
+        if (!value || value.dynamic || value.dynamicMaySplit || !value.text ||
+            (option === 'kill-after' ? !duration(value) : value.text.startsWith('-'))) info.launcherUnknown = true;
+      } else if (!flags.has(option) || eq >= 0) info.launcherUnknown = true;
+    } else {
+      if (word.text === '-') info.launcherUnknown = true;
+      for (let p = 1; p < word.text.length; p++) {
+        const ch = word.text[p];
+        if ('fpv'.includes(ch)) continue;
+        if (!'sk'.includes(ch)) { info.launcherUnknown = true; break; }
+        const value = p + 1 < word.text.length ? { ...word, text: word.text.slice(p + 1) } : rest[++k];
+        if (!value || value.dynamic || value.dynamicMaySplit || !value.text ||
+            (ch === 'k' ? !duration(value) : value.text.startsWith('-'))) info.launcherUnknown = true;
+        break;
+      }
+    }
+    k++;
+  }
+  if (terminal && !info.launcherUnknown) return -1;
+  if (!duration(rest[k]) || !rest[k + 1]) info.launcherUnknown = true;
+  return info.launcherUnknown ? rest.length : k + 1;
+}
+
+/** GNU nice/stdbuf value options consume argv before resolving the actual child. */
+function coreutilsValueLauncher(rest, info, name) {
+  const options = name === 'nice' ? { adjustment: 'n' } : { input: 'i', output: 'o', error: 'e' };
+  const shorts = Object.values(options);
+  const validValue = (ch, word) => word && !word.dynamic && !word.dynamicMaySplit &&
+    (name === 'nice' ? /^[+-]?\d+$/.test(word.text) :
+      (word.text === 'L' ? ch !== 'i' : /^\d+(?:[KMGTPEZYRQ](?:i?B)?)?$/.test(word.text)));
+  let k = 0;
+  info.launcherArgs.push(...rest);
+  while (k < rest.length && rest[k].text.startsWith('-')) {
+    const word = rest[k];
+    if (word.dynamic || word.dynamicMaySplit) info.launcherUnknown = true;
+    if (word.text === '--') { k++; break; }
+    if (name === 'nice' && /^--?\d+$/.test(word.text)) { k++; continue; }
+    if (word.text.startsWith('--')) {
+      const eq = word.text.indexOf('=');
+      const option = word.text.slice(2, eq < 0 ? undefined : eq);
+      if (['help', 'version'].includes(option) && eq < 0 && !info.launcherUnknown) return -1;
+      const ch = options[option];
+      if (!ch) info.launcherUnknown = true;
+      else {
+        const value = eq < 0 ? rest[++k] : { ...word, text: word.text.slice(eq + 1) };
+        if (!validValue(ch, value)) info.launcherUnknown = true;
+      }
+    } else {
+      const ch = word.text[1];
+      if (!shorts.includes(ch)) info.launcherUnknown = true;
+      else {
+        const value = word.text.length > 2 ? { ...word, text: word.text.slice(2) } : rest[++k];
+        if (!validValue(ch, value)) info.launcherUnknown = true;
+      }
+    }
+    k++;
+  }
+  if (info.launcherUnknown) return rest.length;
+  return k >= rest.length ? -1 : k; // nice query / invalid stdbuf usage has no child.
+}
+
 const LAUNCHER_OPTIONS = {
   setsid: {
     long: { ctty: 'c', fork: 'f', wait: 'w', help: 'h', version: 'V' },
@@ -961,30 +1054,9 @@ const WRAPPERS = {
     while (k < rest.length && rest[k].text === '-p') k++;
     return k;
   },
-  nice: (rest) => {
-    let k = 0;
-    while (k < rest.length && rest[k].text.startsWith('-')) {
-      if (rest[k].text === '-n') k++;
-      k++;
-    }
-    return k;
-  },
-  stdbuf: (rest) => {
-    let k = 0;
-    while (k < rest.length && rest[k].text.startsWith('-')) {
-      if (/^-[ioe]$/.test(rest[k].text)) k++;
-      k++;
-    }
-    return k;
-  },
-  timeout: (rest) => {
-    let k = 0;
-    while (k < rest.length && rest[k].text.startsWith('-')) {
-      if (/^-[sk]$/.test(rest[k].text)) k++;
-      k++;
-    }
-    return k + 1; // DURATION
-  },
+  nice: (rest, info) => coreutilsValueLauncher(rest, info, 'nice'),
+  stdbuf: (rest, info) => coreutilsValueLauncher(rest, info, 'stdbuf'),
+  timeout: timeoutArgs,
   caffeinate: (rest) => {
     let k = 0;
     while (k < rest.length && rest[k].text.startsWith('-')) {
@@ -1072,12 +1144,14 @@ const WRAPPERS = {
       break;
     }
     // env 自身が読む代入はシェルの代入語と違い、引用された NAME=value も有効。
-    while (k < rest.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[k].text)) {
+    while (k < rest.length && /^(?:[A-Za-z_][A-Za-z0-9_]*|BASH_FUNC_[^=]*%%)=/.test(rest[k].text)) {
       if (rest[k].dynamicMaySplit) info.envUnknown = true;
       const name = rest[k].text.split('=')[0];
       info.assigns.push(name);
       info.assignRaws.push(rest[k].raw);
       info.envOps.push({ set: name });
+      const imported = functionEnvironmentAssignment(rest[k], name, rest[k].text.slice(name.length + 1));
+      if (imported) info.envOps.push({ functionEnvironment: imported });
       k++;
     }
     return k;
@@ -1126,6 +1200,9 @@ function resolveCommand(words, localFunctions = null) {
       info.assigns.push(assignName(words[k]));
       info.assignRaws.push(words[k].raw);
       info.envOps.push({ set: assignName(words[k]) });
+      const assignment = scalarAssignment(words[k]);
+      const imported = assignment && functionEnvironmentAssignment(words[k], assignment.name, assignment.value);
+      if (imported) info.envOps.push({ functionEnvironment: imported });
       k++;
     }
     if (k >= words.length) return info;
@@ -1221,7 +1298,7 @@ const CD_LIKE = new Set(['cd', 'pushd', 'popd']);
 const EXPORT_LIKE = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 const CONFIG_ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME']);
 // Track explicit external-helper selectors separately from Git target/config variables.
-const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']);
+const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS', 'ENV', 'GIT_EXTERNAL_DIFF', 'SHELLOPTS', 'POSIXLY_CORRECT']);
 /** Include Git's configuration-root variables in per-invocation environment effects. */
 const affectsGitEnvironment = (name) => /^GIT_/.test(name) || CONFIG_ROOT_ENV.has(name);
 /** Shell declaration options stop at the first operand; later strings are variable names or values. */
@@ -1232,6 +1309,30 @@ function declarationOptions(args) {
     options.push(word.text);
   }
   return options;
+}
+/** Separate positive function-export attributes from variable exports, listing and removal. */
+function functionExportSelection(name, args) {
+  if (!['export', 'declare', 'typeset'].includes(name)) return null;
+  const opts = declarationOptions(args);
+  const has = (sign, flag) => opts.some(option => option[0] === sign && option.slice(1).includes(flag));
+  const functionMode = has('-', 'f') || has('-', 'F');
+  const removal = has('-', 'n') || has('+', 'x') || has('+', 'f') || has('+', 'F');
+  const query = name !== 'export' && has('-', 'p');
+  let k = opts.length;
+  if (args[k]?.text === '--' && !args[k].dynamic) k++;
+  const operands = args.slice(k);
+  const uncertainOption = !functionMode && !query && !removal && args[k]?.dynamic &&
+    !/^[A-Za-z_][A-Za-z0-9_]*=/.test(args[k].text);
+  if (uncertainOption) return { names: [], unknown: true };
+  if (!functionMode || removal || query || !operands.length || (name !== 'export' && !has('-', 'x'))) return null;
+  const names = [];
+  let unknown = false;
+  for (const word of operands) {
+    if (word.dynamic || word.dynamicMaySplit || word.globExpanded || word.braceExpanded || word.tildeExpanded ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) unknown = true;
+    else names.push(word.text);
+  }
+  return { names, unknown };
 }
 // POSIX モードでは prefix の代入が、通常のコマンドと違い special builtin の後にも残る。
 const SPECIAL_BUILTINS = new Set([':', '.', 'break', 'continue', 'eval', 'exit', 'export', 'readonly', 'return', 'set', 'shift', 'times', 'trap', 'unset']);
@@ -1336,12 +1437,17 @@ function shellInvocation(args, name) {
   // Bash processes these first literal options as terminal queries before reading a program.
   // Redirection expansions were parsed independently and retain their executable effects.
   if (name === 'bash' && args[0] && !args[0].dynamic && ['--help', '--version'].includes(args[0].text)) {
-    return { scripts: [], commandMode: false, readsStdin: false, unknown: false, positionals: [], terminal: true };
+    return { scripts: [], commandMode: false, readsStdin: false, unknown: false, positionals: [], terminal: true,
+      interactive: false, privileged: false, posix: false, posixExplicit: false };
   }
   const scripts = [];
   let commandMode = false;
   let stdin = false;
   let unknown = false;
+  let interactive = null;
+  let privileged = false;
+  let posix = name === 'sh';
+  let posixExplicit = false;
   let k = 0;
   const fishLong = {
     command: 'c', 'init-command': 'C', features: 'f', debug: 'd', 'debug-output': 'o',
@@ -1373,7 +1479,8 @@ function shellInvocation(args, name) {
       } else if (['rcfile', 'init-file', 'emulate'].includes(option)) {
         const value = eq < 0 ? args[++k] : { ...w, text: t.slice(eq + 1) };
         if (!value || value.dynamicMaySplit) unknown = true;
-      } else if (!['debugger', 'dump-po-strings', 'dump-strings', 'help', 'login', 'noediting',
+      } else if (option === 'posix' && eq < 0) { posix = true; posixExplicit = true; }
+      else if (!['debugger', 'dump-po-strings', 'dump-strings', 'help', 'login', 'noediting',
         'noprofile', 'norc', 'posix', 'restricted', 'verbose', 'version'].includes(option) || eq >= 0) unknown = true;
       continue;
     }
@@ -1391,13 +1498,18 @@ function shellInvocation(args, name) {
         if (!'hPilNnv'.includes(ch)) unknown = true;
       } else if (ch === 'o' || ch === 'O') {
         // -o / -O take an optional option name; attached text is that name, not more flags.
-        if (p + 1 === t.length && args[k + 1] && !/^[+-]/.test(args[k + 1].text)) {
-          if (args[++k].dynamic) unknown = true;
+        const option = p + 1 < t.length ? { ...w, text: t.slice(p + 1) }
+          : args[k + 1] && !/^[+-]/.test(args[k + 1].text) ? args[++k] : null;
+        if (option?.dynamic) unknown = true;
+        if (ch === 'o' && option?.text === 'posix' && !option.dynamic) {
+          posix = t[0] === '-'; posixExplicit = true;
         }
         break;
-      } else if (t[0] === '-') {
-        if (ch === 'c') commandMode = true;
-        if (ch === 's') stdin = true;
+      } else {
+        if (ch === 'i') interactive = t[0] === '-';
+        if (ch === 'p') privileged = t[0] === '-';
+        if (t[0] === '-' && ch === 'c') commandMode = true;
+        if (t[0] === '-' && ch === 's') stdin = true;
       }
     }
   }
@@ -1411,7 +1523,9 @@ function shellInvocation(args, name) {
       .includes(path.posix.normalize(operand.text)))));
   const positionals = commandMode ? args.slice(k + (name === 'fish' ? 0 : 2))
     : stdin ? args.slice(k) : operand ? args.slice(k + 1) : [];
-  return { scripts, commandMode, readsStdin, unknown, positionals };
+  return { scripts, commandMode, readsStdin, unknown, positionals,
+    interactive: unknown ? null : interactive === null && (commandMode || !readsStdin) ? false : interactive,
+    privileged: unknown ? null : privileged, posix: unknown ? null : posix, posixExplicit };
 }
 
 /** Detect Git text that a shell can expose after tokenization, without executing its input. */
@@ -1597,6 +1711,40 @@ function sourceChangesValues(inner) {
   });
 }
 
+/** Reuse an exact quoted scalar proof without rewriting the shell word or evaluating its contents. */
+function literalScalarWord(word, state) {
+  const variable = /^"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"$/.exec(word.raw);
+  const name = variable && (variable[1] || variable[2]);
+  const known = name && state.pathProofs.has(name) && !state.valuesTainted && state.values.get(name);
+  return typeof known === 'string' ? { ...word, literalValue: known } : word;
+}
+
+/** Track allexport only in set's option region; positional operands and queries are data. */
+function functionAutoExportSet(args, before) {
+  let mode = before;
+  for (let k = 0; k < args.length; k++) {
+    const word = args[k];
+    const text = word.text;
+    if (word.dynamic) return null;
+    if (text === '--' || text === '-' || !/^[+-]/.test(text)) break;
+    if (!/^[+-][A-Za-z]+$/.test(text)) return null;
+    for (let p = 1; p < text.length; p++) {
+      if (text[p] === 'a') mode = text[0] === '-';
+      if (text[p] === 'o') {
+        if (p + 1 < text.length) return null;
+        const option = args[k + 1];
+        if (option?.dynamic) return null;
+        if (option && !/^[+-]/.test(option.text)) {
+          if (option.text === 'allexport') mode = text[0] === '-';
+          k++;
+        }
+        break;
+      }
+    }
+  }
+  return mode;
+}
+
 /** Read set's positional operands without confusing option queries or consumed -o names with argv. */
 function positionalSet(args) {
   let k = 0;
@@ -1637,9 +1785,11 @@ const knownPositionals = (words) => words.every((word) => !word.dynamic &&
 
 /** Inspect an executable source string conservatively while leaving ordinary command arguments as data. */
 function inspectMediatedSource(source, depth = 0) {
+  const options = depth && typeof depth === 'object' ? depth : {};
+  if (depth && typeof depth === 'object') depth = options.sourceDepth || 0;
   const word = typeof source === 'string' ? { text: source, dynamic: false } : source;
   if (!word || word.dynamic) return { gits: [], invocations: [], problems: ['実行する source 文字列が動的で、中身を検査できない'] };
-  const inner = inspect(word.text, { sourceDepth: depth + 1 });
+  const inner = inspect(word.text, { ...options, sourceDepth: depth + 1 });
   const opaque = inner.invocations.some((invocation) => invocation.dynamicName || invocation.definitionName ||
     ['.', 'source', 'eval'].includes(invocation.name) || COMMAND_SEARCH_MUTATORS.has(invocation.name) ||
     invocation.shellSourceUnknown || invocation.shellScripts.some((script) => script.dynamic) ||
@@ -1709,8 +1859,8 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set() });
-  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs) });
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set() });
+  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
       scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
@@ -1721,6 +1871,17 @@ function inspect(cmd, options = {}) {
   if (Array.isArray(options.initialHelperEnvNames)) {
     for (const name of options.initialHelperEnvNames) if (HELPER_SOURCE_ENV.has(name)) stateFor(parsed.scope).helperEnv.add(name);
   }
+  const sourcePlaceholder = (name) => ({ definitionName: name, redirs: [], heredocBodies: [], functionBody: null });
+  const seedFunctionNames = (names, add) => {
+    if (!Array.isArray(names)) return;
+    for (const name of names) {
+      if (typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) add(name);
+      else stateFor(parsed.scope).exportedFunctionUnknown = true;
+    }
+  };
+  seedFunctionNames(options.initialFunctionSourceNames, name => stateFor(parsed.scope).functions.set(name, sourcePlaceholder(name)));
+  seedFunctionNames(options.initialExportedFunctionNames, name => stateFor(parsed.scope).exportedFunctions.add(name));
+  if (options.initialExportedFunctionUnknown) stateFor(parsed.scope).exportedFunctionUnknown = true;
   if (Array.isArray(options.initialPositionals)) stateFor(parsed.scope).positionals = knownPositionals(options.initialPositionals);
   const updatePositionals = (state, c, next) => {
     const conditional = (c.effects || []).some((effect) => effect.conditional || effect.pipeline);
@@ -1811,25 +1972,39 @@ function inspect(cmd, options = {}) {
     }
     const env = new Set(state.env);
     const helperEnv = new Set(state.helperEnv);
+    const exportedFunctions = new Set(state.exportedFunctions);
+    let exportedFunctionUnknown = state.exportedFunctionUnknown;
+    const environmentFunctions = new Map(state.environmentFunctions);
+    const environmentFunctionUnknown = new Set(state.environmentFunctionUnknown);
     let pathChanged = state.pathChanged;
     for (const op of info.envOps) {
-      if (op.clear) { env.clear(); helperEnv.clear(); for (const root of CONFIG_ROOT_ENV) env.add(root); pathChanged = false; }
+      if (op.clear) { env.clear(); helperEnv.clear(); exportedFunctions.clear(); exportedFunctionUnknown = false;
+        environmentFunctions.clear(); environmentFunctionUnknown.clear(); for (const root of CONFIG_ROOT_ENV) env.add(root); pathChanged = false; }
       if (op.unset) {
         if (CONFIG_ROOT_ENV.has(op.unset)) env.add(op.unset); else env.delete(op.unset);
         helperEnv.delete(op.unset);
+        environmentFunctions.delete(op.unset); environmentFunctionUnknown.delete(op.unset);
         if (op.unset === 'PATH') pathChanged = false;
       }
       if (op.set && affectsGitEnvironment(op.set)) env.add(op.set);
       if (op.set && HELPER_SOURCE_ENV.has(op.set)) helperEnv.add(op.set);
       if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
+      if (op.functionEnvironment) {
+        const imported = op.functionEnvironment;
+        if (imported.callee) environmentFunctions.set(imported.environment, imported.callee);
+        if (imported.unknown) environmentFunctionUnknown.add(imported.environment);
+      }
     }
     const cdBefore = state.cd || info.cdLike;
     const shell = SHELLS.has(info.name) ? shellInvocation(info.args, info.name) : null;
+    if (shell && !shell.posixExplicit && (helperEnv.has('SHELLOPTS') || helperEnv.has('POSIXLY_CORRECT'))) shell.posix = null;
+    const importedFunctionNames = [...new Set([...exportedFunctions, ...environmentFunctions.values()])];
     const builtin = info.wrapperNames.every((name) => name === 'command' || name === 'builtin');
     const trap = info.name === 'trap' && builtin ? trapInvocation(info.args) : null;
     const alias = info.name === 'alias' && builtin ? aliasInvocation(info.args) : null;
     const invocation = {
-      order: res.invocations.length, name: info.name, nameWord: info.nameWord, args: info.args,
+      order: res.invocations.length, name: info.name, nameWord: info.nameWord,
+      args: info.args.map(word => literalScalarWord(word, expansionState)),
       words: c.words, redirs: c.redirs, heredocBodies: c.heredocBodies, scope: c.scope, incomplete: info.incomplete,
       wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
       executableExpansionUnknown: info.executableExpansionUnknown,
@@ -1841,6 +2016,7 @@ function inspect(cmd, options = {}) {
       functionBodyUnknown: !!c.functionBodyUnknown || !!c.functionBody?.unknown,
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
       helperEnvNames: [...helperEnv],
+      exportedFunctionNames: importedFunctionNames, exportedFunctionUnknown: exportedFunctionUnknown || environmentFunctionUnknown.size > 0,
       pathChangedBefore: pathChanged || state.searchChanged,
       unknownContextBefore: state.unknownContext,
       pipelineParticipant: (c.effects || []).some((e) => e.pipeline),
@@ -1852,6 +2028,8 @@ function inspect(cmd, options = {}) {
       shellScripts: shell ? shell.scripts : [], shellCommandMode: shell ? shell.commandMode : false,
       shellSourceUnknown: shell ? shell.unknown : false, shellReadsStdin: shell ? shell.readsStdin : false,
       shellPositionals: shell && !shell.unknown ? shell.positionals : null,
+      shellInteractive: shell ? shell.interactive : null, shellPrivileged: shell ? shell.privileged : null,
+      shellPosix: shell ? shell.posix : null, shellTerminal: !!shell?.terminal,
       trapScripts: trap ? trap.scripts : [], trapSourceUnknown: trap ? trap.unknown : false,
       aliasScripts: alias ? alias.scripts : [], aliasSourceUnknown: alias ? alias.unknown : false,
       // Carrier offsets allow template/data evidence to be mapped back to a known executable body.
@@ -1865,6 +2043,8 @@ function inspect(cmd, options = {}) {
     res.invocations.push(invocation);
     if (invocation.definitionName) {
       state.functions.set(invocation.definitionName, { ...c, functionConditional: conditional });
+      if (state.functionAutoExport === true) state.exportedFunctions.add(invocation.definitionName);
+      else if (state.functionAutoExport === null) state.exportedFunctionUnknown = true;
       // Keep the existing conservative Git/positional gates after a definition, without running it.
       state.unknownContext = true;
       state.positionalsTainted = true;
@@ -1898,6 +2078,7 @@ function inspect(cmd, options = {}) {
         }
       }
       seedScope(body.scope, env, cdBefore, { ...state, helperEnv, pathChanged,
+        exportedFunctions, exportedFunctionUnknown, environmentFunctions, environmentFunctionUnknown,
         localNames: new Set(), positionals: knownPositionals(info.args), positionalsTainted: !!info.incomplete });
       for (const evaluation of selectedFunction.evaluations || []) checkEvaluation(evaluation, stateFor(body.scope));
       for (const redir of selectedFunction.redirs) {
@@ -1913,6 +2094,11 @@ function inspect(cmd, options = {}) {
         for (const name of after.env) if (!local(name)) state.env.add(name);
         for (const name of after.helperEnv) if (!local(name)) state.helperEnv.add(name);
         for (const [name, definition] of after.functions) state.functions.set(name, definition);
+        for (const name of after.exportedFunctions) state.exportedFunctions.add(name);
+        state.exportedFunctionUnknown ||= after.exportedFunctionUnknown;
+        state.functionAutoExport = after.functionAutoExport;
+        for (const [environment, name] of after.environmentFunctions) if (!local(environment)) state.environmentFunctions.set(environment, name);
+        for (const environment of after.environmentFunctionUnknown) if (!local(environment)) state.environmentFunctionUnknown.add(environment);
         state.cd ||= after.cd;
         if (!local('PATH') && !local('FPATH')) state.pathChanged ||= after.pathChanged;
         state.searchChanged ||= after.searchChanged;
@@ -1929,6 +2115,11 @@ function inspect(cmd, options = {}) {
     const declOptions = declaration ? declarationOptions(info.args) : [];
     const declarationQuery = ['declare', 'typeset', 'local'].includes(info.name) &&
       declOptions.some((option) => /^-[A-Za-z]*p[A-Za-z]*$/.test(option));
+    const exported = builtin && declaration ? functionExportSelection(info.name, info.args) : null;
+    if (exported) {
+      for (const name of exported.names) state.exportedFunctions.add(name);
+      state.exportedFunctionUnknown ||= exported.unknown;
+    }
     if (c.scope.functionBody && !declarationQuery && ['local', 'declare', 'typeset'].includes(info.name) &&
         !declOptions.some((option) => /^-[A-Za-z]*g[A-Za-z]*$/.test(option))) {
       for (const word of info.args.slice(declOptions.length)) {
@@ -2050,17 +2241,22 @@ function inspect(cmd, options = {}) {
       'getopts', 'let', 'set', 'shift', 'trap', 'alias'].includes(info.name)) state.valuesTainted = true;
     if (info.cdLike) res.cdLike = true;
     for (const a of info.assigns) if (affectsGitEnvironment(a) && !res.gitEnvNames.includes(a)) res.gitEnvNames.push(a);
-    if (!info.name && !info.dynamicName && !info.wrapped) { state.env = env; state.helperEnv = helperEnv; state.pathChanged = pathChanged; }
+    if (!info.name && !info.dynamicName && !info.wrapped) {
+      state.env = env; state.helperEnv = helperEnv; state.pathChanged = pathChanged;
+      state.environmentFunctions = environmentFunctions; state.environmentFunctionUnknown = environmentFunctionUnknown;
+    }
     if (info.persistsEnv || (!info.wrapped && SPECIAL_BUILTINS.has(info.name))) {
       for (const a of env) state.env.add(a);
       for (const a of helperEnv) state.helperEnv.add(a);
       state.pathChanged = state.pathChanged || pathChanged;
+      for (const [environment, name] of environmentFunctions) state.environmentFunctions.set(environment, name);
+      for (const environment of environmentFunctionUnknown) state.environmentFunctionUnknown.add(environment);
     }
     if (info.envUnknown && (gitContext || c.words.some(wordHasGit))) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf'].includes(name)))) {
       res.problems.push('launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
@@ -2099,6 +2295,8 @@ function inspect(cmd, options = {}) {
         selectsLocalFunction({ text: evalWords.map((word) => word.text).join(' '), dynamic: false }));
     if (mediatedFunction) res.problems.push('文字列の実行 source が選ぶ既存の関数の状態・body・呼出し条件を引き継いで検査できない');
     if (builtin && name === 'set') {
+      const mode = functionAutoExportSet(info.args, state.functionAutoExport);
+      state.functionAutoExport = conditional && mode !== state.functionAutoExport ? null : mode;
       const change = positionalSet(info.args);
       if (change) {
         const words = change.words.flatMap((word) => state.positionals && exactQuotedAt(word) ? state.positionals : [word]);
@@ -2159,6 +2357,12 @@ function inspect(cmd, options = {}) {
           res.gitEnvNames.push(nm); state.env.add(nm);
         }
         if (HELPER_SOURCE_ENV.has(nm) && (w.text.includes('=') || !print)) state.helperEnv.add(nm);
+        const assignment = scalarAssignment(w);
+        const imported = assignment && functionEnvironmentAssignment(w, assignment.name, assignment.value);
+        if (imported) {
+          if (imported.callee) state.environmentFunctions.set(imported.environment, imported.callee);
+          if (imported.unknown) state.environmentFunctionUnknown.add(imported.environment);
+        }
         if (nm === 'PATH' || nm === 'FPATH') state.pathChanged = true;
       }
     }
@@ -2185,7 +2389,10 @@ function inspect(cmd, options = {}) {
             const inner = parseShell(h.body);
             for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
             res.async = res.async || inner.async;
-            seedScope(inner.scope, env, cdBefore, { ...state, helperEnv, pathChanged, positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
+            seedScope(inner.scope, env, cdBefore, { ...state, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+              environmentFunctions, environmentFunctionUnknown,
+              functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
+                .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
             if (inner.errors.length && shellInputHasGit(h.body)) {
               res.problems.push(`${name} に流すヒアドキュメントを読みきれない`);
             }
@@ -2198,7 +2405,10 @@ function inspect(cmd, options = {}) {
                 const inner = parseShell(r.word.text);
                 for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
                 res.async = res.async || inner.async;
-                seedScope(inner.scope, env, cdBefore, { ...state, helperEnv, pathChanged, positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
+                seedScope(inner.scope, env, cdBefore, { ...state, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+                  environmentFunctions, environmentFunctionUnknown,
+                  functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
+                    .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
                 if (inner.errors.length) res.problems.push(`${name} に流す文字列の git を読みきれない`);
                 for (const ic of inner.cmds) visit(ic, resolveCommand(ic.words), depth + 1);
               }
@@ -2227,7 +2437,8 @@ function inspect(cmd, options = {}) {
           const sub = resolveCommand(info.args.slice(k + 1, e));
           sub.incomplete = true;
           const scope = { parent: null };
-          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged });
+          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, exportedFunctions, exportedFunctionUnknown,
+            environmentFunctions, environmentFunctionUnknown });
           visit({ words: info.args.slice(k + 1, e), redirs: [], piped: false, heredocBodies: [], scope, effects: c.effects }, sub, depth + 1);
           k = e;
         }
@@ -2254,7 +2465,8 @@ function inspect(cmd, options = {}) {
         if (writes || unclear) {
           // 外側が xargs / find なら、未知 wrapper を外しても追加引数の不確定性を保つ。
           const scope = { parent: null };
-          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged });
+          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, exportedFunctions, exportedFunctionUnknown,
+            environmentFunctions, environmentFunctionUnknown });
           const sub = resolveCommand(tail);
           sub.incomplete = info.incomplete || sub.incomplete;
           visit({ words: tail, redirs: [], piped: false, heredocBodies: [], scope, effects: c.effects }, sub, depth + 1);
@@ -2264,12 +2476,7 @@ function inspect(cmd, options = {}) {
     }
     const g = parseGit(info.args);
     if (g.problems.length) { res.problems.push(...g.problems); return; }
-    g.args = g.args.map((word) => {
-      const variable = /^"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"$/.exec(word.raw);
-      const name = variable && (variable[1] || variable[2]);
-      const known = name && state.pathProofs.has(name) && !state.valuesTainted && state.values.get(name);
-      return typeof known === 'string' ? { ...word, literalValue: known } : word;
-    });
+    g.args = g.args.map(word => literalScalarWord(word, state));
     if (g.sub === 'commit') {
       const parsedCommit = parseCommitArgs(g.args);
       if (parsedCommit.terminal) { g.terminal = true; g.helpKind = parsedCommit.helpKind; }

@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の R14 で採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。R11 / R12 の取得時刻・source を付した測定は履歴として残し、R13 の実測と R14 の確認を区別する。
+この文書は PR #191 の R15 までに採用した保護範囲と、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。R11 / R12 / R13 / R14 の取得時刻・source を付した測定は履歴として残し、R15 の新 source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -275,6 +275,37 @@ R14のactual CLI 2.1.296は **17:14:43 JSTまでの8試行 / 実入口確認6 PA
 
 sourceは common `51202716`、egress `0df0b5c4`、secret `a78a0acd`、add-all `210a9bcb`で固定。original PreToolUse matcher / if / timeout、permission denyを保持し、user defaultsは有効。trust変更、model override、permission / hook bypassは使用していない。untrusted DUMMY workspaceのproject Skill allowは無視され得る。production SessionStart / PostToolUse / Stop / pluginと本番全lifecycleは再現していない。通常作業の例が通ることも、任意program内部・default SSH設定・すべてのruntime envの安全認証ではない。
 
+## R15: startup / exported function / outbound DATA の境界
+
+R15 は R14 公開 head `4f0ff562` への fresh review の 7 指摘（Codex 6、CodeRabbit 1）を入口とする。対応範囲・3 種類の結果・止まる通常作業・出口を先に定め、選択した source と outbound DATA に局所的な fail-closed を加える。正式指摘の 6 command は、旧 df463a9・f2f8・4f0ff562 の全 3 hook に直接渡すといずれも ALLOW だった。これは旧版からの直接判定の抜けであり、実漏えいの測定ではない。別途、`f() { …; }; export -f f; bash -c f` の直接判定は、旧 f2f8 の停止が R14 で失われていた。未使用の関数定義を deferred source と分けた修正から、child に export する source への結び付きが欠けた退行である。同じ source の群として修復し、witness 数を独立した脆弱性の件数と数えない。
+
+| 守る対象 | 必要条件と判定 | 止まる通常作業 | 対応する形式・出口 | 対照と試験 |
+|---|---|---|---|---|
+| ENV / BASH_ENV startup source | positive ENV と interactive / 未確定な対象 shell mode は UNKNOWN。noninteractive・実 terminal query・privileged 条件を別に確認する。Bash の POSIX / privileged / interactive 条件も startup 選択の役割で扱い、SHELLOPTS / POSIXLY_CORRECT 等が未確認なら非実行を推定しない | ENV で初期化する interactive shell、startup file を使う wrapper | 同目的に startup が不要なら、実 per-call `env -u ENV` / `env -u BASH_ENV` と対応 literal source を検討する。必要な初期化・interactive mode 自体を削除して目的が変わるなら owner へ | 正の prefix / inherited env、実 `-i` / `-p` / POSIX mode、consumed DATA / query、後続 child の再選択。installed shell で一例の marker が出ないことを全環境の非実行証明にしない |
+| child が import / export する function source | 明示 `export -f` / function attribute、`set -a` / `set -o allexport` の自動 export、modern `BASH_FUNC_name%%` / known legacy header の potential import を名前だけで追跡する。選択した child callee の本文・選択が検査できなければ UNKNOWN。名前自体が未確定で選択を確認できない child も UNKNOWN | child Bash が親の function を使う wrapper、環境で関数を渡す script、allexport script | 同じ目的を対応する直接 source に表せる場合だけ書換え。実 `env -i` で import が不要になる場合は、環境消去が変える他条件も再確認。attribute 解除の出現だけでは既に追跡した export の不在を証明しない。function import 自体が必要なら owner へ | 既知の未使用 export と child `-c ':'`、query / attribute removal と新 export の区別、local / transient env scope、env clear、privileged child と nested nonprivileged re-import。関数本文や環境値を log に保存しない |
+| GNU timeout / nice / stdbuf が実行する child | nice の `-n` / `--adjustment`、stdbuf の `-i` / `-o` / `-e` と `--input` / `--output` / `--error` の値を、attached / separated と実 `--` の役割で消費する。timeout は正確な `-s` / `--signal` と `-k` / `--kill-after` の attached / separated 値、対応する flag、literal duration、実 `--` を読んでから child を検査する。missing / dynamic / unknown / abbreviated option、未知 duration は UNKNOWN。signal 値や child argv の `--help` は actual timeout query と別 | `timeout --sig …` 等の省略形、生成 duration / options / buffering mode を使う launcher | 同じ意味になる正確な `timeout --signal TERM 5 <対応 command>` 等へ。duration は対応 literal の数値と単位 `s` / `m` / `h` / `d` にする。動的 option の意味を確定できなければ owner へ | separated signal / kill interval、attached / short、query / consumed DATA、duration・child の境界。GNU が受け付ける unique abbreviation も、この parser では未対応 |
+| 単独 Git が選ぶ外部 helper | active operation の positive `diff.external` / GIT_EXTERNAL_DIFF、textconv / filter / hook / pager / include selector は、source 内部・実行条件を検査できず UNKNOWN。commit 前に限らず検査する。実 `--no-ext-diff` / `--no-textconv` と実 query の役割は区別 | custom diff・textconv・filter・pager を使う standalone read / write。読取り command 名だけでは許可しない | helper が目的に不要なら actual disable flag と対応 argv / cwd / env / config で同じ目的を保てる場合だけ書換え。必要な helper 自体に代替がなければ owner へ | external diff を選ばない ordinary log、format / grep / pattern の quoted scalar DATA、local getter / stdout query、消費値の disable。未知 argv / context は未使用の証明にならない |
+| gh の file-backed outbound DATA | 共通 operation / payload role 分類で Release upload / create の asset と edit の notes file と Issue 本文の `--body-file` / `-F` を扱う。`file#label` は実 file 部分、本文 `-` は stdin source となる。確定した file payload は既存 file-upload policy の FORBIDDEN。本文 / notes の `-` が選ぶ未検査 stdin source は UNKNOWN。公開 artifact も同じ禁止範囲。operation / option arity / operands / context が未確定なら UNKNOWN | 通常の release asset 公開、public build artifact の upload、file / stdin 由来の Issue 本文 | query の `view` / `list` / actual help は別目的の対照。asset 転送と同目的の対応済み代替はないため、対象・file source・release / repo・cwd / env / config を owner へ | asset / 本文 file / stdin、`-R` / `--repo`・tag・literal body の消費値、actual help・query・print DATA、missing / dynamic operands。query を投稿や upload の代替としない |
+| SSH remote command の outbound DATA | `-n` / `-f` は stdin を止める条件であり、remote command の展開結果を送らない証明ではない。同じ payload word に結び付く対応 reader の secret filename operand と確定 source / argv / context は FORBIDDEN。未知 producer / stdout / source / context は UNKNOWN | 変数・command substitution で組み立てる remote command、custom filter の出力を送る SSH | 同目的を確認した非秘密 literal DATA / 対応 reader と確定 source にできる場合だけ書換え。生成や source 自体が必要で不明点が残れば owner へ | stdin と remote argv の独立判定、query / receive-only、印字 DATA、無関係の reader、unknown program / process substitution。ファイル名の共起だけで payload 内容を推定しない |
+| Git push option の outbound DATA | actual `-o` / `--push-option` と対応 `push.pushOption` の DATA source を、repository / ref / index と別に検査する。関連 secret filename reader と確定 source / argv / context は FORBIDDEN。未知 source や未確定 destination / transport は UNKNOWN | 動的な push option、file 内容を push option にする server hook 連携 | 必要でない option を除いても同じ目的を保てる場合だけ再検査。必要な DATA が非秘密 literal で条件を満たす形は対照。source / transport 自体が必要なら owner へ | named remote の意味だけで DATA を許可しない。quoted `$OPTION` も安全値の証明ではなく、dynamic repository が option になり得る形は FORBIDDEN と断定しない |
+| Vault wrapper の staged filename 読取と parity | canonical `SECRET_PATH_RE` は変更せず、shell copy の `.env?backup` / bare `secrets` / explicit whitespace 等を同期。Git `--name-only -z` の全 record と byte 数を読み、読取失敗・partial NUL・LF filename は何も unstage せず判断不能で停止する | 非秘密の LF を含む filename、staged 名前を読めない状態。通常の case / subdir / whitespace 名は predicate の対照で照合する | 完全な filename 読取と同じ対象を復旧して再検査する。LF 名や復旧できない source / 状態は owner に対象・操作・条件を確認する。別の場所へコピーして gate を回避しない | [専用 parity test](../../.claude/hooks/tests/secret-path-parity.test.cjs) は raw NUL reader、predicate、失敗前の unstage 不実行を確認する。full wrapper / 本番 Vault / push の試験とは分ける |
+
+これらの shell / Git / outbound 条件は、常時 `Bash` の egress 自身が停止を担当する。条件付き secret-git / add-all の union だけで対応済みとせず、L2 の required guard と L3 の実 dispatch を別に測る。`.claude/settings.json` の `if: "Bash(git *)"`、全 Bash matcher、permission deny はこの変更で書き換えない。Vault wrapper は別入口の staged gate であり、PreToolUse 3 本による保護と混同しない。
+
+source / cwd / env / config / helper と argv の必要情報を確認できない操作には `[判断不能]`、確認した policy 禁止には `[禁止]` を示す。secret filename を扱う reader と sink の関連を確認しても、実 file 内容・認証・送信成立を確認した意味ではない。process substitution の filename provenance も内容の証明にならず UNKNOWN とする。既知の未使用 source や consumed DATA が通る対照は、その担当条件だけの判定であり、任意プログラム・既定 config 全体の安全認証には広げない。
+
+terminal help / version の例外は、original argv の query role と invocation context の両方を確認できる場合に限る。関数定義後の保守的な context 条件は維持するため、既知の未使用 export と `bash --help` を組み合わせても UNKNOWN で停止する場合がある。native Bash の help が本文を実行しなかった観測と、この停止を別に記録する。`R15EF19` は公開4f0ff562とR15候補がUNKNOWN、旧df463a9・f2f8がALLOWの通常作業制限であり、R15で新設した禁止や実漏えいの証明ではない。
+
+追加の独立検証資料で報告された Release create asset / Issue 本文 file / nice / stdbuf long option は、当席でも公開 4f と修正前 candidate の全 3 hook が ALLOW と確認した。user 提供の Linux native 証拠と当席の macOS 測定を区別し、実秘密・実外部送信・任意プログラムの安全保証とはしない。追加判定を一つずつ外す disposable source の reverse verification は、危険入力・正常対照の試験とは別に取得する。別の独立判定が停止を維持する場合、単独判定の必要性は未証明と記録し、保護をまとめて無効化しない。
+
+SSH / push-option は共通の値の生成元判定を使う。既存 state が確認できる quoted scalar の exact literal proof を一般の invocation にも渡す。読取・未対応加工・以前の処理で taint が残る変数は「非秘密」にしない。無関係な reader と静的な SSH command / literal `ci.skip` は別の対照として許可するが、同じ reader の後の変数代入だけで既存の taint が消えたとは扱わず、proof が確立しない変数 operand は UNKNOWN になる。
+
+**R15 の確定ローカル測定（2026-10-13 19:40:57 JST）:** common `addb1e95` / egress `079e4f0d` の固定 source で直接 guard suite **3764/3764、broken 0、hash 不変**。旧3498件の ID / command / stdin / cwd / project / env はすべて保持し、3490定義は不変、5件の ALLOW→UNKNOWN と3件の UNKNOWN→FORBIDDEN理由分類だけを根拠付きで変更、266件を追加した。同じ3764入力を公開4fへ渡すと150件の判定 / 担当hook差と3件の理由だけの差、broken 0。差を独立した脆弱性や実漏えい件数とはしない。公開 L1 **45/45**、deny / dependency API **6/6**、別のfilename parity / NUL reader契約 **8/8**。disposable sourceで ENV、child import、Git helper、GH file payload、SSH remote argv、push payload、timeout / nice / stdbuf arity、autoexport の判定を個別に外し、対応witnessがALLOWへ戻ることと正常・関連対照の維持を確認した。initial inherited outer functionとRelease edit notes fileも単独edge reversalを確認した。
+
+**R15 の実入口（2026-10-13 19:42:17 JST）:** CLI2.1.296、新sourceの **10試行 / 8実入口PASS / 0FAIL / 2NOT_EXERCISED**。explicit export / autoexportの選択はUNKNOWN、unused exportとtimeout / nice / stdbuf printf controlsはALLOW、Release create assetとIssue本文fileはFORBIDDEN。HEAD / refs / index / status / DUMMY files / helper markers / object inventoriesは不変。diff helperとpush optionはAPI safeguardがBash / hookより前に止めたためPASSに含めない。旧1ef6sourceの途中7試行 / 4PASS / 3NOT_EXERCISED（ENV、Release upload、SSH argv）は別の履歴で、新sourceへ持ち越さない。拒否済み3例はbypass retryせず、新sourceのauth/startup/SSH・upload-specific L3は未測定。fixtureのGH / SSHはnetworkなしのlocal marker stub、timeout / nice / stdbufはinstalled GNU9.11へのsymlink。original PreToolUse matcher / if / timeout・permission denyとuser defaultsを保持し、trust / model / bypass変更なし。production lifecycle / plugin / full trusted session、実外部送信やOpenSSH transportを再現した結果ではない。
+
+新headのrequired CIとfresh review / thread状態はPRで別に取得する。旧R14結果やprivate focused / harmless native数を新統合suite・実CLIの成功数へ加算しない。
+
 ## 試験を 3 層に分ける
 
 上記の条件ごとに L1 の意味、L2 の ALLOW / FORBIDDEN / UNKNOWN と担当、L3 の実 dispatch と副作用を別々に確認する。新しい source の結果を取得するまで、過去の合格数や dispatch を持ち越さない。
@@ -319,6 +350,7 @@ tag file と grep-before-commit の 2 試行は Claude API の `[cyber]` safegua
 
 ```bash
 node --test .claude/hooks/tests/git-guard-analysis.test.cjs
+node --test .claude/hooks/tests/secret-path-parity.test.cjs
 node .claude/hooks/tests/git-guards.test.cjs
 node .claude/hooks/tests/git-guards.test.cjs --hooks-dir /path/to/hooks --json
 ```
