@@ -2067,10 +2067,11 @@ function rsyncRequestRule(word, option) {
     word: merge ? rsyncRequestValue(word, text, payloadStart) : word };
 }
 
-/** Request filters are transmitted to a remote sender even when destination storage is local. */
+/** Request filters and explicit remote options can leave a client even for a remote download. */
 function rsyncFileListPayload(invocation) {
   if (invocation.name !== 'rsync') return false;
   const requests = [];
+  const remoteOptions = [];
   const operands = [];
   let unknown = Boolean(invocation.incomplete);
   let afterDD = false;
@@ -2086,6 +2087,7 @@ function rsyncFileListPayload(invocation) {
       if (RSYNC_VALUE_LONG.has(name)) {
         const value = eq < 0 ? invocation.args[++k] : rsyncRequestValue(word, text, eq + 1);
         if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
+        if (name === 'remote-option') remoteOptions.push(value);
         if (['filter', 'include', 'exclude', 'include-from', 'exclude-from', 'files-from'].includes(name)) {
           const request = rsyncRequestRule(value, name);
           if (request.clear) requests.splice(0, requests.length, ...requests.filter(previous => previous.mode === 'file-list'));
@@ -2100,6 +2102,7 @@ function rsyncFileListPayload(invocation) {
         if (RSYNC_VALUE_SHORT.includes(text[p])) {
           const value = p + 1 < text.length ? rsyncRequestValue(word, text, p + 1) : invocation.args[++k];
           if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
+          if (text[p] === 'M') remoteOptions.push(value);
           if (text[p] === 'f') {
             const request = rsyncRequestRule(value, 'filter');
             if (request.clear) requests.splice(0, requests.length, ...requests.filter(previous => previous.mode === 'file-list'));
@@ -2115,11 +2118,27 @@ function rsyncFileListPayload(invocation) {
     if (!literal) unknown = true;
     operands.push(literal ? literal.text : null);
   }
-  if (!requests.length) return false;
+  if (!requests.length && !remoteOptions.length) return false;
   const roles = operands.map(text => remoteCopyAddressRole('rsync', text));
   const remote = roles.includes('REMOTE');
   if (!remote && !unknown && !roles.includes('UNKNOWN')) return false;
   if (unknown || roles.includes('UNKNOWN') || !operands.length || requests.some(request => request.unknown)) return 'UNKNOWN';
+  // Explicit remote-option values enter server argv for either transfer direction.
+  // Keep them separate from filter clearing/side selection. Pinned GNU client
+  // validation rejects a known non-dash value before transport; unknown values
+  // cannot use that rejection as proof that no request DATA is selected.
+  const selectedRemoteOptions = remoteOptions.filter(word => {
+    const literal = literalSourceWord(word);
+    if (literal) return literal.text.startsWith('-');
+    // A fixed non-dash first byte remains non-dash even with a generated suffix.
+    // GNU client validation rejects that operand before constructing server argv.
+    if (word?.dynamicMaySplit === false && !word.ansiCUnknown && !word.globExpanded &&
+        !word.braceExpanded && !word.tildeExpanded && typeof word.text === 'string' &&
+        word.text && word.text[0] !== '-' && word.text[0] !== '\0') return false;
+    return true;
+  });
+  const remoteOptionVerdict = outboundPayloadVerdict(invocation, selectedRemoteOptions);
+  if (remoteOptionVerdict) return remoteOptionVerdict;
   const pull = roles[0] === 'REMOTE' && (operands.length === 1 || roles.at(-1) === 'LOCAL');
   // Remote uploads retain the independent file-upload prohibition below. A role
   // selected only on the opposite remote side does not inherit a coincident local read.
@@ -2981,13 +3000,96 @@ function sshOptionScalar(word) {
   return /^[^\s"'\\]+$/.test(text) ? text.toLowerCase() : null;
 }
 
+/** Match pinned raw ProxyCommand / last ProxyJump hostname selection, not token text alone. */
+function sshCanonicalProxySelection(options) {
+  const command = options.get('proxycommand');
+  const jump = options.get('proxyjump');
+  const keys = [...options.keys()];
+  const jumpFirst = jump && (!command || keys.indexOf('proxyjump') < keys.indexOf('proxycommand'));
+  const unknown = staticUnknown => ({ direct: true, unknown: true, staticUnknown });
+  if (jumpFirst) {
+    const literal = literalSourceWord(jump);
+    if (!literal) return unknown(false);
+    const raw = literal.text.replace(/^[ \t=]+/, '');
+    // Exact raw none is a no-op. A later command may still be selected.
+    if (raw.toLowerCase() !== 'none') {
+      // parse_jump strips comments/rtrims, then installs the final jump's host.
+      const last = raw.split('#')[0].trimEnd().split(',').at(-1);
+      const target = /^(?:[A-Za-z0-9_.-]+@)?(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9_.-]+)(?::([0-9]+))?$/.exec(last);
+      if (!target || target[2] && (Number(target[2]) < 1 || Number(target[2]) > 65535)) return unknown(true);
+      const host = target[1].replace(/^\[|\]$/g, '');
+      if (target[1].startsWith('[') && require('node:net').isIP(host) !== 6) return unknown(true);
+      return { direct: host.toLowerCase() === 'none', unknown: false, staticUnknown: false };
+    }
+  }
+  if (!command) return { direct: true, unknown: false, staticUnknown: false };
+  const literal = literalSourceWord(command);
+  if (!literal) return unknown(false);
+  // parse_command removes leading separators; it keeps trailing whitespace/quotes.
+  return { direct: literal.text.replace(/^[ \t=]+/, '').toLowerCase() === 'none', unknown: false, staticUnknown: false };
+}
+
+/** Select only domain suffix DATA consumed by active hostname canonicalization. */
+function sshCanonicalDomainPayload(invocation, selection) {
+  const { options, host, destinationWord, hostArgumentWord, argvUncertain } = selection;
+  const empty = { words: [], unknown: false };
+  const domain = options.get('canonicaldomains');
+  if (!host || !domain) return empty;
+  if (argvUncertain || invocation.incomplete) return { words: [domain], unknown: true };
+  const domainLiteral = literalSourceWord(domain);
+  const domainTokens = domainLiteral && sshConfigTokens(domainLiteral);
+  if (domainTokens?.length === 1 && domainTokens[0].toLowerCase() === 'none') return empty;
+  const modeSource = options.get('canonicalizehostname');
+  // The caller already rejected implicit/opaque config; absent explicit mode is default no.
+  let mode = modeSource ? sshOptionScalar(modeSource) : 'no';
+  if (mode === 'false') mode = 'no';
+  if (mode === 'true') mode = 'yes';
+  if (mode === 'no') return empty;
+  const configuredHost = options.get('hostname');
+  // SCP's synthetic endpoint and raw SSH URI are not the consumer-selected host proof.
+  if (!configuredHost && invocation.sshCanonicalSyntheticHost) return { words: [domain], unknown: true };
+  const hostnameLiteral = literalSourceWord(configuredHost || destinationWord);
+  if (!hostnameLiteral) return { words: [domain], unknown: true };
+  const hostnameTokens = configuredHost ? sshConfigTokens(hostnameLiteral) : [hostnameLiteral.text];
+  if (!hostnameTokens || hostnameTokens.length !== 1) return { words: [domain], unknown: true };
+  let hostname = '';
+  const value = hostnameTokens[0];
+  const numericUri = !configuredHost && /^ssh:\/\/(\[[0-9A-Fa-f:]+\]|[0-9.]+)\/?$/.exec(value);
+  if (numericUri && require('node:net').isIP(numericUri[1].replace(/^\[|\]$/g, '')) !== 0) return empty;
+  if (value.includes('://')) return { words: [domain], unknown: true };
+  for (let k = 0; k < value.length; k++) {
+    if (value[k] !== '%') { hostname += value[k]; continue; }
+    const token = value[++k];
+    if (token === '%') hostname += '%';
+    else if (token === 'h') {
+      const original = literalSourceWord(hostArgumentWord);
+      if (!original) return { words: [domain], unknown: true };
+      hostname += original.text;
+    } else return { words: [domain], unknown: true };
+  }
+  // Numeric and anchored hostnames return before the suffix loop in resolve_canonicalize.
+  if (!hostname.includes('%') && require('node:net').isIP(hostname) !== 0 || hostname.endsWith('.')) return empty;
+  if (hostname.includes('%') || /\$\{/.test(hostname)) return { words: [domain], unknown: true };
+  const maxSource = options.get('canonicalizemaxdots');
+  const maxText = maxSource ? sshOptionScalar(maxSource) : '1';
+  if (!maxText || !/^\+?\d+$/.test(maxText) || Number(maxText) > 2147483647) return { words: [domain], unknown: true };
+  if ((hostname.match(/\./g) || []).length > Number(maxText)) return empty;
+  if (!['yes', 'always'].includes(mode)) return { words: [domain], unknown: true };
+  if (mode === 'yes') {
+    const proxy = sshCanonicalProxySelection(options);
+    if (proxy.unknown) return { words: [domain], unknown: true };
+    if (!proxy.direct) return empty;
+  }
+  return { words: [domain], unknown: false };
+}
+
 /** Read SSH's option boundary before and after the host, stopping at the actual remote command. */
 function sshOperation(invocation) {
   if (invocation.name === 'scp') {
     const operation = scpOperation(invocation);
     if (!operation.sshActive) return { sources: [], stdin: false, remoteWords: [] };
     // SCP already selected the remote endpoint; its path operands are not SSH remote argv.
-    const result = sshOperation({ ...invocation, name: 'ssh',
+    const result = sshOperation({ ...invocation, name: 'ssh', sshCanonicalSyntheticHost: true,
       args: [...operation.sshArgs, { text: '__scp_remote__', dynamic: false }],
       incomplete: invocation.incomplete || operation.unknown });
     return { ...result, stdin: false, remoteWords: [], metadataWords: [], metadataUnknown: false,
@@ -3117,26 +3219,15 @@ function sshOperation(invocation) {
     if (canonicalSource && !['no', 'yes', 'always'].includes(canonical) || cnameSource && !cname) {
       deny('SSH -G より前に使う明示 hostname resolution 設定の有効条件・source を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     }
-    let direct = true;
-    let proxySelectionUnknown = false;
-    const proxyCommand = options.get('proxycommand');
-    const proxyJump = options.get('proxyjump');
-    const keys = [...options.keys()];
-    const jumpFirst = proxyJump && (!proxyCommand || keys.indexOf('proxyjump') < keys.indexOf('proxycommand'));
-    // A non-none first jump installs proxy_command=none; a first command,
-    // including explicit none, prevents a later non-none jump from activating.
-    // A first jump=none does not install proxy_command and keeps a later command.
-    const jump = jumpFirst && literalSourceWord(proxyJump);
-    const selectedProxy = jumpFirst && (!jump || jump.text.trim().toLowerCase() !== 'none')
-      ? proxyJump : proxyCommand;
-    if (selectedProxy) {
-      const value = literalSourceWord(selectedProxy);
-      if (!value) proxySelectionUnknown = true;
-      else direct = value.text.trim().toLowerCase() === 'none';
-    }
+    const proxy = sshCanonicalProxySelection(options);
+    const direct = proxy.direct;
+    const proxySelectionUnknown = proxy.unknown;
     const cnameActive = cname && cname.text.trim().toLowerCase() !== 'none';
     if (proxySelectionUnknown && canonical !== 'always' && (canonical === 'yes' || cnameActive)) {
-      deny('SSH -G より前の明示 hostname resolution と proxy の実選択を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+      const selectedData = [options.get('hostname') || destinationWord, ...(canonical === 'yes' && options.has('canonicaldomains') ? [options.get('canonicaldomains')] : []), ...(cnameActive ? [cnameSource] : [])];
+      // Keep existing unknown-source refusal; unsupported literal grammar only downgrades
+      // generated/unproved selected DATA, without banning ordinary static query values.
+      if (!proxy.staticUnknown || outboundPayloadVerdict(invocation, selectedData)) deny('SSH -G より前の明示 hostname resolution と proxy の実選択を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     }
     const canonicalActive = canonical === 'always' || canonical === 'yes' && direct;
     if (canonicalActive || cnameActive && (direct || canonical === 'always')) {
@@ -3213,7 +3304,9 @@ function sshOperation(invocation) {
   const environment = sshEnvironmentPayload(invocation, { host, sessionType, controlOperation, requestedTTY,
     setEnv: options.get('setenv'), sendEnvOptions });
   const forwarding = sshForwardPayload(invocation, { forwards, options, host, hostArgumentWord, controlOperation, argvUncertain });
+  const canonicalDomains = sshCanonicalDomainPayload(invocation, { options, host, destinationWord, hostArgumentWord, argvUncertain });
   return { sources, stdin: host && !detached, remoteWords, argvUncertain, metadataWords, metadataUnknown,
+    canonicalDomainWords: canonicalDomains.words, canonicalDomainUnknown: canonicalDomains.unknown,
     forwardingWords: forwarding.words, forwardingUnknown: forwarding.unknown,
     environmentWords: environment.words, environmentUnknown: environment.unknown };
 }
@@ -4406,6 +4499,13 @@ for (const invocation of invocations) {
     if (verdict) deny(verdict === 'FORBIDDEN' ?
       'SSH remote command の引数を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-n による stdin 抑止とは独立した送信データです。内容や実送信の成立を確認したものではありません。' :
       'SSH remote command の引数を生成する source・program・stdout・argv/context を確定できません。-n は remote command DATA の検査を省略する条件ではありません。' + UNKNOWN_OWNER_GATE, verdict);
+  }
+  if (remote.canonicalDomainUnknown || remote.canonicalDomainWords?.length) {
+    const payload = outboundPayloadVerdict(invocation, remote.canonicalDomainWords);
+    const verdict = payload && remote.canonicalDomainUnknown ? 'UNKNOWN' : payload;
+    if (verdict) deny(verdict === 'FORBIDDEN' ?
+      'SSH の有効な hostname canonicalization が選ぶ CanonicalDomains DATA の同じ生成元読取が、禁止された secret filename operand に当たります。-N と独立した DNS source 役割です。内容・label format・native DNS・認証・実通信は確認していません。' :
+      'SSH の active CanonicalDomains の生成元・hostname / mode / proxy / dot-limit の実選択・argv/context を確定できません。同じ接続目的・canonicalization 条件を保つ対応 known source が可能でなければ' + UNKNOWN_OWNER_GATE, verdict);
   }
 }
 /** Select only identity values which can enter this commit object, preserving scalar precedence. */

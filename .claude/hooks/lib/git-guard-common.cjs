@@ -1214,7 +1214,84 @@ function setprivArgs(rest, info) {
   return k;
 }
 
+/** util-linux 2.41.2 prlimit: optional resource values attach; first operand is the program. */
+function prlimitArgs(rest, info) {
+  const resources = { as: 'v', core: 'c', cpu: 't', data: 'd', fsize: 'f', locks: 'x',
+    memlock: 'l', msgqueue: 'q', nice: 'e', nofile: 'n', nproc: 'u', rss: 'm',
+    rtprio: 'r', rttime: 'y', sigpending: 'i', stack: 's' };
+  const names = [...Object.keys(resources), 'pid', 'output', 'help', 'version', 'raw', 'verbose', 'noheadings'];
+  const resourceShorts = Object.values(resources);
+  const known = word => word && !word.dynamic && wrapperValueKnown(word);
+  const limit = text => {
+    text = text.startsWith('=') ? text.slice(1) : text;
+    const part = x => x === 'unlimited' || /^[\t\n\v\f\r ]*-1$/.test(x) ? (1n << 64n) - 1n :
+      /^[\t\n\v\f\r ]*\+?\d+$/.test(x) && BigInt(x) < (1n << 64n) ? BigInt(x) : null;
+    const pieces = text.split(':');
+    if (pieces.length > 2 || !text) return false;
+    if (pieces.length === 1) return part(pieces[0]) !== null;
+    if (pieces.every(x => x === '')) return false;
+    const soft = pieces[0] === '' ? null : part(pieces[0]);
+    const hard = pieces[1] === '' ? null : part(pieces[1]);
+    return (pieces[0] === '' || soft !== null) && (pieces[1] === '' || hard !== null) &&
+      (soft === null || hard === null || soft <= hard);
+  };
+  let k = 0, pid = 0, pidSpecified = false;
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const resource = value => {
+    if (!value) return;
+    if (!known(value) || !limit(value.text)) info.launcherUnknown = true;
+  };
+  const required = (option, value) => {
+    if (!known(value)) { info.launcherUnknown = true; return; }
+    if (option === 'output') {
+      if (!value.text || !value.text.split(',').every(x => ['RESOURCE', 'DESCRIPTION', 'SOFT', 'HARD', 'UNITS'].includes(x.toUpperCase()))) info.launcherUnknown = true;
+    } else {
+      if (pidSpecified && pid !== 0) info.launcherUnknown = true;
+      pidSpecified = true;
+      if (!/^\d+$/.test(value.text) || BigInt(value.text) > 2147483647n) info.launcherUnknown = true;
+      else pid = Number(value.text);
+    }
+  };
+  while (k < rest.length && rest[k].text.startsWith('-') && rest[k].text !== '-') {
+    const word = rest[k], text = word.text;
+    if (text === '--' && known(word)) { k++; break; }
+    if (!known(word)) info.launcherUnknown = true;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = names.includes(name) ? [name] : names.filter(x => x.startsWith(name));
+      if (matches.length !== 1) info.launcherUnknown = true;
+      else {
+        const option = matches[0];
+        if (['pid', 'output'].includes(option)) required(option, eq < 0 ? rest[++k] : { ...word, text: text.slice(eq + 1) });
+        else if (Object.hasOwn(resources, option)) resource(eq < 0 ? null : { ...word, text: text.slice(eq + 1) });
+        else if (eq >= 0) info.launcherUnknown = true;
+        else if (['help', 'version'].includes(option) && !info.launcherUnknown) return -1;
+      }
+    } else {
+      for (let p = 1; p < text.length; p++) {
+        const option = text[p];
+        if ('hV'.includes(option) && !info.launcherUnknown) return -1;
+        if ('po'.includes(option)) {
+          required(option === 'p' ? 'pid' : 'output', p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : rest[++k]);
+          break;
+        }
+        if (resourceShorts.includes(option)) {
+          if (p + 1 < text.length) { resource({ ...word, text: text.slice(p + 1) }); break; }
+        } else info.launcherUnknown = true;
+      }
+    }
+    k++;
+  }
+  // A separate word after an optional resource option is the actual child, not its value.
+  // Known no-child get/set and positive PID plus COMMAND do not execute a child.
+  // This is an execution-role decision, not certification of selected process effects.
+  if (!info.launcherUnknown && (k >= rest.length || pid > 0)) return -1;
+  return k;
+}
+
 const WRAPPERS = {
+  prlimit: (rest, info) => prlimitArgs(rest, info),
   setpriv: (rest, info) => setprivArgs(rest, info),
   chroot: (rest, info) => {
     info.launcherArgs.push(...rest);
@@ -3077,8 +3154,8 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv'].includes(name)))) {
-      res.problems.push('launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit'].includes(name)))) {
+      res.problems.push(info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
     if (positionalUnknown || (positionalExec && info.name === 'git')) {
