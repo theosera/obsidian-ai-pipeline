@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 / R24 / R25 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 / R24 / R25 / R26 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -19,6 +19,28 @@
 既存 main 由来の raw backstop も残す。文字列の形だけが一致し、実 argv・操作と message / コメント / DATA を区別できない停止は **UNKNOWN** である。この一致を、秘密ファイルが実際に送信されることの証明として扱わない。
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
+
+## R26: Vault の staged filename 判定 error
+
+R26 は `safe-vault-push-perm.sh` の staged filename collector に限定した条件修復である。公開692d6815のfullCR review5515805932（2026-10-14 18:27:41 JST）、Security Major comment4269035150を受け、first grepがerror・無出力でも後段nonmatchに隠れる経路と、upstream `printf` failureをDUMMYの抽出fragmentで確認した。依頼前df463a91のfilter / assignmentにも同種maskを観測したため、R25が新しく開いた穴とは扱わない。df463の旧filterと現NUL collectorは別sourceで、全wrapperの同値性は証明していない。
+
+| 守る対象 | 判定結果 | 判断不能になる条件 | 通常作業への影響 | 同じ目的の代替・維持する対照 | owner への出口 | 試験する境界 |
+|---|---|---|---|---|---|---|
+| **Vaultのstaged filename判定とsecret gateの副作用** | 正常な0/1は従来のmatch / nonmatchを維持し、確認済みsecret matchは既存禁止へ。`printf` nonzero、どちらかのgrep status >1、3段のstatus不足はUNKNOWNとして停止 | filenameの検査に必要なproducer / predicateの終了状態を確認できない。既存Git読取失敗 / 不完全NUL / LF filenameも独立して停止 | 普通のfilenameでもtool / PATH / runtime / 読取errorで停止し得る。UNKNOWNでは部分offender一覧を公開せず、このsecret gateでpartial restore / unstageをしない | 同じrepo / staged集合を保ち、producer / grep / 読取条件を直して検査をやり直す。正常match / nonmatch・allowlist・filename規則は維持。他のrepo / copy / hook停止を代替へしない | repo / staged対象、tool version / PATH / LC_ALL、失敗stageとstatus、input境界と不足proofを提示。原因を解消できなければownerが同目的・同条件の対応経路を確認 | success / else両分岐の即時PIPESTATUS、firstgrep無出力error / printf failure / 後段error、late error前のsecret、正常0/1、offender非公開・restore呼出し0・capturecleanup |
+
+3段の`PIPESTATUS`はpipeline直後にsuccess / elseの両分岐で保存する。`pipefail`とpipeline全体のstatus1だけをerror不在の証明にしない。全filenameとNUL境界、各stageの正常性を確認した後だけoffender配列を公開する。確認済みsecretは従来どおり該当名を単一argvでunstageして停止する。ここでのUNKNOWNはwrapperの非zero停止で、CJS PreToolUseのJSON / reason prefixをwrapperへ追加した契約ではない。stage / rebase等の先行wrapper処理まで状態不変だとする説明でもない。
+
+[GNU Bashのpipeline資料](https://www.gnu.org/software/bash/manual/html_node/Pipelines)は、pipefail時のpipeline全体の結果を右側で最後にnonzeroとなったstageのstatusと説明する。[PIPESTATUSの資料](https://www.gnu.org/software/bash/manual/html_node/Bash-Variables.html)は直前のforeground pipeline各commandのstatus配列で、その後のcommandでも更新されることを示す。[GNU grepの終了状態](https://www.gnu.org/s/grep/manual/html_node/Exit-Status.html)では通常0がmatch、1がnonmatch、2等がerrorである。ここでは公式domainのindexed excerpt部分を参照し、0/1とerrorを各stageで分ける契約をinstalled Bash3.2 / grepのDUMMY観測で照合する。現在のGNU文書から全Mac版の挙動を推定しない。
+
+### R26の検証境界
+
+2026-10-14 18:42:13 JSTのnative観測はmacOS Bash3.2.57 / installed BSD grep2.6.0-FreeBSD / Git2.54の固定DUMMY fragmentで、realVault / fullwrapper / commit / push / 実秘密 / 外部通信は実行していない。18:34台のGNU / Bash公式page timeoutは原未取得として保持する。18:57〜58台に公式domainのindexed excerptを別取得したが、direct fullpage openは再び400 / timeoutで、完全なmanual取得やMacのcompiled source確認ではない。private candidateでは既存parity8契約のprefixを保持し、error境界4を加えた12試験を取得した。19:00台の別DUMMY sandboxではlocal bare / clonesでwrapper / installer25試験を取得したが、実Vault / 実外部通信の受入ではない。19:03台のLIVE parity12の取得、変更Vault sourceの公開CI / fresh reviewは各cutの別証拠として確認する。
+
+R25のhistorical128は解析114＋旧parity8＋private denyAPI6である。byte再利用する範囲は変更しないCJS4本 / 公開5044 / 解析114 / private denyAPI6に限定する。変更するpublic parityは旧8契約prefixを保持した12で、旧8の成功はhistoricalのまま保存し、128全体を新predicateの成功へcarryしない。
+
+R26の私有検証cutでは、private09dc sourceのDUMMY sandbox wrapper / installer25PASS（19:00:17取得、isolated HOME / local bare / clones、実Vault / actual user HOME / networkを使わない）、LIVE parity12PASS（19:01〜03台の取得、test completion時刻は独立未取得）を別証拠として確認した。独立immutableca301のDUMMY fragment8/8と、firstgrep / printfの判定を個別に外す2reverse条件は19:02:44に閉鎖した。failure-message-only09dcはcollector / restore部分がca301とbyte一致し、wholefileが同一ではない。途中source / closureの訂正incidentと原phaseを保持し、message変更だけを新native実行へしない。
+
+このcutで新公開headのCI / fresh reviewはまだ未取得で、公開後にexactheadで別確認する。実Vault / 全owner環境でのwrapper運用は未検証である。旧whole-tool SCP strictFAIL / API-before-hook NOTも維持し、任意program / implicitdefault / ownerの実Vault状態をこのcollectorだけで認証しない。
 
 ## R25: 送信値と transport source の選択条件
 

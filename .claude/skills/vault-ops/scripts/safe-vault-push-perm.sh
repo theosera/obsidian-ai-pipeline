@@ -54,8 +54,8 @@ abort_rebase_if_in_progress() {
 # Read only this repository's staged names. Git quoting is avoided with NUL
 # records; collect all offenders before the caller can unstage any filename.
 collect_staged_secret_paths() {
-  local LC_ALL=C list_file list_size staged_path filter_status consumed=0
-  local -a found=()
+  local LC_ALL=C list_file list_size staged_path consumed=0
+  local -a found=() filter_statuses=()
   SECRET_OFFENDERS=()
   # ECMAScript \s beyond ASCII: exact UTF-8 sequences, not a byte bracket class.
   # C-locale [:space:] supplies TAB/LF/VT/FF/CR/SPACE; grep -i folds ASCII terms.
@@ -76,10 +76,19 @@ collect_staged_secret_paths() {
     case "${staged_path}" in *$'\n'*|'') rm -f -- "${list_file}"; return 1 ;; esac
     consumed=$((consumed + ${#staged_path} + 1))
     if printf '%s\n' "${staged_path}" | LC_ALL=C grep -ivE "${ALLOW_ERE}" | LC_ALL=C grep -iE "${SECRET_ERE}" >/dev/null; then
-      found[${#found[@]}]="${staged_path}"
+      filter_statuses=( "${PIPESTATUS[@]}" )
     else
-      filter_status=$?
-      if [ "${filter_status}" -ne 1 ]; then rm -f -- "${list_file}"; return 1; fi
+      filter_statuses=( "${PIPESTATUS[@]}" )
+    fi
+    # Capture every stage before another command replaces PIPESTATUS. A later
+    # no-match (1) must not hide a producer or earlier predicate failure.
+    if [ "${#filter_statuses[@]}" -ne 3 ] || [ "${filter_statuses[0]}" -ne 0 ] ||
+       [ "${filter_statuses[1]}" -gt 1 ] || [ "${filter_statuses[2]}" -gt 1 ]; then
+      rm -f -- "${list_file}"
+      return 1
+    fi
+    if [ "${filter_statuses[1]}" -eq 0 ] && [ "${filter_statuses[2]}" -eq 0 ]; then
+      found[${#found[@]}]="${staged_path}"
     fi
   done < "${list_file}"; then
     :
@@ -112,7 +121,7 @@ stage_and_gate() {
   # Staged secret gate — shell copy (4th system) of SECRET_PATH_RE in
   # .claude/hooks/lib/git-guard-common.cjs; update both in the same PR.
   if ! collect_staged_secret_paths; then
-    die "staged filename の読取・境界を確認できません (Git 読取失敗 / 不完全な NUL 入力 / LF filename)。何も unstage せず停止しました。対象・実行条件を owner に確認してください。"
+    die "staged filename の読取・判定を確認できません (Git 読取失敗 / 不完全な NUL 入力 / LF filename / printf・grep の実行失敗)。何も unstage せず停止しました。対象・実行条件を owner に確認してください。"
   fi
   if [ "${#SECRET_OFFENDERS[@]}" -gt 0 ]; then
     for f in "${SECRET_OFFENDERS[@]}"; do

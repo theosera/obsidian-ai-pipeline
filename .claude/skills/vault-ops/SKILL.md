@@ -86,6 +86,17 @@ vault-push-perm() { PERM_NOTE_PATH='/path/to/vault' "$HOME/.claude/bin/safe-vaul
 5. オフラインで push 不能 (ローカル commit は完了済み = データは失われない)
 6. push 3 回失敗 (認証・ネットワーク異常)
 7. staged filename 読取の失敗・不完全な NUL 入力・LF を含む filename。判定不能として、secret ゲートでは何も unstage せず停止する。通常の非秘密 LF 名もこの境界で停止するため、対象と実行条件を owner に確認する。
+8. staged filenameを判定する `printf` のnonzero / allowlist grepまたはsecret grepのerror（status >1）/ 3段の終了状態不足。UNKNOWNとして停止し、部分offender一覧を公開せず、このsecret gateで何もunstageしない。正常なgrep0/1は従来のmatch / nonmatchとして扱う。
+
+## R26: filename predicateのerror境界
+
+pipeline直後の`PIPESTATUS`をsuccess / elseの両分岐で保存し、producer / allowlist / secretの各stageを確認する。全体status1だけをsafe nonmatchにしない。全filenameとNUL境界、各predicateの正常性を確認するまでoffender配列を公開せず、error後にpartial restoreしない。pattern / allowlist / `LC_ALL=C` / 通常0/1の意味は変更しない。
+
+普通のfilenameでもtool / PATH / runtime errorで止まり得る。同じrepo / staged集合でproducer / grep / 読取条件を直して再検査するのが同目的の出口で、不足が残れば対象・失敗stage / status・tool version / PATH / localeをownerへ示す。個別操作の了承からhook停止やcopy先実行の了承を導かない。確認済みsecret matchの既存unstage停止と、UNKNOWNでこのgateのunstageをしない境界を分ける。[7列の条件と検証範囲](../../../docs/security/git-command-guards.md#r26-vault-の-staged-filename-判定-error)。
+
+firstgrep / producerのerror-maskは依頼前df463のfilterにも観測され、R25導入退行とは扱わない。macOS Bash3.2.57 / installed BSD grep / Git2.54でのDUMMY抽出fragmentとprivate parity12（旧8契約保持＋error4）の取得は、realVault / 全wrapper / commit / push / 全shell版の受入ではない。GNU / Bashは公式domainのindexed excerptでPIPESTATUS / pipefail / grep statusを参照したが、direct fullpage timeoutとMac compiled source未確認を別限界として残す。19:00台の別DUMMY sandboxはlocal bare / clonesによるwrapper / installer25試験で、実Vault / 実外部通信の成功へ昇格させない。LIVE parity12の19:03台取得と、新sourceの公開CI / fresh review / 必要な副作用検証は各cutで別確認する。
+
+R25のhistorical128は解析114＋旧parity8＋private denyAPI6で、変更しないCJS4 / 公開5044 / 解析114 / denyAPI6のbyte再利用と、新public parity12の確認を分ける。旧parity8の成功を新predicateへcarryしない。独立immutableca301のDUMMY fragment8/8とfirstgrep / printfを個別に外す2reverse条件は19:02:44に閉鎖した。failure-message-only09dcとの同値性はcollector / restore部分に限り、wholefileの同一や実Vault成功を主張しない。途中source / closure訂正は原phaseとして保持する。
 
 ## `git add -A` 例外の根拠 (明文化)
 
@@ -106,7 +117,7 @@ CLAUDE.md の「`git add -A` 禁止」は **obsidian-ai-pipeline 自身の commi
 template の完全一致を専用 parity test で比較する。任意の Unicode filename 全体を安全認証する説明ではない。
 
 実際の staged 名は `git diff --cached --name-only -z` の成功を確認して読取り、Git の quoted
-表示を正規表現へ渡さない。完全な NUL 入力を確認した後だけ offender 配列を公開し、該当名を
+表示を正規表現へ渡さない。完全な NUL 入力と各判定stageの正常な終了を確認した後だけ offender 配列を公開し、該当名を
 `git restore --staged --` の単一引数として扱う。grep が LF で filename を分割するため、
 LF 名は本文の非秘密性に関係なく読取境界で停止し、何も unstage しない。これは全 filename に
 対する parity 保証ではない。Git / egress hook は同じ `isSecretPath` を使う。**新トークン形式・

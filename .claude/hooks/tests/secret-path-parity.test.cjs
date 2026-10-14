@@ -267,3 +267,97 @@ test('extracted production restore loop preserves exact array filenames and -- b
   }
   assert.deepEqual(actual.sort(), names.filter(isSecretPath).sort());
 });
+
+// Fault injection targets one producer/predicate at a time. The extracted
+// reader and restore loop remain production code; no Vault or network is used.
+const grepExecutable = toolPath.split(path.delimiter).map(dir => path.resolve(dir, 'grep')).find(candidate => {
+  try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
+  catch { return false; }
+});
+assert.ok(grepExecutable, 'grep is available before fixture PATH stubs');
+const digest = bytes => require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+function gateFixtureState(dir, names) {
+  const state = {};
+  function visit(relative) {
+    const filename = path.join(dir, relative), stat = fs.lstatSync(filename);
+    assert.ok(!stat.isSymbolicLink(), 'DUMMY fixture has no symlink');
+    if (stat.isDirectory()) for (const child of fs.readdirSync(filename).sort()) visit(path.join(relative, child));
+    else state[relative] = digest(fs.readFileSync(filename));
+  }
+  visit('.git');
+  for (const name of names) visit(name);
+  return state;
+}
+function gateFaultFixture(t, names) {
+  const f = fixture(t, names), bin = path.join(f.dir, 'bin'), log = path.join(f.dir, 'restore-attempts');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nif [ "$1" = restore ]; then printf '%s\\0' "$@" >> "$PARITY_LOG"; else exec ${shellQuote(gitExecutable)} "$@"; fi\n`, { mode: 0o755 });
+  return { ...f, bin, log, before: gateFixtureState(f.dir, names), names };
+}
+function assertGateFaultClosed(f, result) {
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 7, result.stderr);
+  assert.equal(result.stdout, '', 'no partial offender array is published');
+  assert.equal(fs.existsSync(f.log), false, 'no restore attempt after a reader/predicate failure');
+  assert.deepEqual(gateFixtureState(f.dir, f.names), f.before, 'HEAD, refs, index, objects and DUMMY files stay unchanged');
+  assert.deepEqual(fs.readdirSync(path.join(f.dir, 'tmp')), [], 'owned filename capture is removed');
+}
+function predicateFault(f, stage, emitsInput = false, onlyName = '') {
+  const flag = stage === 'first' ? '-ivE' : '-iE';
+  fs.writeFileSync(path.join(f.bin, 'grep'), `#!/bin/sh\nif [ "$1" = ${shellQuote(flag)} ]; then\n  filename=$(cat)\n  if [ -z ${shellQuote(onlyName)} ] || [ "$filename" = ${shellQuote(onlyName)} ]; then\n    ${emitsInput ? 'printf "%s\\n" "$filename"' : ':'}\n    exit 2\n  fi\n  printf '%s\\n' "$filename" | ${shellQuote(grepExecutable)} "$@"\nelse\n  exec ${shellQuote(grepExecutable)} "$@"\nfi\n`, { mode: 0o755 });
+}
+function runProducerFault(f) {
+  const restore = source.match(/^    for f in "\$\{SECRET_OFFENDERS\[@\]\}"; do\n      git restore --staged -- "\$\{f\}" \|\| true\n    done/m);
+  assert.ok(restore, 'production restore loop is available');
+  // Only the pipeline's Bash printf producer fails. Diagnostic/output code
+  // uses builtin printf so the adapter cannot manufacture a missing offender.
+  const commands = `set -euo pipefail\nprintf() { return 2; }\n${readerSource()}\n` +
+    `if collect_staged_secret_paths; then\nif [ "\${#SECRET_OFFENDERS[@]}" -gt 0 ]; then\n${restore[0]}\nbuiltin printf '%s\\0' "\${SECRET_OFFENDERS[@]}"\nfi\n` +
+    `else\n[ "\${#SECRET_OFFENDERS[@]}" -eq 0 ] || exit 9\nexit 7\nfi`;
+  return spawnSync('/bin/bash', ['--noprofile', '--norc', '-c', commands], {
+    cwd: f.dir, encoding: 'utf8', env: { ...fixtureEnv, PATH: `${f.bin}${path.delimiter}${toolPath}`,
+      TMPDIR: path.join(f.dir, 'tmp'), LC_ALL: 'C', PARITY_LOG: f.log },
+  });
+}
+
+test('first predicate error cannot hide behind a later ordinary nonmatch', t => {
+  for (const emitsInput of [false, true]) {
+    const f = gateFaultFixture(t, ['.env?DUMMY']);
+    predicateFault(f, 'first', emitsInput);
+    assertGateFaultClosed(f, runReader(f.dir, { bin: f.bin, restore: true, env: { PARITY_LOG: f.log } }));
+  }
+});
+
+test('later predicate failure publishes no earlier matched secret or partial unstage', t => {
+  for (const stage of ['first', 'second']) {
+    const f = gateFaultFixture(t, ['.env?DUMMY', 'z-fail.public.txt']);
+    predicateFault(f, stage, false, 'z-fail.public.txt');
+    assertGateFaultClosed(f, runReader(f.dir, { bin: f.bin, restore: true, env: { PARITY_LOG: f.log } }));
+  }
+});
+
+test('printf producer and final predicate errors stop with unchanged fixture state', t => {
+  for (const names of [['.env?DUMMY'], ['public.txt']]) {
+    const f = gateFaultFixture(t, names);
+    assertGateFaultClosed(f, runProducerFault(f));
+  }
+  for (const emitsInput of [false, true]) {
+    const f = gateFaultFixture(t, ['.env?DUMMY']);
+    predicateFault(f, 'second', emitsInput);
+    assertGateFaultClosed(f, runReader(f.dir, { bin: f.bin, restore: true, env: { PARITY_LOG: f.log } }));
+  }
+});
+
+test('normal nonmatch and exact template remain ordinary; secret match alone reaches restore', t => {
+  for (const names of [['public.txt'], ['notes/.ENV.EXAMPLE'], ['.env?DUMMY']]) {
+    const f = gateFaultFixture(t, names);
+    const result = runReader(f.dir, { bin: f.bin, restore: true, env: { PARITY_LOG: f.log } });
+    assert.equal(result.status, 0, result.stderr);
+    const expected = names.filter(isSecretPath);
+    assert.deepEqual(nulFields(result.stdout), expected);
+    assert.equal(fs.existsSync(f.log), expected.length > 0);
+    if (expected.length) assert.deepEqual(nulFields(fs.readFileSync(f.log, 'utf8')), ['restore', '--staged', '--', ...expected]);
+    assert.deepEqual(gateFixtureState(f.dir, f.names), f.before, 'restore stub records argv; no actual unstage or other fixture write');
+    assert.deepEqual(fs.readdirSync(path.join(f.dir, 'tmp')), []);
+  }
+});
