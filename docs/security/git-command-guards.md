@@ -20,6 +20,40 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+## R29: wrapper のchildとredirect後のproxy source
+
+この節は新しい3件のレビュー入力に対応する局所契約案である。依頼前 df463 / 直前 fec / 公開825の同じ入力がHook DATAで通った事実は旧盲点の有限比較であり、sudo権限、unshare namespace、proxy URI・認証・redirect・実送信の成立証明ではない。残る5候補の追加調査は停止している。任意の wrapper / client / implicit config を保護済みとは扱わない。
+
+対応条件を先に決め、その条件が未証明なら UNKNOWN、既存policyの禁止を解析したchild / payloadで確認できれば FORBIDDEN とする。UNKNOWNでも停止し、確定した漏えいとして記録しない。queryはそのoperationでchild / proxyを使わない範囲だけの扱いで、外側の置換や他の独立sourceの検査を解除しない。
+
+| 守る対象・対応版 / 条件 | 判定 | 判断不能条件 | 止まり得る通常作業 | 同目的の対応形式 | ownerへの出口 | 試験境界 |
+|---|---|---|---|---|---|---|
+| sudo 1.9.17p2 `parse_args.c` の値を取るlong / shortとchild境界 | required値を別引数 / `=` / short attached・bundleから消費し、その後の既知childを既存ガードへ渡す。`--preserve-env`の任意値はattached `=`だけ。`--host`は値を消費するcontextで、helpではない | unknown option、missing / split argv、shell / login / edit / askpass / auth-class / SELinux / root / cwd / host 等の未検査contextは UNKNOWN | 通常childでも未対応contextを使う実行 | user / root / cwd / targetを保持した対応argv・source proof。最初の実help / versionは説明を調べる目的のときだけ代替 | 必要な権限・context・childと不足情報を提示。必要なsudoを外して通さない | L1で値とchild、L2で危険 / 通常の対、reverseでchild取り違えを確認。native child・auth・権限未実行 |
+| sudoのcarrierとterminal query、unshare 2.41.2のchild / context | sudoはliteral `--`前のnonoption `=`語をcarrierとして消費する。対応identifierはmetadataへ、未対応nameはUNKNOWN。`--`後は実callee。最初の実help / versionと確認済みno-child modeはchild未実行として扱う。既知functionを先に解決 | list / validate / timestamp modeはplugin / authの安全を証明しない。unshareのactive namespace / map / root / cwd / interpreter / caps / signal / time、childなしの既定shell、未知contextは UNKNOWN | namespace / shell / mappingが必要な通常作業。既存raw backstopに一致するprinted DATA | 同一namespace / cwd / user / operationで対応childを明示。unshareのfork-only / plain既知childは他ガードで検査 | exactargv・uid・root・cwd・env・config・必要なcontextを提示。namespaceを外すことを自動代替にしない | unshareの`+`非置換getopt、任意long attached `=`とrequired値、sudoのみcarrierを確認。installed unshare実backend未測定 |
+| curl 8.7.1の初期URLとredirect後のproxy選択 | 実export / inheritとprotocol優先順位で選ばれた未証明sourceは UNKNOWN。literal ordinary / 実unusedはこのfamilyの停止なし。last `-L` / `--location` / `--location-trusted`・対応no-BOOL・`--next`別operationを保持 | 次URLのprotocol / host、未知mask / proxy / env、未取得backendやimplicit libproxy / cache / configの選択は未証明 | redirectやproxyが必要で次routeを証明できない通常取得 | 必要条件を保ったliteral source、または目的がredirectを要しない場合だけ実no-follow / `--max-redirs 0` | 同目的に必要なredirect / route / targetと未証明URI・auth・backend条件を提示。direct化や宛先変更を自動代替にしない | `--proto`と`--proto-redir`の有効maskを交差、per-operation / last / consumed DATA・正常対照。native通信 / auth未実行 |
+| curlのprotocol mask / no_proxy / zero cap | `proto-redir`各指定はHTTP / HTTPS / FTP / FTPSから開始し、bare名は追加、`=http`や`-all,http`で制限する。exact `*`だけ全host bypass、domain一致は初期hostだけ。fileはnonnetworkとして除外 | padded star、CLI emptyでambient bypassを失う場合、未知producer / overflow / 未対応format、未取得WS / WSS等backendは証明不能 | 初期no_proxyだけを根拠にredirect先もproxyなしとした通常作業 | 有効finite mask / literal capの証明。目的上必要なprotocolを勝手に除外しない | 初期とfuture host / protocol、mask / no_proxy選択の不足を提示 | source読取とHook判定を分ける。curl長略記 / long `=`をnative有効形式として保証しない。既存raw / file / body / helper停止を保持 |
+| Wget 1.25.0の既定redirect、selected proxyとfamily固有no_proxy | HTTP / HTTPSまたは選択HTTP proxy経路からfuture HTTP / HTTPS / FTP / FTPS sourceを検査し、未証明なら UNKNOWN。実no-proxy・literal selected source・`--max-redirect 0`のinactive対照を保持 | 初期host一致だけではfuture hostのbypassを証明しない。leading-dot suffixはWgetとcurlで同一に扱わない。Wget `.example.invalid`はsubdomainを覆うがapexの解除証明にならない | 既定redirectやopaque future proxyを使う通常取得。初期no_proxy一致による旧allowの一部 | 必要なtarget / operationを保ったsource proof。redirect不要という同目的条件が満たされるときだけselected zero cap | redirect必須の仕事は必要route / auth sourceと不足を提示してownerへ。no-proxyを自動代替にしない | leading-dot apex U / subdomain A / no-dot apex A / curl apex Aの同4対照をv4で確認。修復前1不一致を保持し、旧component / reverse結果は新sourceへ持ち越さない |
+
+sudoのknown empty operandsはpinned parserが拒否する条件に従い、empty promptはDATAとして保持する。timeout値のplugin受理やaccount / uid / gidの存在・権限はこの分類が認証しない。unshareはsudoのcarrier構文を持たず、`NAME=value`をchildとして扱う。既知functionの本文がwrapperを置換している場合と未解決callは区別する。
+
+max-redirsのliteral zero proofもclient別である。curlはgetnum / strtolのend-checkを使い、有限literal decimal signed zeroと先頭ASCII空白を確認する。Wgetの`strtol(val,NULL,10)`はendを確認しないため`-0` / `0ordinary` / literal no-conversionはsource上zeroになる。これはsourceとHookの判定条件であり、native Wget転送や任意argv妥当性の実験ではない。生成値を自動zeroへ変換せず、invalid / overflow / 未対応formatは UNKNOWN。例示には対応するexact separated long形式を使い、古い保守的negative一致をnative grammarの受理保証にしない。
+
+<!-- PR191:R29:GUIDE-MEASUREMENTS:BEGIN -->
+### R29 固定sourceのlocal受入と未検証
+
+取得cut: 2026-10-15T03:38:05.996358+09:00。combined-v2 EG `05d7edb45fc7d8660fe4460de40a8a6f3991cd779e5e7ecac58beaf5d9c1a67a` / common `5ccff4f3bb4304e0ba63d287cfdd96bac8ab16fee39aba56bd708bcb0b5f1daa`で、全5982件を03:24:12.249〜03:34:02.354 JSTに実投入し5982/5982・failed0 / broken0、4source・公開runner・定義の前後不変を確認した。3hookへの17,946個のspawnSync input引数hashを採取したが、kernel stdin readbackやClaude dispatchの証拠ではない。元5846のID / command / stdin / cwd / project / envのpresence・値・順序を保持した。PE-W07 / PE-W14はWget既定redirectのfuture host / protocolを初期条件で解除できないため理由付きA→UNKNOWNとし、旧A期待・rawFAILを保持する。P191P32は元からUNKNOWNで停止し、停止Hookの集合だけ追加された。判定差2・Hookのみの差1、DENY→ALLOW0。新136入力signatureを加えた全5845 normalized signaturesと元137alias記録を保持し、件数を独立脆弱性数へ換算しない。
+
+元レビュー5521743833の3入力を一字も変えず、当egress自身のFORBIDDEN / FORBIDDEN / UNKNOWN・broken0を同5982観測から確認した。過去R28の原4入力のown-egress FORBIDDENも同sourceで維持した。public analysis149とfilename parity12の161件を同合同sourceで実行し161/161、root602 / typecheck / lintは成功した。初期138成功と別23成功を足した数字ではない。
+
+combined-v2でsudo / unshareの逆検証20tuples・40observations・120hook input引数と、curl future proxy判定の逆検証6tuples・12observationsを新たに採取した。sudo long required値消費だけを外すとchild curl→root・own-egress F→A、unshare登録だけを外すと対応F→A、curl future opaque条件だけを外すと対応U→Aである。初期proxy U / Wget U / body F / normal Aを維持し、独立guardをまとめて外していない。whole sudo callerを旧版へ戻す結果はcomponent効果、empty / unsupported carrierのU→Fで停止が残る結果は分類精度であり、停止にそのpredicateが単独必要とは未証明である。旧176 / composite62の結果を新単一checkの必要性へ使わない。
+
+Wget leading-dot対照4件は修復前03:20:43.837 JSTにallA、apexのU期待1件がFAIL・broken0だった。Wgetのsepstring / sufmatchだけの局所精度修復v4後03:22:01.115 JSTに同4件U / A / A / A・4一致を取得し、その入力と結果を新5982にも含めた。first-item / trailing空白や先頭dotをcurlのtrimへ一般化せず、comma直後ASCIIspaceという取得済みconsumer条件を保持する。原FAIL・旧source・旧5978合格は保存し、新source成功へ持ち越さない。private候補のprinted DATA期待誤り、scalar / carrier境界の原FAIL、reverse期待誤り、20件の公開assertion mapping矛盾も元記録を残し、修復と試験器具の訂正を分ける。
+
+一次資料は[sudo1.9.17p2 parse_args.c](https://raw.githubusercontent.com/sudo-project/sudo/v1.9.17p2/src/parse_args.c)、[util-linux2.41.2 unshare.c](https://raw.githubusercontent.com/util-linux/util-linux/v2.41.2/sys-utils/unshare.c)、curl8.7.1 exact source、[GNU Wget1.25.0 archive](https://ftp.gnu.org/gnu/wget/wget-1.25.0.tar.gz)のgetproxy / retr / init / sepstring / sufmatchである。Wget選択consumerは取得済みで、archiveの対象memberと取得sourceのbyte一致を確認した。HTTP auth emission serializerやcompiled backend、URI / auth / remote responseは別の未取得・未監査条件である。
+
+このcutでは新公開head / required CI / fresh両review / 実Claude入口 / Goal / ZIPは未取得・未完であり、local受入がそれらを自動的に満たすことはない。実権限・namespace・URI・auth・実通信は未検証のまま残し、残る5候補の追加調査は停止する。公開825のCI / CRやR28の実入口を変更したsourceへ繰り上げない。下のR28以下はそのsource・取得時刻の履歴である。
+<!-- PR191:R29:GUIDE-MEASUREMENTS:END -->
+
 ## R28: forwarding request DATA と入力 source
 
 R28 は公開 head `fecdd9ab559081f00753cfd1c6c700426f85fb2f` に対する正式 Codex review5518577060（2026-10-14 22:22:44 JST）の4 P1を受けた私有候補契約である。review comments4271325397 / 4271325407 / 4271325418 / 4271325427の原入力は1字も変えず Hook DATA として保持した。攻撃入力を native client として実行せず、実秘密・外部転送・認証成立を確認したとはしない。現公開 R27 と、まだ受入前の R28 候補を分ける。

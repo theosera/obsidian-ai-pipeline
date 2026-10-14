@@ -1026,6 +1026,144 @@ function launcherArgs(rest, info, name) {
   return k;
 }
 
+/** Keep required wrapper operands as DATA before resolving the executable. */
+function wrapperValueKnown(word) {
+  return !!word && !word.dynamicMaySplit && !word.globExpanded && !word.braceExpanded && !word.tildeExpanded;
+}
+
+/** sudo 1.9.17p2: exact child boundary, optional preserve-env and dual -h. */
+function sudoArgs(rest, info) {
+  const longs = {
+    background: ['b', 'none'], 'preserve-env': ['E', 'optional'], edit: ['e', 'none'],
+    'set-home': ['H', 'none'], login: ['i', 'none'], 'remove-timestamp': ['K', 'none'],
+    list: ['l', 'none'], 'preserve-groups': ['P', 'none'], shell: ['s', 'none'],
+    'other-user': ['U', 'required'], validate: ['v', 'none'], askpass: ['A', 'none'],
+    'auth-type': ['a', 'required'], bell: ['B', 'none'], 'close-from': ['C', 'required'],
+    'login-class': ['c', 'required'], chdir: ['D', 'required'], group: ['g', 'required'],
+    help: ['?', 'none'], host: ['h', 'required'], 'reset-timestamp': ['k', 'none'],
+    'no-update': ['N', 'none'], 'non-interactive': ['n', 'none'], prompt: ['p', 'required'],
+    chroot: ['R', 'required'], role: ['r', 'required'], stdin: ['S', 'none'],
+    'command-timeout': ['T', 'required'], type: ['t', 'required'], user: ['u', 'required'],
+    version: ['V', 'none'],
+  };
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  let k = 0, nonChild = false;
+  const apply = (ch, value, arity) => {
+    if (arity === 'required' && !wrapperValueKnown(value)) info.launcherUnknown = true;
+    // These sudo parser cases reject an empty operand; prompt explicitly permits it.
+    if (arity === 'required' && value && !value.dynamic && value.text === '' &&
+        'aCcDghRrtUu'.includes(ch)) info.launcherUnknown = true;
+    if ('AaeisDRhcr t'.replaceAll(' ', '').includes(ch)) info.launcherUnknown = true;
+    if ('DR'.includes(ch)) info.cdLike = true;
+    if ('Klv'.includes(ch)) nonChild = true;
+    if ('?V'.includes(ch)) nonChild = true;
+  };
+  while (k < rest.length) {
+    const w = rest[k], t = w.text;
+    if (t === '--' && !w.dynamic) { k++; break; }
+    // Unlike shell assignments, sudo accepts a quoted supported NAME=value carrier.
+    if (!t.startsWith('-') && !t.startsWith('/') && !t.startsWith('=') && t.includes('=')) {
+      // sudo's native carrier grammar is broader than our supported metadata names.
+      if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { info.launcherUnknown = true; k++; continue; }
+      const name = t.split('=')[0];
+      info.assigns.push(name); info.assignRaws.push(w.raw); info.envOps.push({ set: name });
+      if (w.dynamicMaySplit) info.launcherUnknown = true;
+      k++; continue;
+    }
+    if (!t.startsWith('-') || t === '-') break;
+    if (w.dynamicMaySplit || w.globExpanded || w.braceExpanded || w.tildeExpanded) info.launcherUnknown = true;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('='), name = t.slice(2, eq < 0 ? undefined : eq);
+      const matches = Object.keys(longs).filter(n => n === name || n.startsWith(name));
+      const exact = Object.hasOwn(longs, name);
+      if (!exact && matches.length !== 1) info.launcherUnknown = true;
+      else {
+        const [ch, arity] = longs[exact ? name : matches[0]];
+        let value;
+        if (arity === 'required') value = eq < 0 ? rest[++k] : { ...w, text: t.slice(eq + 1) };
+        else if (arity === 'optional' && eq >= 0) value = { ...w, text: t.slice(eq + 1) };
+        else if (eq >= 0) info.launcherUnknown = true;
+        if ('?V'.includes(ch) && k === 0 && !w.dynamic && eq < 0) return -1;
+        apply(ch, value, arity);
+      }
+    } else {
+      for (let p = 1; p < t.length; p++) {
+        const ch = t[p];
+        if (!'AaBbCcDEegHhiKklNnPpRrSsTtUuVv'.includes(ch)) { info.launcherUnknown = true; break; }
+        let value, arity = 'none';
+        if ('aCcDgpRrTtUu'.includes(ch)) {
+          arity = 'required'; value = p + 1 < t.length ? { ...w, text: t.slice(p + 1) } : rest[++k];
+        } else if (ch === 'h') {
+          if (p + 1 < t.length) { arity = 'required'; value = { ...w, text: t.slice(p + 1) }; }
+          else if (rest[k + 1] && !rest[k + 1].text.startsWith('-') && !rest[k + 1].text.includes('=')) {
+            arity = 'required'; value = rest[++k];
+          } else {
+            nonChild = true;
+            if (rest.length === 1 && !w.dynamic && t === '-h') return -1;
+            continue;
+          }
+        }
+        if (ch === 'V' && k === 0 && !w.dynamic && t === '-V') return -1;
+        apply(ch, value, arity);
+        if (arity === 'required') break;
+      }
+    }
+    k++;
+  }
+  if (nonChild && !info.launcherUnknown) return -1;
+  if (k >= rest.length) info.launcherUnknown = true; // implied target shell is uninspected
+  return k;
+}
+
+/** util-linux 2.41.2: plain known child is inspectable; selected namespace context is not. */
+function unshareArgs(rest, info) {
+  const optional = new Set(['mount', 'uts', 'ipc', 'net', 'pid', 'user', 'cgroup', 'time',
+    'kill-child', 'mount-proc', 'mount-binfmt']);
+  const required = new Set(['map-user', 'map-users', 'map-group', 'map-groups', 'propagation',
+    'setgroups', 'setuid', 'setgid', 'root', 'wd', 'monotonic', 'boottime', 'load-interp']);
+  const flags = new Set(['help', 'version', 'fork', 'map-root-user', 'map-current-user',
+    'map-auto', 'map-subids', 'keep-caps']);
+  const names = [...optional, ...required, ...flags];
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  let k = 0;
+  while (k < rest.length && rest[k].text.startsWith('-') && rest[k].text !== '-') {
+    const w = rest[k], t = w.text;
+    if (t === '--' && !w.dynamic) { k++; break; }
+    if (w.dynamicMaySplit || w.globExpanded || w.braceExpanded || w.tildeExpanded) info.launcherUnknown = true;
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('='), name = t.slice(2, eq < 0 ? undefined : eq);
+      const matches = names.includes(name) ? [name] : names.filter(n => n.startsWith(name));
+      if (matches.length !== 1) info.launcherUnknown = true;
+      else {
+        const option = matches[0];
+        if (['help', 'version'].includes(option) && k === 0 && !w.dynamic && eq < 0) return -1;
+        if (required.has(option)) {
+          const value = eq < 0 ? rest[++k] : { ...w, text: t.slice(eq + 1) };
+          if (!wrapperValueKnown(value)) info.launcherUnknown = true;
+        } else if (!optional.has(option) && eq >= 0) info.launcherUnknown = true;
+        if (option !== 'fork') info.launcherUnknown = true;
+      }
+    } else {
+      for (let p = 1; p < t.length; p++) {
+        const ch = t[p];
+        if (['-h', '-V'].includes(t) && k === 0 && !w.dynamic) return -1;
+        if (!'fhVmuinpCTUrR:w:S:G:cl:'.replaceAll(':', '').includes(ch)) { info.launcherUnknown = true; break; }
+        if ('RwSGl'.includes(ch)) {
+          const value = p + 1 < t.length ? { ...w, text: t.slice(p + 1) } : rest[++k];
+          if (!wrapperValueKnown(value)) info.launcherUnknown = true;
+          info.launcherUnknown = true; break;
+        }
+        if (ch !== 'f') info.launcherUnknown = true;
+      }
+    }
+    k++;
+  }
+  if (k >= rest.length) info.launcherUnknown = true; // exec_shell(), not a terminal no-child query
+  return k;
+}
+
 const WRAPPERS = {
   chroot: (rest, info) => {
     info.launcherArgs.push(...rest);
@@ -1071,21 +1209,8 @@ const WRAPPERS = {
     }
     return k;
   },
-  sudo: (rest, info) => {
-    let k = 0;
-    while (k < rest.length && rest[k].text.startsWith('-')) {
-      const t = rest[k].text;
-      if (t === '--') { k++; break; }
-      if (/^-[ugCDhprtTU]$/.test(t)) {
-        if (t === '-D') info.cdLike = true;
-        k++;
-      } else if (/^--chdir=/.test(t) || /^-D./.test(t)) {
-        info.cdLike = true;
-      }
-      k++;
-    }
-    return k;
-  },
+  sudo: sudoArgs,
+  unshare: unshareArgs,
   doas: (rest) => {
     let k = 0;
     while (k < rest.length && rest[k].text.startsWith('-')) {
@@ -1202,7 +1327,7 @@ function resolveCommand(words, localFunctions = null) {
   let k = 0;
   for (;;) {
     while (k < words.length && !words[k].quoted && !words[k].dynamic && RESERVED.has(words[k].text)) k++;
-    while (k < words.length && isAssignWord(words[k])) {
+    while (k < words.length && !info.launcherChildNoAssignments && isAssignWord(words[k])) {
       info.assigns.push(assignName(words[k]));
       info.assignRaws.push(words[k].raw);
       info.envOps.push({ set: assignName(words[k]) });
@@ -2889,7 +3014,7 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare'].includes(name)))) {
       res.problems.push('launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }

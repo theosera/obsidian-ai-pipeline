@@ -1389,3 +1389,31 @@ test('R27 inherited non-shell identifier names remain selectable environment ent
   assert.equal(invocation.outboundEnvironmentSources.find(s => s.name === 'LEAK-X').word, null);
   assert.equal(invocation.outboundEnvironmentSources.some(s => s.name === 'BAD=NAME'), false);
 });
+
+// R29 native-wrapper argv contracts. Strings remain inspect DATA only.
+function wrapperContractR29(id, command, verify) {
+  test(`${id}: supported wrapper child and DATA boundaries`, () => verify(inspect(command)));
+}
+wrapperContractR29('SW-L1-01','sudo --user root curl -q URL',x=>{const v=x.invocations[0];assert.equal(v.name,'curl');assert.deepEqual(v.args.map(w=>w.text),['-q','URL']);assert.equal(v.launcherUnknown,false);assert.deepEqual(v.wrapperNames,['sudo']);});
+wrapperContractR29('SW-L1-02','sudo --user=root printf ordinary',x=>{assert.equal(x.invocations[0].name,'printf');assert.equal(x.invocations[0].launcherUnknown,false)});
+wrapperContractR29('SW-L1-03','sudo -nu root printf ordinary',x=>{assert.equal(x.invocations[0].name,'printf');assert.deepEqual(x.invocations[0].args.map(w=>w.text),['ordinary'])});
+wrapperContractR29('SW-L1-04',"sudo --prompt '--help' curl -q URL",x=>{assert.equal(x.invocations[0].name,'curl');assert.equal(x.invocations[0].nonExec,false);assert.equal(x.invocations[0].launcherUnknown,false)});
+wrapperContractR29('SW-L1-05','sudo --preserve-env printf ordinary',x=>{assert.equal(x.invocations[0].name,'printf');assert.equal(x.invocations[0].launcherUnknown,false)});
+wrapperContractR29('SW-L1-06','sudo -h localhost printf ordinary',x=>{assert.equal(x.invocations[0].name,'printf');assert.equal(x.invocations[0].nonExec,false);assert.equal(x.invocations[0].launcherUnknown,true);assert.ok(x.problems.length)});
+wrapperContractR29('SW-L1-07','sudo --help curl -q URL',x=>{assert.equal(x.invocations[0].nonExec,true);assert.ok(!x.invocations.some(v=>v.name==='curl'))});
+wrapperContractR29('SW-L1-08','sudo --user root',x=>{assert.equal(x.invocations[0].launcherUnknown,true);assert.ok(x.problems.length)});
+wrapperContractR29('UN-L1-09','unshare -- curl -q URL',x=>{assert.equal(x.invocations[0].name,'curl');assert.equal(x.invocations[0].launcherUnknown,false);assert.deepEqual(x.invocations[0].wrapperNames,['unshare'])});
+wrapperContractR29('UN-L1-10','unshare --root /tmp printf ordinary',x=>{assert.equal(x.invocations[0].name,'printf');assert.equal(x.invocations[0].launcherUnknown,true);assert.ok(x.problems.length)});
+wrapperContractR29('UN-L1-11','unshare --mount /tmp/ns printf ordinary',x=>{assert.equal(x.invocations[0].name,'ns');assert.equal(x.invocations[0].launcherUnknown,true);assert.deepEqual(x.invocations[0].args.map(w=>w.text),['printf','ordinary'])});
+wrapperContractR29('UN-L1-12','unshare --fork printf ordinary',x=>{assert.equal(x.invocations[0].name,'printf');assert.equal(x.invocations[0].launcherUnknown,false)});
+wrapperContractR29('UN-L1-13','unshare',x=>{assert.equal(x.invocations[0].launcherUnknown,true);assert.ok(x.problems.length)});
+wrapperContractR29('SW-L1-14','sudo FOO=bar --user root printf ordinary',x=>{assert.equal(x.invocations[0].name,'printf');assert.ok(x.invocations[0].assignments.includes('FOO'))});
+wrapperContractR29('SW-L1-15','sudo -- FOO=bar curl -q URL',x=>{assert.equal(x.invocations[0].name,'FOO=bar');assert.ok(!x.invocations[0].assignments.includes('FOO'));assert.deepEqual(x.invocations[0].args.map(w=>w.text),['curl','-q','URL'])});
+wrapperContractR29('UN-L1-16','unshare FOO=bar curl -q URL',x=>{assert.equal(x.invocations[0].name,'FOO=bar');assert.ok(!x.invocations[0].assignments.includes('FOO'))});
+wrapperContractR29('SW-L1-17',"printf '%s' 'sudo --user root curl'",x=>{assert.equal(x.invocations[0].name,'printf');assert.deepEqual(x.invocations[0].wrapperNames,[])});
+wrapperContractR29('UN-L1-18','unshare --wd --help printf ordinary',x=>{assert.equal(x.invocations[0].name,'printf');assert.equal(x.invocations[0].nonExec,false);assert.equal(x.invocations[0].launcherUnknown,true)});
+wrapperContractR29('SW-L1-19',"sudo(){ printf ordinary; }; sudo --user root curl -q URL",x=>{assert.ok(!x.invocations.some(v=>v.name==='curl'));assert.equal(x.problems.length,0)});
+wrapperContractR29('SW-L1-20','sudo --user= curl -q URL',x=>{assert.equal(x.invocations[0].name,'curl');assert.equal(x.invocations[0].launcherUnknown,true);assert.ok(x.problems.length)});
+wrapperContractR29('SW-L1-21',"sudo --prompt '' printf ordinary",x=>{assert.equal(x.invocations[0].name,'printf');assert.equal(x.invocations[0].launcherUnknown,false);assert.equal(x.problems.length,0)});
+wrapperContractR29('SW-L1-22',"sudo 'BAD-NAME=ordinary' curl -q URL",x=>{assert.equal(x.invocations[0].name,'curl');assert.equal(x.invocations[0].launcherUnknown,true);assert.ok(x.problems.length);assert.ok(!x.invocations[0].assignments.includes('BAD-NAME'))});
+wrapperContractR29('SW-L1-23',"sudo -- 'BAD-NAME=ordinary' printf ordinary",x=>{assert.equal(x.invocations[0].name,'BAD-NAME=ordinary');assert.equal(x.invocations[0].launcherUnknown,false);assert.deepEqual(x.invocations[0].assignments,[])});

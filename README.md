@@ -18,6 +18,16 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+R29 の局所契約案では、sudo / unshare のオプション値と実行する child を分け、curl / Wget が redirect 後に選び得る proxy source も確認する。必要な child / source が未証明なら UNKNOWN で止める。既知の通常 child / query / 未使用 source は独立した既存ガードと併せて扱い、権限・namespace・認証・実通信の成功を認証しない。
+
+namespace / root / cwd / shell / login / host 等の未対応 context を使う通常作業や、redirect 必須で次の route を証明できない作業も止まり得る。同じ user / root / namespace / cwd / target / operation と目的を保てる対応形式がなければ、owner に exact argv・env・config・不足条件を提示する。必要な wrapper / proxy / redirect を外すことを自動的な代替にしない。詳しい条件と出口は[ガイドの R29 節](docs/security/git-command-guards.md#r29-wrapper-のchildとredirect後のproxy-source)を参照する。
+
+<!-- PR191:R29:README-MEASUREMENTS:BEGIN -->
+R29 local測定cut: 2026-10-15T03:38:05.996358+09:00。固定EG `05d7edb4…` / common `5ccff4f3…`の全5982件を2026-10-15 03:24:12.249〜03:34:02.354 JSTに実行し、5982/5982・failed0 / broken0・source4 / runner / 定義の前後不変を確認した。元5846のID・command・stdin・cwd・project・envと順序を保持し、通常期待の変更は理由付きPE-W07 / PE-W14 A→UNKNOWNだけ。停止済みP191P32の停止Hook追加1件を別に記録し、DENY→ALLOWは0。新136は入力signature数で、独立finding数ではない。公開解析契約161件、root602件、typecheck / lintも成功した。元レビュー3入力はegress自身でF / F / Uとして停止した。逆検証は新判定を個別に外した固定sourceの比較で、Wget先頭dot修復前FAILや器具・期待前提の原FAILを保持する。
+
+このcutの受入は有限local契約に限る。新公開headのrequired CI・fresh両review・実Claude入口は未取得で、Goal / ZIPは未完。権限・namespace・URI・auth・実通信の未検証表示は停止判定の成功後も残す。残る5候補の調査は停止。下のR28記述は取得時刻付きの履歴である。
+<!-- PR191:R29:README-MEASUREMENTS:END -->
+
 R28 の候補契約では、SSH forwarding の remote request 成分、Wget の選択された URL-list stdin / base、rsync の sender filter rules、curl の range / request valuesを生成元と結び付ける。確定した policy 禁止は FORBIDDEN、source / format / operation / protocol が未証明なら UNKNOWN、対応する通常 literal / query / unused DATA は区別する。環境proxyは実export / inherit / protocolで選ばれた未証明routeだけUNKNOWNとし、ordinary scalar、未export、実unset / removal、明示disable / overrideを保持する。URI・認証・実送信の成立は別の未検証条件であり、全curl / Wget / SSHや全parameterを一律拒否しない。
 
 通常の URL / filter file、生成値・未知forward / proxy sourceも止まり得る。同じ対象・operation・cwd / env / configと目的を保てる対応literal / query / inactive形式がなければ、ownerへexact sourceと不足条件を渡して確認する。proxy必須の仕事をdirectへ変えるdisable、DNS / authに必要なhostnameをIPへ置換することを、自動的な同目的代替にはしない。SSH config dumpでCanonicalDomainsが未使用と証明できるのは、今回の対応ではpercent token等がないfull literal IPv4 / IPv6の場合に限る。

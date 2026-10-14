@@ -4138,36 +4138,43 @@ function collectNetworkInvocations(inspection, depth = 0) {
   return result;
 }
 
-/** Select only actual exported proxy sources; route/URI/backend proof remains UNKNOWN. */
+/** Select exported proxy sources for initial and conditionally followed URLs. */
 function proxyEnvironmentVerdict(invocation) {
+  const wget = invocation.name === 'wget';
   const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  const literal = word => literalSourceWord(word)?.text;
   const opaque = word => !literalSourceWord(word);
   const source = names => {
     for (const name of names) if (environment.has(name)) {
       const word = environment.get(name);
-      // curl_getenv treats empty values as absent. Wget's empty direct env has no
-      // selected URL bytes; its independent libproxy/default context is not certified.
-      if (literalSourceWord(word)?.text === '') continue;
+      // Empty direct values contribute no proxy URL bytes. Implicit libproxy,
+      // default configuration and compiled-backend behavior remain unproved.
+      if (literal(word) === '') continue;
       return { name, word };
     }
     return null;
   };
-  const protocolSource = protocol => invocation.name === 'wget' ?
+  const protocolSource = protocol => wget ?
     source([{ http: 'http_proxy', https: 'https_proxy', ftp: 'ftp_proxy', ftps: 'ftps_proxy' }[protocol]].filter(Boolean)) :
     source([protocol + '_proxy', ...(protocol === 'http' ? [] : [(protocol + '_proxy').toUpperCase()]), 'all_proxy', 'ALL_PROXY']);
-  const possible = invocation.name === 'wget' ? ['http_proxy', 'https_proxy', 'ftp_proxy', 'ftps_proxy'] :
+  const possible = wget ? ['http_proxy', 'https_proxy', 'ftp_proxy', 'ftps_proxy'] :
     [...environment.keys()].filter(name => /^[A-Za-z][A-Za-z0-9_]*_proxy$/i.test(name) && name !== 'HTTP_PROXY' && !/^no_proxy$/i.test(name));
   if (!possible.some(name => environment.has(name) && opaque(environment.get(name)))) return false;
-  const literal = word => literalSourceWord(word)?.text;
-  const bypass = (list, host, wget) => {
+  const bypass = (list, host) => {
     if (typeof list !== 'string') return false;
-    if (!wget && list.trim() === '*') return true;
+    if (!wget && list === '*') return true;
     if (!host) return false;
-    // Finite ASCII exact/domain proof only. CIDR, normalization, dynamic lists and
-    // Wget's libproxy rules are not inferred from this matching subset.
-    return list.split(',').some(item => {
-      const domain = item.trim().toLowerCase().replace(/^\./, '');
-      return /^[a-z0-9.-]+$/.test(domain) && (host === domain || host.endsWith('.' + domain));
+    // This finite ASCII exact/domain subset proves only the specified host.
+    // A server-selected future host is not matched against the initial host.
+    return list.split(',').some((item, index) => {
+      // Wget sepstring retains dots and item whitespace, except leading ASCII
+      // whitespace after a comma. Its dot-prefixed suffix excludes the apex.
+      // Curl's separate noproxy consumer ignores a token's leading dot.
+      const token = wget ? (index ? item.replace(/^[ \t\n\r\v\f]+/, '') : item) : item.trim();
+      const domain = token.toLowerCase().replace(wget ? /$^/ : /^\./, '');
+      if (!/^[a-z0-9.-]+$/.test(domain)) return false;
+      if (wget && domain.startsWith('.')) return host.endsWith(domain);
+      return host === domain || host.endsWith('.' + domain);
     });
   };
   const urlRole = word => {
@@ -4181,61 +4188,135 @@ function proxyEnvironmentVerdict(invocation) {
     const host = /^([a-z0-9.-]+)(?::[0-9]+)?$/i.exec(authority)?.[1]?.toLowerCase() || null;
     return { protocol: match[1].toLowerCase(), host };
   };
-  const operation = () => ({ urls: [], proxy: false, preproxy: false, noProxy: undefined, useProxy: true, unknown: !!invocation.incomplete });
+  // Superset of the exact-tag lib/url.c handler names. A build may omit handlers;
+  // this is a finite exclusion proof, not installed-backend certification.
+  const protocols = ['file', 'gophers', 'smtp', 'sftp', 'smb', 'smtps', 'telnet', 'gopher', 'tftp', 'ftps',
+    'http', 'imap', 'rtmps', 'rtmpt', 'ldaps', 'wss', 'https', 'rtsp', 'smbs', 'scp', 'pop3', 'rtmp',
+    'rtmpte', 'dict', 'mqtt', 'pop3s', 'imaps', 'ws', 'rtmpts', 'ldap', 'ftp'];
+  const redirectDefaults = ['http', 'https', 'ftp', 'ftps'];
+  const protocolMask = (value, defaults) => {
+    if (typeof value !== 'string') return null;
+    let selected = new Set(defaults);
+    for (const token of value.split(',').filter(Boolean)) {
+      const match = /^([=+-]*)([a-z0-9]+)$/i.exec(token);
+      if (!match) return null;
+      const modifiers = match[1], name = match[2].toLowerCase();
+      if (name !== 'all' && !protocols.includes(name)) return null;
+      const action = modifiers.slice(-1) || '+';
+      if (action === '=') selected.clear();
+      if (name === 'all') {
+        if (action === '-') selected.clear();
+        else selected = new Set(protocols);
+      } else if (action === '-') selected.delete(name);
+      else selected.add(name);
+    }
+    return selected;
+  };
+  const limit = value => {
+    if (typeof value !== 'string') return null;
+    if (wget) {
+      // Exact1.25 cmd_number uses strtol(val, NULL, 10): no-conversion and
+      // zero decimal prefixes select 0; no end-pointer validation is performed.
+      const prefix = /^[ \t\n\r\v\f]*([+-]?[0-9]+)/.exec(value);
+      const parsed = prefix ? Number(prefix[1]) : 0;
+      return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 2147483647 ? parsed : null;
+    }
+    // Exact8.7.1 getnum requires end-of-string but permits signed zero and
+    // initial ASCII whitespace. Unproved producers/overflow are never zero.
+    if (!/^[ \t\n\r\v\f]*[+-]?[0-9]+$/.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= -1 ? parsed : null;
+  };
+  const operation = () => ({ urls: [], proxy: false, preproxy: false, noProxy: undefined, useProxy: true,
+    follow: wget, maxRedirects: wget ? 20 : 50, tunnel: false, protocols: new Set(protocols),
+    redirectProtocols: new Set(redirectDefaults), unknown: !!invocation.incomplete });
   let op = operation(), result = false, afterDD = false;
+  const redirectEntry = (url, selected, initialBypass) => {
+    if (!url.protocol) return true;
+    if (['http', 'https'].includes(url.protocol)) return true;
+    if (url.protocol === 'file') return false;
+    // Non-HTTP direct protocols do not acquire an HTTP Location merely from -L.
+    // HTTP proxy adapters are conditional on the selected proxy and handler.
+    // WS/WSS handshake/redirect behavior is not certified by this finite proof.
+    if (!wget && ['ws', 'wss'].includes(url.protocol)) return true;
+    if (initialBypass || !selected || !wget && op.tunnel) return false;
+    if (!wget && ['ftps', 'smtp', 'smtps', 'telnet'].includes(url.protocol)) return false;
+    const value = literal(selected.word);
+    if (typeof value !== 'string') return true;
+    if (/^socks(?:4a?|5h?):\/\//i.test(value)) return false;
+    // curl FTP PROTOPT_PROXY_AS_HTTP and Wget's HTTP-proxy http_loop are
+    // established consumers. Other adapter formats/backend conditions stay U.
+    return /^https?:\/\//i.test(value) || !/^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+  };
   const finish = () => {
     if (!op.urls.length || !op.useProxy && !op.unknown) return;
     if (op.unknown) { result = 'UNKNOWN'; return; }
-    // Explicit proxy or preproxy strings (including empty) prevent ambient detection.
+    // Explicit strings, including empty, suppress ambient detection. Independent
+    // explicit source, body, config and helper guards are left intact.
     if (op.proxy || op.preproxy) return;
-    const noProxy = op.noProxy !== undefined ? op.noProxy :
-      literal(source(invocation.name === 'wget' ? ['no_proxy'] : ['no_proxy', 'NO_PROXY'])?.word);
+    const noProxy = op.noProxy !== undefined ? op.noProxy : literal(source(wget ? ['no_proxy'] : ['no_proxy', 'NO_PROXY'])?.word);
     for (const word of op.urls) {
       const url = word ? urlRole(word) : { protocol: null, host: null };
-      if (url.protocol === 'file' || bypass(noProxy, url.host, invocation.name === 'wget')) continue;
+      if (url.protocol === 'file' || !wget && op.protocols && url.protocol && !op.protocols.has(url.protocol)) continue;
+      const initialBypass = bypass(noProxy, url.host);
       const selected = url.protocol ? protocolSource(url.protocol) : null;
-      const uncertainProtocolSource = !url.protocol && possible.some(name => environment.has(name) && opaque(environment.get(name)));
-      if (selected && opaque(selected.word) || uncertainProtocolSource) result = 'UNKNOWN';
+      if (!initialBypass && (selected && opaque(selected.word) || !url.protocol)) result = 'UNKNOWN';
+      if (!op.follow || op.maxRedirects === 0 || !wget && noProxy === '*' || !redirectEntry(url, selected, initialBypass)) continue;
+      const reachable = wget ? redirectDefaults : protocols.filter(protocol =>
+        protocol !== 'file' && (!op.protocols || op.protocols.has(protocol)) && (!op.redirectProtocols || op.redirectProtocols.has(protocol)));
+      // Neither the original host nor its finite no_proxy suffix proves that a
+      // server-selected next host bypasses its own protocol's opaque proxy.
+      if (reachable.some(protocol => { const next = protocolSource(protocol); return next && opaque(next.word); })) result = 'UNKNOWN';
     }
   };
-  if (invocation.name === 'curl' && curlTerminalQuery(invocation.args, invocation.incomplete)) return false;
+  if (!wget && curlTerminalQuery(invocation.args, invocation.incomplete)) return false;
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k], value = literal(word), text = value ?? word.text;
     if (!afterDD && text === '--' && value !== undefined) { afterDD = true; continue; }
     if (!afterDD && text.startsWith('--')) {
       const eq = text.indexOf('='), name = text.slice(2, eq < 0 ? undefined : eq);
-      if (invocation.name === 'wget' && name === 'proxy' && eq < 0 && value !== undefined) { op.useProxy = true; continue; }
-      if (invocation.name === 'curl' && eq < 0 && name.startsWith('no-') && CURL_BOOLEAN_LONG.has(name.slice(3)) && value !== undefined) continue;
-      const values = invocation.name === 'curl' ? CURL_VALUE_LONG : WGET_VALUE_LONG;
-      const flags = invocation.name === 'curl' ? CURL_FLAG_LONG : WGET_FLAG_LONG;
-      const matches = invocation.name === 'curl' ? [...values, ...flags].includes(name) ? [name] : [] :
+      if (wget && name === 'proxy' && eq < 0 && value !== undefined) { op.useProxy = true; continue; }
+      if (!wget && eq < 0 && name.startsWith('no-') && CURL_BOOLEAN_LONG.has(name.slice(3)) && value !== undefined) {
+        if (['no-location', 'no-location-trusted'].includes(name)) op.follow = false;
+        if (name === 'no-proxytunnel') op.tunnel = false;
+        continue;
+      }
+      const values = wget ? WGET_VALUE_LONG : CURL_VALUE_LONG, flags = wget ? WGET_FLAG_LONG : CURL_FLAG_LONG;
+      const matches = !wget ? [...values, ...flags].includes(name) ? [name] : [] :
         [...values, ...flags].includes(name) ? [name] : [...values, ...flags].filter(option => option.startsWith(name));
-      if (matches.length !== 1 || value === undefined && !(eq >= 0 && invocation.name === 'wget' && quotedAttachedOptionValue(word, text, WGET_VALUE_SHORT, [...WGET_VALUE_LONG]))) { op.unknown = true; continue; }
+      if (matches.length !== 1 || value === undefined && !(eq >= 0 && wget && quotedAttachedOptionValue(word, text, WGET_VALUE_SHORT, [...WGET_VALUE_LONG]))) { op.unknown = true; continue; }
       const option = matches[0];
-      if (['help', 'version'].includes(option) && eq < 0 && value !== undefined && invocation.name === 'wget') return false;
-      if (option === 'next' && invocation.name === 'curl') { finish(); op = operation(); afterDD = false; continue; }
-      if (option === 'no-proxy' && invocation.name === 'wget' && eq < 0) { op.useProxy = false; continue; }
+      if (['help', 'version'].includes(option) && eq < 0 && value !== undefined && wget) return false;
+      if (option === 'next' && !wget) { finish(); op = operation(); afterDD = false; continue; }
+      if (option === 'no-proxy' && wget && eq < 0) { op.useProxy = false; continue; }
       if (values.has(option) && option !== 'use-askpass') {
         const selected = eq < 0 ? invocation.args[++k] : wgetValueWord(word, eq + 1);
         if (!selected || selected.dynamicMaySplit || selected.globExpanded || selected.braceExpanded || selected.ansiCUnknown) op.unknown = true;
-        if (invocation.name === 'curl' && eq >= 0) { op.unknown = true; continue; }
+        if (!wget && eq >= 0) { op.unknown = true; continue; }
         take(option, selected);
       } else if (eq >= 0) op.unknown = true;
+      else if (!wget && ['location', 'location-trusted'].includes(option)) op.follow = true;
+      else if (!wget && option === 'proxytunnel') op.tunnel = true;
       continue;
     }
     if (!afterDD && text.startsWith('-') && text !== '-') {
-      const shortValues = invocation.name === 'curl' ? Object.keys(CURL_VALUE_SHORT).join('') : WGET_VALUE_SHORT;
+      const shortValues = !wget ? Object.keys(CURL_VALUE_SHORT).join('') : WGET_VALUE_SHORT;
       for (let p = 1; p < text.length; p++) {
         const short = text[p];
-        if (short === ':' && invocation.name === 'curl') { finish(); op = operation(); continue; }
-        if (invocation.name === 'wget' && 'hV'.includes(short) && value !== undefined) return false;
+        if (short === ':' && !wget) { finish(); op = operation(); continue; }
+        if (wget && 'hV'.includes(short) && value !== undefined) return false;
         if (!shortValues.includes(short)) {
-          if (!(invocation.name === 'curl' ? '012346afgGiIjklLMnNOpqRsSvVZ:#' : WGET_FLAG_SHORT).includes(short)) op.unknown = true;
+          if (!(!wget ? '012346afgGiIjklLMnNOpqRsSvVZ:#' : WGET_FLAG_SHORT).includes(short)) op.unknown = true;
+          if (!wget && ['L', 'p'].includes(short)) {
+            if (value === undefined) op.unknown = true;
+            else if (short === 'L') op.follow = true;
+            else op.tunnel = true;
+          }
           continue;
         }
         const selected = p + 1 < text.length ? wgetValueWord(word, p + 1) : invocation.args[++k];
         if (!selected || selected.dynamicMaySplit || selected.globExpanded || selected.braceExpanded || selected.ansiCUnknown) op.unknown = true;
-        const option = invocation.name === 'curl' ? CURL_VALUE_SHORT[short] : short === 'i' ? 'input-file' : short === 'e' ? 'execute' : null;
+        const option = !wget ? CURL_VALUE_SHORT[short] : short === 'i' ? 'input-file' : short === 'e' ? 'execute' : null;
         take(option, selected); break;
       }
       continue;
@@ -4246,14 +4327,15 @@ function proxyEnvironmentVerdict(invocation) {
   return result;
   function take(option, word) {
     const value = literal(word);
-    if (invocation.name === 'curl' && ['proxy', 'proxy1.0', 'socks4', 'socks4a', 'socks5', 'socks5-hostname'].includes(option)) op.proxy = true;
-    else if (option === 'preproxy' && invocation.name === 'curl') op.preproxy = true;
+    if (!wget && ['proxy', 'proxy1.0', 'socks4', 'socks4a', 'socks5', 'socks5-hostname'].includes(option)) op.proxy = true;
+    else if (option === 'preproxy' && !wget) op.preproxy = true;
     else if (option === 'noproxy') op.noProxy = value ?? null;
+    else if (!wget && option === 'proto') op.protocols = protocolMask(value, protocols);
+    else if (!wget && option === 'proto-redir') op.redirectProtocols = protocolMask(value, redirectDefaults);
+    else if (option === (wget ? 'max-redirect' : 'max-redirs')) op.maxRedirects = limit(value);
     else if (option === 'url') op.urls.push(word);
     else if (option === 'input-file' && value !== '/dev/null') op.urls.push(null);
-    // Wget explicit config is still blocked independently. Preserve the precise
-    // family override without treating a config scalar as authenticated source.
-    else if (invocation.name === 'wget' && option === 'execute' && typeof value === 'string') {
+    else if (wget && option === 'execute' && typeof value === 'string') {
       const entry = /^\s*(http|https|ftp)_?proxy\s*=\s*(.*)$/i.exec(value);
       if (entry) op.proxy = true;
     }
