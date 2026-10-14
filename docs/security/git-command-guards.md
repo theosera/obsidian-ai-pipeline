@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 / R24 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 / R24 / R25 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -19,6 +19,87 @@
 既存 main 由来の raw backstop も残す。文字列の形だけが一致し、実 argv・操作と message / コメント / DATA を区別できない停止は **UNKNOWN** である。この一致を、秘密ファイルが実際に送信されることの証明として扱わない。
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
+
+## R25: 送信値と transport source の選択条件
+
+R25 は curl の送信値、Git の protocol が選ぶ proxy / SSH source、SSH の選択された login / destination metadata を、operation・引数の役割・環境の export・設定の選択順と結び付ける。対象は公開 b6a89247 に対する正式 review 5513847977（2026-10-14 15:22:40 JST）の 3 P1 と、その役割を変える有限な対照である。原 3 入力は依頼前 df463a91 / e4560795 / b6a89247 で全 3 hook ALLOW・broken 0 と観測され、依頼前からの担当盲点だった。Hook に渡した DATA であり、実秘密・認証・helper / transport・被害を再現した証拠ではない。
+
+以下は fixed-v3 の有限な条件である。単独の focused 成功、解析、全 bank、実入口、公開後の CI / fresh review は別証拠であり、一つの成功から他の受入を作らない。未担当の副作用は担当 owner と検査範囲を再確認し、担当先も証拠もない処理を保護済みとは扱わない。
+
+| 守る対象 | 判定結果 | 判断不能になる条件 | 通常作業への影響 | 同じ目的の代替・維持する対照 | owner への出口 | 試験する境界 |
+|---|---|---|---|---|---|---|
+| **curl の選択された送信値** | 同じ source / 語の対応 secret reader が有効な outbound value に入ると証明すれば FORBIDDEN。必要な証明が不足すれば UNKNOWN | 未対応 producer / program / 加工、word の split / file-inline syntax、protocol / operation / redirect / argv / context が未証明。未知 URL や設定は independent source 判定も残る | 生成 body / header / auth / URL と unsupported expansion を使う通常作業も止まり得る | 確認済み literal / 対応 scalar、actual help、消費 DATA、選択されない後勝ち scalar、無関係 reader を維持。target / 認証 / operation が同じ時だけ対応形を検討 | selected role / value / operation / URL、生成 reader / source / span、protocol、cwd / export / config と不足を提示 | 対応 short / exact long、保守照合の unsupported grammar、selected scalar / additive、operation ごとの `--next`、file-inline、protocol active / unused、原入力 / normal / reverse |
+| **Git の active protocol proxy / SSH 実行 source** | 対応 operation が選ぶ未検査 helper は UNKNOWN。literal helper 名だけでは本文・副作用を確定できず FORBIDDEN / 実送信を主張しない | named / dynamic repository、明示 rewrite、未知 protocol / config / argv / context、継承された selector の語、helper body / PATH / child source の不足 | git:// proxy や custom SSH wrapper を使う通常の remote read / transfer も停止し得る | 対応する実 query / getter、確定 unused protocol / selector、actual export 解除を保持。必要 helper を消すだけの案や local query は送信目的の万能代替にしない | target の scheme / raw host:port、operation、helper / domain 条件と選択順、実 env / config / child / cwd と不足を提示 | proxy first matching raw domain:port、environment priority、SSH selector priority、export / unset / child、actual query / 消費 DATA / 原入力 / reverse |
+| **SSH の選択された login / destination metadata** | 対応 reader と selected word / source / context を証明すれば FORBIDDEN。部分選択や生成元が未証明なら UNKNOWN。stdin / remote command の有無と別に判定 | partial dynamic `user@host`、未知 selected hostname / login、config `%` / `${}` 展開、未検査 producer / boundary / context。部分の生成元を取り出せない場合に未選択 user の F を捏造しない | 動的 login / hostname、config expansion を必要とする通常の SSH も停止し得る | first-selected ordinary user / host、対応 scalar、後続の未選択 `-l` / `-o User`、actual query、無関係 reader を保持。認証対象や必要 user を変える代替を自動採用しない | selected login / host、選択順、生成 source / partial component、認証 / config / env / cwd と不足を提示 | first User / `-l` / user@host、post-host options / remote boundary、`-N` / `-n`、actual query / shadow actor / partial source / 原入力 / reverse |
+
+### 選択と未使用の扱い
+
+curl 8.7.1 に照合した送信 value の表記は 26 で、10 scalar-last と 16 additive に分ける。scalar は request / request-target / user / proxy-user / user-agent / referer / oauth2-bearer / ftp-account / mail-auth / mail-from。additive は data / JSON の各形、form / form-string、header / proxy-header、url / url-query、cookie、mail-rcpt、quote、telnet-option の表記で、alias や field 群を独立脆弱性数へ数えない。役割の分類だけで全 protocol に送られるとは認定しない。
+
+同じ operation の有効な後続 scalar が先の値を置換した場合、その未選択の先行値を payload として FORBIDDEN にしない。additive の寄与は後の ordinary 値で消さず、未知 contribution は UNKNOWN とする。curl の `--next` は先行 URL がある場合に次 operation を作り、先行 operation を捨てない。global setting / variable と operation-local 値を混ぜない。cookie の inline / file は両方 append で、empty cookie file input は engine を有効にする形であり先行 list の reset ではない。
+
+FTP / SMTP / Telnet の値は、固定 curl 8.7.1 の backend と実 consumer の条件で active / unused / UNKNOWN を分ける。確定 unused value はこの新 payload 条件の対象外でも、他の argv / source / file / config / context 条件を解除しない。全 selected URL と actual redirect selection を確認し、1つの見えている HTTPS URL だけで他 URL や未知 target を解除しない。
+
+| 選択された値 / mode | この限定契約での扱い | 不足する保証 |
+|---|---|---|
+| FTP / FTPS `ftp-account` | 対応 ACCT consumer で active な generated source は既存 producer policyへ。HTTP / HTTPS直結で未使用を証明できる時はこの familyだけ inactive | 実 serverの332応答・認証成功・native bytesは未測定。未知backend / format / contextは UNKNOWN |
+| SMTP / SMTPS `mail-from` | upload / MIME body と recipientを伴う MAIL branchの選択が必要。body / recipientを使わない対応command modeでは未使用 | URLがSMTPというだけでFORBIDDENにしない。format / consumer / source不足は UNKNOWN |
+| SMTP / SMTPS `mail-auth` | 上記potential MAILに加えて実SASL authused条件が必要で、そのruntime/auth selectionが未証明なら UNKNOWN | optionの存在から認証成功や送信を確定しない。MAIL branch自体が未使用ならこの値だけ inactive |
+| SMTP / SMTPS `mail-rcpt` | bodyが無くても recipient-onlyのVRFY / EXPN等の対応consumerに入る。対応source/argv/contextのsecret producerは FORBIDDEN | actualcommand / format / producer不明は UNKNOWN。body欠落だけでrecipientを解除しない |
+| FTP / FTPS / SFTP `quote` | 対応backend / stage / opcodeの選択を確認しproducerを判定。未知future FTP、未対応SFTP format / backendは UNKNOWN | FTP pre/post stageを別SFTP実装へ流用しない。nativecommand実行・全SFTP実装の安全は未認証 |
+| Telnet `telnet-option` | wholegeneratedkeywordは未証明で UNKNOWN。対応するknown `TTYPE=`等のprefixと選択backend/source/contextが確定したsecret producerは FORBIDDEN | optionkeyword / format、長さ、negotiation / native送信全体を保証しない |
+
+known default `--location` / `-L` だけのcurl8.7.1 redirect maskはHTTP / HTTPS / FTP / FTPSで、SMTP / SMTPS / Telnetを含まない。このmaskが実selected defaultだと証明できれば、HTTPSからのSMTP / Telnet familyはinactive。FTP / quoteは将来FTPへの選択が未検査なので UNKNOWNを維持する。custom `--proto-redir`、未知mask / target、sourceで変わる選択は UNKNOWNで、defaultと仮定しない。実 full separated long `--location-trusted`、short `-L`、後続の actual ARG_BOOL `--no-location` と、optionに消費された同じ文字列を区別する。
+
+HTTP以外の他generated value roleについて、この有限調査でactual consumerを証明できない場合は UNKNOWNに限定する。全curlを許可した保証ではなく、role名だけを全protocolの確定payloadへ昇格させない。form / query / cookie等のfile syntaxとliteral DATAも区別し、名前の一致だけでraw body uploadとしない。既存のactual first literal `-q` / `--disable`、明示config / netrc / ETag / cacheの独立条件を保持する。
+
+Git の proxy は明示 git://、SSH source は確定 SSH / scp-like repository と対応 active operation の組で選ぶ。clone / fetch / fetch-pack / pull / ls-remote と既存 push の typed transport source を結び付ける。既知 HTTPS / Git の local-file URL / absolute / `./` / `../` は当該 transport family の unused 対照で、他の Git source / cookie / header 等の解除証明ではない。`core.gitProxy` は順序を保った最初の matching domain を使い、raw hostname:port が必要な比較で port を落とさない。config の known `none` / empty / domain 不一致と、実 `GIT_PROXY_COMMAND` の優先 / known empty を分ける。環境の `none` は executable 名で、config `none` と同じ解除ではない。
+
+actual prefix / export / 継承の known-empty `GIT_PROXY_COMMAND` は `core.gitProxy` より優先する。independent argv / config / contextのUNKNOWNを先に維持した上で、他のpositive SSH selectorがない場合だけ、このproxy source familyをinactiveにする。remote名でprotocolが不明でも、この確定empty優先を理由なくUNKNOWNに戻さない。未 export local empty、SSHpositive、明示 unknown config root、unknownargvはUNKNOWNを保持する。emptyの解除は他のobject / cookie / header / helper等を解除しない。
+
+この条件の修復中に、known-empty proxyのordinary2入力が旧b6 ALLOWから私有v4 UNKNOWNへ変わる通常退行を17:26:37 JSTに確認した。原A期待・2FAIL/sourceを保持し、privatev5でremote aliasのprotocolunknownよりempty優先を先に条件化し、normal2と独立boundary4を追加して再取得した。公開元4821の期待を変えて正常を装った修正ではない。
+
+SSH transport source は実 `GIT_SSH_COMMAND` → `core.sshCommand` → `GIT_SSH` の優先を保持し、empty も未認証 source として扱う。prefix / export / 継承 / unset / `export -n` / `env -u` の順序と child transfer を保持し、未 export の shell local を選択 source にしない。partial 初期 seed は他 family の UNKNOWN を消さない。実 `ls-remote --get-url`、config getter / status と、option に消費される query-looking DATA を分ける。fetch-pack は通常 mode の git_connect / proxy consumerへ同じ positive selectorを結び付け、実option prefixは最初のdestinationまで、以後のflag-looking refはDATAとして扱う。proven prefixのdiag-url / stateless-rpcはこの transport familyだけinactiveで、旧argv / stdin / operationのUNKNOWNは残る。driver / direct entrypointも同じ役割に従う。明示 `--upload-pack` / `--exec` sourceは既存operation source担当のUNKNOWNを維持する。入口を接続したことはhelper body / arbitrary ref / PATH / implicitdefault / 全Gitcommandの安全保証ではない。
+
+SSH は first-selected user を保持する。OpenSSH 10.3p1 の CLI `-l`、command-line `-o User`、parsed destination username は、user 未設定の時に選ばれる。host 後の option も実 remote command の前まで読む。`-N` は remote command の抑止で、`-n` は stdin の抑止であり、選択 login / host metadata の検査を省略する条件ではない。今回の metadata 修復は既存 stdin predicate / `-W` forwarding 条件を変更する契約ではない。
+
+known `-V` / `-Q` / `-G` query の metadata 送信は inactive と分けるが、`-G` の config / Match exec と既存 provider / ProxyCommand / source 条件は独立する。resolved ordinary function body は外部 SSH actor にしない。unresolved shadow / 外部 actor を呼ぶ body まで許可証明へ一般化しない。SCP の synthetic SSH endpoint は、SCP の実 metadata 全体を証明した意味ではなく、既存 SCP / SSH helper / provider / config / payload 条件を保持する。
+
+### curl 8.7.1 の native grammar と新 producer 判定
+
+固定8.7.1のlong optionはexact name / separated valueで照合する。installed `/usr/bin/curl` 8.7.1のordinary no-URL query8（2026-10-14 17:00:51 JST）では、`--data=DUMMY`、`--user-a=DUMMY`、`--user-a DUMMY`、`--location-t` はexit2/stdout0で受理されず、shortattached `-dDUMMY`、full separated `--data DUMMY`、actual `--no-location`、full `--location-trusted` はhelp/version exit0だった。native query / compiler / protocol / senderは別scopeであり、8送信成功ではない。
+
+actual terminalqueryはこの対応grammarとactual ARG_BOOLを使い、valueを消費するlong/shortと、unsupported `--no-help` / `--no-version` / `--no-manual` 等をqueryへ昇格させない。値付きshortのattached formは対応する。unknown source / split / arity / contextが残る場合はUNKNOWNとし、単にhelpという語があるだけで全sourceを許可しない。
+
+既存negative classifierがlong略記や`--long=value`を保守的に照合することは、nativeのwell-formed argv認証ではない。新outbound producer edgeがsecret sourceを得ても、そのlong grammarがこの版で未対応ならFORBIDDENをUNKNOWNへ下げ、停止は保持する。対応separated long / shortのselected payloadでsource / role / contextを確認した場合のFORBIDDENは維持する。legacy file / raw / config / sourceの独立した停止をこの補正でまとめて解除しない。
+
+途中のprivate108入力では、unsupported long `--data=...` のCP04が新producerのFORBIDDENになり、正式な実operation / argv未対応というUNKNOWN契約へ理由を訂正した。元same108/原F期待/1FAILを保持し、新CP04だけ根拠付きF→Uを採用、新unsupported略記CP110を別unique対照に追加した。native grammarの無効と、Hookがstopを出すことと、実送信 / 被害を混ぜない。
+
+### HTTP header の実 consumer と getter
+
+正式 P2 4267445818 の「generic header がより specific な値で置換される」という前提は、Git 2.54.0 / libcurl 8.7.1 の isolated config と literal DUMMY loopback で別に確認した。generic LOW の後に exact HIGH を置く実 HTTP は LOW と HIGH、同 `git config --get-urlmatch` の getter は HIGH を返した。逆順なら実 HTTP は HIGH、同 rank の反復は両方、explicit empty reset は先行 list を消す。この 4 ordinary request は HTTP404 / Git exit128 であり、repository 操作成功や review witness / real secret の送信ではない。
+
+HTTP callback の nonempty append / empty clear と、getter callback の accepted value ごとの reset は違う。better URL rank だけを理由に先行 accepted HTTP header を無条件 clear する変更は採用しない。該当 input の UNKNOWN を保持して、root は有限 source / native 根拠付きで当該 P2 の返信・thread 解決を行った。原 formal finding の記録は残し、Code Review 新規 0 や他の 3 P1 修復完了を意味しない。全 Git 版 / wildcard / percent / HTTPS / implicit config の native 保証は増やさない。
+
+### R25 の版と検証境界
+
+一次照合は [curl 8.7.1 option parser](https://github.com/curl/curl/blob/curl-8_7_1/src/tool_getparam.c) / [operation](https://github.com/curl/curl/blob/curl-8_7_1/src/tool_operate.c) / [value / list helper](https://github.com/curl/curl/blob/curl-8_7_1/src/tool_paramhlp.c)、[Git 2.54.0 connect.c](https://github.com/git/git/blob/v2.54.0/connect.c) / [HTTP consumer](https://github.com/git/git/blob/v2.54.0/http.c) / [URL matcher](https://github.com/git/git/blob/v2.54.0/urlmatch.c) / [config getter](https://github.com/git/git/blob/v2.54.0/builtin/config.c)、[OpenSSH V_10_3_P1 ssh.c](https://github.com/openssh/openssh-portable/blob/V_10_3_P1/ssh.c) に限定する。installed binary、source version、ordinary native と Hook INPUT DATA の範囲を区別し、compiled source attestation、任意 program / implicit default config / 認証 / transport / 全 runtime の安全認証にはしない。
+
+R25 fixed-v3 は2026-10-14 17:46:59 JSTに sourceを停写した（egress `8248ae48`、common `7078920b`、add-all `8365d365`、secret-git `273f6be4`）。新bank定義5044は原4821のID / command / stdin / cwd / project / env / 旧期待を全保持する。新私有期待のCP04理由F→Uと新CP110追加、empty proxy normal/boundary6の追加は原入力 / 原FAIL / 採用根拠を別保存する。古い私有v1〜v5、合成v1 / v2の成功をv3へ持ち越さない。
+
+17:52:44 JSTにこの sourceの公開解析114 / filename parity8 / private停止API6の128契約を別取得した。root602 / typecheck / lint / duplicate、全5044 same-bank比較、私有metadata、single-edge reverse、実入口、公開head CI / fresh / threadはそれぞれ取得source・時刻を付して別gateで判断する。この記録時点の全5044比較は採取中だったため、後続のfixed-source proofに沿って結果を追記し、128成功から全bank成功を先に宣言しない。
+
+2026-10-14 18:06:35.216 JSTに、固定v3の同一5,044入力・期待を旧公開b6と同一fixtureで比較し、修正側5,044/5,044・failed0、両側broken0、source4前後不変を取得した。旧4,821入力・期待は変更していない。旧sourceとのassertion差112はaggregate ALLOW→deny111と、aggregateを変えないhook / 理由差1で、独立脆弱性数ではない。Hook stdinのhashは共通runnerの同じconstructorから計算したもので、process stdinを別途captureした証拠ではない。原正式4入力も17:59:08.173 JSTにcommand bytesを変えず再投入し、egress自身のU / F / U / F・broken0を確認した。
+
+単一edge reverseはcurl5feature/15観測（stop loss4 / scalar allowance精度1）、SSH4feature（stop loss3 / F→UでDENYが残る分類精度1）、Git8feature（stop loss5 / normal精度2 / child必要性未証明1）、curl unsupportedgrammarのcategory1（U→FになってDENY保持）を別に記録する。合計18featureは18脆弱性や18停止必要性証明ではない。normal対照 / 他guardの独立停止を保持し、必要性が不明なedgeのため他guardをまとめて外さない。sourceが変われば同edgeの証拠を再取得し、旧phaseの数を新sourceへ無条件加算しない。
+
+2026-10-14 17:45:09 JSTの合成v2 sourceに対する新DUMMY実入口6試行は、ordinary SSHの1PASS、APIcyber前段で止まった5NOT_EXERCISED、FAIL0だった。SSHだけexact Bash1回 / owned3hooks / egress ALLOW / ssh stubの期待markerを観測し、HEAD / refs / index / objects / file等は不変。negative3とnormal Git/curl2はBash / hook0で入口未検証、各1回で再試行しない。v2のこの結果を新v3のdispatch成功へ持ち越さず、1normalからnegative成功を作らない。R23のdefaultPython SCP whole-tool strictFAILとAPIcyberNOT、R24のnegative2NOTも原source / scopeのまま保持する。
+
+2026-10-14 18:07:48.432 JSTには、新v3に対する独立した正常query `c''url -q --no-location --help` を1回だけ試行し、exact Bash1回 / owned egress1hookのALLOW / curl stubの期待markerを観測した。HEAD / refs / index / objects / trackedfile、private4 / LIVE4 / 設定は不変だった。実観測はegress1hookであり、事前想定の3hookへ増やした記録にはしない。helpという別operationでの正常機能・入口確認であり、以前APIが拒否したsender / readerの再試行や代替実行ではない。compiledhelp動作は別のnative ordinary資料に限り、この1queryの成功をnegative3やnormal Git/curl2のdispatch成功へ昇格させない。
+
+公開後のrequiredCI、両fresh review、全thread、Goalの判定は、公開headと取得時刻を確認したPR本文・監査記録を参照する。旧b6のCI / fullCR0は当時の有効な履歴で、変更したsourceの成功ではない。この節のlocal/私有cutを最新公開状態へ無条件持ち越さず、過去の処理中 / 未取得を恒久的なcurrent表示にしない。任意program / implicitdefault / 認証 / transport / 全runtimeの安全認証、module責務refactor実施、sourceの安全保証やmerge承認ではない。
+
+個別操作の了承とhook停止・別コピー先実行の了承は別である。対象 / 操作 / source / export / config / cwd / 必要なhelperやmetadataと不足をownerへ提示する。担当owner / 証拠のない副作用を保護済みとは扱わない。API前段の拒否を再試行・書換え・hook無効化で成功へ変えず、caseごとのactual hook list、owned decisionとmarker / HEAD / refs / index / objects / 必要fileのbefore / afterを保存する。
 
 ## R24: Git HTTP metadata の選択と生成元
 

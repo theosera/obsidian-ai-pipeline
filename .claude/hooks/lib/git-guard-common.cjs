@@ -1324,7 +1324,8 @@ const GH_HELPER_ENV = new Set(['GH_EDITOR', 'GH_BROWSER', 'GH_PAGER', 'GH_CONFIG
 const SHELL_STARTUP_ENV = new Set(['BASH_ENV', 'ENV']);
 const GIT_CONFIG_SOURCE_ENV = new Set(['GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG']);
 const GIT_HTTP_METADATA_ENV = new Set(['GIT_HTTP_USER_AGENT']);
-const TRACKED_VALUE_ENV = new Set([...GIT_HTTP_METADATA_ENV, ...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, ...GIT_CONFIG_SOURCE_ENV, 'PS4']);
+const GIT_TRANSPORT_SOURCE_ENV = new Set(['GIT_PROXY_COMMAND', 'GIT_SSH_COMMAND', 'GIT_SSH']);
+const TRACKED_VALUE_ENV = new Set([...GIT_TRANSPORT_SOURCE_ENV, ...GIT_HTTP_METADATA_ENV, ...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, ...GIT_CONFIG_SOURCE_ENV, 'PS4']);
 const trackedValueEnvironment = name => TRACKED_VALUE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 const gitConfigurationEnvironment = name => GIT_CONFIG_SOURCE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 /** A stored shell value enters a child environment only with a selected export attribute. */
@@ -2055,6 +2056,50 @@ function gitHttpClientRole(g) {
   return { repositoryWord, argvUnknown: parsed.unknown, mode: 'potential-http-client', values: parsed.values, operands: parsed.operands };
 }
 
+/** Explicit transport selectors are executable sources, selected only by an active client role. */
+function gitTransportSourceRole(g) {
+  if (!['clone', 'fetch', 'fetch-pack', 'pull', 'push', 'ls-remote'].includes(g.sub)) return null;
+  let client;
+  if (g.sub === 'fetch-pack') {
+    if (g.gitNamespaceInferred || g.terminal || g.helpKind === 'manual') return null;
+    const valueNames = ['upload-pack', 'exec', 'depth', 'shallow-since', 'shallow-exclude', 'filter'];
+    const argumentText = word => typeof word.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word.text;
+    const firstOperand = g.args.findIndex(word => !argumentText(word).startsWith('-'));
+    const prefixLength = firstOperand < 0 ? g.args.length : firstOperand;
+    const prefix = g.args.slice(0, prefixLength);
+    const parsed = gitTypedArguments({ ...g, args: prefix }, { values: valueNames,
+      flags: ['all', 'stdin', 'quiet', 'keep', 'thin', 'include-tag', 'no-progress', 'diag-url', 'stateless-rpc',
+        'lock-pack', 'check-self-contained-and-connected', 'cloning', 'update-shallow', 'from-promisor',
+        'refetch', 'no-filter', 'deepen-relative'], shortFlags: 'qkv' });
+    // Native stops option parsing at its first destination. Later dash-prefixed
+    // reference names are DATA and cannot select diag/stateless query modes.
+    parsed.operands = g.args.slice(prefixLength);
+    if (parsed.operands.some(word => word.dynamicMaySplit !== false || word.ansiCUnknown ||
+        word.globExpanded || word.braceExpanded || word.tildeExpanded) ||
+        parsed.operands[0]?.dynamic && typeof parsed.operands[0].literalValue !== 'string') parsed.unknown = true;
+    // This builtin accepts value options only with '=' and its short flags are
+    // single-letter forms. An unknown native arity is never a query proof.
+    if (prefix.some(word => valueNames.some(name => argumentText(word) === '--' + name) ||
+        /^-[^-]/.test(argumentText(word)) && !['-q', '-k', '-v'].includes(argumentText(word)))) parsed.unknown = true;
+    if (!parsed.unknown && parsed.flags.some(flag => ['stateless-rpc', 'diag-url'].includes(flag))) return null;
+    client = { repositoryWord: parsed.operands[0], argvUnknown: parsed.unknown || !parsed.operands.length,
+      mode: 'potential-transport-client', values: parsed.values, operands: parsed.operands };
+  } else client = gitHttpClientRole(g);
+  if (!client) return null;
+  const settings = (g.configSelections || []).flatMap((selection, order) => {
+    const eq = selection.text.indexOf('='), key = selection.text.slice(0, eq < 0 ? undefined : eq).toLowerCase();
+    if (!['core.gitproxy', 'core.sshcommand'].includes(key)) return [];
+    const word = selection.mode === 'configuration-env' ? selection.word : selection.mode === 'env' ?
+      selection.prefixSourceKnown ? selection.word : null : selection.word && eq >= 0 ?
+        commitInlineValue(selection.word, selection.word, selection.text.slice(eq + 1), eq + 1) : null;
+    return [{ key, kind: key === 'core.gitproxy' ? 'proxy' : 'ssh', word, order, mode: selection.mode }];
+  });
+  const environmentSources = g.gitTransportSources || [];
+  if (!settings.length && !environmentSources.length) return null;
+  const configEnvironmentUnknown = gitConfigurationEntries(g.gitConfigurationSources || []).unknown;
+  return { ...client, kind: 'selected-transport-source', settings, environmentSources, configEnvironmentUnknown };
+}
+
 /** Keep ordered command-scope selectors and their original value words. */
 function gitHttpSettings(g, family) {
   const selections = (g.configSelections || []).slice();
@@ -2264,15 +2309,15 @@ function inspect(cmd, options = {}) {
   if (Array.isArray(options.initialHelperEnvNames)) {
     for (const name of options.initialHelperEnvNames) if (HELPER_SOURCE_ENV.has(name)) stateFor(parsed.scope).helperEnv.add(name);
   }
-  if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames) || Array.isArray(options.initialGhEnvNames) || Array.isArray(options.initialShellStartupEnvNames) || Array.isArray(options.initialGitConfigEnvNames) || Array.isArray(options.initialGitHttpEnvNames)) {
+  if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames) || Array.isArray(options.initialGhEnvNames) || Array.isArray(options.initialShellStartupEnvNames) || Array.isArray(options.initialGitConfigEnvNames) || Array.isArray(options.initialGitHttpEnvNames) || Array.isArray(options.initialGitTransportEnvNames)) {
     const initial = stateFor(parsed.scope);
-    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || []), ...(options.initialGhEnvNames || []), ...(options.initialShellStartupEnvNames || []), ...(options.initialGitConfigEnvNames || []), ...(options.initialGitHttpEnvNames || [])]) if (trackedValueEnvironment(name)) {
+    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || []), ...(options.initialGhEnvNames || []), ...(options.initialShellStartupEnvNames || []), ...(options.initialGitConfigEnvNames || []), ...(options.initialGitHttpEnvNames || []), ...(options.initialGitTransportEnvNames || [])]) if (trackedValueEnvironment(name)) {
       initial.identitySources.set(name, null); initial.identityExports.set(name, true);
     }
   }
-  if (Array.isArray(options.initialGitIdentitySources) || Array.isArray(options.initialPagerSources) || Array.isArray(options.initialGhSources) || Array.isArray(options.initialShellStartupSources) || Array.isArray(options.initialGitConfigSources) || Array.isArray(options.initialGitHttpSources)) {
+  if (Array.isArray(options.initialGitIdentitySources) || Array.isArray(options.initialPagerSources) || Array.isArray(options.initialGhSources) || Array.isArray(options.initialShellStartupSources) || Array.isArray(options.initialGitConfigSources) || Array.isArray(options.initialGitHttpSources) || Array.isArray(options.initialGitTransportSources)) {
     const initial = stateFor(parsed.scope);
-    const selected = childIdentityState(new Map([...(options.initialGitIdentitySources || []), ...(options.initialPagerSources || []), ...(options.initialGhSources || []), ...(options.initialShellStartupSources || []), ...(options.initialGitConfigSources || []), ...(options.initialGitHttpSources || [])]
+    const selected = childIdentityState(new Map([...(options.initialGitIdentitySources || []), ...(options.initialPagerSources || []), ...(options.initialGhSources || []), ...(options.initialShellStartupSources || []), ...(options.initialGitConfigSources || []), ...(options.initialGitHttpSources || []), ...(options.initialGitTransportSources || [])]
       .filter(source => trackedValueEnvironment(source.name)).map(source => [source.name, source.word])));
     // Presence names may include unknown inherited values while source arrays only
     // supply partial known values. Preserve every presence seed across families.
@@ -2451,6 +2496,7 @@ function inspect(cmd, options = {}) {
       helperEnvNames: [...helperEnv],
       gitIdentitySources: [...identitySources].filter(([name]) => GIT_IDENTITY_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitPagerEnvSources: [...identitySources].filter(([name]) => GIT_PAGER_ENV.has(name)).map(([name, word]) => ({ name, word })),
+      gitTransportSources: [...identitySources].filter(([name]) => GIT_TRANSPORT_SOURCE_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitHttpMetadataSources: [...identitySources].filter(([name]) => GIT_HTTP_METADATA_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitConfigurationSources: [...identitySources].filter(([name]) => gitConfigurationEnvironment(name)).map(([name, word]) => ({ name, word })),
       ghEnvironmentSources: [...identitySources].filter(([name]) => GH_METADATA_ENV.has(name)).map(([name, word]) => ({ name, word })),
@@ -3117,6 +3163,7 @@ function inspect(cmd, options = {}) {
     g.gitPagerEnvSources = invocation.gitPagerEnvSources;
     g.gitConfigurationSources = invocation.gitConfigurationSources;
     g.gitHttpMetadataSources = invocation.gitHttpMetadataSources;
+    g.gitTransportSources = invocation.gitTransportSources;
     for (const config of g.configSelections) if (config.mode === 'env') {
       const variable = config.text.slice(config.text.indexOf('=') + 1);
       const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(variable + '='));
@@ -3132,6 +3179,7 @@ function inspect(cmd, options = {}) {
     g.cdLikeBefore = cdBefore;
     g.httpCookieRole = gitHttpCookieRole(g);
     g.httpMetadataRole = gitHttpMetadataRole(g);
+    g.transportSourceRole = gitTransportSourceRole(g);
     res.gits.push(g);
   };
 
@@ -3990,6 +4038,7 @@ module.exports = {
   gitOperationRole,
   gitHttpCookieRole,
   gitHttpMetadataRole,
+  gitTransportSourceRole,
   parseAddArgs,
   isSecretPath,
   readOnlyGitMode,

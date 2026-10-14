@@ -206,6 +206,9 @@ const insp = guard.inspect(cmd, {
   initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_EXTERNAL_DIFF', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
     .filter(name => process.env[name] !== undefined),
   initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL'].filter(name => process.env[name] !== undefined),
+  initialGitTransportEnvNames: ['GIT_PROXY_COMMAND', 'GIT_SSH_COMMAND', 'GIT_SSH'].filter(name => process.env[name] !== undefined),
+  initialGitTransportSources: ['GIT_PROXY_COMMAND'].filter(name => process.env[name] === '').map(name =>
+    ({ name, word: { text: '', raw: "''", quoted: true, dynamic: false, dynamicMaySplit: false } })),
   initialGitHttpEnvNames: ['GIT_HTTP_USER_AGENT'].filter(name => process.env[name] !== undefined),
   initialGitHttpSources: ['GIT_HTTP_USER_AGENT'].filter(name => process.env[name] === '').map(name =>
     ({ name, word: { text: '', raw: "''", quoted: true, dynamic: false, dynamicMaySplit: false } })),
@@ -944,11 +947,65 @@ function gitHttpMetadataWriteVerdict(g, invocation) {
   return operation.unknownOption || outboundPayloadVerdict(invocation, [value]) ? 'UNKNOWN' : false;
 }
 
+/** Git-protocol proxy and SSH selectors are local executable source, not payload DATA. */
+function gitTransportSource(g, invocation) {
+  const role = guard.gitTransportSourceRole(g);
+  if (!role) return false;
+  const env = new Map(role.environmentSources.map(source => [source.name, source.word]));
+  const proxies = role.settings.filter(setting => setting.kind === 'proxy');
+  const ssh = role.settings.filter(setting => setting.kind === 'ssh');
+  const proxySelected = env.has('GIT_PROXY_COMMAND') || proxies.length;
+  const sshSelected = env.has('GIT_SSH_COMMAND') || env.has('GIT_SSH') || ssh.length;
+  if (!proxySelected && !sshSelected) return false;
+  if (role.argvUnknown || role.configEnvironmentUnknown || !knownInvocationContext(invocation)) return true;
+  // A proven exported empty proxy overrides core.gitProxy for every protocol.
+  // Preserve independent SSH selection and the argv/config/context gates above.
+  if (env.has('GIT_PROXY_COMMAND') && literalSourceWord(env.get('GIT_PROXY_COMMAND'))?.text === '' && !sshSelected) return false;
+  const repository = literalSourceWord(role.repositoryWord);
+  const rewrite = [...(g.configs || []), ...(g.configEnvs || [])].some(value => /^url\..+\.insteadof(?:=|$)/i.test(value));
+  let protocol = 'unknown', host = null;
+  if (repository && !rewrite) {
+    const value = repository.text;
+    if (/^git:\/\//.test(value)) {
+      // Git matches core.gitProxy against the decoded raw host-and-port before
+      // get_host_and_port() strips the port. Do not use URL.hostname or URL.host:
+      // their normalization can erase a selected suffix (port/leading zero/case).
+      const authority = /^git:\/\/([^/]+)\//.exec(value)?.[1];
+      if (authority && !/[\s%@?#\\]/.test(value) &&
+          /^(?:[A-Za-z0-9._-]+(?::[0-9]*)?|\[[0-9A-Fa-f:.]+\](?::[0-9]*)?)$/.test(authority)) {
+        protocol = 'git'; host = authority;
+      } // Percent decoding/unsupported authority syntax stays UNKNOWN.
+    } else if (/^(?:ssh|git\+ssh|ssh\+git):\/\//.test(value) || !value.includes('://') && SCP_ARG_RE.test(value)) protocol = 'ssh';
+    else if (/^(?:https?:\/\/|file:\/\/|\/|\.\.?\/)/.test(value)) protocol = 'other';
+  }
+  if (protocol === 'other') return false;
+  if (protocol === 'unknown') return true;
+  if (protocol === 'ssh') return Boolean(sshSelected);
+  if (!proxySelected) return false;
+  // An actual exported/prefix empty override disables this proxy family. 'none'
+  // has disabling meaning only in core.gitProxy, not in GIT_PROXY_COMMAND.
+  if (env.has('GIT_PROXY_COMMAND')) return literalSourceWord(env.get('GIT_PROXY_COMMAND'))?.text !== '';
+  for (const source of proxies) {
+    const literal = literalSourceWord(source.word);
+    if (!literal) return true;
+    const forIndex = literal.text.indexOf(' for '); // Native uses the first delimiter.
+    const domain = forIndex < 0 ? null : literal.text.slice(forIndex + 5);
+    if (domain !== null) {
+      if (!domain || /[\s%*]/.test(domain)) return true;
+      if (host !== domain && !host.endsWith('.' + domain)) continue;
+    }
+    const command = forIndex < 0 ? literal.text : literal.text.slice(0, forIndex);
+    return command !== '' && command !== 'none'; // First matching entry wins.
+  }
+  return false;
+}
+
 /** Positive selectors of local Git execution must be gated for their actual operation. */
 function gitExecutableSource(g, invocation) {
   const actual = !g.gitNamespaceInferred;
   if (g.terminal && g.helpKind === 'stdout' && knownInvocationContext(invocation)) return false;
   if (gitPagerSource(g, invocation)) return true;
+  if (gitTransportSource(g, invocation)) return true;
   if (actual && g.operationRole?.mode === 'query' && ['hook', 'interpret-trailers', 'mergetool'].includes(g.sub)) return false;
   if (g.sub === 'config' && configOperation(g.args).read) return false;
   const diff = (actual || g.sub !== 'diff-pairs') && ['diff', 'show', 'log', 'diff-tree', 'diff-index', 'diff-files', 'diff-pairs', 'format-patch', 'whatchanged'].includes(g.sub);
@@ -1127,33 +1184,66 @@ const CURL_FLAG_LONG = new Set([
   'xattr',
 ]);
 const CURL_LONG_NAMES = [...CURL_VALUE_LONG, ...CURL_FLAG_LONG];
+// Exact curl 8.7.1 ARG_BOOL aliases; no- is a toggle, not a terminal query.
+const CURL_BOOLEAN_LONG = new Set([
+  'alpn', 'anyauth', 'append', 'basic', 'buffer', 'ca-native', 'cert-status', 'clobber', 'compressed',
+  'compressed-ssh', 'create-dirs', 'crlf', 'digest', 'disable', 'disable-eprt', 'disable-epsv',
+  'disallow-username-in-url', 'doh-cert-status', 'doh-insecure', 'eprt', 'epsv', 'fail', 'fail-early',
+  'fail-with-body', 'false-start', 'form-escape', 'ftp-create-dirs', 'ftp-pasv', 'ftp-pret',
+  'ftp-skip-pasv-ip', 'ftp-ssl', 'ftp-ssl-ccc', 'ftp-ssl-control', 'ftp-ssl-reqd', 'get', 'globoff',
+  'haproxy-protocol', 'head', 'help', 'http0.9', 'ignore-content-length', 'include', 'insecure',
+  'junk-session-cookies', 'keepalive', 'list-only', 'location', 'location-trusted',
+  'mail-rcpt-allowfails', 'manual', 'metalink', 'negotiate', 'netrc', 'netrc-optional', 'npn', 'ntlm',
+  'ntlm-wb', 'parallel', 'parallel-immediate', 'path-as-is', 'post301', 'post302', 'post303',
+  'progress-bar', 'progress-meter', 'proxy-anyauth', 'proxy-basic', 'proxy-ca-native', 'proxy-digest',
+  'proxy-http2', 'proxy-insecure', 'proxy-negotiate', 'proxy-ntlm', 'proxy-ssl-allow-beast',
+  'proxy-ssl-auto-client-cert', 'proxytunnel', 'raw', 'remote-header-name', 'remote-name',
+  'remote-name-all', 'remote-time', 'remove-on-error', 'retry-all-errors', 'retry-connrefused',
+  'sasl-ir', 'sessionid', 'show-error', 'silent', 'socks5-basic', 'socks5-gssapi', 'socks5-gssapi-nec',
+  'ssl', 'ssl-allow-beast', 'ssl-auto-client-cert', 'ssl-no-revoke', 'ssl-reqd',
+  'ssl-revoke-best-effort', 'styled-output', 'suppress-connect-headers', 'tcp-fastopen', 'tcp-nodelay',
+  'test-event', 'tftp-no-options', 'tr-encoding', 'trace-ids', 'trace-time', 'use-ascii', 'verbose',
+  'version', 'wdebug', 'xattr',
+]);
 
 /** curl 8.7.1: actual help/manual/version exits argument parsing before transfers. */
 function curlTerminalQuery(words, incomplete) {
   if (incomplete) return false;
   const flags = '012346afgGiIjklLMnNOpqRsSvVZ:#';
+  const scalarValue = word => literalSourceWord(word) || word && word.dynamic &&
+    word.dynamicMaySplit === false && !word.ansiCUnknown && !word.globExpanded && !word.braceExpanded;
+  const attachedValue = word => {
+    if (!word?.dynamic || word.dynamicMaySplit !== false || word.ansiCUnknown || word.globExpanded || word.braceExpanded) return false;
+    if (word.text.startsWith('--')) return false; // Native 8.7.1 does not split --name=value.
+    return quotedAttachedOptionValue(word, word.text, Object.keys(CURL_VALUE_SHORT).join(''));
+  };
   for (let k = 0; k < words.length; k++) {
-    const word = literalSourceWord(words[k]);
+    const word = literalSourceWord(words[k]) || (attachedValue(words[k]) ? words[k] : null);
     if (!word) return false;
     const text = word.text;
     if (text === '--') return false;
     if (text.startsWith('--')) {
       const eq = text.indexOf('=');
       const name = text.slice(2, eq < 0 ? undefined : eq);
-      const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter(option => option.startsWith(name));
-      if (matches.length !== 1) return false;
-      const option = matches[0];
+      if (eq >= 0) return false; // Native long lookup is exact; unsupported grammar is no query proof.
+      if (name.startsWith('no-')) {
+        const base = name.slice(3);
+        if (!CURL_BOOLEAN_LONG.has(base) || !CURL_LONG_NAMES.includes(base) && !CURL_LONG_NAMES.includes(name)) return false;
+        continue;
+      }
+      if (!CURL_LONG_NAMES.includes(name)) return false;
+      const option = name;
       if (['help', 'manual', 'version'].includes(option)) return true;
       // Keep the independent, uninspected explicit configuration source boundary.
       if (option === 'config') return false;
-      if (CURL_VALUE_LONG.has(option) && eq < 0 && !literalSourceWord(words[++k])) return false;
+      if (CURL_VALUE_LONG.has(option) && eq < 0 && !scalarValue(words[++k])) return false;
     } else if (text.startsWith('-') && text !== '-') {
       for (let p = 1; p < text.length; p++) {
         if ('hMV'.includes(text[p])) return true;
         const option = CURL_VALUE_SHORT[text[p]];
         if (option === 'config') return false;
         if (option) {
-          if (p === text.length - 1 && !literalSourceWord(words[++k])) return false;
+          if (p === text.length - 1 && !scalarValue(words[++k])) return false;
           break;
         }
         if (!flags.includes(text[p])) return false;
@@ -1202,7 +1292,7 @@ function curlImplicitNetrc(words, incomplete) {
 }
 
 /** Recognize curl file payloads and opaque config input without reading either file. */
-function curlReadsUpload(words, incomplete = false, actualClient = false) {
+function curlReadsUpload(words, incomplete = false, actualClient = false, payloadContext = null) {
   // Additional words from splitting or pathname/brace expansion can introduce payload options,
   // including from a value consumed by a visible option. Never infer the unseen argv from env.
   if (actualClient && words.some(word => word.dynamic && word.dynamicMaySplit !== false || word.globExpanded || word.braceExpanded)) return 'UNKNOWN';
@@ -1219,7 +1309,68 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
   let cache = new Map();
   let operationUrl = false;
   const cacheVerdicts = [];
-  const finishOperation = () => {
+  // curl 8.7.1: ten scalar fields keep the last value; list/data roles append.
+  // Retain producer verdicts until selection is final, rather than stopping on
+  // a generated scalar that a later ordinary argument actually replaces.
+  const scalarPayloads = new Set(['request', 'request-target', 'user', 'proxy-user',
+    'user-agent', 'referer', 'oauth2-bearer', 'ftp-account', 'mail-auth', 'mail-from']);
+  let selectedPayloads = new Map();
+  const payloadVerdicts = [];
+  let payloadSequence = 0;
+  let operationProtocols = new Set();
+  let protocolUnknown = false;
+  let followRedirects = false;
+  let redirectProtocolsUnknown = false;
+  let mimeBody = false;
+  let mailRecipients = false;
+  // These protocol-specific fields are not HTTP payloads merely because curl
+  // stores their values. Unknown target/redirect activation is a separate UNKNOWN.
+  const protocolPayloads = new Map([
+    ['ftp-account', ['ftp', 'ftps']], ['mail-auth', ['smtp', 'smtps']],
+    ['mail-from', ['smtp', 'smtps']], ['mail-rcpt', ['smtp', 'smtps']],
+    ['quote', ['ftp', 'ftps', 'sftp']], ['telnet-option', ['telnet']],
+  ]);
+  const selectedPayload = (option, verdict, text = '') => {
+    if (option === 'form' || option === 'form-string') mimeBody = true;
+    if (option === 'mail-rcpt') mailRecipients = true;
+    selectedPayloads.set(scalarPayloads.has(option) ? option : ++payloadSequence, { option, verdict, text });
+  };
+  const selectedUrl = (word) => {
+    const literal = literalSourceWord(word) || word;
+    const scheme = literal && /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(literal.text);
+    if (scheme) operationProtocols.add(scheme[1].toLowerCase());
+    else protocolUnknown = true;
+  };
+  const finishOperation = (final = false) => {
+    // --next creates a new OperationConfig only after a URL was supplied.
+    if (operationUrl || final) {
+      for (const { option, verdict, text } of selectedPayloads.values()) {
+        if (!verdict) continue;
+        const protocols = protocolPayloads.get(option);
+        const activeProtocol = protocols && [...operationProtocols].some(protocol => protocols.includes(protocol));
+        if (activeProtocol) {
+          // SMTP FROM/AUTH are used in MAIL, not the recipient-only VRFY/EXPN mode.
+          if (['mail-from', 'mail-auth'].includes(option) && !(mimeBody && mailRecipients)) continue;
+          if (option === 'mail-auth' || option === 'telnet-option' && !/^(?:TTYPE|XDISPLOC|NEW_ENV)=/i.test(text)) payloadVerdicts.push('UNKNOWN');
+          else payloadVerdicts.push(verdict);
+        } else if (protocols) {
+          // Default redirects are HTTP(S)/FTP(S); a custom redirect set is uninspected.
+          if (protocolUnknown || !operationProtocols.size || followRedirects &&
+              (redirectProtocolsUnknown || protocols.some(protocol => ['ftp', 'ftps'].includes(protocol)))) payloadVerdicts.push('UNKNOWN');
+        } else {
+          // Generated-value roles are certified here for the HTTP family. Other
+          // backends have operation-specific consumption which this guard has not proved.
+          payloadVerdicts.push([...operationProtocols].some(protocol => ['http', 'https'].includes(protocol)) ? verdict : 'UNKNOWN');
+        }
+      }
+      selectedPayloads = new Map();
+      operationProtocols = new Set();
+      protocolUnknown = false;
+      followRedirects = false;
+      redirectProtocolsUnknown = false;
+      mimeBody = false;
+      mailRecipients = false;
+    }
     etags.push(etag);
     if (operationUrl && [...cache.values()].some(Boolean)) cacheVerdicts.push('UNKNOWN');
     etag = false;
@@ -1290,7 +1441,12 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
   for (let k = 0; k < words.length; k++) {
     const optionWord = words[k];
     const t = optionWord.text;
-    if (t === '--') { operationUrl ||= words.slice(k + 1).some(word => word.text !== ''); break; }
+    if (t === '--') {
+      const urls = words.slice(k + 1).filter(word => word.text !== '');
+      operationUrl ||= urls.length > 0;
+      for (const url of urls) { selectedUrl(url); if (payloadContext) selectedPayload('url', outboundPayloadVerdict(payloadContext, [url])); }
+      break;
+    }
     // At an actual argv boundary a prefix-free scalar may be a URL or an upload/cookie flag.
     // Known option values are consumed below and do not reach this boundary as option words.
     if (actualClient && optionWord.dynamic && t.startsWith('\0')) return 'UNKNOWN';
@@ -1299,6 +1455,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
       const fullName = t.slice(2, eq < 0 ? undefined : eq);
       const expanding = fullName.startsWith('expand-');
       const name = expanding ? fullName.slice(7) : fullName;
+      if (knownWord(optionWord) && eq < 0 && ['location', 'location-trusted', 'no-location', 'no-location-trusted'].includes(name)) followRedirects = !name.startsWith('no-');
       if (optionWord.dynamic && name.includes('\0')) {
         const prefix = name.split('\0')[0];
         if ('cookie'.startsWith(prefix) || prefix.startsWith('cookie')) return 'UNKNOWN';
@@ -1307,9 +1464,11 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
       if (optionWord.dynamic && name.includes('\0') && ['hsts', 'alt-svc'].some(option => option.startsWith(name.split('\0')[0]))) return 'UNKNOWN';
       const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter((option) => option.startsWith(name));
       if (matches.length !== 1 && matches.includes('cookie')) return 'UNKNOWN';
+      if (matches.length === 1 && ['location', 'location-trusted'].includes(matches[0]) && knownWord(optionWord) && eq < 0) followRedirects = true;
       if (matches.length === 1 && matches[0] === 'next') { finishOperation(); continue; }
       if (matches.length !== 1 || !CURL_VALUE_LONG.has(matches[0])) continue;
       const option = matches[0];
+      if (option === 'proto-redir') redirectProtocolsUnknown = true;
       if (option === 'config') return 'UNKNOWN';
       const value = eq < 0 ? words[++k] : { ...optionWord, text: t.slice(eq + 1) };
       if (value) {
@@ -1321,7 +1480,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
           etag = source.text === '' && !source.file && !source.unknown ? false : verdict;
           continue;
         }
-        if (option === 'url') operationUrl = true;
+        if (option === 'url') { operationUrl = true; selectedUrl({ ...value, text: source.text }); }
         if (option === 'alt-svc' || option === 'hsts') {
           // These last-value options load connection/cache conditions, not a raw file body.
           // Empty disables this file-input family only; other payload/source gates remain active.
@@ -1338,8 +1497,17 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
         // A scalar '+' or '=' proves inline query syntax; an unknown prefix or argv count does not.
         if (option === 'url-query' && ((value.dynamic && value.dynamicMaySplit !== false) ||
             (!source.file && !source.text.startsWith('+') && !source.text.includes('=') && source.text.includes('\0')))) return 'UNKNOWN';
-        if (expanding && outbound.has(option) && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) return verdict;
-        if ((source.file && outbound.has(option)) || payload(option, source.text)) return verdict;
+        // Selected outbound DATA retains the shell producer independently from curl @file syntax.
+        // An uninspected variable expansion is not ordinary literal DATA.
+        if (outbound.has(option)) {
+          let generated = expanding && source.unknown ? 'UNKNOWN' :
+            payloadContext ? outboundPayloadVerdict(payloadContext, [value]) : false;
+          // Producer proof cannot certify an outbound role from unsupported native 8.7.1 grammar.
+          if (generated === 'FORBIDDEN' && (eq >= 0 || name !== option)) generated = 'UNKNOWN';
+          if (source.file || expanding && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) generated ||= verdict;
+          selectedPayload(option, generated, source.text);
+        }
+        if (payload(option, source.text)) return verdict;
       } else if (option === 'etag-compare') etag = 'UNKNOWN';
       else if (option === 'alt-svc' || option === 'hsts') return 'UNKNOWN';
       else if (option === 'cookie' || option === 'netrc-file' || incomplete && fileOptions.has(option)) return 'UNKNOWN';
@@ -1347,6 +1515,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
       for (let p = 1; p < t.length; p++) {
         if (actualClient && optionWord.dynamic && t[p] === '\0') return 'UNKNOWN';
         if (t[p] === ':') { finishOperation(); continue; }
+        if (t[p] === 'L' && knownWord(optionWord)) followRedirects = true;
         const option = CURL_VALUE_SHORT[t[p]];
         if (!option) continue;
         if (option === 'config') return 'UNKNOWN';
@@ -1355,15 +1524,23 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
         if (option === 'cookie' && value && ((value.dynamic && value.dynamicMaySplit !== false) ||
             value.globExpanded || value.braceExpanded || value.tildeExpanded || value.ansiCUnknown ||
             (value.text.includes('\0') && !value.text.includes('=')))) return 'UNKNOWN';
+        if (value && outbound.has(option)) {
+          selectedPayload(option, payloadContext ? outboundPayloadVerdict(payloadContext, [value]) : false, value.text);
+        }
         if (value ? payload(option, value.text) : incomplete && fileOptions.has(option)) {
           return !incomplete && knownWord(optionWord) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
         }
         break;
       }
-    } else if (t !== '') operationUrl = true;
+    } else if (t !== '') {
+      operationUrl = true;
+      selectedUrl(optionWord);
+      if (payloadContext) selectedPayload('url', outboundPayloadVerdict(payloadContext, [optionWord]));
+    }
   }
-  finishOperation();
-  return etags.includes('FORBIDDEN') ? 'FORBIDDEN' : etags.includes('UNKNOWN') || cacheVerdicts.length ? 'UNKNOWN' : false;
+  finishOperation(true);
+  return etags.includes('FORBIDDEN') || payloadVerdicts.includes('FORBIDDEN') ? 'FORBIDDEN' :
+    etags.includes('UNKNOWN') || cacheVerdicts.length || payloadVerdicts.includes('UNKNOWN') ? 'UNKNOWN' : false;
 }
 
 // Wget 1.25.0 --help: consume option values so a printed option name is not executable syntax.
@@ -2408,7 +2585,7 @@ function sshOperation(invocation) {
     const result = sshOperation({ ...invocation, name: 'ssh',
       args: [...operation.sshArgs, { text: '__scp_remote__', dynamic: false }],
       incomplete: invocation.incomplete || operation.unknown });
-    return { ...result, stdin: false, remoteWords: [],
+    return { ...result, stdin: false, remoteWords: [], metadataWords: [], metadataUnknown: false,
       sources: operation.unknown || !knownInvocationContext(invocation)
         ? result.sources.map(source => ({ ...source, dynamic: true, literalValue: undefined })) : result.sources };
   }
@@ -2427,11 +2604,31 @@ function sshOperation(invocation) {
   let detached = false;
   let remoteWords = [];
   let noRemoteCommand = false;
+  let selectedUser = false;
+  let loginWord;
+  let destinationWord;
+  let metadataUnknown = false;
+  const selectDestination = (word) => {
+    destinationWord = literalSourceWord(word) || word;
+    if (!destinationWord) { metadataUnknown = true; return; }
+    // Dynamic user@host needs component-level proof; do not attribute an unselected
+    // username's producer to the selected host or to an earlier explicit -l value.
+    if (!literalSourceWord(destinationWord)) { metadataUnknown = true; return; }
+    const at = destinationWord.text.lastIndexOf('@');
+    if (at >= 0) {
+      if (!selectedUser) {
+        selectedUser = true;
+        loginWord = { ...destinationWord, text: destinationWord.text.slice(0, at), literalValue: undefined };
+      }
+      destinationWord = { ...destinationWord, text: destinationWord.text.slice(at + 1), literalValue: undefined };
+    }
+  };
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k];
     const text = word.text;
     if (text === '--') {
       remoteWords = invocation.args.slice(k + (host ? 1 : 2));
+      if (!host && invocation.args[k + 1]) selectDestination(invocation.args[k + 1]);
       host = host || Boolean(invocation.args[k + 1]);
       break;
     }
@@ -2440,6 +2637,7 @@ function sshOperation(invocation) {
         text.startsWith('\0') && !(host && word.dynamicMaySplit === false))) argvUncertain = true;
     if (!text.startsWith('-') || text === '-') {
       if (host) { remoteWords = invocation.args.slice(k); break; }
+      selectDestination(word);
       host = true; continue;
     }
     for (let p = 1; p < text.length; p++) {
@@ -2452,10 +2650,20 @@ function sshOperation(invocation) {
       const value = literalSourceWord(original) || original;
       if (value?.dynamic && (value.dynamicMaySplit !== false || (p + 1 < text.length && value.text.startsWith('\0')))) argvUncertain = true;
       if (text[p] === 'F') { selectedConfig = true; configFile = value; }
+      // OpenSSH assigns CLI -l only while options.user is NULL.
+      if (text[p] === 'l' && !selectedUser) { selectedUser = true; loginWord = value; }
       if (text[p] === 'o') {
         const match = value && /^\s*([^=\s]+)\s*(?:=\s*|\s+)([\s\S]*)$/.exec(value.text);
         if (!match || value.dynamicMaySplit && value.dynamic) unknown = true;
-        else if (!options.has(match[1].toLowerCase())) options.set(match[1].toLowerCase(), { ...value, text: match[2], literalValue: undefined });
+        else if (!options.has(match[1].toLowerCase())) {
+          const key = match[1].toLowerCase();
+          const optionWord = { ...value, text: match[2], literalValue: undefined };
+          options.set(key, optionWord);
+          if (key === 'user' && !selectedUser) {
+            selectedUser = true;
+            loginWord = { ...optionWord, sshConfigMetadata: true };
+          }
+        }
       }
       if (text[p] === 'J' && value && !options.has('proxyjump')) options.set('proxyjump', value);
       // -I directly assigns the provider, while -o PKCS11Provider obeys first-value wins.
@@ -2494,7 +2702,25 @@ function sshOperation(invocation) {
   if (sshOptionScalar(options.get('sessiontype')) === 'none') noRemoteCommand = true;
   if (noRemoteCommand) remoteWords = [];
   else if (options.has('remotecommand')) remoteWords.push(options.get('remotecommand'));
-  return { sources, stdin: host && !detached, remoteWords, argvUncertain };
+  const metadataWords = [];
+  if (host) {
+    if (options.has('hostname')) destinationWord = { ...options.get('hostname'), sshConfigMetadata: true };
+    if (selectedUser) metadataWords.push(loginWord);
+    metadataWords.push(destinationWord);
+    for (let k = 0; k < metadataWords.length; k++) {
+      const word = metadataWords[k];
+      if (!word) { metadataUnknown = true; continue; }
+      if (word.sshConfigMetadata) {
+        // Config token/environment expansion is not a shell literal value proof.
+        if (word.text.includes('%') || /\$\{/.test(word.text)) metadataUnknown = true;
+        const literal = literalSourceWord(word);
+        if (literal && /^"[^"\\]*"$/.test(literal.text.trim())) {
+          metadataWords[k] = { ...literal, text: literal.text.trim().slice(1, -1), literalValue: undefined };
+        }
+      }
+    }
+  }
+  return { sources, stdin: host && !detached, remoteWords, argvUncertain, metadataWords, metadataUnknown };
 }
 
 /** Identify network clients that actually consume pipeline/stdin data, excluding explicit query/receive-only modes. */
@@ -2773,6 +2999,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
     initialGitIdentitySources: invocation.gitIdentitySources || [],
     initialGitConfigSources: invocation.gitConfigurationSources || [],
     initialGitHttpSources: invocation.gitHttpMetadataSources || [],
+    initialGitTransportSources: invocation.gitTransportSources || [],
     initialPagerSources: invocation.gitPagerEnvSources || [],
     initialShellStartupSources: invocation.shellStartupEnvironmentSources || [],
     initialGhSources: (invocation.ghEnvironmentSources || []).concat(invocation.ghHelperEnvironmentSources || []),
@@ -2823,7 +3050,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
     const decision = guard.gitObjectInputDecision(g);
     if (decision) deny(decision.reason, gitVerdict(g, decision.category));
     if (gitExecutableSource(g, gitInvocationContexts.get(g))) {
-      deny('当該 Git 操作の config / environment が選ぶ外部 diff・変換・filter・hook・fsmonitor・archive・include の実行 source を検査できません。commit の有無とは独立に、active helper の本文と副作用は判断不能です。' + UNKNOWN_OWNER_GATE);
+      deny('当該 Git 操作の config / environment が選ぶ外部 diff・変換・filter・hook・fsmonitor・archive・include・transport proxy/SSH の実行 source を検査できません。commit の有無とは独立に、active helper の本文と副作用は判断不能です。' + UNKNOWN_OWNER_GATE);
     }
     if (g.sub === 'difftool' && !g.terminal) {
       deny('Git difftool の extcmd・既定 tool・env/config が選ぶ外部実行 source と副作用を検査できません。helper を呼ばない対応済み diff が同目的・同条件を保てる場合に検討し、保てなければ owner に確認してください。' + UNKNOWN_OWNER_GATE);
@@ -2946,7 +3173,7 @@ function parsedExfil(invocation) {
   let verdict = false;
   if (invocation.name === 'gh') verdict = ghOfficialVerdict(invocation);
   if (invocation.name === 'curl') {
-    verdict = curlReadsUpload(invocation.args, invocation.incomplete, true);
+    verdict = curlReadsUpload(invocation.args, invocation.incomplete, true, invocation);
     // Only the actual first literal argv -q/--disable prevents curl's implicit curlrc load.
     if (!verdict && !(knownWord(invocation.args[0]) && ['-q', '--disable'].includes(invocation.args[0].text))) verdict = 'UNKNOWN';
   }
@@ -2965,6 +3192,13 @@ if (SCP_TEXT_COPY_SHAPE.test(cmd) && !knownSingleScpReceiveOnly(insp)) {
 const invocations = collectNetworkInvocations(insp);
 for (const invocation of invocations) {
   const remote = sshOperation(invocation);
+  if (remote.metadataWords?.length) {
+    const verdict = remote.argvUncertain || remote.metadataUnknown ? 'UNKNOWN' :
+      outboundPayloadVerdict(invocation, remote.metadataWords);
+    if (verdict) deny(verdict === 'FORBIDDEN' ?
+      'SSH の選択された login / destination metadata を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-N/-n や remote command の有無とは独立した送信 DATA です。内容・認証・実送信の成立は確認していません。' :
+      'SSH の選択された login / destination metadata の source・部分選択・展開・argv/context を確定できません。-N/-n は metadata の検査を省略する条件ではありません。' + UNKNOWN_OWNER_GATE, verdict);
+  }
   if (remote.remoteWords.length) {
     const verdict = remote.argvUncertain ? 'UNKNOWN' : outboundPayloadVerdict(invocation, remote.remoteWords);
     if (verdict) deny(verdict === 'FORBIDDEN' ?
