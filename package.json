@@ -18,15 +18,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
+    "@anthropic-ai/sdk": "^0.133.0",
     "@googleapis/gmail": "^22.0.1",
     "@mozilla/readability": "^0.6.0",
-    "@napi-rs/keyring": "^2.1.0",
+    "@napi-rs/keyring": "^2.1.1",
     "better-sqlite3": "^13.0.3",
     "fast-xml-parser": "^5.11.2",
     "jsdom": "^25.0.0",
-    "openai": "^7.28.0",
-    "playwright": "^1.63.0",
+    "openai": "^7.32.0",
+    "playwright": "^1.64.0",
     "string-similarity": "^4.0.4",
     "turndown": "^7.2.0"
   },
@@ -37,7 +37,7 @@
     "@types/string-similarity": "^4.0.2",
     "@types/turndown": "^5.0.6",
     "oxlint": "^1.87.0",
-    "oxlint-tsgolint": "^7.0.2003",
+    "oxlint-tsgolint": "^7.0.2004",
     "tsx": "catalog:",
     "typescript": "catalog:"
   }
