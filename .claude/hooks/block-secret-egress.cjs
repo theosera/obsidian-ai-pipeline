@@ -652,9 +652,9 @@ const RSYNC_FLAG_LONG = new Set(['archive', 'recursive', 'links', 'copy-links', 
     'existing', 'ignore-existing', 'remove-source-files', 'delete', 'delete-before', 'delete-during', 'delete-delay',
     'delete-after', 'delete-excluded', 'ignore-errors', 'force', 'partial', 'delay-updates', 'checksum', 'update',
     'inplace', 'append', 'append-verify', 'relative', 'no-implied-dirs', 'dirs', 'quiet', 'verbose', 'progress', 'stats',
-    'numeric-ids', 'human-readable', 'itemize-changes', 'cvs-exclude', 'ignore-times', 'size-only', 'ipv4', 'ipv6', 'list-only']);
+    'numeric-ids', 'human-readable', 'itemize-changes', 'cvs-exclude', 'ignore-times', 'size-only', 'ipv4', 'ipv6', 'list-only', 'from0']);
 const RSYNC_VALUE_SHORT = 'efBMT';
-const RSYNC_FLAG_SHORT = 'avrlpgoDHtOUJSLkKNnWxuzqsIbcdRACEXyih46';
+const RSYNC_FLAG_SHORT = 'avrlpgoDHtOUJSLkKNnWxuzqsIbcdRACEXyih460';
 
 /** A selected rsync remote shell is opaque local executable source; a proven local copy does not select it. */
 function rsyncRemoteHelper(invocation) {
@@ -1340,7 +1340,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
   // Retain producer verdicts until selection is final, rather than stopping on
   // a generated scalar that a later ordinary argument actually replaces.
   const scalarPayloads = new Set(['request', 'request-target', 'user', 'proxy-user',
-    'user-agent', 'referer', 'oauth2-bearer', 'ftp-account', 'mail-auth', 'mail-from']);
+    'user-agent', 'referer', 'oauth2-bearer', 'ftp-account', 'mail-auth', 'mail-from', 'range']);
   let selectedPayloads = new Map();
   const payloadVerdicts = [];
   let payloadSequence = 0;
@@ -1350,6 +1350,13 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
   let redirectProtocolsUnknown = false;
   let mimeBody = false;
   let mailRecipients = false;
+  let rangeHeaders = new Set();
+  let rangeHeaderUnknown = false;
+  let httpDataBody = false;
+  let httpFormBody = false;
+  let httpUpload = false;
+  let httpGet = false;
+  let httpHead = false;
   // These protocol-specific fields are not HTTP payloads merely because curl
   // stores their values. Unknown target/redirect activation is a separate UNKNOWN.
   const protocolPayloads = new Map([
@@ -1357,10 +1364,61 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
     ['mail-from', ['smtp', 'smtps']], ['mail-rcpt', ['smtp', 'smtps']],
     ['quote', ['ftp', 'ftps', 'sftp']], ['telnet-option', ['telnet']],
   ]);
+  // Exact registered consumers whose activation/route/auth format is unproved here.
+  // These selected generated roles stop UNKNOWN; they are not raw-body upload facts.
+  const unprovedRoles = new Map([["proxy", {"key": "proxy-route", "protocols": null, "mode": "network", "list": false}], ["proxy1.0", {"key": "proxy-route", "protocols": null, "mode": "network", "list": false}], ["socks4", {"key": "proxy-route", "protocols": null, "mode": "network", "list": false}], ["socks4a", {"key": "proxy-route", "protocols": null, "mode": "network", "list": false}], ["socks5", {"key": "proxy-route", "protocols": null, "mode": "network", "list": false}], ["socks5-hostname", {"key": "proxy-route", "protocols": null, "mode": "network", "list": false}], ["preproxy", {"key": "preproxy", "protocols": null, "mode": "network", "list": false}], ["doh-url", {"key": "doh-url", "protocols": null, "mode": "network", "list": false}], ["dns-servers", {"key": "dns-servers", "protocols": null, "mode": "network", "list": false}], ["connect-to", {"key": "connect-to", "protocols": null, "mode": "network", "list": true}], ["resolve", {"key": "resolve", "protocols": null, "mode": "network", "list": true}], ["ipfs-gateway", {"key": "ipfs-gateway", "protocols": ["ipfs", "ipns"], "mode": null, "list": false}], ["ftp-alternative-to-user", {"key": "ftp-alternative-to-user", "protocols": ["ftp", "ftps"], "mode": null, "list": false}], ["ftp-port", {"key": "ftp-port", "protocols": ["ftp", "ftps"], "mode": null, "list": false}], ["aws-sigv4", {"key": "aws-sigv4", "protocols": ["http", "https"], "mode": null, "list": false}], ["haproxy-clientip", {"key": "haproxy-clientip", "protocols": ["http", "https"], "mode": null, "list": false}], ["login-options", {"key": "login-options", "protocols": ["imap", "imaps", "pop3", "pop3s", "smtp", "smtps", "ldap", "ldaps"], "mode": null, "list": false}], ["sasl-authzid", {"key": "sasl-authzid", "protocols": ["imap", "imaps", "pop3", "pop3s", "smtp", "smtps", "ldap", "ldaps"], "mode": null, "list": false}], ["service-name", {"key": "service-name", "protocols": null, "mode": "selected-negotiate-or-anyauth", "list": false}], ["proxy-service-name", {"key": "proxy-service-name", "protocols": null, "mode": "selected-proxy-negotiation-or-unknown-proxy", "list": false}], ["tlsuser", {"key": "tlsuser", "protocols": null, "mode": "selected-user-password-pair+potential-TLS", "list": false}], ["tlspassword", {"key": "tlspassword", "protocols": null, "mode": "selected-user-password-pair+potential-TLS", "list": false}], ["tlsauthtype", {"key": "tlsauthtype", "protocols": null, "mode": "selected-user-password-pair+potential-TLS", "list": false}], ["proxy-tlsuser", {"key": "proxy-tlsuser", "protocols": null, "mode": "selected-proxy-user-password-pair+potential-HTTPS-proxy", "list": false}], ["proxy-tlspassword", {"key": "proxy-tlspassword", "protocols": null, "mode": "selected-proxy-user-password-pair+potential-HTTPS-proxy", "list": false}], ["proxy-tlsauthtype", {"key": "proxy-tlsauthtype", "protocols": null, "mode": "selected-proxy-user-password-pair+potential-HTTPS-proxy", "list": false}]]);
+  let selectedNativeRoleValues = new Map();
+  let negotiate = false;
+  let anyAuth = false;
+  let proxyNegotiate = false;
+  let proxyAnyAuth = false;
+  let requestedTLS = false;
+  const roleActive = (option, role) => {
+    if (!operationUrl) return false;
+    const protocols = [...operationProtocols];
+    const unknown = protocolUnknown || !protocols.length;
+    if (!unknown && protocols.every(p => p === 'file')) return false;
+    if (selectedNativeRoleValues.get('noproxy') === '*' && (role.key === 'proxy-route' || option === 'preproxy' || role.mode?.startsWith('selected-proxy-'))) return false;
+    if (role.protocols) {
+      if (protocols.some(p => role.protocols.includes(p))) return true;
+      return unknown || followRedirects && (redirectProtocolsUnknown ||
+        role.protocols.some(p => ['http', 'https', 'ftp', 'ftps'].includes(p)));
+    }
+    if (role.mode === 'selected-negotiate-or-anyauth') return negotiate || anyAuth;
+    const proxy = selectedNativeRoleValues.get('proxy-route');
+    const explicitNoProxy = proxy === '';
+    if (role.mode === 'selected-proxy-negotiation-or-unknown-proxy') {
+      if (explicitNoProxy) return false;
+      if (proxy === undefined || proxy.includes('\0')) return true;
+      return proxyNegotiate || proxyAnyAuth || /^socks5(?:h)?:/i.test(proxy);
+    }
+    const pair = prefix => selectedNativeRoleValues.has(prefix + 'tlsuser') &&
+      selectedNativeRoleValues.has(prefix + 'tlspassword') &&
+      selectedNativeRoleValues.get(prefix + 'tlsuser') !== '' &&
+      selectedNativeRoleValues.get(prefix + 'tlspassword') !== '';
+    if (role.mode === 'selected-user-password-pair+potential-TLS') {
+      if (!pair('')) return false;
+      return unknown || requestedTLS || protocols.some(p => ['https','ftps','smtps','imaps','pop3s','ldaps'].includes(p));
+    }
+    if (role.mode === 'selected-proxy-user-password-pair+potential-HTTPS-proxy') {
+      if (!pair('proxy-') || explicitNoProxy) return false;
+      return proxy === undefined || proxy.includes('\0') || /^https:\/\//i.test(proxy);
+    }
+    return true;
+  };
   const selectedPayload = (option, verdict, text = '') => {
     if (option === 'form' || option === 'form-string') mimeBody = true;
     if (option === 'mail-rcpt') mailRecipients = true;
-    selectedPayloads.set(scalarPayloads.has(option) ? option : ++payloadSequence, { option, verdict, text });
+    if (['data', 'data-ascii', 'data-binary', 'data-raw', 'data-urlencode', 'json'].includes(option)) httpDataBody = true;
+    if (option === 'form' || option === 'form-string') httpFormBody = true;
+    if (option === 'header') {
+      const name = /^([^:\s;\0]+)[:;]/.exec(text);
+      if (name) rangeHeaders.add(name[1].toLowerCase());
+      else if (text.includes('\0')) rangeHeaderUnknown = true;
+    }
+    const role = unprovedRoles.get(option);
+    if (role && !role.list) selectedNativeRoleValues.set(role.key, text);
+    selectedPayloads.set(role && !role.list ? role.key : scalarPayloads.has(option) ? option : ++payloadSequence, { option, verdict, text });
   };
   const selectedUrl = (word) => {
     const literal = literalSourceWord(word) || word;
@@ -1373,6 +1431,28 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
     if (operationUrl || final) {
       for (const { option, verdict, text } of selectedPayloads.values()) {
         if (!verdict) continue;
+        const unproved = unprovedRoles.get(option);
+        if (unproved) {
+          if (roleActive(option, unproved)) payloadVerdicts.push('UNKNOWN');
+          continue;
+        }
+        if (option === 'range') {
+          // Range is scalar-last, but its native consumer depends on the request backend.
+          // Curl8.7.1 stores warned non-digit values and interpolates the HTTP header.
+          if (!operationUrl) continue;
+          const http = [...operationProtocols].some(p => ['http', 'https'].includes(p));
+          if (!http && !protocolUnknown && operationProtocols.size &&
+              [...operationProtocols].every(p => p === 'file')) continue;
+          if (!http) { payloadVerdicts.push('UNKNOWN'); continue; }
+          // Multipart request kinds have no range-line branch in Curl_http_range.
+          if (httpFormBody && !httpGet && !httpHead && !httpDataBody && !httpUpload) continue;
+          const modeUnknown = httpFormBody || httpDataBody && httpUpload ||
+            httpHead && (httpDataBody || httpUpload) && !httpGet;
+          const header = httpGet || httpHead || !httpDataBody && !httpUpload ? 'range' : 'content-range';
+          if (rangeHeaders.has(header)) continue;
+          payloadVerdicts.push(modeUnknown || rangeHeaderUnknown || protocolUnknown ? 'UNKNOWN' : verdict);
+          continue;
+        }
         const protocols = protocolPayloads.get(option);
         const activeProtocol = protocols && [...operationProtocols].some(protocol => protocols.includes(protocol));
         if (activeProtocol) {
@@ -1397,6 +1477,11 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
       redirectProtocolsUnknown = false;
       mimeBody = false;
       mailRecipients = false;
+      rangeHeaders = new Set();
+      rangeHeaderUnknown = false;
+      httpDataBody = false; httpFormBody = false; httpUpload = false; httpGet = false; httpHead = false;
+      selectedNativeRoleValues = new Map();
+      negotiate = false; anyAuth = false; proxyNegotiate = false; proxyAnyAuth = false; requestedTLS = false;
     }
     etags.push(etag);
     if (operationUrl && [...cache.values()].some(Boolean)) cacheVerdicts.push('UNKNOWN');
@@ -1410,7 +1495,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
   const outbound = new Set(['data', 'data-ascii', 'data-binary', 'data-raw', 'data-urlencode', 'json',
     'form', 'form-string', 'header', 'proxy-header', 'url', 'url-query', 'request', 'request-target',
     'user', 'proxy-user', 'user-agent', 'referer', 'cookie', 'oauth2-bearer', 'ftp-account',
-    'mail-auth', 'mail-from', 'mail-rcpt', 'quote', 'telnet-option']);
+    'mail-auth', 'mail-from', 'mail-rcpt', 'quote', 'telnet-option', 'range', ...unprovedRoles.keys()]);
   /** Expand known inline values locally; file/env contents remain an unknown marker and are never read. */
   const expanded = (value) => {
     let file = false;
@@ -1482,6 +1567,15 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
       const fullName = t.slice(2, eq < 0 ? undefined : eq);
       const expanding = fullName.startsWith('expand-');
       const name = expanding ? fullName.slice(7) : fullName;
+      if (knownWord(optionWord) && eq < 0) {
+        if (name === 'get' || name === 'no-get') httpGet = name === 'get';
+        if (name === 'negotiate' || name === 'no-negotiate') negotiate = name === 'negotiate';
+        if (name === 'anyauth' || name === 'no-anyauth') anyAuth = name === 'anyauth';
+        if (name === 'proxy-negotiate' || name === 'no-proxy-negotiate') proxyNegotiate = name === 'proxy-negotiate';
+        if (name === 'proxy-anyauth' || name === 'no-proxy-anyauth') proxyAnyAuth = name === 'proxy-anyauth';
+        if (['ssl','ssl-reqd','ftp-ssl-control'].includes(name)) requestedTLS = true;
+        if (name === 'head' || name === 'no-head') httpHead = name === 'head';
+      }
       if (knownWord(optionWord) && eq < 0 && ['location', 'location-trusted', 'no-location', 'no-location-trusted'].includes(name)) followRedirects = !name.startsWith('no-');
       if (optionWord.dynamic && name.includes('\0')) {
         const prefix = name.split('\0')[0];
@@ -1499,8 +1593,10 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
       if (option === 'config') return 'UNKNOWN';
       const value = eq < 0 ? words[++k] : { ...optionWord, text: t.slice(eq + 1) };
       if (value) {
+        if (option === 'upload-file') httpUpload = true;
         if (option === 'variable') { variableDefinition(value.text, expanding, value); continue; }
         const source = expanding ? expanded(value.text) : { text: value.text, file: false };
+        if (option === 'noproxy') selectedNativeRoleValues.set('noproxy', literalSourceWord(value)?.text ?? source.text);
         const verdict = !incomplete && knownWord(optionWord) && knownWord(value) && !source.unknown &&
           (option !== 'url-query' || name === option) ? 'FORBIDDEN' : 'UNKNOWN';
         if (option === 'etag-compare') {
@@ -1536,21 +1632,24 @@ function curlReadsUpload(words, incomplete = false, actualClient = false, payloa
         }
         if (payload(option, source.text)) return verdict;
       } else if (option === 'etag-compare') etag = 'UNKNOWN';
-      else if (option === 'alt-svc' || option === 'hsts') return 'UNKNOWN';
+      else if (option === 'alt-svc' || option === 'hsts' || option === 'range' || unprovedRoles.has(option)) return 'UNKNOWN';
       else if (option === 'cookie' || option === 'netrc-file' || incomplete && fileOptions.has(option)) return 'UNKNOWN';
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
         if (actualClient && optionWord.dynamic && t[p] === '\0') return 'UNKNOWN';
         if (t[p] === ':') { finishOperation(); continue; }
         if (t[p] === 'L' && knownWord(optionWord)) followRedirects = true;
+        if (t[p] === 'G' && knownWord(optionWord)) httpGet = true;
+        if (t[p] === 'I' && knownWord(optionWord)) httpHead = true;
         const option = CURL_VALUE_SHORT[t[p]];
         if (!option) continue;
         if (option === 'config') return 'UNKNOWN';
         const value = p + 1 < t.length ? { ...optionWord, text: t.slice(p + 1) } : words[++k];
-        if (option === 'cookie' && !value) return 'UNKNOWN';
+        if ((option === 'cookie' || option === 'range') && !value) return 'UNKNOWN';
         if (option === 'cookie' && value && ((value.dynamic && value.dynamicMaySplit !== false) ||
             value.globExpanded || value.braceExpanded || value.tildeExpanded || value.ansiCUnknown ||
             (value.text.includes('\0') && !value.text.includes('=')))) return 'UNKNOWN';
+        if (option === 'upload-file' && value) httpUpload = true;
         if (value && outbound.has(option)) {
           selectedPayload(option, payloadContext ? outboundPayloadVerdict(payloadContext, [value]) : false, value.text);
         }
@@ -1599,7 +1698,7 @@ const WGET_FLAG_LONG = new Set([
   'retr-symlinks', 'ftps-implicit', 'ftps-resume-ssl', 'ftps-clear-data-connection', 'ftps-fallback-to-ftp',
   'recursive', 'mirror', 'delete-after', 'convert-links', 'convert-file-only', 'backup-converted',
   'page-requisites', 'strict-comments', 'relative', 'follow-ftp', 'span-hosts', 'no-parent', 'ignore-case',
-  'no-directories', 'force-directories', 'no-host-directories', 'protocol-directories', 'force-html',
+  'no-directories', 'force-directories', 'no-host-directories', 'protocol-directories', 'force-html', 'no-force-html',
 ]);
 const WGET_FLAG_SHORT = 'hVbdqvncNS46rkmEpKpFHs';
 
@@ -1691,15 +1790,21 @@ function wgetPayloadRole(invocation) {
   const headers = new Map();
   const unknownHeaders = [];
   const urls = [];
+  const htmlTagValues = new Map();
   let unknown = Boolean(invocation.incomplete);
   let terminal = false;
   let noProxy = false;
+  let forceHtml = false;
   let afterDD = false;
   const takeValue = (option, value) => {
     if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.ansiCUnknown ||
         value?.globExpanded || value?.braceExpanded || value?.tildeExpanded) unknown = true;
     if (!value) return;
     values.set(option, value);
+    if (option === 'follow-tags' || option === 'ignore-tags') {
+      if (literalSourceWord(value)?.text === '') htmlTagValues.set(option, []);
+      else htmlTagValues.set(option, [...(htmlTagValues.get(option) || []), value]);
+    }
     if (option !== 'header') return;
     const literal = literalSourceWord(value);
     if (literal?.text === '') { headers.clear(); unknownHeaders.length = 0; return; }
@@ -1711,6 +1816,7 @@ function wgetPayloadRole(invocation) {
   const flag = (option) => {
     if (['help', 'version'].includes(option)) terminal = true;
     if (option === 'no-proxy') noProxy = true;
+    if (option === 'force-html' || option === 'no-force-html') forceHtml = option === 'force-html';
   };
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k];
@@ -1738,26 +1844,86 @@ function wgetPayloadRole(invocation) {
       for (let p = 1; p < text.length; p++) {
         const short = text[p];
         if (WGET_VALUE_SHORT.includes(short)) {
-          const option = short === 'U' ? 'user-agent' : short === 'i' ? 'input-file' : `short-${short}`;
+          const option = short === 'U' ? 'user-agent' : short === 'i' ? 'input-file' : short === 'B' ? 'base' : `short-${short}`;
           takeValue(option, p + 1 < text.length ? wgetValueWord(word, p + 1) : invocation.args[++k]);
           break;
         }
         if (!WGET_FLAG_SHORT.includes(short)) unknown = true;
         if (short === 'h') flag('help');
         if (short === 'V') flag('version');
+        if (short === 'F') flag('force-html');
       }
       continue;
     }
     if (!proven && (word.dynamicMaySplit !== false || word.ansiCUnknown || word.globExpanded || word.braceExpanded)) unknown = true;
     urls.push(word);
   }
-  return { values, headers, unknownHeaders, urls, unknown, terminal, noProxy };
+  return { values, headers, unknownHeaders, urls, unknown, terminal, noProxy, forceHtml, htmlTagValues };
+}
+
+/** Wget's selected URL-list source composes with CLI URLs; it is not an upload body. */
+function wgetInputListState(invocation, role) {
+  const input = role.values.get('input-file');
+  if (!input) return { verdict: false, inactive: true, body: null };
+  const literal = literalSourceWord(input);
+  if (!literal) {
+    // An explicit remote input URL is itself fetched before its uninspected URL list.
+    const remote = /^(?:https?|ftps?):\/\//i.test(input.text);
+    return { verdict: remote ? outboundPayloadVerdict(invocation, [input]) || 'UNKNOWN' : 'UNKNOWN', inactive: false, body: null };
+  }
+  if (literal.text === '/dev/null') return { verdict: false, inactive: true, body: '' };
+  if (literal.text !== '-') return { verdict: guard.isSecretPath(literal.text) && !role.forceHtml ? 'FORBIDDEN' : 'UNKNOWN', inactive: false, body: null };
+  const source = shellStdinSource(invocation);
+  const nullInput = invocation.redirs.length === 1 && !invocation.heredocBodies.length &&
+    invocation.redirs[0].fdKnown && [null, '0'].includes(invocation.redirs[0].fd) &&
+    invocation.redirs[0].op === '<' && literalSourceWord(invocation.redirs[0].word)?.text === '/dev/null';
+  if (nullInput || source && source.text.trim() === '') return { verdict: false, inactive: true, body: '' };
+  const all = invocationSources.get(invocation) || [];
+  // Selected fd 0 proof is separately owned; HTML extraction is not a raw URL-line body.
+  let verdict = requestDataStdinVerdict(invocation, all);
+  if (role.forceHtml && verdict === 'FORBIDDEN') verdict = 'UNKNOWN';
+  return { verdict, inactive: false, body: source?.text ?? null };
+}
+
+/** Only selected relative URLs consume a base; unknown links/components stay unknown. */
+function wgetBasePayloadVerdict(invocation, role, input) {
+  const base = role.values.get('base');
+  if (!base || literalSourceWord(base) || input.inactive) return false;
+  if (input.body === null) return 'UNKNOWN';
+  let links;
+  if (role.forceHtml) {
+    // A deliberately small literal anchor grammar proves the href attribute itself;
+    // DATA inside title/data-href, comments, scripts or other HTML is not a link proof.
+    const clean = input.body.trim();
+    if (!clean) return false;
+    const anchor = /^<a\s+href\s*=\s*(["'])([A-Za-z0-9_.\/-]+)\1\s*>[^<>]*<\/a\s*>$/i.exec(clean);
+    if (!anchor) return 'UNKNOWN';
+    const tags = option => {
+      const words = role.htmlTagValues.get(option) || [];
+      const values = words.map(word => literalSourceWord(word)?.text);
+      if (values.some(value => value === undefined || !/^[A-Za-z0-9]+(?:,[A-Za-z0-9]+)*$/.test(value))) return null;
+      return new Set(values.flatMap(value => value.toLowerCase().split(',')));
+    };
+    const ignored = tags('ignore-tags');
+    const followed = tags('follow-tags');
+    if (!ignored || !followed) return 'UNKNOWN';
+    if (ignored.has('a') || followed.size && !followed.has('a')) return false;
+    links = [anchor[2]];
+  } else links = input.body.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (!links.length || links.every(link => /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(link))) return false;
+  if (!links.every(link => /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\/?$/.test(link) &&
+      !link.split('/').some(part => part === '.' || part === '..'))) return 'UNKNOWN';
+  return outboundPayloadVerdict(invocation, [base]);
 }
 
 /** Inspect only selected transmitted Wget words; inactive/overwritten values remain DATA. */
 function wgetInlinePayloadVerdict(invocation) {
   const role = wgetPayloadRole(invocation);
   if (role.terminal && !role.unknown) return false;
+  const input = wgetInputListState(invocation, role);
+  if (input.verdict) return input.verdict;
+  const base = wgetBasePayloadVerdict(invocation, role, input);
+  if (base) return base;
   const selected = [];
   const generated = word => word && !literalSourceWord(word);
   const value = name => role.values.get(name);
@@ -1765,7 +1931,7 @@ function wgetInlinePayloadVerdict(invocation) {
   if (role.unknown) return words.some(generated) ? 'UNKNOWN' : false;
   let http = false;
   let ftp = false;
-  let protocolUnknown = role.values.has('input-file');
+  let protocolUnknown = role.values.has('input-file') && !input.inactive;
   for (const url of role.urls) {
     const text = literalSourceWord(url)?.text ?? url.text;
     if (/^https?:\/\//i.test(text)) http = true;
@@ -1855,48 +2021,137 @@ function remoteCopyDestination(invocation) {
   return roles.at(-1) === 'REMOTE' ? 'FORBIDDEN' : false;
 }
 
-/** A local rsync file list transmits requested names on both upload and download routes. */
+/** Slice consumed option bytes without losing the original generated-value source span. */
+function rsyncRequestValue(word, text, start = 0) {
+  if (!word) return null;
+  return { ...word, text: text.slice(start),
+    literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(start) : undefined,
+    outboundLiteralValue: typeof word.outboundLiteralValue === 'string' ? word.outboundLiteralValue.slice(start) : undefined };
+}
+
+/** The stable filter prefix chooses sender/receiver roles before generated pattern DATA is checked. */
+function rsyncRequestRule(word, option) {
+  if (!word) return { unknown: true };
+  const literal = literalSourceWord(word);
+  const text = literal ? literal.text : word.text;
+  if (option === 'files-from') return { mode: 'file-list', word };
+  if (option === 'include-from' || option === 'exclude-from') return { mode: 'file', word, sender: true, receiver: true };
+  if (option === 'include' || option === 'exclude') {
+    if (literal && text === '!') return { clear: true };
+    return { mode: 'pattern', word, sender: true, receiver: true };
+  }
+  if (literal && (text === '!' || text === 'clear')) return { clear: true };
+  const match = /^(dir-merge|exclude|include|protect|merge|hide|show|risk|[-+.:HSPR])(?:,?([/!Cenprswx+-]*))([ _])(.*)$/s.exec(text);
+  if (!match) return { unknown: true };
+  const names = { exclude: '-', include: '+', merge: '.', 'dir-merge': ':', hide: 'H', show: 'S', protect: 'P', risk: 'R' };
+  const kind = names[match[1]] || match[1];
+  const modifiers = match[2] || '';
+  const merge = kind === '.' || kind === ':';
+  // Prefix-selected sides cannot also carry a side modifier. Word splitting can
+  // introduce several rule prefixes; the bounded single-rule contract does not guess them.
+  if ((/[HSPR]/.test(kind) && /[sr]/.test(modifiers)) || !merge && /[Cenw+-]/.test(modifiers)) {
+    // Exact literal invalid syntax is rejected while parsing options, before the
+    // client transport is selected. Preserve consumed DATA such as '-e helper'.
+    return literal ? { invalid: true } : { unknown: true };
+  }
+  if (merge && /[!w]/.test(modifiers) || !match[4]) return { unknown: true };
+  let sender = kind === 'H' || kind === 'S';
+  let receiver = kind === 'P' || kind === 'R';
+  if (!/[HSPR]/.test(kind)) {
+    sender = modifiers.includes('s'); receiver = modifiers.includes('r');
+    if (!sender && !receiver) sender = receiver = true;
+  }
+  const payloadStart = text.length - match[4].length;
+  return { mode: kind === '.' ? 'file' : kind === ':' ? 'dir-merge' : 'pattern', sender, receiver,
+    fullRuleGrammar: kind === '.' && !/[+\-C]/.test(modifiers),
+    word: merge ? rsyncRequestValue(word, text, payloadStart) : word };
+}
+
+/** Request filters are transmitted to a remote sender even when destination storage is local. */
 function rsyncFileListPayload(invocation) {
   if (invocation.name !== 'rsync') return false;
-  const files = [];
-  let remote = false;
+  const requests = [];
+  const operands = [];
   let unknown = Boolean(invocation.incomplete);
   let afterDD = false;
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k];
     const literal = literalSourceWord(word);
     const text = literal ? literal.text : word.text;
-    if (!literal && !quotedAttachedOptionValue(word, text, RSYNC_VALUE_SHORT, [...RSYNC_VALUE_LONG])) unknown = true;
-    if (!afterDD && text === '--') { afterDD = true; continue; }
-    if (!afterDD && ['--help', '--version'].includes(text) && !unknown) return false;
+    if (!afterDD && text === '--' && literal) { afterDD = true; continue; }
+    if (!afterDD && ['--help', '--version'].includes(text) && literal && !unknown) return false;
     if (!afterDD && text.startsWith('--')) {
       const eq = text.indexOf('=');
       const name = text.slice(2, eq < 0 ? undefined : eq);
       if (RSYNC_VALUE_LONG.has(name)) {
-        const value = eq < 0 ? invocation.args[++k] : { ...word, text: text.slice(eq + 1), literalValue: literal ? text.slice(eq + 1) : undefined };
-        if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
-        if (name === 'files-from') files.push(value);
-      } else if (!RSYNC_FLAG_LONG.has(name) && name !== 'from0' || eq >= 0) unknown = true;
+        const value = eq < 0 ? invocation.args[++k] : rsyncRequestValue(word, text, eq + 1);
+        if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
+        if (['filter', 'include', 'exclude', 'include-from', 'exclude-from', 'files-from'].includes(name)) {
+          const request = rsyncRequestRule(value, name);
+          if (request.clear) requests.splice(0, requests.length, ...requests.filter(previous => previous.mode === 'file-list'));
+          else requests.push(request);
+        }
+      } else if ((!RSYNC_FLAG_LONG.has(name) && name !== 'from0') || eq >= 0) unknown = true;
+      if (!literal && !quotedAttachedOptionValue(word, text, RSYNC_VALUE_SHORT, [...RSYNC_VALUE_LONG])) unknown = true;
       continue;
     }
     if (!afterDD && text.startsWith('-') && text !== '-') {
       for (let p = 1; p < text.length; p++) {
         if (RSYNC_VALUE_SHORT.includes(text[p])) {
-          const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
-          if (!literalSourceWord(value)) unknown = true;
+          const value = p + 1 < text.length ? rsyncRequestValue(word, text, p + 1) : invocation.args[++k];
+          if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
+          if (text[p] === 'f') {
+            const request = rsyncRequestRule(value, 'filter');
+            if (request.clear) requests.splice(0, requests.length, ...requests.filter(previous => previous.mode === 'file-list'));
+            else requests.push(request);
+          }
           break;
         }
         if (!RSYNC_FLAG_SHORT.includes(text[p]) && text[p] !== '0') unknown = true;
       }
+      if (!literal && !quotedAttachedOptionValue(word, text, RSYNC_VALUE_SHORT, [...RSYNC_VALUE_LONG])) unknown = true;
       continue;
     }
-    const role = remoteCopyAddressRole('rsync', text);
-    if (role === 'UNKNOWN') unknown = true;
-    if (role === 'REMOTE') remote = true;
+    if (!literal) unknown = true;
+    operands.push(literal ? literal.text : null);
   }
-  if (!files.length || !remote && !unknown) return false;
-  if (unknown || files.some(word => !literalSourceWord(word) || literalSourceWord(word).text === '-' || literalSourceWord(word).text.startsWith(':'))) return 'UNKNOWN';
-  return 'FORBIDDEN';
+  if (!requests.length) return false;
+  const roles = operands.map(text => remoteCopyAddressRole('rsync', text));
+  const remote = roles.includes('REMOTE');
+  if (!remote && !unknown && !roles.includes('UNKNOWN')) return false;
+  if (unknown || roles.includes('UNKNOWN') || !operands.length || requests.some(request => request.unknown)) return 'UNKNOWN';
+  const pull = roles[0] === 'REMOTE' && (operands.length === 1 || roles.at(-1) === 'LOCAL');
+  // Remote uploads retain the independent file-upload prohibition below. A role
+  // selected only on the opposite remote side does not inherit a coincident local read.
+  if (!pull && !requests.some(request => request.mode === 'file-list')) return false;
+  const stdinConsumers = requests.filter(request => ['file', 'file-list'].includes(request.mode) &&
+    literalSourceWord(request.word)?.text === '-');
+  if (stdinConsumers.length > 1 && requests.some(request => request.sender || request.mode === 'file-list')) return 'UNKNOWN';
+  for (const request of requests) {
+    if (request.mode === 'file-list') {
+      const literal = literalSourceWord(request.word);
+      if (!literal || !literal.text || literal.text.startsWith(':')) return 'UNKNOWN';
+      if (literal.text === '-') {
+        return requestDataStdinVerdict(invocation, invocationSources.get(invocation) || [], true);
+      }
+      return 'FORBIDDEN';
+    }
+    if (!request.sender) continue;
+    if (request.mode === 'file') {
+      const literal = literalSourceWord(request.word);
+      if (!literal || !literal.text) return 'UNKNOWN';
+      if (literal.text === '-') {
+        const verdict = requestDataStdinVerdict(invocation, invocationSources.get(invocation) || [], true);
+        // Full filter grammar can select secondary local merge files even from
+        // known ordinary bytes. No-prefix merge forms retain literal DATA proof.
+        return verdict || (request.fullRuleGrammar ? 'UNKNOWN' : false);
+      }
+      return 'FORBIDDEN';
+    }
+    const verdict = outboundPayloadVerdict(invocation, [request.word]);
+    if (verdict) return verdict;
+  }
+  return false;
 }
 
 /** scp -S is local executable source even for downloads; only proven entirely local copies ignore it. */
@@ -1907,6 +2162,7 @@ function scpOperation(invocation) {
   const operands = [];
   const sshArgs = [
     { text: '-oPermitLocalCommand=no', dynamic: false },
+    { text: '-oClearAllForwardings=yes', dynamic: false },
     { text: '-oRemoteCommand=none', dynamic: false },
   ];
   let connectionProgram;
@@ -2741,14 +2997,13 @@ function sshOperation(invocation) {
   if (invocation.name !== 'ssh') return { sources: [], stdin: false, remoteWords: [] };
   const options = new Map();
   const sendEnvOptions = [];
+  const forwards = [];
   let sessionType;
   let controlOperation;
   let requestedTTY;
   const valueOptions = 'BbcDEeFIiJLlmOopQRSWw';
   let query = false;
   let earlyQuery = false;
-  let requestedQuery = false;
-  let requestedEarlyQuery = false;
   let argvUncertain = false;
   let selectedConfig = false;
   let configFile;
@@ -2760,8 +3015,12 @@ function sshOperation(invocation) {
   let selectedUser = false;
   let loginWord;
   let destinationWord;
+  let hostArgumentWord;
   let metadataUnknown = false;
+  const expandsArgument = word => Boolean(word && (word.globExpanded || word.braceExpanded ||
+    word.tildeExpanded || word.ansiCUnknown));
   const selectDestination = (word) => {
+    if (expandsArgument(word)) argvUncertain = true;
     destinationWord = literalSourceWord(word) || word;
     if (!destinationWord) { metadataUnknown = true; return; }
     // Dynamic user@host needs component-level proof; do not attribute an unselected
@@ -2775,17 +3034,20 @@ function sshOperation(invocation) {
       }
       destinationWord = { ...destinationWord, text: destinationWord.text.slice(at + 1), literalValue: undefined };
     }
+    hostArgumentWord = destinationWord;
   };
   for (let k = 0; k < invocation.args.length; k++) {
-    const word = invocation.args[k];
+    const originalWord = invocation.args[k];
+    const word = literalSourceWord(originalWord) || originalWord;
     const text = word.text;
+    if (expandsArgument(originalWord)) argvUncertain = true;
     if (text === '--') {
       remoteWords = invocation.args.slice(k + (host ? 1 : 2));
       if (!host && invocation.args[k + 1]) selectDestination(invocation.args[k + 1]);
       host = host || Boolean(invocation.args[k + 1]);
       break;
     }
-    const provenOperand = typeof word.literalValue === 'string' && word.dynamicMaySplit === false && !word.literalValue.startsWith('-');
+    const provenOperand = Boolean(literalSourceWord(originalWord) && !text.startsWith('-'));
     if (word.dynamic && !provenOperand && (word.dynamicMaySplit !== false ||
         text.startsWith('\0') && !(host && word.dynamicMaySplit === false))) argvUncertain = true;
     if (!text.startsWith('-') || text === '-') {
@@ -2794,17 +3056,19 @@ function sshOperation(invocation) {
       host = true; continue;
     }
     for (let p = 1; p < text.length; p++) {
-      if (text[p] === 'G') { requestedQuery = true; if (!argvUncertain) query = true; }
-      if (text[p] === 'Q' || text[p] === 'V') { requestedEarlyQuery = true; if (!argvUncertain) earlyQuery = true; }
+      if (text[p] === 'G' && !argvUncertain && !unknown) query = true;
+      if ((text[p] === 'Q' || text[p] === 'V') && !argvUncertain && !unknown) earlyQuery = true;
       if (text[p] === 'n' || text[p] === 'f') detached = true;
       if (text[p] === 'N' || text[p] === 'W') { noRemoteCommand = true; sessionType = 'none'; }
       if (text[p] === 's') { if (sessionType === undefined) sessionType = 'subsystem'; }
       if (text[p] === 't') requestedTTY = requestedTTY === 'yes' ? 'force' : 'yes';
       if (text[p] === 'T') requestedTTY = 'no';
       if (!valueOptions.includes(text[p])) continue;
-      const original = p + 1 < text.length ? { ...word, text: text.slice(p + 1), literalValue: undefined } : invocation.args[++k];
+      const original = p + 1 < text.length ? sshConsumedValueWord(word, p + 1) : invocation.args[++k];
       const value = literalSourceWord(original) || original;
-      if (value?.dynamic && (value.dynamicMaySplit !== false || (p + 1 < text.length && value.text.startsWith('\0')))) argvUncertain = true;
+      if (!original || expandsArgument(original)) argvUncertain = true;
+      if (value?.dynamic && (value.dynamicMaySplit !== false || (!'RLWDw'.includes(text[p]) && p + 1 < text.length && value.text.startsWith('\0')))) argvUncertain = true;
+      if ('RLWDw'.includes(text[p])) forwards.push({ kind: text[p], word: value });
       if (text[p] === 'F') { selectedConfig = true; configFile = value; }
       if (text[p] === 'O') controlOperation = value;
       // OpenSSH assigns CLI -l only while options.user is NULL.
@@ -2814,7 +3078,8 @@ function sshOperation(invocation) {
         if (!match || value.dynamicMaySplit && value.dynamic) unknown = true;
         else {
           const key = match[1].toLowerCase();
-          const optionWord = { ...value, text: match[2], literalValue: undefined };
+          const optionWord = sshConsumedValueWord(value, value.text.length - match[2].length);
+          if (key === 'remoteforward' || key === 'localforward' || key === 'dynamicforward') forwards.push({ kind: key === 'remoteforward' ? 'R' : key === 'localforward' ? 'L' : 'D', word: optionWord, config: true });
           if (key === 'sendenv') sendEnvOptions.push(optionWord);
           if (key === 'sessiontype' && sessionType === undefined) sessionType = sshOptionScalar(optionWord) || 'unknown';
           if (key === 'requesttty' && requestedTTY === undefined) requestedTTY = sshOptionScalar(optionWord) || 'unknown';
@@ -2832,11 +3097,69 @@ function sshOperation(invocation) {
       break;
     }
   }
-  if (selectedConfig ? earlyQuery : requestedEarlyQuery) return { sources: [], stdin: false, remoteWords: [] };
+  if (earlyQuery) return { sources: [], stdin: false, remoteWords: [] };
   if (selectedConfig && (argvUncertain || !configFile || configFile.dynamic || !['none', '/dev/null'].includes(configFile.text))) {
     deny('SSH の -F config が未知の実行 source（Match exec 等）を選び、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   }
-  if (selectedConfig ? query : requestedQuery) return { sources: [], stdin: false, remoteWords: [] };
+  if (query && !argvUncertain && !unknown) {
+    // -G dumps after explicit hostname canonicalization/CNAME selection; -V/-Q
+    // already returned during the proven early parse path above.
+    const canonicalSource = options.get('canonicalizehostname');
+    const canonical = canonicalSource && sshOptionScalar(canonicalSource);
+    const cnameSource = options.get('canonicalizepermittedcnames');
+    const cname = cnameSource && literalSourceWord(cnameSource);
+    if (canonicalSource && !['no', 'yes', 'always'].includes(canonical) || cnameSource && !cname) {
+      deny('SSH -G より前に使う明示 hostname resolution 設定の有効条件・source を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+    }
+    let direct = true;
+    let proxySelectionUnknown = false;
+    const proxyCommand = options.get('proxycommand');
+    const proxyJump = options.get('proxyjump');
+    const keys = [...options.keys()];
+    const jumpFirst = proxyJump && (!proxyCommand || keys.indexOf('proxyjump') < keys.indexOf('proxycommand'));
+    // A non-none first jump installs proxy_command=none; a first command,
+    // including explicit none, prevents a later non-none jump from activating.
+    // A first jump=none does not install proxy_command and keeps a later command.
+    const jump = jumpFirst && literalSourceWord(proxyJump);
+    const selectedProxy = jumpFirst && (!jump || jump.text.trim().toLowerCase() !== 'none')
+      ? proxyJump : proxyCommand;
+    if (selectedProxy) {
+      const value = literalSourceWord(selectedProxy);
+      if (!value) proxySelectionUnknown = true;
+      else direct = value.text.trim().toLowerCase() === 'none';
+    }
+    const cnameActive = cname && cname.text.trim().toLowerCase() !== 'none';
+    if (proxySelectionUnknown && canonical !== 'always' && (canonical === 'yes' || cnameActive)) {
+      deny('SSH -G より前の明示 hostname resolution と proxy の実選択を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+    }
+    const canonicalActive = canonical === 'always' || canonical === 'yes' && direct;
+    if (canonicalActive || cnameActive && (direct || canonical === 'always')) {
+      const hostname = options.get('hostname') || destinationWord;
+      const words = [hostname];
+      const hostnameLiteral = literalSourceWord(hostname);
+      if (hostnameLiteral && hostnameLiteral.text.includes('%')) {
+        let originalHostSelected = false;
+        for (let p = 0; p < hostnameLiteral.text.length; p++) {
+          if (hostnameLiteral.text[p] !== '%') continue;
+          const token = hostnameLiteral.text[++p];
+          if (token === '%') continue;
+          if (token === 'h') originalHostSelected = true;
+          else deny('SSH -G より前の HostName token の展開 source を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+        }
+        if (originalHostSelected) words.push(hostArgumentWord);
+      }
+      // resolve_canonicalize returns numeric addresses before consuming domain suffixes.
+      // Only exact full-address DATA proves this; token/alias/unproved host values do not.
+      const numericHostname = hostnameLiteral && !hostnameLiteral.text.includes('%') &&
+        require('node:net').isIP(hostnameLiteral.text) !== 0;
+      if (canonicalActive && !numericHostname && options.has('canonicaldomains')) words.push(options.get('canonicaldomains'));
+      const verdict = outboundPayloadVerdict(invocation, words);
+      if (verdict) deny(verdict === 'FORBIDDEN' ?
+        'SSH -G の設定表示より前に有効な hostname resolution が選ぶ host / domain DATA は、禁止された secret filename operand 由来です。内容・DNS 名の成立・native lookup・実通信は確認していません。' :
+        'SSH -G の設定表示より前に有効な hostname resolution の host / domain DATA・生成元・argv/context を確定できません。' + UNKNOWN_OWNER_GATE, verdict);
+    }
+    return { sources: [], stdin: false, remoteWords: [] };
+  }
   if (unknown) deny('SSH の -o option が動的で、ローカル実行 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   for (const key of ['pkcs11provider', 'securitykeyprovider']) {
     const source = options.get(key);
@@ -2883,7 +3206,9 @@ function sshOperation(invocation) {
   }
   const environment = sshEnvironmentPayload(invocation, { host, sessionType, controlOperation, requestedTTY,
     setEnv: options.get('setenv'), sendEnvOptions });
+  const forwarding = sshForwardPayload(invocation, { forwards, options, host, hostArgumentWord, controlOperation, argvUncertain });
   return { sources, stdin: host && !detached, remoteWords, argvUncertain, metadataWords, metadataUnknown,
+    forwardingWords: forwarding.words, forwardingUnknown: forwarding.unknown,
     environmentWords: environment.words, environmentUnknown: environment.unknown };
 }
 
@@ -3109,6 +3434,136 @@ function stdinPayloadVerdict(invocation, all, allFiles = false) {
   return false;
 }
 
+/** A selected request-data fd 0 source; separate from the legacy network stdin backstop. */
+function requestDataStdinVerdict(invocation, all, allFiles = false) {
+  if (!invocation || !knownInvocationContext(invocation)) return 'UNKNOWN';
+  const literal = word => literalSourceWord(word);
+  const sourceVerdict = (word, owner) => {
+    const value = literal(word);
+    if (!value) return 'UNKNOWN';
+    if (value.text === '/dev/null') return false;
+    if (guard.isSecretPath(value.text) || allFiles) return contextualVerdict(owner, 'FORBIDDEN');
+    return 'UNKNOWN'; // An ordinary filename is not a proof of its request-data contents.
+  };
+  const selectedWordsVerdict = (owner, words) => {
+    const verdict = outboundPayloadVerdict(owner, words);
+    if (verdict) return contextualVerdict(invocation, verdict);
+    for (const word of words) {
+      if (literal(word)) continue;
+      if (!Number.isInteger(word.start) || !word.raw) return 'UNKNOWN';
+      const end = word.start + word.raw.length;
+      const related = (invocationSources.get(owner) || all || []).filter(other => {
+        if (other === owner || other.order >= owner.order || !other.nameWord ||
+            other.nameWord.start <= word.start || other.nameWord.start >= end) return false;
+        for (let scope = other.scope; scope?.parent; scope = scope.parent) {
+          if (scope.parent === owner.scope) return true;
+        }
+        return false;
+      });
+      if (!related.length) return 'UNKNOWN';
+      for (const other of related) {
+        const data = pipelineInput(other);
+        if (data.unknown || !knownInvocationContext(other)) return 'UNKNOWN';
+        if (data.refs.length) return allFiles ? contextualVerdict(invocation, 'FORBIDDEN') : 'UNKNOWN';
+      }
+    }
+    return false;
+  };
+  const input = owner => {
+    const candidates = [];
+    for (const redir of owner.redirs || []) {
+      if (!redir.fdKnown) return { unknown: true };
+      const fd = redir.fd === null ? (redir.op.startsWith('<') ? '0' : '1') : redir.fd;
+      if (fd === '0') candidates.push({ ...redir, kind: 'redirect' });
+    }
+    for (const body of owner.heredocBodies || []) {
+      if (!body.fdKnown) return { unknown: true };
+      if (body.fd === null || body.fd === '0') candidates.push({ ...body, kind: 'heredoc' });
+    }
+    if (!candidates.length) return null;
+    if (candidates.some(x => !Number.isInteger(x.redirectionOrder)) ||
+        new Set(candidates.map(x => x.redirectionOrder)).size !== candidates.length) return { unknown: true };
+    return candidates.sort((a, b) => a.redirectionOrder - b.redirectionOrder).at(-1);
+  };
+  const inputVerdict = (selected, owner) => {
+    if (selected.unknown) return 'UNKNOWN';
+    if (selected.kind === 'heredoc') return selected.quoted ? false : 'UNKNOWN';
+    if (selected.op === '<<<') return selectedWordsVerdict(owner, [selected.word]);
+    if (['<', '<>'].includes(selected.op)) return sourceVerdict(selected.word, owner);
+    if (selected.op === '<&' && literal(selected.word)?.text === '-') return false;
+    return 'UNKNOWN';
+  };
+  const selectedInput = input(invocation);
+  // Shell fd 0 redirections replace pipeline input before the client reads it.
+  if (selectedInput) return inputVerdict(selectedInput, invocation);
+  const ids = invocation.pipelineIds || [];
+  if (ids.length !== 1) return 'UNKNOWN';
+  const producers = (all || []).filter(other => other !== invocation &&
+    other.scope === invocation.scope && other.order < invocation.order &&
+    (other.pipelineIds || []).includes(ids[0]));
+  const producer = producers.sort((a, b) => a.order - b.order).at(-1);
+  if (!producer || producer.functionCallName || producer.definitionName ||
+      !knownInvocationContext(producer)) return 'UNKNOWN';
+  // Track ordinary stdout FD copies in order. A redirect cannot leave an earlier
+  // secret read connected to the selected pipe after stdout has been discarded.
+  const fds = new Map([['1', 'pipe'], ['2', 'other']]);
+  for (const redir of [...(producer.redirs || [])].sort((a, b) => a.redirectionOrder - b.redirectionOrder)) {
+    if (!redir.fdKnown || !Number.isInteger(redir.redirectionOrder)) return 'UNKNOWN';
+    const fd = redir.fd === null ? (redir.op.startsWith('<') ? '0' : '1') : redir.fd;
+    if (['>', '>>', '>|', '<>'].includes(redir.op)) fds.set(fd, 'other');
+    else if (['>&', '<&'].includes(redir.op)) {
+      const value = literal(redir.word)?.text;
+      if (value === '-') fds.set(fd, 'other');
+      else if (value && /^\d+$/.test(value)) fds.set(fd, fds.get(value) || 'unknown');
+      else fds.set(fd, 'unknown');
+    }
+  }
+  if (fds.get('1') === 'other') return false;
+  if (fds.get('1') !== 'pipe') return 'UNKNOWN';
+  if ([':', 'true', 'false'].includes(producer.name)) return false;
+  if (producer.name === 'printf') {
+    const args = producer.args || [];
+    let k = 0;
+    const first = literal(args[0])?.text;
+    if (first === '-v' || first?.startsWith('-v') && first.length > 2) return false;
+    if (first === '--') k++;
+    const format = literal(args[k]);
+    if (!format || format.text.startsWith('-') && first !== '--') return 'UNKNOWN';
+    let conversions = 0;
+    for (let p = 0; p < format.text.length; p++) {
+      if (format.text[p] === '\\') {
+        const escaped = format.text[++p];
+        // Only literal NUL with no following octal digit is proved here.
+        if (escaped === '0' && !/[0-7]/.test(format.text[p + 1] || '')) continue;
+        if (!['a', 'b', 'e', 'f', 'n', 'r', 't', 'v', '\\'].includes(escaped)) return 'UNKNOWN';
+        continue;
+      }
+      if (format.text[p] !== '%') continue;
+      const conversion = format.text[++p];
+      if (conversion === '%') continue;
+      if (conversion !== 's') return 'UNKNOWN';
+      conversions++;
+    }
+    // A literal-only format never uses later DATA arguments; %s formats repeat
+    // until all supplied args are consumed, so every later word is selected.
+    if (!conversions) return false;
+    const words = args.slice(k + 1);
+    return selectedWordsVerdict(producer, words);
+  }
+  const selectedProducerInput = input(producer);
+  if (producer.name === 'cat' && !producer.args.length && selectedProducerInput) {
+    return inputVerdict(selectedProducerInput, producer);
+  }
+  const data = pipelineInput(producer);
+  if (data.unknown) return 'UNKNOWN';
+  if (data.refs.length) {
+    if (data.refs.some(word => !literal(word))) return 'UNKNOWN';
+    return allFiles || data.refs.some(word => guard.isSecretPath(literal(word).text))
+      ? contextualVerdict(invocation, 'FORBIDDEN') : 'UNKNOWN';
+  }
+  return 'UNKNOWN'; // Unobserved input and unproved multi-stage transforms are not literal DATA.
+}
+
 /** Keep the existing network-client selection separate from the reusable stdin DATA role. */
 function unsafeNetworkInput(invocation, all) {
   return networkReadsStdin(invocation) ? stdinPayloadVerdict(invocation, all) : false;
@@ -3222,6 +3677,122 @@ function sshConfigTokens(word) {
   if (quote) return null;
   if (started) result.push(token);
   return result;
+}
+
+/** Preserve scalar proofs when ssh strips a consumed option prefix; raw/start retain provenance. */
+function sshConsumedValueWord(word, offset) {
+  if (!word) return word;
+  return { ...word, text: word.text.slice(offset),
+    literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(offset) : undefined,
+    outboundLiteralValue: typeof word.outboundLiteralValue === 'string' ? word.outboundLiteralValue.slice(offset) : undefined };
+}
+
+/** OpenSSH forwarding fields use bracket/escape boundaries, not shell whitespace splitting. */
+function sshForwardFields(text) {
+  if (typeof text !== 'string' || /\$\{/.test(text)) return null;
+  text = text.replace(/^\s+/, '');
+  const fields = []; let token = '', bracket = false, endedBracket = false;
+  for (let k = 0; k < text.length; k++) {
+    const ch = text[k];
+    if (endedBracket && ch !== ':') return null;
+    if (ch === '\\' && !bracket) { if (k + 1 >= text.length) return null; token += text[++k]; continue; }
+    if (ch === '[' && token === '' && !bracket) { bracket = true; continue; }
+    if (ch === ']' && bracket) { bracket = false; endedBracket = true; continue; }
+    if (ch === ':' && !bracket) { fields.push(token); token = ''; endedBracket = false; continue; }
+    token += ch;
+  }
+  if (bracket || fields.length > 3) return null;
+  fields.push(token); return fields;
+}
+
+/** Request component proof keeps an opaque unselected component from being attributed to the sink. */
+function sshForwardComponent(word, component) {
+  if (typeof component !== 'string') return null;
+  if (!component.includes('\0')) return { text: component, dynamic: false, dynamicMaySplit: false };
+  // A source span covering other generated components cannot establish which reader
+  // supplied this request value. Preserve UNKNOWN rather than label a local target secret.
+  if ((component.match(/\0/g) || []).length !== (word.text.match(/\0/g) || []).length) return null;
+  return { ...word, text: component, literalValue: undefined, outboundLiteralValue: undefined };
+}
+
+/** Immediate R/W request metadata is distinct from conditional L targets and local D binds. */
+function sshForwardPayload(invocation, selection) {
+  const { forwards, options, host, hostArgumentWord, controlOperation, argvUncertain } = selection;
+  if (!host || !forwards.length) return { words: [], unknown: false };
+  const control = controlOperation && literalSourceWord(controlOperation);
+  if (control && ['check', 'conninfo', 'channels', 'exit', 'stop'].includes(control.text)) return { words: [], unknown: false };
+  if (controlOperation && (!control || !['forward', 'cancel'].includes(control.text))) return { words: [], unknown: true };
+  const stdio = forwards.some(entry => entry.kind === 'W');
+  const clearing = options.has('clearallforwardings') ? sshOptionScalar(options.get('clearallforwardings')) : stdio ? 'yes' : 'no';
+  let unknown = Boolean(argvUncertain); const words = [];
+  if (stdio && (controlOperation || forwards.filter(entry => entry.kind === 'W').length > 1)) unknown = true;
+  const port = (value, zero = false) => /^\d+$/.test(value) && Number(value) >= (zero ? 0 : 1) && Number(value) <= 65535;
+  for (const entry of forwards) {
+    if (entry.kind !== 'W' && entry.kind !== 'w' && clearing === 'yes') continue;
+    if (entry.kind !== 'W' && entry.kind !== 'w' && !['yes', 'no'].includes(clearing)) { unknown = true; continue; }
+    const value = literalSourceWord(entry.word) || entry.word;
+    if (!value || value.dynamicMaySplit !== false || value.ansiCUnknown) { unknown = true; continue; }
+    if (entry.kind === 'D') continue; // This argv specifies a local listener; future SOCKS input is not inspected.
+    if (entry.kind === 'w') {
+      // Tunnel IDs are converted to integers, not transmitted as the source's raw bytes.
+      if (!literalSourceWord(value)) unknown = true;
+      continue;
+    }
+    let text = value.text;
+    if (entry.config) {
+      const tokens = sshConfigTokens(value);
+      if (!tokens?.length || tokens.length > 2) { unknown = true; continue; }
+      text = tokens.join(':');
+    }
+    const fields = sshForwardFields(text);
+    if (!fields) { unknown = true; continue; }
+    const isPath = field => field.includes('/');
+    let selected;
+    let valid = true;
+    if (entry.kind === 'W') {
+      valid = fields.length === 1 && isPath(fields[0]) || fields.length === 2 && port(fields[1]);
+      selected = valid ? fields[0] : undefined;
+    } else if (fields.length === 4) {
+      valid = port(fields[1], entry.kind === 'R') && port(fields[3]);
+      selected = entry.kind === 'R' ? fields[0] : fields[2];
+    } else if (fields.length === 3) {
+      if (isPath(fields[0])) { valid = port(fields[2]); selected = entry.kind === 'R' ? fields[0] : fields[1]; }
+      else if (isPath(fields[2])) { valid = port(fields[1], entry.kind === 'R'); selected = entry.kind === 'R' ? fields[0] : fields[2]; }
+      else { valid = port(fields[0], entry.kind === 'R') && port(fields[2]); selected = entry.kind === 'L' ? fields[1] : ''; }
+    } else if (fields.length === 2) {
+      if (isPath(fields[0]) && isPath(fields[1])) selected = entry.kind === 'R' ? fields[0] : fields[1];
+      else if (isPath(fields[1])) { valid = port(fields[0], entry.kind === 'R'); selected = entry.kind === 'L' ? fields[1] : ''; }
+      else { valid = entry.kind === 'R' && port(fields[1], true); selected = fields[0]; }
+    } else if (fields.length === 1) {
+      valid = entry.kind === 'R' && (isPath(fields[0]) || port(fields[0], true)); selected = isPath(fields[0]) ? fields[0] : '';
+    } else valid = false;
+    if (!valid) { unknown = true; continue; }
+    const component = sshForwardComponent(value, selected);
+    // L's target enters a request only after an external client selects this listener.
+    // Generated non-selected fields can also alter the runtime forwarding grammar.
+    if (!component || entry.kind === 'L' && !literalSourceWord(component) ||
+        !selected.includes('\0') && fields.some(field => field.includes('\0'))) { unknown = true; continue; }
+    if (selected.includes('/') && selected.includes('%') && entry.kind !== 'W') {
+      // OpenSSH expands streamlocal R listen paths after parse_forward. L's target
+      // requires a later client connection; W does not use this percent expansion loop.
+      for (let k = 0; k < selected.length; k++) {
+        if (selected[k] !== '%') continue;
+        const token = selected[++k];
+        if (token === '%') continue;
+        if (token !== 'k') { unknown = true; continue; }
+        const alias = options.get('hostkeyalias') || hostArgumentWord;
+        const tokens = sshConfigTokens(alias);
+        if (!alias || !tokens || tokens.length !== 1) { unknown = true; continue; }
+        // %k substitutes first-selected HostKeyAlias (lowercased by ssh), or the
+        // original host argument. It is not recursively expanded as shell source.
+        const value = literalSourceWord(alias);
+        if (entry.kind === 'L') { if (!value) unknown = true; }
+        else words.push(value ? { text: tokens[0], dynamic: false, dynamicMaySplit: false } : alias);
+      }
+    }
+    if (entry.kind === 'R' || entry.kind === 'W') words.push(component);
+  }
+  return { words, unknown };
 }
 
 /** Wildcards select environment names (and remove earlier pattern strings), not variable values. */
@@ -3567,6 +4138,128 @@ function collectNetworkInvocations(inspection, depth = 0) {
   return result;
 }
 
+/** Select only actual exported proxy sources; route/URI/backend proof remains UNKNOWN. */
+function proxyEnvironmentVerdict(invocation) {
+  const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  const opaque = word => !literalSourceWord(word);
+  const source = names => {
+    for (const name of names) if (environment.has(name)) {
+      const word = environment.get(name);
+      // curl_getenv treats empty values as absent. Wget's empty direct env has no
+      // selected URL bytes; its independent libproxy/default context is not certified.
+      if (literalSourceWord(word)?.text === '') continue;
+      return { name, word };
+    }
+    return null;
+  };
+  const protocolSource = protocol => invocation.name === 'wget' ?
+    source([{ http: 'http_proxy', https: 'https_proxy', ftp: 'ftp_proxy', ftps: 'ftps_proxy' }[protocol]].filter(Boolean)) :
+    source([protocol + '_proxy', ...(protocol === 'http' ? [] : [(protocol + '_proxy').toUpperCase()]), 'all_proxy', 'ALL_PROXY']);
+  const possible = invocation.name === 'wget' ? ['http_proxy', 'https_proxy', 'ftp_proxy', 'ftps_proxy'] :
+    [...environment.keys()].filter(name => /^[A-Za-z][A-Za-z0-9_]*_proxy$/i.test(name) && name !== 'HTTP_PROXY' && !/^no_proxy$/i.test(name));
+  if (!possible.some(name => environment.has(name) && opaque(environment.get(name)))) return false;
+  const literal = word => literalSourceWord(word)?.text;
+  const bypass = (list, host, wget) => {
+    if (typeof list !== 'string') return false;
+    if (!wget && list.trim() === '*') return true;
+    if (!host) return false;
+    // Finite ASCII exact/domain proof only. CIDR, normalization, dynamic lists and
+    // Wget's libproxy rules are not inferred from this matching subset.
+    return list.split(',').some(item => {
+      const domain = item.trim().toLowerCase().replace(/^\./, '');
+      return /^[a-z0-9.-]+$/.test(domain) && (host === domain || host.endsWith('.' + domain));
+    });
+  };
+  const urlRole = word => {
+    const value = literal(word);
+    if (typeof value !== 'string') return { protocol: null, host: null };
+    const protocol = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+    if (protocol === 'file') return { protocol, host: null };
+    const match = /^([a-z][a-z0-9+.-]*):\/\/([^\s/?#]+)/i.exec(value);
+    if (!match) return { protocol: null, host: null };
+    const authority = match[2].replace(/^.*@/, '');
+    const host = /^([a-z0-9.-]+)(?::[0-9]+)?$/i.exec(authority)?.[1]?.toLowerCase() || null;
+    return { protocol: match[1].toLowerCase(), host };
+  };
+  const operation = () => ({ urls: [], proxy: false, preproxy: false, noProxy: undefined, useProxy: true, unknown: !!invocation.incomplete });
+  let op = operation(), result = false, afterDD = false;
+  const finish = () => {
+    if (!op.urls.length || !op.useProxy && !op.unknown) return;
+    if (op.unknown) { result = 'UNKNOWN'; return; }
+    // Explicit proxy or preproxy strings (including empty) prevent ambient detection.
+    if (op.proxy || op.preproxy) return;
+    const noProxy = op.noProxy !== undefined ? op.noProxy :
+      literal(source(invocation.name === 'wget' ? ['no_proxy'] : ['no_proxy', 'NO_PROXY'])?.word);
+    for (const word of op.urls) {
+      const url = word ? urlRole(word) : { protocol: null, host: null };
+      if (url.protocol === 'file' || bypass(noProxy, url.host, invocation.name === 'wget')) continue;
+      const selected = url.protocol ? protocolSource(url.protocol) : null;
+      const uncertainProtocolSource = !url.protocol && possible.some(name => environment.has(name) && opaque(environment.get(name)));
+      if (selected && opaque(selected.word) || uncertainProtocolSource) result = 'UNKNOWN';
+    }
+  };
+  if (invocation.name === 'curl' && curlTerminalQuery(invocation.args, invocation.incomplete)) return false;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k], value = literal(word), text = value ?? word.text;
+    if (!afterDD && text === '--' && value !== undefined) { afterDD = true; continue; }
+    if (!afterDD && text.startsWith('--')) {
+      const eq = text.indexOf('='), name = text.slice(2, eq < 0 ? undefined : eq);
+      if (invocation.name === 'wget' && name === 'proxy' && eq < 0 && value !== undefined) { op.useProxy = true; continue; }
+      if (invocation.name === 'curl' && eq < 0 && name.startsWith('no-') && CURL_BOOLEAN_LONG.has(name.slice(3)) && value !== undefined) continue;
+      const values = invocation.name === 'curl' ? CURL_VALUE_LONG : WGET_VALUE_LONG;
+      const flags = invocation.name === 'curl' ? CURL_FLAG_LONG : WGET_FLAG_LONG;
+      const matches = invocation.name === 'curl' ? [...values, ...flags].includes(name) ? [name] : [] :
+        [...values, ...flags].includes(name) ? [name] : [...values, ...flags].filter(option => option.startsWith(name));
+      if (matches.length !== 1 || value === undefined && !(eq >= 0 && invocation.name === 'wget' && quotedAttachedOptionValue(word, text, WGET_VALUE_SHORT, [...WGET_VALUE_LONG]))) { op.unknown = true; continue; }
+      const option = matches[0];
+      if (['help', 'version'].includes(option) && eq < 0 && value !== undefined && invocation.name === 'wget') return false;
+      if (option === 'next' && invocation.name === 'curl') { finish(); op = operation(); afterDD = false; continue; }
+      if (option === 'no-proxy' && invocation.name === 'wget' && eq < 0) { op.useProxy = false; continue; }
+      if (values.has(option) && option !== 'use-askpass') {
+        const selected = eq < 0 ? invocation.args[++k] : wgetValueWord(word, eq + 1);
+        if (!selected || selected.dynamicMaySplit || selected.globExpanded || selected.braceExpanded || selected.ansiCUnknown) op.unknown = true;
+        if (invocation.name === 'curl' && eq >= 0) { op.unknown = true; continue; }
+        take(option, selected);
+      } else if (eq >= 0) op.unknown = true;
+      continue;
+    }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      const shortValues = invocation.name === 'curl' ? Object.keys(CURL_VALUE_SHORT).join('') : WGET_VALUE_SHORT;
+      for (let p = 1; p < text.length; p++) {
+        const short = text[p];
+        if (short === ':' && invocation.name === 'curl') { finish(); op = operation(); continue; }
+        if (invocation.name === 'wget' && 'hV'.includes(short) && value !== undefined) return false;
+        if (!shortValues.includes(short)) {
+          if (!(invocation.name === 'curl' ? '012346afgGiIjklLMnNOpqRsSvVZ:#' : WGET_FLAG_SHORT).includes(short)) op.unknown = true;
+          continue;
+        }
+        const selected = p + 1 < text.length ? wgetValueWord(word, p + 1) : invocation.args[++k];
+        if (!selected || selected.dynamicMaySplit || selected.globExpanded || selected.braceExpanded || selected.ansiCUnknown) op.unknown = true;
+        const option = invocation.name === 'curl' ? CURL_VALUE_SHORT[short] : short === 'i' ? 'input-file' : short === 'e' ? 'execute' : null;
+        take(option, selected); break;
+      }
+      continue;
+    }
+    op.urls.push(word);
+  }
+  finish();
+  return result;
+  function take(option, word) {
+    const value = literal(word);
+    if (invocation.name === 'curl' && ['proxy', 'proxy1.0', 'socks4', 'socks4a', 'socks5', 'socks5-hostname'].includes(option)) op.proxy = true;
+    else if (option === 'preproxy' && invocation.name === 'curl') op.preproxy = true;
+    else if (option === 'noproxy') op.noProxy = value ?? null;
+    else if (option === 'url') op.urls.push(word);
+    else if (option === 'input-file' && value !== '/dev/null') op.urls.push(null);
+    // Wget explicit config is still blocked independently. Preserve the precise
+    // family override without treating a config scalar as authenticated source.
+    else if (invocation.name === 'wget' && option === 'execute' && typeof value === 'string') {
+      const entry = /^\s*(http|https|ftp)_?proxy\s*=\s*(.*)$/i.exec(value);
+      if (entry) op.proxy = true;
+    }
+  }
+}
+
 /** Return a typed refusal for the same executable egress shapes, including uninspectable source variants. */
 function parsedExfil(invocation) {
   // xargs/find can supply both the operation and every payload argument. Even a visible
@@ -3575,12 +4268,12 @@ function parsedExfil(invocation) {
   let verdict = false;
   if (invocation.name === 'gh') verdict = ghOfficialVerdict(invocation);
   if (invocation.name === 'curl') {
-    verdict = curlReadsUpload(invocation.args, invocation.incomplete, true, invocation);
+    verdict = curlReadsUpload(invocation.args, invocation.incomplete, true, invocation) || proxyEnvironmentVerdict(invocation);
     // Only the actual first literal argv -q/--disable prevents curl's implicit curlrc load.
     if (!verdict && !(knownWord(invocation.args[0]) && ['-q', '--disable'].includes(invocation.args[0].text))) verdict = 'UNKNOWN';
   }
   if (invocation.name === 'wget') verdict = wgetReadsUpload(invocation.args) ||
-    (wgetSourceBoundary(invocation) ? 'UNKNOWN' : wgetInlinePayloadVerdict(invocation));
+    (wgetSourceBoundary(invocation) ? 'UNKNOWN' : wgetInlinePayloadVerdict(invocation)) || proxyEnvironmentVerdict(invocation);
   if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
   if (['ncat', 'telnet'].includes(invocation.name)) verdict = verdict || socketAuthenticationVerdict(invocation);
   // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.
@@ -3602,6 +4295,12 @@ for (const invocation of invocations) {
     if (verdict) deny(verdict === 'FORBIDDEN' ?
       'SSH の選択された login / destination metadata を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-N/-n や remote command の有無とは独立した送信 DATA です。内容・認証・実送信の成立は確認していません。' :
       'SSH の選択された login / destination metadata の source・部分選択・展開・argv/context を確定できません。-N/-n は metadata の検査を省略する条件ではありません。' + UNKNOWN_OWNER_GATE, verdict);
+  }
+  if (remote.forwardingUnknown || remote.forwardingWords?.length) {
+    const verdict = remote.forwardingUnknown ? 'UNKNOWN' : outboundPayloadVerdict(invocation, remote.forwardingWords);
+    if (verdict) deny(verdict === 'FORBIDDEN' ?
+      'SSH の有効な forwarding request が送る remote listen / stdio destination 成分を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-N/-n と独立した送信 DATA です。内容・認証・native format・server の受入・実送信は確認していません。' :
+      'SSH forwarding の選択された request 成分・生成元・argv/context・有効条件を確定できません。local target / bind と immediate remote request は別の役割です。同目的・同条件を保つ known ordinary / query / 実 ClearAllForwardings による無効化が可能でなければ' + UNKNOWN_OWNER_GATE, verdict);
   }
   if (remote.environmentUnknown || remote.environmentWords?.length) {
     const verdict = remote.argvUncertain || remote.environmentUnknown ? 'UNKNOWN' :

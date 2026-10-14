@@ -20,6 +20,147 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+## R28: forwarding request DATA と入力 source
+
+R28 は公開 head `fecdd9ab559081f00753cfd1c6c700426f85fb2f` に対する正式 Codex review5518577060（2026-10-14 22:22:44 JST）の4 P1を受けた私有候補契約である。review comments4271325397 / 4271325407 / 4271325418 / 4271325427の原入力は1字も変えず Hook DATA として保持した。攻撃入力を native client として実行せず、実秘密・外部転送・認証成立を確認したとはしない。現公開 R27 と、まだ受入前の R28 候補を分ける。
+
+### 適用条件・停止理由・通常作業への影響
+
+| 対象 / 実際に選ばれる役割 | FORBIDDEN / UNKNOWN の条件 | 正常対照・同じ目的の対応形式 | ownerへ渡す不足 / 出口 | 版・未検証の境界 |
+|---|---|---|---|---|
+| SSH `-R` / `RemoteForward` の remote listen host / Unix socket path、`-W` の direct remote destination | 選択された送信成分に対応する secret filename reader が結び付く場合は FORBIDDEN。成分・token / escape / bracket / port / 生成元の分離・contextが未証明なら UNKNOWN。`-N/-n/-f` は global forwarding を無効にしない | known ordinary forwarding、実 query、実選択された `ClearAllForwardings=yes` はその family の条件として扱う。forwarding の目的を失う clear を自動的な同目的代替にはしない | target / remote request 成分と local target、operation / config / producer、clear / control 選択と不足条件を渡す。helper / startup / auth 等の別条件は解除しない | OpenSSH V_10_3_P1 の packet 成分と option 選択の一次 source。`-R` local connect targetを即時送信値としない。`-L` の remote target は local接続後の条件が未証明なら UNKNOWN、`-D` local bindや数値tunを rawsecret送信としない |
+| SCP が child SSH に渡す forwarding options | synthetic child に先に置かれる `ClearAllForwardings=yes` を保持し、使われない forwarding DATA を FORBIDDEN に誤帰属しない | 同じ copy の typed source / destination / helper 条件を維持する。inactive forward は upload / helper 条件を解除しない | original SCP argv / firstoperand / child override と実 copy direction / source を渡す | exact scp.c の forced-first defaultに基づく修正で、任意wrapper・別版・child helperの安全認証ではない。SCP first-clear source / 対照はfamily phaseで取得し、合成受入はpending |
+| Wget `-i` / `--input-file` の URL-list file / fd0 と `-B` / `--base` の resolved URL | input-file は raw request bodyではなくURL source。known sensitive plain listはそのpolicyでFORBIDDEN、ordinary未検査URL file / 未観測fd0 / 未証明HTML抽出はUNKNOWN。fd0は共有helperのcaller policyで分ける。Wget URL-list callerのordinary file / 未検査URL内容はUNKNOWN、sensitive sourceとの対応はそのpolicyでFORBIDDEN。rsyncのallFiles=trueをWgetへ一律に適用しない。ordinary CLI URLだけで別input sourceを消さない | 対応 ordinary URL stdout / quoted input、actual query、consumed DATA、実上書き・empty / unused 条件を区別する。file と CLI URL は併用可能 | selected input / last value / effective fd0、plain / HTML extraction、relative link / base、producer、target / config と不足条件を渡す | GNU Wget1.25 exact codeは plain relative inputにもbaseを適用する。manualのHTML文脈だけでplain-list baseをinactiveとしない。arbitraryfile内容がvalid URL・serverがacceptedと断定しない |
+| rsync `--include-from` / `--exclude-from` / `--files-from`、inline include / exclude / filter | remote pullでもsender request rulesは外向きDATA。selected local file-backed sourceは既存file-upload policyで FORBIDDEN、対応secret producerも FORBIDDEN。未知grammar / rule modifiers / source / route / competing stdinは UNKNOWN | ordinary inline pattern / constant stdout、実help / version、receiver-only remote-pull rule / proven local-only を区別。rulesはadditive、`!` はfilterだけをclearしfiles-fromを消さない | sender / receiver / both side、filter prefix / source / clear、copy direction、cwd / env / config、未検査sourceを渡す | pinned rsync3.4.1 primaryとinstalled Apple openrsyncは別。`--dry-run` / list-onlyはrequest送信を止めるqueryではない。dir-mergeはfilename role、full mergeのsecondary file grammarはordinary stdinでも UNKNOWNになり得る |
+| curl `-r` / `--range` と finite registry の選択された request values / source | HTTPで選択されたrangeの生成元を保持。対応secret producerは FORBIDDEN、未証明native grammar / active protocol / redirect / operation / header override / transformed sourceは UNKNOWN。backend変換を rawsecret送信と断定しない | ordinary range / 対応scalar、last value、`--next`のoperation区分、真terminal query / consumed DATA / actual unused roleを区別。独立したbody/header/file/config refusalは残す | selected native option / protocol / method / operation / override / producerと不足条件を渡す | curl8.7.1 exact source。long `= / abbreviation` の未対応grammarは新producerのFを支えず UNKNOWN。rangeのFILEはlocal field、FTP/SFTP変換・auth fallback等はfinite contractでUNKNOWNと分け、実backend / native成立は未検証 |
+| curlの実export / inherit / prefix protocol proxy environment / ALL_PROXY fallback | 実active protocolで選ばれたgenerated / unknown URI・credential / route sourceは最低UNKNOWN。native URI/auth/handshake/実送信を未実測のままFORBIDDENと断定しない | ordinary literal / proved scalar、unexported local、unset / export-n / actual env-u、protocol unused、実CLI proxy/preproxy clear・known no_proxy/NO_PROXY matchを当該familyだけ区別する | exact client / protocol / URL / source / export属性 / effective CLI override / cwd / configと不足条件を渡す。必須proxyを外すdirectは同目的とは限らない | curl8.7.1: lowercase protocol_proxy→uppercase（HTTP_PROXYは除外）→all_proxy→ALL_PROXY。empty envはfallbackへ進む。CLI --noproxyはenv bypassより優先。FILE/nonnetworkはこのfamilyがinactive |
+| Wgetの実export / inherit / prefix lowercase protocol proxy environment | 選ばれたopaque proxy URI・credential / contextはUNKNOWN。known sensitive readerが見えるだけでURI parsing / auth emission / server受入を確定しない | known --no-proxy・host suffix no_proxy match、ordinary scalar、実unset / removal / 未export / unused protocolを区別。`-e` config sourceの独立UNKNOWNは解除しない | getproxyが選ぶ実protocol / opt setting / lower envとsource proof、libproxy/backend、生成元・native formatと未確認条件を渡す | exact GNU1.25 getproxy/retr.c＋init/host sourceは取得済み。HTTP auth emission serializerは別途未取得・未監査。Wgetのno_proxyはcurlの'*'/CIDRへ一般化しない |
+
+### 共有 request-data stdin と役割の分離
+
+新しい request-data stdin 判定は、caller が実際に fd0 をURL / sender rule等として使う条件を確認した後だけ呼ぶ。既存 network stdin backstop を一括で置き換えない。最後の fd0 redirection / heredoc が pipelineを置換し、同scope / 同pipeline edgeの最後のproducerを選ぶ。nested substitutionや無関係readerをmain producerと混同しない。stdout discard、printf `-v`、出力に使われないDATAは区別する。
+
+対応printfは既知formatの `%s` / `%%` と有限escapeだけで、実際に出力へ使われる引数を既存 producer判定へ渡す。literal heredoc / here-string / ordinary constantは normal。selectedfile-backed inputをFORBIDDENにするのは、callerがallFiles=trueを指定するrole又は対応secret filename / source policyを証明した場合である。Wgetのordinary未検査URL fileはUNKNOWN、rsync sender filterのallFiles=trueはordinary selected fileもFORBIDDENと区別する。未知format / transformation / multi-stage / function / source / contextは UNKNOWN。literal backslash-zeroの後が非octalまたはendの場合だけNUL対応を追加し、width・`%b`・octal続きへ拡張しない。これは入力bytesのproducer proofで、native senderの実適用や成功の証明ではない。
+
+通常の目的を同じtarget / operation / cwd / env / configで保てる対応literal・query・実inactive/local-onlyだけを代替にする。目的が保てない場合は不足条件をownerへ渡して停止する。secretを別場所へcopy、別client / hook無効化、設定全消去を自動的な同目的出口にはしない。
+
+### 公式照合の範囲と取得段階
+
+current sourceのknown value tablesはcurl137 / Wget80 / rsync35 / SSH21の273 entriesとして列挙した。optionのarityを知って消費できることと、送信role / executable source / unused DATAを認証できることを分ける。全273を一律拒否または全安全とする契約ではなく、未確認entry・implicitconfig・popt alias/exec・任意client/helper/body/runtimeは未認証として残す。
+
+[OpenSSH ssh](https://man.openbsd.org/ssh)、[ssh_config](https://man.openbsd.org/ssh_config)、[V_10_3_P1 channels.c](https://raw.githubusercontent.com/openssh/openssh-portable/V_10_3_P1/channels.c)、[GNU Wget manual](https://www.gnu.org/software/wget/manual/wget.html)、[rsync manual](https://download.samba.org/pub/rsync/rsync.1.html)、[curl manual](https://curl.se/docs/manpage.html)を一次参照とする。live manual / installed version / pinned source / native DUMMY / actual Hook DATA / Claude dispatchは別段階である。GNUindividualpage fetch失敗やnative local selectorだけを取得成功・remote transfer証拠に昇格させない。
+
+### 修正前の観測・原FAILと pending受入
+
+独立測定は2026-10-14 22:35:16.321 JST、原4入力をfecdd / df463 / e456 / b6 / edeへ投入した20 observationsが全3ALLOW、broken0、各phaseのsource4は実Git blob bytesと一致した。これらは依頼前からのown-egress盲点であり、新R27退行と数えない。通常4pair / 真query4もcurrentALLOW。RemoteForward/include-fromの2対照と、同じroleのW / inline filter / activebaseの4条件を別取得し、旧public inputs / expectationsは書き換えていない。観測差やassertion数を独立脆弱性数に換算しない。
+
+共有helper v1の33 API assertionsでは4FAILを保持し、v2の同33/33と別exact追加34/34を取得した。v3はliteral DUMMYのNUL bytes6観測と、新sourceのAPI39/39を取得した。v2の未対応NULは正直なUNKNOWNであり、normal3とsecret1の新期待を旧v2へ当てた4差も別保存した。botのtest-definition/source inspection、これらのprivateAPI測定、担当familyのHook DATA、今後の合成全件 / 実入口を混同しない。
+
+R27 exact headのrequired CIは22:07:44.994 JST取得でrun38567973440 / job115865448678 / 実17step success。fullCRは22:11:43.648 JSTにall14/actionable0を取得したが、current-head bypass riskの一般文を別未解決として保持し、22:20:11.457 JSTのauthor clarification撤回を別証拠へ結び付けた。summary本文は未編集、生成由来は未取得、一般安全を認証したとはしない。その後22:22:44 JSTに新Codex4P1が投稿され、22:27:04.390 JSTのsnapshotで139total / 135resolved / 4openを取得した。過去CI / CR0 / 撤回をR28 sourceのfresh both0に持ち越さない。
+
+担当familyの私有phaseはsourceと原recordを付して区別する。SSH privatev3はnew64＋old275の339対照、L1 17、reverse12を取得した。SCP synthetic childのforced-first ClearAllForwardings欠落により、初期v2がinactive generated RemoteForwardをFへ誤帰属したcode精度退行を保存し、23:16:29.517 JSTのv3比較で既存の独立Uへ戻した（aggregatedeny維持、ordinary2はA維持）。この修復を原review4の新ALLOWholeや、fixture前提の訂正と同じ件数にまとめない。
+
+rsync privatev8はnew146/146・old110/110・L1 14・reverse6＋6＋5を取得し、helperv3をbindした。同sourceのliteralNUL正常2は、v2のunsupported-format Uを保存した上で対応した。full-merge `. -` のordinarystdinはsecondary file grammar未確認U、prefix無効の `.- -` / `.+ -` ordinaryはA、selectedfile-backedはallFiles policyFを維持する。literal invalid modifierに消費されたDATAの旧R12X128 Aと独立secretfilename textual Uも保持した。これらはfamily-onlyの測定で、別source・合成source・installed remote native・実dispatchの証明ではない。curl/Wget candidate-v6のfinite consumer表とfamily測定は次項のphaseとして受領した。合成sourceの合格へ持ち越さない。
+
+### family契約と先行private合成v1（歴史cut）
+
+23:49:14.346489 JSTにprivate合成v1を停写し、5709 bankを固定した。元5253のID / command / stdin / cwd / project / env / expectationは完全prefixとして保持し、new456 uniqueを追加、family間のexact duplicate1は同じ入力を再利用した。入力数・assertion数を独立脆弱性数へ換算しない。runner SHA256 `49e4098ef5848fe8b69019ad6fc98461c4992eea8a50b416c08760a034060dc6`、definitions SHA256 `b3f7db5ac2a52c698fe972f6e0ca4e3b5c73cef67310ab1c6e88db694e128f9c`。これは先行v1の取得cutで、下記の最新v3とは別のsource。ここに残す当時のPENDINGを後続sourceの合格へ読み替えない。
+
+| 先行private v1 source（歴史cut） | SHA256 |
+|---|---|
+| block-secret-egress.cjs | `d7491aee3e7fb7811d55e7a991efad574e468eaba5a9c20a47f3e28464b60073` |
+| lib/git-guard-common.cjs | `2f2a2796d55b6e60561f7010d55ee16d7dffc2798e7fd0cca4daade76214cfd8` |
+| block-secret-git.cjs | `273f6be441ba85cb295303b929a8427e2a88e5f883800f9cd1d0f51f875c9664` |
+| block-git-add-all.cjs | `8365d3652d9076aa5b40d21f57e41aaf0b4f453c5ff92f36db961580b7785201` |
+
+SSHの最終secondary-source条件は、remote streamlocal pathの `%k` をfirst-selected HostKeyAlias / originalhostへ結び付ける。literal `%%` と区別し、他のactive tokenやconditional LocalForwardは必要条件不足のUNKNOWNにする。service-name portの名前解決・変換はrawsecret送信証明へ使わず、今回対応するnumeric port以外はUNKNOWN。ordinary `http` 等のservice名も止まり得る。意味を保つknown numeric portを確認できる場合だけ対応形とし、sourceやservice mappingが目的に必要ならownerへ不足条件を渡す。同tag `ssh -G` とliteral80の無害selector観測はnative forwarding / auth / server acceptanceの保証ではない。
+
+curl rangeの最終条件は、HTTP native request-kindのGET / HEAD / default GETがRange、通常data POST / upload PUTがContent-Range。`--request`文字列だけで別のrequest-kindを証明しない。実際に選ばれた対応custom headerは自動range fieldだけを抑止し、そのheaderの独立payload判定は残す。multipart-only formは自動range branchがinactive、混合・不明body modesはUNKNOWN。FILE rangeはlocal seeking、FTP / SFTP等はHTTP rawheaderの証明を借りずUNKNOWNにする。
+
+Wget input-fileはscalar-lastでCLI URLと合成し、`-`は実fd0、`/dev/null`やproved empty / closedはinactive。ordinary未検査URL fileはUNKNOWN、sensitive plain fileは対応policyでFORBIDDEN。generated HTMLの出力は直ちにURLになったとはせず、未証明link extractionをUNKNOWNにする。baseはplain URL linesとHTMLの両方へ作用する。Fを支える対応範囲はsimple literal relative plain line、またはnarrow literal `<a href="ordinary">text</a>`等の明示subsetだけで、未知HTML / attribute / title / data-href / comments / normalization / secondarybaseはUNKNOWN。known absolute/empty inputはbaseがunused。follow-tags / ignore-tagsはappend vectors、emptyでそのvectorをresetし、ignoreの除外をfollow intersectionより先に適用する。ignored/excluded anchorはbase fieldがinactive、未知vectorはUNKNOWN。privatev5のinactive tag controls2が誤Fになった原A期待 / FAILを保存し、v6で修復した。
+
+#### curl generated / unproved consumerの有限26条件
+
+これらは登録されたvalueがgenerated / unprovedで、実consumerが選択され得る場合だけUNKNOWNにする。ordinary static / 対応scalar・実overwrite / noURL / actualquery / inactive protocolは別条件。全273 entriesや全generated argvの一律禁止ではない。
+
+| consumer群（26 names） | 選択・UNKNOWN条件とinactive対照 |
+|---|---|
+| proxy / proxy1.0 / socks4 / socks4a / socks5 / socks5-hostname | 共通last-value field。empty proxy / known noproxy `*` はproxy routingだけをinactiveにし、別sourceを消さない |
+| preproxy / doh-url / dns-servers / connect-to / resolve | 前3はscalar、connect-to / resolveはappend。scalar後勝ちとempty doh clearを区別し、ordinary additive値で先行未知entryを消さない |
+| ipfs-gateway | IPFS / IPNSまたは未知activation。known別protocolではunused |
+| ftp-alternative-to-user / ftp-port | FTP(S)または未知/custom redirect activationでUNKNOWN。knownHTTPSとdefaultredirectではunused。fallback command・FTP address変換をrawsecret送信と断定しない |
+| aws-sigv4 / haproxy-clientip | HTTP familyの認証・client metadata。generated formatや選択consumerが未証明ならUNKNOWN |
+| login-options / sasl-authzid | potential IMAP / POP3 / SMTP / LDAP familyまたは未知redirect。knownHTTPSとdefaultredirectではunused |
+| service-name / proxy-service-name | direct negotiate / anyauth選択、proxy routing・mode・auth / inheritedunknownを確認。known absent / disabled selectionはinactive |
+| tlsuser / tlspassword / tlsauthtype / proxy-tlsuser / proxy-tlspassword / proxy-tlsauthtype | selected user/password pairとpotential TLS、proxy側はpotentialHTTPS proxy。compiledfeature / backend / auth / format / server acceptanceが未証明のUNKNOWN |
+
+--nextのoperation境界は以前のactive判断を保持し、URLが無い同operationでは後値の選択を続ける。crypto engine/providerの限定loader consumerは取得済みだが、deployed backend / operation / source適用は未確認である。deprecated name・defaultTLS・local binding/filter/transformationなどの残余を安全認証にしない。通常生成route / credential/provider値が新たに止まる影響には、同じtarget / operation / 条件の対応static/knownscalarを確認し、同目的の代替がなければexactconsumer・source・cwd/env/config・未証明条件をownerへ渡す。認証値の置換やguard無効化を自動出口にしない。
+
+Curl/Wget privatev6は23:28:59.939 JSTに227/227・broken0/source4stable、metadata16/16、single-edge5groups×3observationsを取得した。four groupsはrange / URL-list / base F→A、unprovedconsumer U→Aという停止の必要性、selectedstdout groupはnormal A→legacyFという精度であり、devnull A→A / original F→Fの未喪失もそのまま残す。23:31:52.652 JSTに元bankのWget140を同v6へ再投入しownEG / aggregate不変を確認した。new26名で旧bankを検索した0件はselectorの0であり、finding0や旧coverage証明ではない。これらfamily-only、helper39API、nativeDUMMY6を合成5709の合格やnative transport成功へ加算しない。
+
+先行private v1のfamily測定とsource / 5709 bankは歴史phaseとして保全する。最新private v3の全件 / 元5253差分 / 実入口 / 公開CI・fresh受入は次項のPENDINGであり、先行phaseの合格をcarryしない。
+
+### explicit proxy environmentの選択・通常対照
+
+proxy private final-v3はcombined-v2をbasisとする別source（egress SHA256 `558ddd54b58b120b86162b1998efff3bc55b43988450af756286cf4591fa830d`）。原38 Hook DATAを保持し、12 selected opaque env conditionsのownEG / aggregate ALLOWをUNKNOWNへ接続した。curl8条件とWget4条件の観測であり、12独立脆弱性やnative送信12成功という意味ではない。最終50/50は2026-10-15 00:43:57.979 JST、actualcaptured Hook inputs150 / broken0 / source4・runnerstable。metadata12/12は00:45:05.838 JST、新caller反転8tuples / 16 observationsは00:47:06.947 JSTである。これらはproxy private sourceでの局所取得で、最新合成75b204 sourceの全件受入ではない。
+
+curlはactual OperationConfigのproxy / preproxy文字列（empty含む）を先に選び、それが無い時にprotocol lowercase env / uppercase fallback / ALL proxyを探す。lowercase HTTP_PROXY相当は`http_proxy`のみで、uppercase `HTTP_PROXY`をproxy選択と誤認しない。empty envは`curl_getenv`でNULLとなり、upper / ALL fallbackを消さない。no_proxy→NO_PROXYはCLI --noproxy未指定時だけで、known '*' / finite ASCII exact-domain matchはそのfamilyをinactiveにする。CLI empty --noproxyはenv bypassを解除する。IPv6 / CIDR / percent encoding / IDNA / arbitrary normalization / backendを、この有限matchのproofから一般化しない。
+
+Wgetのproxy selectorは未取得ではない。取得済みexact1.25 tarのretr.c1483–1553 getproxy / 1574–1580 no_proxy_match、init.c414–418 / config tableと、追加host.c1018–1043 sufmatchをhashへ結び付けた。use_proxy=false又はhost suffix matchが先にreturnし、HTTP / HTTPS / FTP / FTPSのopt setting又はlowercase getenvを選ぶ。empty値時のHAVE_LIBPROXY fallback、HTTP auth serialization、native URI format / handshake / actual送信は別未検査条件である。live GNU pageの取得失敗とcached exact consumer取得を混同しない。curlのuniversal '*' / CIDR仕様をWgetへ持ち込まない。
+
+反転はcurl callerだけ、Wget callerだけを別copyで外したsingle-edgeで、それぞれoriginal target U→A、他family U、ordinary A、既存body Fを保持した。元df463の62 check-removal器具は2 single legacy＋60 compositeであり、今回の必要性へ加算しない。PE-W10の初prospective A / actual既存execute-config Uは原RAWを残し、新private期待Uを別immutable adoptionへ記録した。proxy v1/v2のFILE URI / empty authorityとnative --no-location・disabledproxyのnormal overdeny FAILも保存し、v3で局所修正した。source / config / argvの別guardを解除するためのproxy clearではない。
+
+### SSH numeric config-dumpの限定precision
+
+OpenSSH V_10_3_P1 ssh.c424–433は数値addressを扱い、CanonicalDomains482–489より前にreturnする。privateSSHv9はeffective Hostname又はdestinationのbytesがfull literalで、percent tokenがなく、`node:net.isIP`が4/6を返す時だけ、config dumpのselected CanonicalDomainsをunusedとして除外する。Hostnameと他のsource / query / argv / context条件は残す。full literal 127.0.0.1 / ::1 / explicit Hostname=127.0.0.1の通常対照はこの条件で通る。short127.1、percent / alias / implicit config / generated host / split / glob / tilde / brace / arbitrary DNSのproofへ拡張しない。
+
+v8 rawと他32 controlsを保持したままv9を別sourceへ修復した。raw numeric edgeは2 observations / 1 FAILであり、初伝達の「2FAIL」はunit訂正として残す。v9 focused12/12＋same32/32 / broken0 / source4stable、metadata8/8、numeric-domain conjunctだけのprecision reverse4tuples / 8 observationsを取得した。reverseは過拒否を戻す精度効果で、security stop必要性とは別である。未知hostのL1がquery binderへ到達するという初harness前提は、実際の先行 -F / source stopを確認して訂正し、原scriptを保持した。native DNS / auth / packet / transportを測定したとはしない。
+
+元5253内のR10EG035はinput / ID / contextを変えず、A→UNKNOWN期待を理由付きで採用した。unknown explicit -o source / hostname / DNS条件がconfig dump以前に未証明であるためで、後ろの-oが前の-Gを消費したという説明ではない。known consumed value、実early V / Q、ordinary query / inactive sourceは個別に保持する。DNS名が目的に必要なら数値IPへの置換を自動出口とせず、same target / operation / source / configの不足をownerへ渡す。
+
+### 未確認の一次role台帳（7行、追加調査停止）
+
+残余台帳v5はproxy2行のprivate修復と、将来未確認5行を分ける。全7行を新findingやnew Hook inputsへ換算しない。Git174（171 catalog / 3 offcatalog）、GH196 builtin leaf / 32 containers、network273 registered value namesも別のinventory unitであり、runtime操作数ではない。userが閉じた93への新依頼 / retry / 3 file作成は行わず、3-file facts / intent / artifacts構造は参照だけとして保持する。
+
+| row / 状態 | 取得済み一次consumerと未確認条件 | 通常作業・終了基準 |
+|---|---|---|
+| RP01 curl proxy env — private修復、合成/public pending | exact8.7.1 proxy/env consumer取得、上述50/metadata/reverseはprivate558ddd。URI/auth/backend/送信未証明 | actual ordinary / unused / clearの同目的対照を維持。合成source全件・公開CI/freshを別取得する |
+| RP02 Wget proxy env — private修復、合成/public pending | exact1.25 getproxy selector取得済み、HTTP auth consumer未取得・未監査。libproxy/SSL buildと実transportは未確認 | lowercase/opt優先と実no-proxyを保持。独立execute/config source Uを残す |
+| RP03 curl crypto engine/provider — FUTURE_UNVERIFIED、追加probe停止 | exact8.7.1 tool_getparam / tool_operate / openssl.cの限定loader consumerは取得済み。deployed engine/provider/backend/operationは未認証 | 普通のengine名だけでFにしない。same operationのdefault/inactive sourceと、実active loader/sourceを有限に証明してから判断する |
+| RP04 rsync popt defaults/aliases — FUTURE_UNVERIFIED、追加probe停止 | GNU3.4.1 options.cのpoptReadDefaultConfig consumer取得。popt libraryのfile/error/alias仕様とinstalled Apple applicabilityは未確認 | GNU pathをApple binaryへ一般化しない。actual implementation / owned config / inactive roleが証明できなければ対応済としない |
+| RP05 rsync implicit CVS/per-directory ignores — FUTURE_UNVERIFIED、追加probe停止 | exact3.4.1 exclude.cでHOME/.cvsignore/CVSIGNOREとsender又はprotocol<29のconditional serializationを確認。current side/protocol / source / Hook/nativeは未取得 | modern receiver elision・local-onlyをfile送信へ誤分類しない。active file-backed/source relationが実条件で立つ時だけpolicy判定する |
+| RP06 rsync remote program/options — FUTURE_UNVERIFIED、追加probe停止 | exact main.c / options.cのlocal argument constructionは取得済み。remote interpreter/version/context/actual selected word / executionは未証明 | local / daemon / remote-shellを分ける。ordinary default・consumed DATA・orderingを保ち、実active sourceの不足をownerへ渡す |
+| RP07 current/deprecated option/backend compatibility — FUTURE_UNVERIFIED、追加probe停止 | exact8.7.1 parser tableとPARAM_OPTION_UNKNOWN境界は取得済み。newdeployed path/version/build/current consumersは未認証 | recognized nameをnativevalid operationとしない。未対応nameの存在だけで一律拒否せず、actual active conditionを確認する |
+
+Pinned一次参照は[curl8.7.1 lib/url.c](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/lib/url.c)、[tool_operate.c](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/src/tool_operate.c)、[proxy](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/docs/cmdline-opts/proxy.md) / [noproxy](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/docs/cmdline-opts/noproxy.md)、[GNU Wget1.25.0 source archive](https://ftp.gnu.org/gnu/wget/wget-1.25.0.tar.gz)、[OpenSSH V_10_3_P1 ssh.c](https://raw.githubusercontent.com/openssh/openssh-portable/V_10_3_P1/ssh.c)、[rsync3.4.1 options.c](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/options.c) / [exclude.c](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/exclude.c) / [main.c](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/main.c)とする。原archive/consumer SHAとactual取得cutを別receiptに保存し、未保存の正確web取得時刻はnullとする。live manual・pinned source・installed binary・native DUMMY・Hook DATA・actual入口を相互に代替しない。
+
+### 最新private合成v3 / 5846 bank — 全件結果PENDING
+
+2026-10-15 01:02:33.777100 JSTにprivate合成v3を停写した。元5253のID / command / stdin / cwd / project / envはexact prefixとして維持し、R10EG035の理由付き期待変更1を別採用した。new593はrecorded signatures（cmd / stdin / cwd / project / env）の区分で、独立finding数や全runtime unique数ではない。runner SHA256 `2ab70a47ae3d977097c242caec8f2ab7250c4da27d17074ddefbaf6e5bb3dba5`、definitions SHA256 `f79acd40ddfc25f7dd12382ff45ff2b2e954493cd192db454308f5702543a451`。
+
+| 最新private v3 source | SHA256 |
+|---|---|
+| block-secret-egress.cjs | `75b20493c558e73853e05b08e38840979df8f7842da04407c177f3c4378fad34` |
+| lib/git-guard-common.cjs | `2f2a2796d55b6e60561f7010d55ee16d7dffc2798e7fd0cca4daade76214cfd8` |
+| block-secret-git.cjs | `273f6be441ba85cb295303b929a8427e2a88e5f883800f9cd1d0f51f875c9664` |
+| block-git-add-all.cjs | `8365d3652d9076aa5b40d21f57e41aaf0b4f453c5ff92f36db961580b7785201` |
+
+このstage-v4では5846全件結果、same-bank old-head差分、合成sourceでの合同API / reverse、R28 actualCLI入口、新公開head / source17 / requiredCI / fresh both / thread0はPENDINGである。running processやfamily50成功を全件合格へ昇格しない。R27 source-v5の実入口summaryは2026-10-14 21:45:14.386 JST cutで5attempts / PASS1 / NOT4、actualBash dispatch1 / ownedEG UNKNOWN denial1。これはGit refspecの1入口だけで、Wget / SSH / Ncatとterminal-help normalはbefore-hook NOTでありR28 sourceへのdispatch proofではない。旧whole-tool strictFAILも、そのsource / 試行と結果のまま別保存する。拒否後のCLI/API再試行やモデル / trust / hooks変更を行わず、93 CLOSEDを別席の再試行へ読み替えない。
+
+実URI / auth / binary version / compiled backend / DNS / client / server / transportを未検証のまま自動Goal成功にしない。全件取得後はnew stage-v5にactualcut / fixed source / resultsを結び付け、finished stage-v4や過去sourceの記録を後から書き換えない。このdraftではLIVE / Git / GH / external report / FINAL / ZIPの変更を行わない。
+
+### stage-v5: 同private合成v3の実測チェックポイント
+
+stage-v4のPENDING cutと原fileを保持した上で、親の全件結果を新しい取得として読取り確認した。fixed egress SHA256 `75b20493c558e73853e05b08e38840979df8f7842da04407c177f3c4378fad34`、common / secret-git / add-allとrunner / definitionsは前項のprivate合成v3と同一。全5846 Hook DATAは2026-10-15 01:02:33.905→01:11:59.760 JSTに実行され、5846/5846 / failed0 / broken0。source4とrunner / definitionsは前後stable、三HookそれぞれへのspawnSync input argumentのSHAを計17,538件捕捉した。これはkernel stdin bytesのcapture又はClaudeの実dispatchではない。結果JSON SHA256 `2c0d97cafc72246275c587aa90af658030ea3b2e6a557cdb18896c611340a6c9`。
+
+元5253のID / command / stdin / cwd / project / envと順序は完全保持。旧R27実取得5253結果との比較は再実行ではなく、既存old実測とnew実測を同IDで再計算したderived比較（2026-10-15 01:20:42.020214 JST）。aggregate / 担当Hook / reason prefixの差はR10EG035のA→UNKNOWNだけで、D→Aは0、他5252は一致した。旧期待を理由無しにdenyへ替えず、この1adoptionの元ALLOW / 原inputと不足条件を保存する。新593recorded signaturesの追加、assertion数、差分数は独立脆弱性数へ換算しない。
+
+正常14対照は2026-10-15 01:05:32.041→01:05:33.469 JSTに同sourceへ実投入し14/14 ALLOW / broken0 / source4stable。これはcurrent bankのproposed normal controlsで、author / 93の日常作業の実行・確認ACKでもactualCLI / auth / networkでもない。正常14を全5846の別の14unique実行保障へ加算しない。有限独立確認は01:06:39.262 JSTにexisting definitions / preserved private controlsの28 DATA / 84 Hook spawns、28PASS / broken0 / source4stable、material0。original4のownEG FORBIDDEN、selected proxy12のUNKNOWN、numeric-domain unused2とordinary8のALLOW、既存payload2のFORBIDDENをそのfixture / sourceで確認した。28にはpublic bank外のnormal private stringsも含むため、全5846のcoverageやruntime全安全へ昇格しない。
+
+共有stdin判定のfile分類はcaller role別である。rsync sender ruleのallFiles=trueはselected ordinary local file内容も既存file-backed禁止とし、literal heredoc / known constant stdoutはnormalを保つ。Wget URL-listはraw body uploadではなく、ordinary未検査URL file / file-derived URL選択はUNKNOWN、対応sensitive plain source / producerは既存policyでFORBIDDEN。HTML / base / secondaryfile / activeprotocolの未証明は別UNKNOWNであり、共有helperのFを全callerへ一律に当てない。
+
+このチェックポイントは有限local source / component acceptanceである。public L1/API138の同17source再取得は親がLIVE適用後に行う予定で、この段階では未取得。commonのbyte一致を新public測定と呼ばない。R28 actualENTRY、公開current17source binding、required CI、fresh both review / thread0は依然PENDING。R27の4 NOT / source53でのGit入口1PASSは歴史のままで、新sourceへの再試行・carryをしない。native URI / auth / DNS / binary版 / compiled backend / server / transport / allclient runtime proofは未成立。残余tableの2proxy修復と5 FUTURE_UNVERIFIED停止のscopeを拡張せず、userが閉じた93の新task / retry / 3file作成も行わない。全件成功だけからGoal / FINAL / ZIPを自動成立させない。
+
 ## R27: 送信値と session / protocol の条件
 
 R27は、公開 `ede1302e` に対する正式Codex review5516746744（2026-10-14 19:49:10 JST）の4 P1と、その送信role・実行mode・選択順を変える有限な対照を扱う。修正と試験は固定した私有sourceで先に行った。4 findingには5 literal入力があり、Wget inline body、SSH SetEnv / SendEnv、Ncat / Telnet認証・login metadata、Git pushのdestination refを分ける。2026-10-14 21:25:03.236937 JSTに私有合成v5を停写した（egress `53cc956d`、common `2f2a2796`、add-all `8365d365`、secret-git `273f6be4`）。bankは5253件＝元5044 input byte保持＋新unique209件である。元期待のうち7件を下記の明示scopeへ理由付きでALLOWからUNKNOWNへ採用し、旧入力 / 旧期待 / 原FAILを保存した。v3の5229 / 7FAIL、v4の5235 / 8FAILは各歴史sourceの結果で、v5の合格へ持ち越さない。固定v5全5253は21:35:06.794 JSTに5253PASS/fail0/broken0/source4stableを取得した。新公開headのCI / fresh review / thread受入はこのlocal結果とは別で、文書更新cutでは未取得である。

@@ -18,6 +18,12 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+R28 の候補契約では、SSH forwarding の remote request 成分、Wget の選択された URL-list stdin / base、rsync の sender filter rules、curl の range / request valuesを生成元と結び付ける。確定した policy 禁止は FORBIDDEN、source / format / operation / protocol が未証明なら UNKNOWN、対応する通常 literal / query / unused DATA は区別する。環境proxyは実export / inherit / protocolで選ばれた未証明routeだけUNKNOWNとし、ordinary scalar、未export、実unset / removal、明示disable / overrideを保持する。URI・認証・実送信の成立は別の未検証条件であり、全curl / Wget / SSHや全parameterを一律拒否しない。
+
+通常の URL / filter file、生成値・未知forward / proxy sourceも止まり得る。同じ対象・operation・cwd / env / configと目的を保てる対応literal / query / inactive形式がなければ、ownerへexact sourceと不足条件を渡して確認する。proxy必須の仕事をdirectへ変えるdisable、DNS / authに必要なhostnameをIPへ置換することを、自動的な同目的代替にはしない。SSH config dumpでCanonicalDomainsが未使用と証明できるのは、今回の対応ではpercent token等がないfull literal IPv4 / IPv6の場合に限る。
+
+R27の過去CI / review / 実入口とR28受入を分ける。stage-v4では全件結果PENDINGを記録し、stage-v5でprivate固定sourceの5846/5846・failed0 / broken0を2026-10-15 01:11:59.760 JST cutで確認した。元5253のinputを保持し、旧比較の差は理由付きR10EG035 A→UNKNOWNの1件だけ、D→Aは0。正常14対照と有限独立28対照も同sourceのHook DATAとして取得した。new593はrecorded signaturesで、独立finding数や全runtime unique数へ換算しない。受入は有限local componentだけで、R28実入口・新公開17source合同・CI / fresh reviewはPENDING。native URI / auth / transport / 全client runtime安全や自動Goal成功を証明しない。詳細は[ガイドのR28節](docs/security/git-command-guards.md#r28-forwarding-request-data-と入力-source)を参照する。
+
 ---
 
 ## アーキテクチャ概要
