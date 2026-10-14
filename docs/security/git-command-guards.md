@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 / R24 / R25 / R26 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 / R24 / R25 / R26 / R27 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -19,6 +19,90 @@
 既存 main 由来の raw backstop も残す。文字列の形だけが一致し、実 argv・操作と message / コメント / DATA を区別できない停止は **UNKNOWN** である。この一致を、秘密ファイルが実際に送信されることの証明として扱わない。
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
+
+## R27: 送信値と session / protocol の条件
+
+R27は、公開 `ede1302e` に対する正式Codex review5516746744（2026-10-14 19:49:10 JST）の4 P1と、その送信role・実行mode・選択順を変える有限な対照を扱う。修正と試験は固定した私有sourceで先に行った。4 findingには5 literal入力があり、Wget inline body、SSH SetEnv / SendEnv、Ncat / Telnet認証・login metadata、Git pushのdestination refを分ける。2026-10-14 21:25:03.236937 JSTに私有合成v5を停写した（egress `53cc956d`、common `2f2a2796`、add-all `8365d365`、secret-git `273f6be4`）。bankは5253件＝元5044 input byte保持＋新unique209件である。元期待のうち7件を下記の明示scopeへ理由付きでALLOWからUNKNOWNへ採用し、旧入力 / 旧期待 / 原FAILを保存した。v3の5229 / 7FAIL、v4の5235 / 8FAILは各歴史sourceの結果で、v5の合格へ持ち越さない。固定v5全5253は21:35:06.794 JSTに5253PASS/fail0/broken0/source4stableを取得した。新公開headのCI / fresh review / thread受入はこのlocal結果とは別で、文書更新cutでは未取得である。
+
+### 対応条件・停止理由・通常作業への影響
+
+| 守る対象 / 適用条件 | この境界の判定 | 判断不能になる条件 | 通常作業への影響 | 同じ目的の対応形式 | ownerへ渡す不足 / 出口 | 試験境界 |
+|---|---|---|---|---|---|---|
+| Wgetのselected inline body / header / User-Agent / Refererとprotocol-selected credentials / URL | 対応active roleに結び付いた秘密filename読取stdoutはFORBIDDEN。ordinary literal / 対応scalar、上書き・reset・unused roleはこの新edgeで停止しない | 未証明producer、split / arity / grammar、methodとbody familyの不整合、未確定target / proxy / config / contextはUNKNOWN | 通常生成bodyや認証値、未知proxy設定も止まり得る。file upload・設定・askpassの旧条件は残る | 同じtarget / method / configで意味を確定できるordinary literal / 対応scalarを使い、実際に無効なfamilyを確認する | 選択body / header名 / credential family、protocol、target、producer、cwd / env / configと未解釈条件を添える。代替が無ければowner判断を求める | 私有family / L1 / 単一edge reverse、最終合成sourceのL2 / normal対照を別取得。literal DUMMY selector観測から実秘密・外部送信・認証成功を作らない |
+| Ncatのselected proxy-authと `NCAT_PROXY_AUTH` fallback、Telnetのselected login / environment metadata | 実際に使うprotocol / operation / sourceが対応済みで秘密由来ならFORBIDDEN。known ordinary / unused / 選択から外れた値は独立した旧条件を維持 | proxy / auth / Telnet implementation・選択login・継承値の出所・export / modeを解けなければUNKNOWN。未知envを非秘密として扱わない | stdinを `/dev/null` にしてもargv / env認証値は別に確認するため、通常の生成credentialsやloginも停止し得る | 同じ接続対象・実protocolと認証条件で対応ordinary値を使い、選択されないenvは実unset / env removal等で条件を確認する | CLIとenvの選択優先、consumer、protocol / runtime版、producerを添える。認証入力 / trust fileをraw uploadと混同しない | Hook INPUT DATAのrole / source対照と必要最小実入口を分ける。全socket client・任意protocol / server acceptance / native認証は保証しない |
+| SSHのactive sessionに渡すSetEnv / SendEnv、forced PTYで選ばれるTERM | active sessionの対応送信値で秘密由来が証明されればFORBIDDEN。known ordinary / 未export local / actual removal / inactive sessionはこのfamilyの対照 | 構成値・percent / env expansion・未知inheritance・SendEnv pattern / selection・未対応合成producer・session / TTY modeが解けなければUNKNOWN | stdinを止める `-n` だけではsession envを止めない。通常の生成envやPTY TERMも影響する | 同じtarget / session / PTYを維持する対応ordinary値、実export取消・unset / env removal、同目的の実queryを確認する | 選択name / value / producer、export / env操作順、session / PTY、target / configと未知条件を渡す。`-N`への変更は同じ処理目的を満たす場合だけ検討する | same-tag一次sourceのsession条件、L1とown-egress L2、normal対照、reverse、実入口を分ける。原reviewの `-N` をenv送信成立の証拠にしない |
+| Git pushのdestination refname / deletion target。local source ref・push-optionとは独立 | 実dst値に結び付いた秘密reader stdoutはFORBIDDEN。ordinary dst / 対応scalarは他のrepo / source / refspec条件を維持 | 未確定src:dstの分割・argv / wildcard / source / context、selected config refspecや明示receive-pack sourceの未検査はUNKNOWN | named remoteでもdst metadataは送信先へ届くため、通常生成branch名 / deletion targetも止まり得る。local srcのUNKNOWNは独立guardの責務 | 同じremote / dstの対応literal / scalarを確認する。push-optionやlocal sourceを変更して代わりの成功を作らない | exact refspecのsrc / dst、選択remote / protocol / config、receive-pack / helper source、producerを渡す | 原入力 / force / delete / 複数refspec / src-only / ordinary対照を別に保持。config fallbackと明示receive-packの選択条件を下記へ限定し、この有限測定から全push安全を称しない |
+
+### exportと選択値を保持する
+
+生成値とexport属性は別の情報として保持する。prefix assignment、実export / `set -a`、継承、後のassignment、`unset` / `export -n` / `env -u` / `env -i`の順序を選択consumerへ渡す。未exportのlocal値をchildへ送られた値としない。既知ordinary literal / 対応scalarの上書きは確認済みの値に置き換えるが、未対応の加工・append・composed sourceで生成元を失った場合はUNKNOWNを保持する。family局所更新がGit identity / pager / startup等の別familyのproofを消したり、任意inheritanceの安全証明になったりしない。 HOME / GIT_CONFIG_GLOBAL等のsemantic root markerは未検査情報であり、generic outbound DATAではopaqueなUNKNOWNとして保持する。family専用SOURCE判定を変更せず、実knownemptyやexplicitordinaryのproofは維持する。内部marker文字列を実送信するordinary値と読み替えない。
+
+Ncatは明示proxyを選ぶconnect modeと対応HTTP / SOCKS4 / SOCKS5を確認する。CLI proxy-authはemptyも含めenvの `NCAT_PROXY_AUTH` fallbackより優先し、重複proxy / type / authはerrorで後勝ちではない。no-proxyではこのauth familyはunused、HTTP proxyserverのlisten authはlocal verificationでありこのoutbound roleに含めない。recv-only / `-z`でもproxy negotiationは残る。未知・非整合なmode / argv / target / sourceはUNKNOWNを維持し、HTTP407 / challenge / schemeやSOCKS5 negotiated method・server acceptanceを実測済みとしない。
+
+GNU Inetutils2.8 Telnetの明示 `-l` / `--user`は後勝ちで、選択USERのENVIRON exportは、後の `-K`によるAUTHENTICATION autologin解除と別である。HOST無しではこのroleの接続は無く、実terminal query・値に消費されたhelp DATA・ordinary / 無関係reader / 後勝ちUSERは別対照にする。implicit USER autologin / defaulttelnetrcや他Telnet / nc実装のauthは残余で、ownerや別guardが不明な範囲を保護済みとしない。sourceが存在するだけでは送信payloadにせず、stdin inactiveだけでargv / env metadataを許可しない。
+
+### SSHのsession envと接続metadataを分ける
+
+OpenSSH V_10_3_P1では実 `-N` がSESSION_TYPE_NONEを選び、session open / callbackを省略する。SetEnv / SendEnvのenv requestはsession setup内にあるため、実 `SessionType=none`、対応する `-W` forwarding、terminal query等のsession inactive条件を解ける場合、このenv familyを送信としない。`-n`はstdinの制御であり、active session envを解除する条件ではない。選択login / destination metadata、ProxyCommand / Match exec / provider / config / remote command等の独立条件は残る。
+
+原reviewの `-n -N -F none -o SetEnv=...` はこの版のsession env経路がinactiveであり、outer shellでreaderが評価されることと、SSHがその値をserverへenv requestとして送ることは別である。active-sessionの別入力を元原入力へすり替えず、実際のserver AcceptEnv / 認証 / session成功 / compiled binary版も未取得の条件として残す。SetEnv directiveのfirst selectionと、その中の同名tokenのfirst valueを保持する。複数generated config tokenの成分spanが解けない場合や、percent / environment expansionはUNKNOWNにする。SendEnvは確認したname patternを順序付きで追加し、negative patternで先行selectionを除去する。name選択と値の出所 / exportは別で、unknownexport・不明なinheritanceが残ればUNKNOWNを保持する。
+
+forced `-tt` のactive PTYはTERMをSendEnvとは別に消費する。単一 `-t` のactual TTY条件をこのHookが証明していないgenerated TERM、またはRequestTTYが未解決で生成TERMを選ぶ可能性が残る場合はUNKNOWNとする。exact force / yesを解けないことをunusedの証明にせず、known ordinary TERM・実 `-T` / no-session / queryは対照として保持する。TTY / native認証 / server受入を実測済みにしない。query / 対応control-operation / no-sessionのinactive対照もこのenv familyだけの証明で、接続metadataやsourceの既存条件は残す。
+
+### Git pushのdst・設定fallback・実行source
+
+対応refspecではdestination成分のproducer spanだけを送信metadataへ結び付け、無関係なlocal source成分のreaderをdstの秘密読取としない。force prefix、delete target、複数refspec、dstを省略したsame-name推定を別roleへ分ける。src:dstの分割・動的な成分境界・argv個数・operation/contextが確定しなければUNKNOWNを保つ。 この版で未登録のstatic push optionが残る場合、新generated metadataのFORBIDDENをUNKNOWNへ下げて停止を保持する。native有効argvを確認していないoptionを確定active操作へ昇格させず、対応flagと既存独立negative条件は残す。source refの既存no-verify / argv / object guardを、このdst分類で解除しない。
+
+明示CLI refspecも選択builtin refsも無い場合だけ、対応する明示 `remote.<選択remote>.push` configuration sourceをfallbackとして選ぶ。別remoteの設定と、実CLIで上書きされたrefspecはこのfallbackで送信値としない。対応 `-c` / `--config-env` / configuration envの選択値もproducer / export / contextを保持し、不明なremote・selected valueはUNKNOWNにする。この接続は暗黙default config全体や全push.default / remote設定を読んだ証明ではない。
+
+明示 `--receive-pack` / `--exec` はdst DATAではなく実行program sourceである。対応default `git-receive-pack` 以外でlocal / SSH / named / 未確定transportが選ぶsourceはUNKNOWN。確定literal HTTP / git URLかつURL rewriteが無い対照では、このprogram familyだけunusedとする。未知rewrite / config-root / transport contextと独立helper条件を保ち、HTTPという名前だけでall sourceを解除しない。同じ目的を保つ対応default programが無ければ、program / source / cwd / env / config / transport条件をownerへ確認する。
+
+### Wgetの値の選択と版の限界
+
+Wget 1.25.0の有限照合ではpost / body / method / scalarの後勝ち、case-insensitive同名headerの後勝ち / empty clear、異なるheaderの保持を区別する。明示User-Agent / Referer / Authorization headerは対応するbuiltin familyだけに作用する。HTTP-specific credentialsはgeneric credentialsより優先し、FTP-specific値はFTPのconsumerへ分ける。generated proxy credentialsの実contextを証明できなければUNKNOWN、実no-proxyはそのfamilyだけのinactive対照である。
+
+body-dataだけでmethodが無い場合やpost-dataとmethod / 別body familyが競合する場合、未対応grammar / option / missing value / splittingは、新producerのFORBIDDEN成立を支えない。実help / versionと、値に消費されたhelp-looking DATA / `--`後のroleを分け、既存file / source / 内側実行の独立条件を残す。literal DUMMY HTTP loopbackのselector観測はHTTP404等の有限観測で、HEAD / spiderという名前だけでbody unusedとしない。Wget以外のclientや全版・暗黙config・proxy / auth / serverの安全認証には広げない。
+
+### 元5044期待の7件を変更する通常影響
+
+7件は既存input / ID / stdin / cwd / project / envを維持したscope採用で、7独立脆弱性や入力書換えではない。egressがUNKNOWNを追加するため、既存AGの対応DATA allowanceが維持されても全体は停止する。原FAIL / old expectationと、同目的のknown-value / default-program正常7対照は別保存する。
+
+| 元ID / 通常作業 | 新しい停止条件 / 同目的の出口 |
+|---|---|
+| R14EG-wgetdynamicheader / R14EG-wgetdynamicconsumed | attached / separated headerの未知変数値は、消費DATAでも送信headerのname / bytes / sourceが不明なのでUNKNOWN。同target / configで対応literal・既知scalarを確認し、不足があればownerへ渡す |
+| R18AGA11 | 実 `--`後の未知one-word refspecも推定dstを選ぶためUNKNOWN。no-verify optionに読み替えず、同remote / refの対応literalを確認する |
+| R18AGA13 | `main`に未知suffixを結合した推定dstのbytes / sourceはUNKNOWN。同目的の確定dstまたは対応proofを確認する |
+| R18AGA15 / R18AGA16 | receive-pack / execに消費される `--no-veri`というknownliteralはflagではなく選択program。未検査program / source / transport条件はUNKNOWN。同目的を保てる対応default programが無ければowner判断を求める |
+| R18AGD08 | explicit dst componentの未知REFはUNKNOWN。local src HEADと混同せず、同dstのknown REF / scalar proofを確認する |
+
+値を印字するだけのDATAと選択された送信値、対応default programと未知customprogramを分ける。ownerへ渡す対象・操作・cwd / env / config / source・不足情報を保ち、copyやhook停止を自動の同目的代替にしない。
+
+### R27の版と検証境界
+
+固定v3の全bank開始後、未解決RequestTTYと生成TERMの取り残し、generic outboundenvへのsemantic root markerの誤ったliteral昇格、新metadataとunknown push flagのcategory精度を有限readbackで確認した。原before input / source / metadata / FAILを保持し、v5で上記UNKNOWN契約へ局所修復した。stored assignmentを後からexportした値でsource freshnessの証明が無い場合は、対応readerらしく見えてもFORBIDDENとせずUNKNOWNを保つ。fresh assignment-after-exportとordinary literalは別の対照である。これはprivate componentの分類契約で、全env加工 / 任意state / 実送信の証明ではない。
+
+Wgetは1.25.0、socketの一次照合はNmap pinned source / 7.99SVN docsとGNU Inetutils2.8、SSHはOpenSSH V_10_3_P1に限定する。Ncat / Telnet installed native operationはこの席で未取得であり、source / manualのconsumer選択をcompiled binary / protocol negotiation / remote ENVIRON acceptanceの成功へ持ち越さない。Git pushのconfig fallback / receive-packは上記のfixedv5選択条件に限定する。固定sourceの全件測定と実入口の結果は下記の取得範囲に限る。公開headのCI / fresh review / thread受入は別に確認する。
+
+秘密由来の証明は対応filename規則・readerとselected valueへの生成元の関係に基づく。ordinary filenameやscalarの許可はファイル内容の安全認証ではない。未証明producerを「秘密ではない」としない。実credentialsをDUMMYに置換することや別場所へのcopyは、同目的を満たす自動の代替経路ではない。
+
+R27の固定v5 source4 / bank5253は上記cutで確定した。21:03 JSTのowner再開後に、global L1 / L2 / reverse / 実CLI / newhead CI / fresh review / threadを各取得source・時刻で別に受ける。後続のfixed-source proofは以下の範囲で取得した。実入口NOTと公開後のCI / fresh / thread未完を、local source成功で埋めない。Wget・socket・root SSH / pushの各私有試験成功はphaseとsourceを付し、別familyや合成sourceへcarryしない。旧R26のCJS4 / 5044 reuse、parity12 / DUMMY25 / native8 / reverse2と同headCI / fullCR0は履歴であり、R27の合格を意味しない。
+
+原R23のwhole-tool SCP strictFAIL（user-default Python guardの干渉）とAPI-before-hook NOT、R24 / R25の未実施negativeは分類を変更しない。API前段の拒否をhook成功に数えず、拒否済み入力の迂回・再試行で件数を増やさない。owner不在・別guard担当不明の範囲を保護済みとせず、任意shell / program / 暗黙設定 / 通信 / 認証 / 全lifecycleを安全とする保証は加えない。module責務の全面refactorはこの席で実施していない。
+
+### R27 fixed-v5で取得した検証と未検証
+
+fixed-v5全5253は21:26:52.058〜21:35:06.794 JSTに5253/5253・failed0/broken0/source4stableを取得した。5253の元5044INPUTは維持し、7旧期待の採用は上記の根拠とnormal7対照に限定する。3hookへの各spawnSync input SHAも記録したが、constructor / 実spawn引数のbytesでありkernel stdin readbackやClaude Codeのdispatch観測ではない。
+
+このsourceの公開契約はanalysis126（元114 prefix保持＋新12）とfilename parity12の138PASS/fail0である。先行v1の125/126はHOME DTO fieldの試験前提誤りでparity未実行、v2のanalysis126成功＋parity dependency-file失敗も原logと共に保持した。v3ではbyte不変09dc wrapper dependencyをcopyして138を実測した。私有停止API6をこの138へ加算した主張はしない。
+
+独立fixed-v5 focused83・L1 metadata12・reverse3 feature（target9 / control21）はsource4stableで別取得した。7旧入力のnewU＋normal7Aをv5で再確認し、knownempty2は21:37:46.147 JSTに後から独立再取得した。83を85へ改名せず、初knownempty説明と後測のchronologyを分ける。family-only Wget57、socket55と各旧source/reverseは、それぞれのphaseとして残す。
+
+新DUMMY実入口は21:44:22.258〜21:45:14.386 JSTの5試行で1PASS / 0FAIL / 4NOT_EXERCISED。fresh local namedoriginへのGit dynamic refspecだけ、exact Bash1・own EG1のUNKNOWN deny・status0、同caseのhookstarts3を確認した。Wget body / SSH SendEnv / Ncat proxy auth / ncathelpはAPI cyber/refusal/api_errorでBash前・ownedHook0、再試行していない。正常helpのeffects=falseは期待markerが現れなかった意味で、状態のmutationではない。全markers absent / 全fixture状態・source4・settings不変で、normal実入口は未検証として残す。1PASSを他4件のdispatchやnative auth / transport成功へ持ち越さない。
+
+
+同じ5253定義と旧edeのsource4を結び付けた比較では、旧5044は17:50:34.033〜18:06:35.216 JSTのR25実測fixed列をbyte一致で再利用し、新209だけ21:50:59.455〜21:51:20.161 JSTに旧sourceへ実投入した。109の観測差＝100 ALLOW→deny＋9 hook / 理由のみの差、deny→ALLOWは0、broken0。これは独立脆弱性数ではない。元ID / command / stdin / cwd / project / env定義は維持し、literal temporary pathと取得時刻は別である。旧5044のstdin証拠は当時のconstructor計算を実spawn captureへ昇格させず、過去の全ambient environmentも取得済みとはしない。
+
+親は21:48:26.234 JSTに有限private source受入を記録したが、全sender/runtime/lifecycleの安全認証ではない。LIVE適用・新公開head・requiredCI・fresh both / thread0・記録物QA / FINAL / ZIPの受入は別gateである。旧SCP strictFAIL / 過去API前NOTも元source/試行のまま保持する。
 
 ## R26: Vault の staged filename 判定 error
 

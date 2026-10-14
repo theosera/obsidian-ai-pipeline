@@ -2264,6 +2264,20 @@ let inspectionSerial = 0;
 
 /** Inspect executable Git invocations, associating preceding scope changes with each invocation. */
 function inspect(cmd, options = {}) {
+  // Opt in only for egress: an explicit SendEnv can select any exported scalar.
+  const trackedEnv = name => trackedValueEnvironment(name) ||
+    options.trackOutboundEnvironment === true && typeof name === 'string' && name.length > 0 && !/[=\0]/.test(name);
+  const outboundScalarWord = (word, state) => {
+    const selected = literalScalarWord(word, state);
+    if (options.trackOutboundEnvironment !== true || typeof selected.literalValue === 'string') return selected;
+    // A single quoted scalar with static prefix/suffix has no splitting or
+    // re-evaluation. Keep this DATA proof separate from executable identity.
+    const match = /^([^'"$`\\]*)"([^"$`\\]*)\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})([^"$`\\]*)"$/.exec(word.raw || '');
+    const name = match && (match[3] || match[4]);
+    const value = name && state.pathProofs.has(name) && !state.valuesTainted && state.values.get(name);
+    return typeof value === 'string' && word.dynamicMaySplit === false && !state.integers.has(name) && !state.associatives.has(name)
+      ? { ...selected, outboundLiteralValue: match[1] + match[2] + value + match[5] } : selected;
+  };
   const sourceDepth = options.sourceDepth || 0;
   const inspectionId = ++inspectionSerial;
   const pipelineIds = new Map();
@@ -2297,7 +2311,7 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), identitySources: new Map([['PS4', { text: '+ ', dynamic: false }]]), identityExports: new Map([['PS4', false]]), promptRefNames: new Set(), xtrace: false, promptvars: true, localShellOptions: false });
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown, identitySources: new Map([['PS4', { text: '+ ', dynamic: false }]]), identityExports: new Map([['PS4', false]]), promptRefNames: new Set(), xtrace: false, promptvars: true, localShellOptions: false });
   const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports), promptRefNames: new Set(s.promptRefNames) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
@@ -2306,19 +2320,29 @@ function inspect(cmd, options = {}) {
     return scopeStates.get(scope);
   };
   const seedScope = (scope, env, cd, inherited) => scopeStates.set(scope, copyState({ ...emptyState(), ...inherited, env: new Set(env), cd }));
+  if (options.trackOutboundEnvironment === true) {
+    const initial = stateFor(parsed.scope);
+    for (const name of options.initialOutboundEnvironmentNames || []) if (trackedEnv(name)) {
+      initial.identitySources.set(name, null); initial.identityExports.set(name, true);
+    }
+    const selected = childIdentityState(new Map((options.initialOutboundEnvironmentSources || [])
+      .filter(source => trackedEnv(source.name)).map(source => [source.name, source.word])));
+    for (const [name, word] of selected.identitySources) initial.identitySources.set(name, word);
+    for (const [name, exported] of selected.identityExports) initial.identityExports.set(name, exported);
+  }
   if (Array.isArray(options.initialHelperEnvNames)) {
     for (const name of options.initialHelperEnvNames) if (HELPER_SOURCE_ENV.has(name)) stateFor(parsed.scope).helperEnv.add(name);
   }
   if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames) || Array.isArray(options.initialGhEnvNames) || Array.isArray(options.initialShellStartupEnvNames) || Array.isArray(options.initialGitConfigEnvNames) || Array.isArray(options.initialGitHttpEnvNames) || Array.isArray(options.initialGitTransportEnvNames)) {
     const initial = stateFor(parsed.scope);
-    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || []), ...(options.initialGhEnvNames || []), ...(options.initialShellStartupEnvNames || []), ...(options.initialGitConfigEnvNames || []), ...(options.initialGitHttpEnvNames || []), ...(options.initialGitTransportEnvNames || [])]) if (trackedValueEnvironment(name)) {
+    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || []), ...(options.initialGhEnvNames || []), ...(options.initialShellStartupEnvNames || []), ...(options.initialGitConfigEnvNames || []), ...(options.initialGitHttpEnvNames || []), ...(options.initialGitTransportEnvNames || [])]) if (trackedEnv(name)) {
       initial.identitySources.set(name, null); initial.identityExports.set(name, true);
     }
   }
   if (Array.isArray(options.initialGitIdentitySources) || Array.isArray(options.initialPagerSources) || Array.isArray(options.initialGhSources) || Array.isArray(options.initialShellStartupSources) || Array.isArray(options.initialGitConfigSources) || Array.isArray(options.initialGitHttpSources) || Array.isArray(options.initialGitTransportSources)) {
     const initial = stateFor(parsed.scope);
     const selected = childIdentityState(new Map([...(options.initialGitIdentitySources || []), ...(options.initialPagerSources || []), ...(options.initialGhSources || []), ...(options.initialShellStartupSources || []), ...(options.initialGitConfigSources || []), ...(options.initialGitHttpSources || []), ...(options.initialGitTransportSources || [])]
-      .filter(source => trackedValueEnvironment(source.name)).map(source => [source.name, source.word])));
+      .filter(source => trackedEnv(source.name)).map(source => [source.name, source.word])));
     // Presence names may include unknown inherited values while source arrays only
     // supply partial known values. Preserve every presence seed across families.
     // Child inspections pass selected sources without presence names, so [] still
@@ -2441,6 +2465,7 @@ function inspect(cmd, options = {}) {
       res.problems.push('active xtrace が展開する PS4 prompt の保存 source・置換・実行条件を検査できない');
     }
     const identitySources = identityEnvironmentSources(state);
+    let outboundEnvironmentUnknown = state.outboundEnvironmentUnknown || !!info.envUnknown;
     const helperEnv = new Set(state.helperEnv);
     const exportedFunctions = new Set(state.exportedFunctions);
     let exportedFunctionUnknown = state.exportedFunctionUnknown;
@@ -2448,7 +2473,7 @@ function inspect(cmd, options = {}) {
     const environmentFunctionUnknown = new Set(state.environmentFunctionUnknown);
     let pathChanged = state.pathChanged;
     for (const op of info.envOps) {
-      if (op.clear) { identitySources.clear(); env.clear(); helperEnv.clear(); exportedFunctions.clear(); exportedFunctionUnknown = false;
+      if (op.clear) { outboundEnvironmentUnknown = false; identitySources.clear(); env.clear(); helperEnv.clear(); exportedFunctions.clear(); exportedFunctionUnknown = false;
         environmentFunctions.clear(); environmentFunctionUnknown.clear(); for (const root of CONFIG_ROOT_ENV) env.add(root); pathChanged = false; }
       if (op.unset) {
         identitySources.delete(op.unset);
@@ -2458,7 +2483,7 @@ function inspect(cmd, options = {}) {
         if (op.unset === 'PATH') pathChanged = false;
       }
       if (op.set && affectsGitEnvironment(op.set)) env.add(op.set);
-      if (op.set && trackedValueEnvironment(op.set)) {
+      if (op.set && trackedEnv(op.set)) {
         const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(op.set + '='));
         const value = carrier && literalScalarWord(carrier, expansionState);
         identitySources.set(op.set, value ? commitInlineValue(value, value, value.text.slice(op.set.length + 1), op.set.length + 1) : null);
@@ -2482,7 +2507,7 @@ function inspect(cmd, options = {}) {
     const alias = info.name === 'alias' && builtin ? aliasInvocation(info.args) : null;
     const invocation = {
       order: res.invocations.length, name: info.name, nameWord: info.nameWord,
-      args: info.args.map(word => literalScalarWord(word, expansionState)),
+      args: info.args.map(word => outboundScalarWord(word, expansionState)),
       words: c.words, redirs: c.redirs, heredocBodies: c.heredocBodies, scope: c.scope, incomplete: info.incomplete,
       wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
       executableExpansionUnknown: info.executableExpansionUnknown,
@@ -2494,6 +2519,13 @@ function inspect(cmd, options = {}) {
       functionBodyUnknown: !!c.functionBodyUnknown || !!c.functionBody?.unknown,
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
       helperEnvNames: [...helperEnv],
+      outboundEnvironmentSources: options.trackOutboundEnvironment === true ? [...identitySources].map(([name, word]) => ({ name,
+        // Context markers identify an inherited config root, not its transmitted
+        // bytes. Keep family DTOs unchanged; only the outbound DATA proof is opaque.
+        word: word?.implicitGitConfigRoot ? word.actualOutboundEmpty === true ?
+          { text: '', raw: "''", quoted: true, dynamic: false, dynamicMaySplit: false } : null :
+          word?.defaultGhConfigRoot && word.text !== '' ? null : word })) : [],
+      outboundEnvironmentUnknown: options.trackOutboundEnvironment === true && outboundEnvironmentUnknown,
       gitIdentitySources: [...identitySources].filter(([name]) => GIT_IDENTITY_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitPagerEnvSources: [...identitySources].filter(([name]) => GIT_PAGER_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitTransportSources: [...identitySources].filter(([name]) => GIT_TRANSPORT_SOURCE_ENV.has(name)).map(([name, word]) => ({ name, word })),
@@ -2574,7 +2606,7 @@ function inspect(cmd, options = {}) {
       // call, including to children, but must not replace unexported caller locals.
       const functionIdentitySources = new Map(state.identitySources);
       const functionIdentityExports = new Map(state.identityExports);
-      for (const name of info.assigns) if (trackedValueEnvironment(name)) {
+      for (const name of info.assigns) if (trackedEnv(name)) {
         functionIdentitySources.set(name, identitySources.get(name) ?? null);
         functionIdentityExports.set(name, true);
       }
@@ -2616,6 +2648,7 @@ function inspect(cmd, options = {}) {
           if (after.identityExports.has(name)) state.identityExports.set(name, after.identityExports.get(name));
           else state.identityExports.delete(name);
         }
+        state.outboundEnvironmentUnknown ||= after.outboundEnvironmentUnknown;
         state.valuesTainted = true;
         state.pathProofs.clear();
       }
@@ -2662,13 +2695,23 @@ function inspect(cmd, options = {}) {
       const canRemember = prefix ? ((!info.name && !info.dynamicName && !info.wrapped) || info.persistsEnv ||
         (builtin && SPECIAL_BUILTINS.has(info.name))) : persistentValues;
       if (assignment && canRemember && state.promptRefNames.has(assignment.name)) state.identitySources.set('PS4', null);
-      if (assignment && canRemember && trackedValueEnvironment(assignment.name)) {
+      if (assignment && canRemember && trackedEnv(assignment.name)) {
         const prior = state.identityExports.get(assignment.name) ?? false;
         const selected = state.functionAutoExport === true ? true : state.functionAutoExport === false ? prior : prior === true ? true : null;
         state.identityExports.set(assignment.name, conditional && prior !== selected ? null : selected);
         const value = literalScalarWord(word, expansionState);
         const prefixLength = assignment.name.length + (assignment.name === 'PS4' && assignment.append ? 2 : 1);
         let selectedWord = commitInlineValue(value, value, value.text.slice(prefixLength), prefixLength);
+        if (assignment.name !== 'PS4' && assignment.append) {
+          const previous = state.identitySources.get(assignment.name);
+          const literal = w => w && (typeof w.literalValue === 'string' ? w.literalValue : !w.dynamic ? w.text : null);
+          const added = commitInlineValue(value, value, value.text.slice(assignment.name.length + 2), assignment.name.length + 2);
+          const priorValue = literal(previous), addedValue = literal(added);
+          // Appending cannot turn an unproved inherited/generated source into
+          // ordinary bytes. Unsupported composed producer spans stay unknown.
+          selectedWord = typeof priorValue === 'string' && typeof addedValue === 'string' ?
+            { ...added, text: priorValue + addedValue, literalValue: priorValue + addedValue, dynamic: false } : null;
+        }
         if (assignment.name === 'PS4' && assignment.append) {
           const previous = state.identitySources.get('PS4');
           const literal = w => w && (typeof w.literalValue === 'string' ? w.literalValue : !w.dynamic ? w.text : null);
@@ -2716,10 +2759,11 @@ function inspect(cmd, options = {}) {
         for (const word of attributeArgs.slice(start)) {
           if (info.name === 'export' && word.dynamic && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word.text)) {
             for (const name of state.identitySources.keys()) state.identityExports.set(name, null);
+            state.outboundEnvironmentUnknown = true;
             continue;
           }
           const name = /^([A-Za-z_][A-Za-z0-9_]*)(?:=|$)/.exec(word.text)?.[1];
-          if (!trackedValueEnvironment(name)) continue;
+          if (!trackedEnv(name)) continue;
           const prior = state.identityExports.get(name) ?? false;
           state.identityExports.set(name, conditional && prior !== selection ? null : selection);
           if (!state.identitySources.has(name)) state.identitySources.set(name, null);
@@ -2769,7 +2813,7 @@ function inspect(cmd, options = {}) {
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('builtin が評価する配列の添字を検査できない');
         const identityTarget = info.name !== 'read' || readEnvironmentTargets(info.args).targets.includes(word);
         if (info.name === 'read' && identityTarget && state.promptRefNames.has(target[1])) state.identitySources.set('PS4', null);
-        if (identityTarget && trackedValueEnvironment(target[1])) {
+        if (identityTarget && trackedEnv(target[1])) {
           if (info.name === 'unset' && !conditional) { state.identitySources.delete(target[1]); state.identityExports.delete(target[1]); }
           else state.identitySources.set(target[1], null);
         }
@@ -2789,7 +2833,7 @@ function inspect(cmd, options = {}) {
       if (target) {
         if (state.promptRefNames.has(target[1])) state.identitySources.set('PS4', null);
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('printf -v が評価する配列の添字を検査できない');
-        if (trackedValueEnvironment(target[1])) state.identitySources.set(target[1], null);
+        if (trackedEnv(target[1])) state.identitySources.set(target[1], null);
         if (target[1] === 'PS4') {
           const offset = info.args[0].text === '-v' ? 2 : 1;
           const format = invocation.args[offset], value = invocation.args[offset + 1];
@@ -2809,7 +2853,7 @@ function inspect(cmd, options = {}) {
       const target = targetWord && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(targetWord.text);
       for (const name of ['OPTARG', 'OPTIND', ...(target ? [target[1]] : [])]) {
         if (state.promptRefNames.has(name)) state.identitySources.set('PS4', null);
-        if (trackedValueEnvironment(name)) state.identitySources.set(name, null);
+        if (trackedEnv(name)) state.identitySources.set(name, null);
         if (name === 'PS4') state.identitySources.set(name, null);
         state.values.set(name, null); state.pathProofs.delete(name);
         if (affectsGitEnvironment(name)) state.env.add(name);
@@ -2993,7 +3037,7 @@ function inspect(cmd, options = {}) {
             const inner = parseShell(h.body);
             for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
             res.async = res.async || inner.async;
-            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
               environmentFunctions, environmentFunctionUnknown,
               functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                 .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -3009,7 +3053,7 @@ function inspect(cmd, options = {}) {
                 const inner = parseShell(r.word.text);
                 for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
                 res.async = res.async || inner.async;
-                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
                   environmentFunctions, environmentFunctionUnknown,
                   functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                     .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
