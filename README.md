@@ -18,6 +18,18 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R30:README-CONTRACT:BEGIN -->
+R30 は setpriv の child / context、SSH の暗黙設定 source、Git cherry-pick の object / index / sequencer state、preproxy だけでは証明できない環境proxy選択を分ける局所修復である。確認できる child の既存禁止は FORBIDDEN、検査できない実行 source / 対象 / 状態は UNKNOWN で止める。実 help / version、設定を使わない対応 SSH、既知の通常 child、未使用 source は他の独立したガードと併せて扱う。
+
+既定設定が必要な SSH / remote SCP、通常の cherry-pick・再開・rollback・cleanup、setpriv の未対応 context も停止し得る。`-F none` はその設定を必要としない同目的の接続に限った対応形式であり、設定依存の接続の自動代替ではない。cherry-pick を別の writer に変えることも自動代替にしない。必要な対象・操作・argv・cwd・env・config・state と不足条件を owner に示す。詳しくは[ガイドの R30 条件](docs/security/git-command-guards.md#r30-execution-source-boundaries)を参照する。
+
+curl 8.7.1 の CLI は空の `--preproxy` を拒否し、その版の nonempty library preproxy は環境proxyの検出を抑える。原レビュー入力の Hook 通過と、その版での native 送信成立は別で、後者は確認していない。preproxy 単独の存在を任意の実行版・設定での未使用証明にはせず、到達し得る未証明環境sourceを保守的な UNKNOWN にする。これは版を固定した native 漏えいの実証ではない。main proxy の対応 override、実 inactive / query / 未使用 source と独立した payload 禁止は保持する。R29 以下の測定は各 source / 時点の履歴であり、変更後の受入には持ち越さない。
+<!-- PR191:R30:README-CONTRACT:END -->
+
+<!-- PR191:R30:README-MEASUREMENTS:BEGIN -->
+R30 local測定cut: 2026-10-15T05:08:05.515665+09:00。固定EG `1c823bce…` / common `f8e30d7e…`の全6085件を2026-10-15 04:51:57.206〜05:01:47.511 JSTに実行し、6085/6085・failed0 / broken0・source4 / runner / 定義の前後不変を確認した。元5982のinputと137 aliasを保持し、新103 unique profileを追加した。旧期待も保存し、理由付き122期待編集を明示した。取得済旧9dc結果との比較は122 record差（77 ALLOW→DENY、45 DENY維持、DENY→ALLOW0）、own-egressは78 ALLOW→UNKNOWN /44 FORBIDDEN→UNKNOWNである。後者は未検査sourceのfirst-stop優先によるprefix変更を含み、後段評価・native漏えいを証明しない。初回6080の22FAIL/broken0と、最終の同観測に旧期待を当てた102不一致を保存する。公開解析172＋parity12を同callで184/184、root602、typecheck / lintは成功した。新公開headのCI / fresh review / 実入口はこのlocal cutでは未取得で、Goal完了としない。
+<!-- PR191:R30:README-MEASUREMENTS:END -->
+
 R29 の局所契約案では、sudo / unshare のオプション値と実行する child を分け、curl / Wget が redirect 後に選び得る proxy source も確認する。必要な child / source が未証明なら UNKNOWN で止める。既知の通常 child / query / 未使用 source は独立した既存ガードと併せて扱い、権限・namespace・認証・実通信の成功を認証しない。
 
 namespace / root / cwd / shell / login / host 等の未対応 context を使う通常作業や、redirect 必須で次の route を証明できない作業も止まり得る。同じ user / root / namespace / cwd / target / operation と目的を保てる対応形式がなければ、owner に exact argv・env・config・不足条件を提示する。必要な wrapper / proxy / redirect を外すことを自動的な代替にしない。詳しい条件と出口は[ガイドの R29 節](docs/security/git-command-guards.md#r29-wrapper-のchildとredirect後のproxy-source)を参照する。

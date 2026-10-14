@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 / R24 / R25 / R26 / R27 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の保護範囲、各 round の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -19,6 +19,47 @@
 既存 main 由来の raw backstop も残す。文字列の形だけが一致し、実 argv・操作と message / コメント / DATA を区別できない停止は **UNKNOWN** である。この一致を、秘密ファイルが実際に送信されることの証明として扱わない。
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
+
+<a id="r30-execution-source-boundaries"></a>
+
+## R30: launcher・暗黙SSH設定・object stateとpreproxyの境界
+
+本節は formal review5523094338 の4件に対する対応範囲・判定・例外の契約である。公開親headは `9dcfeb3f9d98b184326412a3ea9a42d72fcf2d8a`。修復候補の固定 CJS は egress `1c823bce0826f4c0633d5ae930eeca7f19f4c28e0ea387b2bed84e18e1e47c14` / common `f8e30d7e09c44b3f3f9d9ebbb8011b4a57fab30bd8b2add67b9ee5a7e6f4af46` で、source・公開runner・入力定義の測定を結び付ける。util-linux2.41.2、Git2.54.0、OpenSSH V_10_3_P1、curl8.7.1 の取得済み一次 source を使う。installed version、固定sourceの Hook DATA、Claude dispatch、native 実行・認証・実通信は別の証拠とする。以下の修復受入が合格しても未取得の通信条件や全体Goalが自動的に合格するものではない。
+
+| 守る対象・版 / 実行条件 | 判定・判断不能条件 | 保持する通常対照 / 期待 | 止まる通常作業と同目的の出口 | 修復を受け入れる条件 | native成立 / 未確認 |
+|---|---|---|---|---|---|
+| util-linux2.41.2 setpriv の child / option arity | non-permuting getopt の値・attached / separated・unique long略記・`--`と最初のprogramを保持。plain / known no-new-privsのchildを既存ガードへ渡し、禁止payloadはFORBIDDEN。未検査identity / groups / caps / LSM / file / reset-env / 未知・split・missing option / childはUNKNOWN | ordinary known childはALLOW、実早期help / versionと対応sole dump / list-capsはchild非実行。setprivにはNAME=value carrier構文がない | contextが必要なordinary実行もUNKNOWN。user / root / namespace / cwd / env / config / target / childを保った対応形式がなければownerへ。不必要なwrapper削除を自動代替にしない | 原setpriv入力egress自身FORBIDDEN、child metadata / arity / consumed DATAと通常対照、登録だけを外す比較でF→A | 対応installed setpriv・権限・caps・kernel / LSM・child実体の成立は未実証。originalはHook DATAのみ |
+| OpenSSH V_10_3_P1 の暗黙 user / system config | host-bearing SSHの未検査の暗黙default設定はMatch exec / helper等を選び得るためUNKNOWN。remote SCPが既存SSH delegateを使うときも適用。最後の`-F`が有効、case-insensitive none / exact /dev/nullの対応境界。未証明argv / source / explicit設定はUNKNOWN | 実`-V` / `-Q`はconfig読取前のquery。確定no-hostはusage前終了。対応config-free接続は独立guard条件を満たせばALLOW。local-only SCPはこのSSH source gate外 | 設定依存のSSH / SCPも止まる。設定を要しない同目的のときだけ対応`-F none`。必要な設定を消さず、source・実選択・対象・認証・cwd / env・不足をownerへ | 原SSH入力egress自身UNKNOWN、default / explicit / case / last-value / query / DATA・normal対照。default条件だけを外す比較で対象U→A | 設定ファイルの実内容やMatch選択、helper実行、SSH接続・認証・transportは未実証。`-G`はconfig読取後のdumpで、config-freeの保証にならない |
+| Git2.54.0 cherry-pick の選択object / index / sequencer | active commit / no-commit・continue / skip・abort rollback・quit cleanupのinput / state / configは未検査でUNKNOWN。mainline / strategy / cleanup / option-looking消費値、`--`、dynamic boundaryをtyped roleとして保持 | 実sole stdout `-h`は対応query、printed DATAや通常statusを維持。`--help`のmanual helperは別の既存条件を保持 | ordinary cherry-pick・index適用・再開・取消・cleanupも止まる。同目的の対応writerを保証しない。commit / selected paths / current index / sequencer / configと不足をownerへ | `<oid>`原文はtemplateとして保持。独立DUMMYのempty .env addition commitを選ぶ具体化とOID mappingを残し、egress UNKNOWN。object kindだけを外す比較でmapped U→A | native cherry-pickは実行していない。safe fixture init / add / commit / diff-tree / local bundle / resetだけでDUMMY対象を確認。3exact＋1OIDtemplateを、原文一字不変の有効4入力とは呼ばない |
+| curl8.7.1 preproxy と環境proxy sourceの証明境界 | preproxy単独の存在を任意runtime / configでのambient未使用証明にはしない。到達するopaque sourceは保守的UNKNOWN。対応main proxy override・actual query / inactive / literal proofは保持 | main overrideと必要preproxyを併用するordinary対照、no-follow / zero cap / unused protocol / printed DATA。独立file / body禁止はFORBIDDENのまま | legitimate preproxy+opaque環境は8.7.1で未使用でもUNKNOWNになり得る。必要なhopを外さず、同じroute / target / operationが保てるmain override / source proofがある場合だけ対応。なければownerへ | 原empty-preproxy Hook DATAをegress UNKNOWN。preproxy exemptionだけを戻した比較でU→A、main override / inactive / body / selectedpreproxyの既存停止を維持 | CLI tool_getparam.c はDENY_BLANKでemptyを拒否。nonempty pointerはlib/url.cでdetect_proxyを抑える。その版での原入力のnative送信は成立済みと扱わない。実版 / backend / URI / auth / redirect / transportは未確認 |
+
+### 一次資料と証拠段階
+
+[setpriv2.41.2 source](https://raw.githubusercontent.com/util-linux/util-linux/v2.41.2/sys-utils/setpriv.c)、[同manual](https://raw.githubusercontent.com/util-linux/util-linux/v2.41.2/sys-utils/setpriv.1.adoc)、[Git2.54.0 revert.c](https://raw.githubusercontent.com/git/git/v2.54.0/builtin/revert.c)、[cherry-pick manual source](https://raw.githubusercontent.com/git/git/v2.54.0/Documentation/git-cherry-pick.adoc)、[OpenSSH ssh.c](https://raw.githubusercontent.com/openssh/openssh-portable/V_10_3_P1/ssh.c)、[readconf.c](https://raw.githubusercontent.com/openssh/openssh-portable/V_10_3_P1/readconf.c)、curl8.7.1 [CLI parse](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/src/tool_getparam.c)・[setopt](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/src/tool_operate.c)・[proxy selection](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/lib/url.c)を固定して照合した。sourceの取得 / 読取とnative成立は区別し、未取得版の挙動を推定で成立済みにしない。
+
+Wgetについては既存のGNU1.25.0 getproxy / retr / init / host / sepstring / sufmatch consumerは取得済みである。一方HTTP auth emission serializerや実backend / 接続・認証・実通信は未監査で、このR30修復の成功では埋まらない。保留5候補と任意shell / executable全体の保証も残る。93への依頼は閉じており、第三者の本人確認を新たに取得したとは扱わない。
+
+### 通常作業・理由分類と合成受入
+
+原5982のID / command / stdin / cwd / project / env・presence・順序と旧期待を保存する。暗黙SSH config UNKNOWNが先に検出され、以前FORBIDDENだったpayload / helper等のprefixがUNKNOWNへ変わることがある。これはwire denyを維持したfirst-stop優先順位の変更で、後段のFORBIDDEN判定をこの実行で評価できた証明ではない。対応config-free対照で独立したmetadata / body / helperの停止を確認する。旧正常ALLOWがUNKNOWNへ変わる場合も、旧期待と原FAILを消さず、止まる正常作業・source不足・条件付き同目的代替 / owner出口を別に記録する。
+
+受入は、対応するegress自身の停止・理由と正常対照、意味のL1、変更sourceで元入力を保った全L2 bankの差分、今回の単一predicate / edgeだけを外した逆検証で判断する。旧composite62や別sourceの合格を単独必要性に使わない。実Claude入口・副作用、native成立、公開新headのCI / fresh full CodeRabbit / Codex / threadは別欄の条件である。後段の各round測定や旧正常対照は過去sourceの履歴であり、R30の条件を解除しない。
+
+<!-- PR191:R30:GUIDE-MEASUREMENTS:BEGIN -->
+### R30 固定sourceのlocal受入と残る条件
+
+取得cut: 2026-10-15T05:08:05.515665+09:00。EG `1c823bce0826f4c0633d5ae930eeca7f19f4c28e0ea387b2bed84e18e1e47c14` / common `f8e30d7e09c44b3f3f9d9ebbb8011b4a57fab30bd8b2add67b9ee5a7e6f4af46` / secret-git `273f6be4…` / add-all `8365d365…`の固定合同sourceで、全6085件を04:51:57.206〜05:01:47.511 JSTに実投入し6085/6085・failed0 / broken0、source4・公開runner・定義の前後不変を確認した。18255個のactual spawnSync input引数hashを採取したが、kernel bytes / Claude dispatchではない。元5982のID / command / stdin / cwd / project / envのpresence・値・順序と旧期待、137既存aliasを保持し、新103 unique入力profileを加えた。全5948 normalized signaturesで、record / signatureを独立findingやnative成功数へ換算しない。
+
+理由を先に決めた122件のassertion期待編集を別manifestに残す。取得済旧9dc全5982との比較は122 record差で、集計77 ALLOW→DENY・45 DENY維持・DENY→ALLOW0、own-egress78 ALLOW→UNKNOWN・44 FORBIDDEN→UNKNOWN。旧FORBIDDENのprefix変更は先行する暗黙config source UNKNOWNを含み、後段FORBIDDENの評価済み保証ではない。初回6080の22FAIL/broken0と、旧期待を最終の同観測へ当てた102不一致を原記録へ保存した。先行finite283だけではoutside normal SCP / config-dump / A09を取り切れなかったため、全bank差から追加25を個別に採用した。public-defined inputを都合よく変更・削除せず、configを必要としない条件付き対照とowner出口を保つ。final6080先頭profileとinitial6080は同じ意味入力と判定を維持し、actual temporary cwd / stdin bytesまで同一とは主張しない。
+
+原setpriv / SSH / empty-preproxyの3文字列を一字も変えずegress自身F / U / U、originalcherry `<oid>` templateは別のDUMMY empty.env commit `cc13480a42d8540b2604d451d2363d2cbfaef1ee`へ具体化しown Uを要求する。safe fixtureのdiff-tree・OID mappingを保持し、原文有効4入力やnative cherrypickとして扱わない。curl8.7.1のempty CLI拒否・nonempty library ambient抑止という一次反証は残し、conservative UNKNOWN採用とnative通信未実証を分ける。
+
+public analysis172＋filename parity12を同一FINALv2 sourceの一つのnode test callで184/184、旧149 analysis本文prefixは完全保持した。root602/602・typecheck / lint・diffcheckは成功した。local Node24.13.0はmanifest `^24.15.0 || >=26.0.0`の範囲外というengine警告を保存し、local runtime適合を認証しない。公開CIの実版と結果は別に取得する。
+
+FINALv2のstrict reverseはcommon12 tuples/24 observations/72 captured Hook inputsとegress16 tuples/32 verdict observationsを新たに取得した。setpriv登録だけを外すと原F→A、cherry object kindだけを外すとmapped U→A、setpriv context problem predicateだけを外すと対応U→A。SSH暗黙config predicateだけを外す4対象、preproxy exemptionだけを戻す3対象はU→A、9個の別条件・正常対照を保持した。別の既存guardをまとめて外していない。5個のconfig-free独立payload / helper / provider対照も新bankへ含め、4F /1Uを保つ。旧composite62と別source reverseを新predicate単独の必要性へ持ち越さない。
+
+このcutの受入はfinite local source / parser / permissionまでである。新公開17 source・required CI・fresh full CodeRabbit / Codex・thread解決、必要最小のnew DUMMY Claude入口と副作用は未取得。R29実入口3PASS/1API前段NOTは履歴で、R30へ持ち越さず、旧拒否を再試行しない。native privilege / kernel / config内容 / URI / auth / transport、任意プログラム / backend全体は未実証。修復local成功で通信未確認や全体Goal条件を自動的に閉じない。
+<!-- PR191:R30:GUIDE-MEASUREMENTS:END -->
 
 ## R29: wrapper のchildとredirect後のproxy source
 

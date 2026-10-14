@@ -3098,7 +3098,13 @@ function sshOperation(invocation) {
     }
   }
   if (earlyQuery) return { sources: [], stdin: false, remoteWords: [] };
-  if (selectedConfig && (argvUncertain || !configFile || configFile.dynamic || !['none', '/dev/null'].includes(configFile.text))) {
+  // -G reads default config before dumping; -V/-Q already exited during proven argv parsing.
+  // A host-less invocation exits at usage before process_config_files.
+  if ((host || argvUncertain || invocation.incomplete) && !selectedConfig) {
+    deny('SSH の暗黙 user / system config が有効な実行 source（Match exec / helper 等）を選び得ますが、egress ガードで内容・選択・副作用を検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+  }
+  if (selectedConfig && (argvUncertain || !configFile || configFile.dynamic ||
+      configFile.text.toLowerCase() !== 'none' && configFile.text !== '/dev/null')) {
     deny('SSH の -F config が未知の実行 source（Match exec 等）を選び、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   }
   if (query && !argvUncertain && !unknown) {
@@ -4251,9 +4257,13 @@ function proxyEnvironmentVerdict(invocation) {
   const finish = () => {
     if (!op.urls.length || !op.useProxy && !op.unknown) return;
     if (op.unknown) { result = 'UNKNOWN'; return; }
-    // Explicit strings, including empty, suppress ambient detection. Independent
+    // Explicit main-proxy strings, including empty, suppress ambient detection. Independent
     // explicit source, body, config and helper guards are left intact.
-    if (op.proxy || op.preproxy) return;
+    // A preproxy alone is not a supported actual-runtime proof that an opaque
+    // ambient proxy stays unused. Exact8.7.1 rejects empty CLI preproxy and its
+    // nonempty library pointer suppresses detect_proxy; native egress is unproved.
+    // This local UNKNOWN boundary deliberately retains only a main override proof.
+    if (op.proxy) return;
     const noProxy = op.noProxy !== undefined ? op.noProxy : literal(source(wget ? ['no_proxy'] : ['no_proxy', 'NO_PROXY'])?.word);
     for (const word of op.urls) {
       const url = word ? urlRole(word) : { protocol: null, host: null };

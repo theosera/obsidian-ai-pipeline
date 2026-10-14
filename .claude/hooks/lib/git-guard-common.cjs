@@ -1164,7 +1164,58 @@ function unshareArgs(rest, info) {
   return k;
 }
 
+/** util-linux 2.41.2 setpriv: getopt stops at the first program; context changes remain opaque. */
+function setprivArgs(rest, info) {
+  const required = new Set(['inh-caps', 'ambient-caps', 'ruid', 'euid', 'rgid', 'egid',
+    'reuid', 'regid', 'groups', 'bounding-set', 'securebits', 'pdeathsig', 'ptracer',
+    'selinux-label', 'apparmor-profile', 'landlock-access', 'landlock-rule', 'seccomp-filter']);
+  const flags = new Set(['dump', 'nnp', 'no-new-privs', 'list-caps', 'clear-groups',
+    'keep-groups', 'init-groups', 'reset-env', 'help', 'version']);
+  const names = [...required, ...flags];
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true; // setpriv has no NAME=value carrier grammar
+  let k = 0, nnp = 0, dumps = 0, listCaps = 0, options = 0;
+  while (k < rest.length && rest[k].text.startsWith('-') && rest[k].text !== '-') {
+    const word = rest[k], text = word.text;
+    if (text === '--' && !word.dynamic) { k++; break; }
+    if (word.dynamic || !wrapperValueKnown(word)) info.launcherUnknown = true;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = names.includes(name) ? [name] : names.filter(candidate => candidate.startsWith(name));
+      if (matches.length !== 1) info.launcherUnknown = true;
+      else {
+        const option = matches[0]; options++;
+        if (['help', 'version'].includes(option) && eq < 0 && !info.launcherUnknown) return -1;
+        if (required.has(option)) {
+          const value = eq < 0 ? rest[++k] : { ...word, text: text.slice(eq + 1) };
+          if (!wrapperValueKnown(value)) info.launcherUnknown = true;
+          info.launcherUnknown = true; // selected identity/caps/LSM/file context is not inspected
+        } else if (eq >= 0) info.launcherUnknown = true;
+        else if (['nnp', 'no-new-privs'].includes(option)) { if (++nnp > 1) info.launcherUnknown = true; }
+        else if (option === 'dump') dumps++;
+        else if (option === 'list-caps') listCaps++;
+        else info.launcherUnknown = true;
+      }
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        options++;
+        if ('hV'.includes(text[j]) && !info.launcherUnknown) return -1;
+        if (text[j] === 'd') dumps++;
+        else info.launcherUnknown = true;
+      }
+    }
+    k++;
+  }
+  if (dumps || listCaps) {
+    if (!info.launcherUnknown && k === rest.length && (dumps === options || listCaps === 1 && options === 1)) return -1;
+    info.launcherUnknown = true;
+  }
+  if (k >= rest.length) info.launcherUnknown = true;
+  return k;
+}
+
 const WRAPPERS = {
+  setpriv: (rest, info) => setprivArgs(rest, info),
   chroot: (rest, info) => {
     info.launcherArgs.push(...rest);
     if (rest[0] && !rest[0].dynamic && ['--help', '--version'].includes(rest[0].text)) return -1;
@@ -2113,6 +2164,18 @@ function gitOperationRole(g) {
       parsed.values.every(value => value.option === 'show-current-patch' && ['raw', 'diff'].includes(value.word.text));
     if (onlyControl) { role.mode = modes[0] === 'show-current-patch' ? 'query' : 'cleanup'; role.stdinInput = false; }
     else if (modes.length) role.mode = 'resume';
+  } else if (g.sub === 'cherry-pick') {
+    const parsed = gitTypedArguments(g, { values: ['cleanup', 'mainline', 'strategy', 'strategy-option', 'empty'],
+      optionalValues: ['gpg-sign'], shortValues: { m: 'mainline', X: 'strategy-option' }, shortOptional: { S: 'gpg-sign' },
+      flags: ['quit', 'continue', 'abort', 'skip', 'no-commit', 'edit', 'no-edit', 'signoff', 'no-signoff',
+        'ff', 'no-ff', 'allow-empty', 'no-allow-empty', 'allow-empty-message', 'no-allow-empty-message',
+        'keep-redundant-commits', 'no-keep-redundant-commits', 'rerere-autoupdate', 'no-rerere-autoupdate', 'no-gpg-sign'],
+      shortFlags: 'nexrs', shortNames: { n: 'no-commit', e: 'edit', s: 'signoff' } });
+    Object.assign(role, parsed); role.kind = 'object-ref-input';
+    role.inputCommits = parsed.operands;
+    const modes = parsed.flags.filter(flag => ['quit', 'continue', 'abort', 'skip'].includes(flag));
+    if (modes.length === 1) role.mode = modes[0] === 'quit' ? 'cleanup' : modes[0] === 'abort' ? 'rollback' : 'resume';
+    if (modes.length > 1 || modes.length && parsed.operands.length) role.unknown = true;
   } else if (g.sub === 'commit-tree') {
     const parsed = gitTypedArguments(g, { shortValues: { m: 'message', F: 'file', p: 'parent' }, shortOptional: { S: 'sign' }, flags: ['no-gpg-sign'] });
     Object.assign(role, parsed); role.kind = 'generated-object';
@@ -3014,7 +3077,7 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv'].includes(name)))) {
       res.problems.push('launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
