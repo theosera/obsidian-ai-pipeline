@@ -1323,7 +1323,8 @@ const GH_METADATA_ENV = new Set(['GH_REPO', 'GH_HOST']);
 const GH_HELPER_ENV = new Set(['GH_EDITOR', 'GH_BROWSER', 'GH_PAGER', 'GH_CONFIG_DIR', 'BROWSER', 'HOME', 'XDG_CONFIG_HOME', 'AppData']);
 const SHELL_STARTUP_ENV = new Set(['BASH_ENV', 'ENV']);
 const GIT_CONFIG_SOURCE_ENV = new Set(['GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG']);
-const TRACKED_VALUE_ENV = new Set([...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, ...GIT_CONFIG_SOURCE_ENV, 'PS4']);
+const GIT_HTTP_METADATA_ENV = new Set(['GIT_HTTP_USER_AGENT']);
+const TRACKED_VALUE_ENV = new Set([...GIT_HTTP_METADATA_ENV, ...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, ...GIT_CONFIG_SOURCE_ENV, 'PS4']);
 const trackedValueEnvironment = name => TRACKED_VALUE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 const gitConfigurationEnvironment = name => GIT_CONFIG_SOURCE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 /** A stored shell value enters a child environment only with a selected export attribute. */
@@ -1415,7 +1416,7 @@ const wordHasGit = (w) => hasGitText(w.raw) || hasGitText(w.text) || hasGitText(
 function parseGit(args) {
   const g = {
     sub: null, args: [], cdirs: [], configs: [], configEnvs: [], gitDir: false, workTree: false,
-    dynamicOpt: false, terminal: false, problems: [], pathspecFlags: [], pagerForced: false, pagerDisabled: false, configWords: [], configSelections: [],
+    dynamicOpt: false, dynamicGlobalWords: [], terminal: false, problems: [], pathspecFlags: [], pagerForced: false, pagerDisabled: false, configWords: [], configSelections: [],
   };
   let k = 0;
   while (k < args.length) {
@@ -1430,7 +1431,7 @@ function parseGit(args) {
       const v = args[k + 1];
       if (!v) { g.problems.push(`git の ${t} に値が無い`); return g; }
       if (v.dynamicMaySplit) { g.problems.push(`git の ${t} の値が複数の語になりうるため、subcommand を決められない`); return g; }
-      if (v.dynamic) g.dynamicOpt = true;
+      if (v.dynamic) { g.dynamicOpt = true; g.dynamicGlobalWords.push({ option: t, word: v }); }
       if (t === '-C') g.cdirs.push(v.text); else { g.configs.push(v.text); g.configWords.push(v);
         g.configSelections.push({ mode: 'value', text: v.text, word: v }); }
       k += 2;
@@ -1458,7 +1459,7 @@ function parseGit(args) {
         const v = args[k + 1];
         if (!v) { g.problems.push(`git の ${t} に値が無い`); return g; }
         if (v.dynamicMaySplit) { g.problems.push(`git の ${t} の値が複数の語になりうるため、subcommand を決められない`); return g; }
-        if (v.dynamic) g.dynamicOpt = true;
+        if (v.dynamic) { g.dynamicOpt = true; g.dynamicGlobalWords.push({ option: name, word: v }); }
         value = v.text;
         k += 2;
       }
@@ -1919,6 +1920,7 @@ function gitTypedArguments(g, spec = {}) {
 
 /** Official executable operations which need a source/context decision distinct from name parsing. */
 function gitOperationRole(g) {
+  if (['clone', 'fetch', 'pull', 'push', 'ls-remote', 'http-push', 'http-fetch', 'remote', 'submodule'].includes(g.sub) && gitHttpMetadataGlobalBoundary(g)) g = { ...g, dynamicOpt: false };
   const role = { operation: g.sub, mode: 'active', kind: null, sourceWords: [], values: [], operands: [],
     unknown: Boolean(g.incomplete || g.dynamicOpt), terminal: g.terminal && g.helpKind === 'stdout' };
   if (role.terminal) return role;
@@ -2026,8 +2028,18 @@ function gitConfigurationEntries(sources) {
   return { entries, unknown };
 }
 
-/** Explicit cookie-file selectors are client file input, not ordinary header DATA. */
-function gitHttpCookieRole(g) {
+/** Dynamic metadata bytes do not erase an already proven quoted -c argv/key boundary. */
+function gitHttpMetadataGlobalBoundary(g) {
+  return Boolean(g.dynamicOpt && g.dynamicGlobalWords?.length && g.dynamicGlobalWords.every(({ option, word }) => {
+    if (option !== '-c' || word.dynamicMaySplit || word.ansiCUnknown || word.globExpanded || word.braceExpanded || word.tildeExpanded) return false;
+    const eq = word.text.indexOf('='), key = word.text.slice(0, eq < 0 ? undefined : eq);
+    return eq >= 0 && !key.includes(DYN) && /^http(?:\..+)?\.(?:extraheader|useragent)$/i.test(key);
+  }));
+}
+
+/** Preserve actual HTTP operation/query selection independently of configured input families. */
+function gitHttpClientRole(g) {
+  if (gitHttpMetadataGlobalBoundary(g)) g = { ...g, dynamicOpt: false };
   if (g.gitNamespaceInferred || g.terminal || g.helpKind === 'manual') return null;
   if (!['clone', 'fetch', 'pull', 'push', 'ls-remote', 'http-push', 'http-fetch', 'remote', 'submodule'].includes(g.sub)) return null;
   const parsed = gitTypedArguments(g, { values: ['upload-pack', 'exec', 'repo', 'branch', 'origin', 'depth', 'filter', 'server-option', 'push-option', 'receive-pack', 'recurse-submodules', 'refmap', 'jobs', 'shallow-since', 'shallow-exclude', 'negotiation-tip', 'separate-git-dir', 'config'],
@@ -2037,28 +2049,50 @@ function gitHttpCookieRole(g) {
   const action = parsed.operands[0]?.text;
   if (g.sub === 'remote' && !parsed.unknown && (action === 'get-url' || action === 'show' && parsed.flags.includes('n'))) return null;
   if (g.sub === 'submodule' && !parsed.unknown && ['status', 'sync', 'summary'].includes(action)) return null;
+  const repositoryWord = g.sub === 'http-fetch' ? parsed.operands[1] : g.sub === 'remote' ? parsed.operands[1] :
+    g.sub === 'submodule' ? action === 'add' ? parsed.operands[1] : null :
+      parsed.operands[0] || parsed.values.findLast(value => value.option === 'repo')?.word;
+  return { repositoryWord, argvUnknown: parsed.unknown, mode: 'potential-http-client', values: parsed.values, operands: parsed.operands };
+}
+
+/** Keep ordered command-scope selectors and their original value words. */
+function gitHttpSettings(g, family) {
   const selections = (g.configSelections || []).slice();
   const seen = new Set(selections.map(value => (value.mode === 'configuration-env' ? 'env' : value.mode) + ':' + value.text));
   for (const [mode, entries] of [['value', g.configs || []], ['env', g.configEnvs || []]]) for (const text of entries) {
     if (!seen.has(mode + ':' + text)) selections.push({ mode, text, word: null });
   }
-  const settings = selections.flatMap((selection, order) => {
+  return selections.flatMap((selection, order) => {
     const eq = selection.text.indexOf('='), key = selection.text.slice(0, eq < 0 ? undefined : eq);
-    const match = /^http(?:\.(.+))?\.cookiefile$/i.exec(key);
-    if (!match) return [];
+    const match = /^http(?:\.(.+))?\.(cookiefile|extraheader|useragent)$/i.exec(key);
+    if (!match || !family.includes(match[2].toLowerCase())) return [];
     const word = selection.mode === 'configuration-env' ? selection.word : selection.mode === 'env' ? selection.prefixSourceKnown ? selection.word : null :
       selection.word && eq >= 0 ? commitInlineValue(selection.word, selection.word, selection.text.slice(eq + 1), eq + 1) : null;
-    return [{ key, scope: match[1] || null, mode: selection.mode, word, order }];
+    return [{ key, field: match[2].toLowerCase(), scope: match[1] || null, mode: selection.mode, word, order }];
   });
+}
+
+/** Explicit cookie-file selectors are client file input, not ordinary header DATA. */
+function gitHttpCookieRole(g) {
+  const client = gitHttpClientRole(g);
+  if (!client) return null;
+  const settings = gitHttpSettings(g, ['cookiefile']);
   const configurationSources = (g.gitConfigurationSources || []).filter(source => !source.word?.implicitGitConfigRoot);
-  const environment = gitConfigurationEntries(configurationSources);
-  const configEnvironmentUnknown = environment.unknown;
+  const configEnvironmentUnknown = gitConfigurationEntries(configurationSources).unknown;
   if (!settings.length && !configEnvironmentUnknown) return null;
-  const repositoryWord = g.sub === 'http-fetch' ? parsed.operands[1] : g.sub === 'remote' ? parsed.operands[1] :
-    g.sub === 'submodule' ? action === 'add' ? parsed.operands[1] : null :
-      parsed.operands[0] || parsed.values.findLast(value => value.option === 'repo')?.word;
-  return { kind: 'http-cookie-file-input', settings, repositoryWord, argvUnknown: parsed.unknown,
-    configEnvironmentUnknown, configurationSources, mode: 'potential-http-client', values: parsed.values, operands: parsed.operands };
+  return { ...client, kind: 'http-cookie-file-input', settings, configEnvironmentUnknown, configurationSources };
+}
+
+/** HTTP headers and User-Agent are generated outbound DATA, retaining export/word provenance. */
+function gitHttpMetadataRole(g) {
+  const client = gitHttpClientRole(g);
+  if (!client) return null;
+  const settings = gitHttpSettings(g, ['extraheader', 'useragent']);
+  const environmentSources = g.gitHttpMetadataSources || [];
+  const configurationSources = (g.gitConfigurationSources || []).filter(source => !source.word?.implicitGitConfigRoot);
+  const configEnvironmentUnknown = gitConfigurationEntries(configurationSources).unknown;
+  if (!settings.length && !environmentSources.length && !configEnvironmentUnknown) return null;
+  return { ...client, kind: 'http-generated-metadata', settings, environmentSources, configEnvironmentUnknown };
 }
 
 function gitOutboundRole(g) {
@@ -2230,15 +2264,15 @@ function inspect(cmd, options = {}) {
   if (Array.isArray(options.initialHelperEnvNames)) {
     for (const name of options.initialHelperEnvNames) if (HELPER_SOURCE_ENV.has(name)) stateFor(parsed.scope).helperEnv.add(name);
   }
-  if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames) || Array.isArray(options.initialGhEnvNames) || Array.isArray(options.initialShellStartupEnvNames) || Array.isArray(options.initialGitConfigEnvNames)) {
+  if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames) || Array.isArray(options.initialGhEnvNames) || Array.isArray(options.initialShellStartupEnvNames) || Array.isArray(options.initialGitConfigEnvNames) || Array.isArray(options.initialGitHttpEnvNames)) {
     const initial = stateFor(parsed.scope);
-    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || []), ...(options.initialGhEnvNames || []), ...(options.initialShellStartupEnvNames || []), ...(options.initialGitConfigEnvNames || [])]) if (trackedValueEnvironment(name)) {
+    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || []), ...(options.initialGhEnvNames || []), ...(options.initialShellStartupEnvNames || []), ...(options.initialGitConfigEnvNames || []), ...(options.initialGitHttpEnvNames || [])]) if (trackedValueEnvironment(name)) {
       initial.identitySources.set(name, null); initial.identityExports.set(name, true);
     }
   }
-  if (Array.isArray(options.initialGitIdentitySources) || Array.isArray(options.initialPagerSources) || Array.isArray(options.initialGhSources) || Array.isArray(options.initialShellStartupSources) || Array.isArray(options.initialGitConfigSources)) {
+  if (Array.isArray(options.initialGitIdentitySources) || Array.isArray(options.initialPagerSources) || Array.isArray(options.initialGhSources) || Array.isArray(options.initialShellStartupSources) || Array.isArray(options.initialGitConfigSources) || Array.isArray(options.initialGitHttpSources)) {
     const initial = stateFor(parsed.scope);
-    const selected = childIdentityState(new Map([...(options.initialGitIdentitySources || []), ...(options.initialPagerSources || []), ...(options.initialGhSources || []), ...(options.initialShellStartupSources || []), ...(options.initialGitConfigSources || [])]
+    const selected = childIdentityState(new Map([...(options.initialGitIdentitySources || []), ...(options.initialPagerSources || []), ...(options.initialGhSources || []), ...(options.initialShellStartupSources || []), ...(options.initialGitConfigSources || []), ...(options.initialGitHttpSources || [])]
       .filter(source => trackedValueEnvironment(source.name)).map(source => [source.name, source.word])));
     // Presence names may include unknown inherited values while source arrays only
     // supply partial known values. Preserve every presence seed across families.
@@ -2417,6 +2451,7 @@ function inspect(cmd, options = {}) {
       helperEnvNames: [...helperEnv],
       gitIdentitySources: [...identitySources].filter(([name]) => GIT_IDENTITY_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitPagerEnvSources: [...identitySources].filter(([name]) => GIT_PAGER_ENV.has(name)).map(([name, word]) => ({ name, word })),
+      gitHttpMetadataSources: [...identitySources].filter(([name]) => GIT_HTTP_METADATA_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitConfigurationSources: [...identitySources].filter(([name]) => gitConfigurationEnvironment(name)).map(([name, word]) => ({ name, word })),
       ghEnvironmentSources: [...identitySources].filter(([name]) => GH_METADATA_ENV.has(name)).map(([name, word]) => ({ name, word })),
       ghHelperEnvironmentSources: [...identitySources].filter(([name]) => GH_HELPER_ENV.has(name)).map(([name, word]) => ({ name, word })),
@@ -3060,7 +3095,8 @@ function inspect(cmd, options = {}) {
       res.problems.push('git add / stage の引数に brace expansion があり、追加される pathspec を検査できない');
       return;
     }
-    if (g.dynamicOpt && !(g.sub && READ_ONLY_SUBS.has(g.sub))) {
+    if (g.dynamicOpt && !(g.sub && READ_ONLY_SUBS.has(g.sub)) &&
+        !(gitHttpMetadataGlobalBoundary(g) && (['clone', 'fetch', 'pull', 'push', 'ls-remote', 'http-push', 'http-fetch', 'remote', 'submodule'].includes(g.sub) || g.sub === 'config' && readOnlyGitMode(g, false, true)))) {
       res.problems.push('git の -C / -c などの値が変数や置換で作られていて、読みきれない');
       return;
     }
@@ -3080,6 +3116,7 @@ function inspect(cmd, options = {}) {
     g.gitIdentitySources = invocation.gitIdentitySources;
     g.gitPagerEnvSources = invocation.gitPagerEnvSources;
     g.gitConfigurationSources = invocation.gitConfigurationSources;
+    g.gitHttpMetadataSources = invocation.gitHttpMetadataSources;
     for (const config of g.configSelections) if (config.mode === 'env') {
       const variable = config.text.slice(config.text.indexOf('=') + 1);
       const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(variable + '='));
@@ -3094,6 +3131,7 @@ function inspect(cmd, options = {}) {
     }
     g.cdLikeBefore = cdBefore;
     g.httpCookieRole = gitHttpCookieRole(g);
+    g.httpMetadataRole = gitHttpMetadataRole(g);
     res.gits.push(g);
   };
 
@@ -3951,6 +3989,7 @@ module.exports = {
   gitTypedArguments,
   gitOperationRole,
   gitHttpCookieRole,
+  gitHttpMetadataRole,
   parseAddArgs,
   isSecretPath,
   readOnlyGitMode,

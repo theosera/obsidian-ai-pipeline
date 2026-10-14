@@ -206,6 +206,9 @@ const insp = guard.inspect(cmd, {
   initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_EXTERNAL_DIFF', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
     .filter(name => process.env[name] !== undefined),
   initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL'].filter(name => process.env[name] !== undefined),
+  initialGitHttpEnvNames: ['GIT_HTTP_USER_AGENT'].filter(name => process.env[name] !== undefined),
+  initialGitHttpSources: ['GIT_HTTP_USER_AGENT'].filter(name => process.env[name] === '').map(name =>
+    ({ name, word: { text: '', raw: "''", quoted: true, dynamic: false, dynamicMaySplit: false } })),
   initialGitConfigEnvNames: Object.keys(process.env).filter(name => /^(?:GIT_CONFIG_(?:COUNT|PARAMETERS|GLOBAL|SYSTEM|(?:KEY|VALUE)_\d+)|GIT_CONFIG)$/.test(name)),
   initialGitConfigSources: ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG'].filter(name => process.env[name] !== undefined).map(name =>
     ({ name, word: { text: '__inherited_default_git_config_root__', dynamic: false, dynamicMaySplit: false, implicitGitConfigRoot: true } }))
@@ -890,6 +893,55 @@ function gitHttpCookieVerdict(g) {
   // values. Generic empty alone does not certify an unseen URL-specific fallback.
   if (selected.exact && ['value', 'env', 'configuration-env'].includes(selected.mode) && word?.text === '' && !g.dynamicOpt && !role.configEnvironmentUnknown && !rewriteSelected) return false;
   return 'UNKNOWN';
+}
+
+/** Generated HTTP metadata is DATA; opaque selection/source remains UNKNOWN, never inferred safe. */
+function gitHttpMetadataVerdict(g, invocation) {
+  const role = guard.gitHttpMetadataRole(g);
+  if (!role) return false;
+  const repository = literalSourceWord(role.repositoryWord);
+  const rewriteSelected = [...(g.configs || []), ...(g.configEnvs || [])].some(value => /^url\..+\.insteadof(?:=|$)/i.test(value));
+  if (repository && /^(?:ssh:\/\/|git:\/\/|git@|file:\/\/|\/|\.\.?\/)/.test(repository.text) && !rewriteSelected && !role.configEnvironmentUnknown) return false;
+  let target;
+  try { if (repository && /^https?:\/\//i.test(repository.text) && !/[%*]/.test(repository.text)) target = new URL(repository.text); } catch {}
+  const unknownFields = new Set();
+  const selected = { extraheader: [], useragent: [] }, ranks = {};
+  for (const setting of role.settings) {
+    let rank = [-1, -1], exact = false;
+    if (setting.scope) {
+      let scope;
+      try { if (!target || /[%*]/.test(setting.scope)) throw Error('opaque URL scope'); scope = new URL(setting.scope); if (scope.search || scope.hash || scope.password) throw Error('opaque URL scope'); }
+      catch { unknownFields.add(setting.field); continue; }
+      if (scope.protocol !== target.protocol || scope.hostname !== target.hostname || scope.port !== target.port || scope.username && scope.username !== target.username) continue;
+      const part = scope.pathname.replace(/\/$/, '');
+      if (part && target.pathname !== part && !target.pathname.startsWith(part + '/')) continue;
+      rank = [part.length, scope.username ? 1 : 0]; exact = scope.pathname === target.pathname && scope.username === target.username;
+    }
+    const old = ranks[setting.field];
+    if (old && (rank[0] < old[0] || rank[0] === old[0] && rank[1] < old[1])) continue;
+    ranks[setting.field] = rank;
+    const value = { ...setting, uncertainSelection: !exact || !target || rewriteSelected };
+    if (setting.field === 'useragent') selected.useragent = [value];
+    else if (literalSourceWord(setting.word)?.text === '') selected.extraheader = [];
+    else selected.extraheader.push(value);
+  }
+  const agent = role.environmentSources.find(source => source.name === 'GIT_HTTP_USER_AGENT');
+  if (agent) { selected.useragent = [{ ...agent, uncertainSelection: !target || rewriteSelected }]; unknownFields.delete('useragent'); }
+  const words = [...selected.extraheader, ...selected.useragent];
+  const certain = outboundPayloadVerdict(invocation, words.filter(source => !source.uncertainSelection).map(source => source.word));
+  const uncertain = outboundPayloadVerdict(invocation, words.filter(source => source.uncertainSelection).map(source => source.word));
+  const verdict = certain || (uncertain ? 'UNKNOWN' : false) || (role.configEnvironmentUnknown || unknownFields.size ? 'UNKNOWN' : false);
+  return verdict && (role.argvUnknown || role.configEnvironmentUnknown || !knownInvocationContext(invocation)) ? 'UNKNOWN' : verdict;
+}
+
+/** Persisting generated HTTP metadata is future selected DATA, not an immediate transport. */
+function gitHttpMetadataWriteVerdict(g, invocation) {
+  if (g.gitNamespaceInferred || g.sub !== 'config') return false;
+  const operation = configOperation(g.args.map(word => literalSourceWord(word) || word));
+  if (operation.read || operation.terminal || operation.rename || operation.deletion || operation.operandWords.length < 2) return false;
+  const [key, value] = operation.operandWords;
+  if (!/^http(?:\..+)?\.(?:extraheader|useragent)$/i.test(literalSourceWord(key)?.text || '')) return false;
+  return operation.unknownOption || outboundPayloadVerdict(invocation, [value]) ? 'UNKNOWN' : false;
 }
 
 /** Positive selectors of local Git execution must be gated for their actual operation. */
@@ -2720,6 +2772,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
     initialHelperEnvNames: invocation.helperEnvNames,
     initialGitIdentitySources: invocation.gitIdentitySources || [],
     initialGitConfigSources: invocation.gitConfigurationSources || [],
+    initialGitHttpSources: invocation.gitHttpMetadataSources || [],
     initialPagerSources: invocation.gitPagerEnvSources || [],
     initialShellStartupSources: invocation.shellStartupEnvironmentSources || [],
     initialGhSources: (invocation.ghEnvironmentSources || []).concat(invocation.ghHelperEnvironmentSources || []),
@@ -2755,7 +2808,12 @@ function collectNetworkInvocations(inspection, depth = 0) {
   const activeCommits = inspection.gits.filter(g => g.sub === 'commit' && !guard.parseCommitArgs(g.args).terminal);
   for (const g of inspection.gits) {
     if (g.gitNamespaceUnknown) deny(`Git namespace (${g.sub}) が選ぶ external helper / alias の実行 source・lookup・argv/context を検査できません。alias 不在や query風の子argvはsource認証ではありません。同目的・同条件の対応済みbuiltin/queryがなければownerに実helper/body・対象・cwd/env/config/sourceと不明点を確認してください。` + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+    const httpMetadata = gitHttpMetadataVerdict(g, gitInvocationContexts.get(g));
+    if (httpMetadata) deny(httpMetadata === 'FORBIDDEN' ?
+      'Git HTTP の header / User-Agent を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。実通信の成立や内容の妥当性を確認したものではありません。' :
+      'Git HTTP の header / User-Agent が選ぶ生成 source・stdout・URL scope・argv/config/environment を確定できません。未使用operation/queryや既知の通常literalを同条件で使えなければownerに対象・cwd/env/config/sourceと不明点を確認してください。' + UNKNOWN_OWNER_GATE, httpMetadata);
     if (gitHttpCookieVerdict(g)) deny('Git HTTP client が選ぶ http.cookieFile / Git config environment の file input・URL scope・format・server matching を検査できません。通常ファイルも非秘密の証明ではありません。未使用operation/queryや同条件を保つ対応済みselectorにできなければownerに対象・cwd/env/config/sourceと不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+    if (gitHttpMetadataWriteVerdict(g, gitInvocationContexts.get(g))) deny('Git config の generated header / User-Agent は将来の HTTP 呼出しで選ばれうる DATA です。実送信や即実行と断定せず、生成source・stdout・future URL/config/context を検査できないためownerにkey・操作・cwd/env/config/sourceと不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
     if (gitConfigSourceWrite(g)) deny('Git config の actual setter/delete/rename が、将来の Git 呼出しで選ぶ helper/callback/program の source または fallback を変更します。設定保存だけを即実行や送信と断定せず、future context・本文・副作用が未検査なので判断不能です。getterや意味を証明したdisable設定を使って同目的を保てなければownerにkey・操作・cwd/env/config/sourceと不明点を確認してください。' + UNKNOWN_OWNER_GATE);
     const operation = gitOperationVerdict(g, gitInvocationContexts.get(g));
     if (operation) deny(operation === 'FORBIDDEN' ?

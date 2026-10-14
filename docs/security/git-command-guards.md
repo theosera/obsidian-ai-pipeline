@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 / R24 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -19,6 +19,46 @@
 既存 main 由来の raw backstop も残す。文字列の形だけが一致し、実 argv・操作と message / コメント / DATA を区別できない停止は **UNKNOWN** である。この一致を、秘密ファイルが実際に送信されることの証明として扱わない。
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
+
+## R24: Git HTTP metadata の選択と生成元
+
+R24 は、active HTTP operation が選ぶ `http.extraHeader` / `http.userAgent` と、実際に export / 継承された `GIT_HTTP_USER_AGENT` の生成元を検査する。2026-10-14 13:56:09 JST の同じ numbered header 2入力を使った比較では、依頼前 df463a91、e4560795、R23 公開 03a05771 のいずれも egress 自身は ALLOW で、secret-git だけが停止した。この担当 egress の旧盲点を、他の conditional guard の停止だけで修復済みとはしない。新入力の実 dispatch、native 攻撃の成立、実秘密の読取や被害はこの Hook DATA の観測から確定しない。
+
+対象は実 Git identity、対応 argv / option arity、repository、HTTP operation と selected command-scope config の組合せである。`-c`、`--config-env`、実 export を保った `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` と PARAMETERS / root の既存境界を保持する。query の option 値や `--` 後の DATA を、実 query と取り違えない。対応する実 `ls-remote --get-url`、remote getter、network を起動しない submodule mode、確定 non-HTTP、未使用 selector は区別するが、既存の helper / source / context / cookie 条件も残る。
+
+| 守る対象 | 判定結果 | 判断不能になる条件 | 通常作業への影響 | 同じ目的の代替・維持する対照 | owner への出口 | 試験する境界 |
+|---|---|---|---|---|---|---|
+| **選択された HTTP header DATA** | 送信に使う語・同じ source 内の関連 secret reader・context・active selection を証明した場合は FORBIDDEN。必要な証明が不足すれば UNKNOWN | 未追跡 producer、複数 argv へ変わり得る語、未検査 command-scope config、URL scope / rewrite / destination / argv が不明。unscoped 生成値と見えていない URL-specific config の優先順を証明できない場合も UNKNOWN | 動的 header、unsupported carrier / scope を必要とする通常の HTTP query / transfer も停止し得る | 確認済み非秘密 literal / 対応 scalar DATA と、選択されない scope / 実 query を維持。同じ対象・認証・操作を保てる場合だけ対応形式へ変更 | operation / target、selected key と語、生成 source / reader、cwd / exported env / config 優先順、残る不足を提示 | numbered / `-c` / `--config-env`、実 export / removal、append / reset、scope、query / 消費 DATA、原入力 |
+| **選択された User-Agent DATA** | 同じ payload proof で秘密由来を確認すれば FORBIDDEN。出所や選択条件が未証明なら UNKNOWN | 継承された nonempty 値の生成元、未対応 child への carrier、opaque scope / target、実 export を確定できない場合 | 既存の custom User-Agent を継承した HTTP 作業や、未証明の生成値を使う作業が停止し得る | ordinary literal / 対応 scalar、未 export / 実 export 解除、実 query を区別。実 environment override は UA だけに適用し、header / cookie を解除しない | 値と実 export、親子の source / mode、優先される setting、target と不足を提示 | config scalar の最後の値、environment priority、partial seed、child / 未使用対照、独立 family |
+| **HTTP metadata の persistent writer** | この2 family の未証明な生成値を保存する操作は、将来の selection が未検査なので UNKNOWN。直ちに HTTP 送信したという FORBIDDEN にはしない | 保存する生成元と将来 consumer が未証明。未知 key / file writer 全体はこの限定 gate で保護済みとは扱わない | 動的 header / User-Agent の設定保存も停止し得る | ordinary literal / empty の保存と getter はこの新 writer gate の対象外。既存の設定・helper guard は維持し、生成目的が必要なら単なる削除で代替しない | key / scope / producer、将来 consumer、必要な設定値と不足を提示 | setter / getter / 実 query、literal / generated / empty、単一 edge、別 family の保持 |
+
+### 値の優先順と対応範囲
+
+`http.extraHeader` は selected list であり、後続の nonempty 値は追加する。後の値だけを見て先行 payload を捨てない。selected empty 値は、その時点の選択済み list を reset する。generic empty による既知 explicit list の reset を、見えていない全 config / cookie / helper family の解除証明にはしない。
+
+`http.userAgent` は selected scalar である。実 prefix / export / 継承された `GIT_HTTP_USER_AGENT` が config より優先する。この override で消せるのは superseded UA の selection uncertainty だけで、unknown header、cookie、config key / root、global argv、内側の実行 source は独立して残る。active config の選択が未検査なら、同じ語の関連 secret reader を確認しても UNKNOWN を保ち、確定した selection の FORBIDDEN と区別する。任意の stored `--config-env` carrier は、対応する child export / producer proof がなければ ordinary に見えても UNKNOWN。実 prefix carrier は、元の値の raw / start と生成元を保持する。
+
+URL selection は literal scheme / host / normalized port / path の slash 境界 / user の対応範囲に限る。percent encoding、wildcard scope、malformed / opaque destination、明示 rewrite は未対応。既定の repository / global / system config 内容全体は検査済みとしない。正確な HTTP metadata key に対する引用済み単一語の `-c` 値では、payload の不確定と argv / key の確定を分けるが、他の dynamic global operand を一律許可しない。
+
+secret reader proof は既存 `outboundPayloadVerdict` の有限な形式を再利用する。同じ source / 語の span / substitution scope と実行順を保ち、対応する `cat` / `head` / `tail` / `base64` / `xxd` / `sed` / `grep` / `awk` の file / input と引数を検査する。実行 path は対応する `/usr/bin/` / `/bin/` または既存の context 条件が必要で、関数・任意 helper、未対応 program text / option / redirection や加工を「非秘密」と扱わない。秘密 filename の関連読取と送信する語の関係を証明できない場合は UNKNOWN。別 statement の無関係な reader は、この payload の証拠にしない。
+
+同目的の代替は、対象・認証・操作を維持できる確認済み literal / scalar 形式がある場合だけ採用する。metadata や生成元が目的に必要で対応形式がない場合は、target / operation / cwd / export / config priority / producer と不足を owner に示す。個別操作の了承と hook の停止の了承は別であり、コピー先での実行を自動的な代替にしない。ordinary child でも既存 Bash source が UNKNOWN の形式は引き続き停止し、child 全般の安全を証明したとはしない。
+
+### R24 の版と検証境界
+
+一次仕様は [Git 2.54 config](https://git-scm.com/docs/git-config/2.54.0)、[v2.54.0 http.c](https://github.com/git/git/blob/v2.54.0/http.c)、[v2.54.0 urlmatch.c](https://github.com/git/git/blob/v2.54.0/urlmatch.c) に照合した。別の DUMMY native 観測は Git 2.54.0 / arm64 / libcurl 8.7.1 の隔離 config と loopback receiver に限る。7対照で append / reset / UA priority を確認したが、応答は全 HTTP 404 / Git exit128 であり、repository 操作の成功・実 witness の送信・production config・他の Git / shell / runtime 版の保証ではない。
+
+2026-10-14 14:24:34 JST の fixed-v1 source（common `3ea53e77`、egress `fc5d7a18`、add-all / secret-git は R23 と同じ）に対する私有 L2 は64/64、解析17/17、旧 Git 条件71/71、単一 edge reverse8を別々に取得した。64入力の egress 結果は ALLOW35 / UNKNOWN25 / FORBIDDEN4で、通常対照10入力は egress ALLOWでも既存 secret-git 単独の UNKNOWNが残る。reverse は担当 egress の停止消失5 / aggregate停止消失4、許可精度2、独立 Bash停止が残る child の必要性未証明1を区別し、8本すべての停止必要性が証明されたとはしない。
+
+2026-10-14 14:33:58 JST の同 fixed source / Claude Code 2.1.299 に対する DUMMY 実入口3試行は、ordinary header の1 PASS / 0 FAIL / 2 NOT_EXERCISED。通常対照だけで実3 hook dispatch・egress ALLOW・Git stub の期待markerを確認し、他の対象状態は不変だった。numbered header reader と exported User-Agent reader の2試行は APIcyber拒否で Bash / hook前に停止し、dispatch 0・対象状態不変である。この2件の実入口停止は未検証として残し、再試行・入力の書換えをしない。user-default hookを有効にし、元の matcher / if / timeoutを保持した untrusted DUMMY workspace の観測であり、production lifecycle / plugin / native sender / 実秘密や通信を再現したものではない。API起動前の試験器準備エラーは、この3 actual trial や hook の合格へ加算しない。
+
+上記は fixed-v1 の履歴である。独立18入力の確認で、明示 unknown config root を伴う2入力が契約の UNKNOWN に対し FORBIDDENとなった停止理由の精度不足を保持した。2026-10-14 14:38:26 JST の fixed-v2（egress `b5ea0756`、他3 sourceはv1と同じ）では unknown config selectionを確定payloadより優先する局所修復を行った。停止を保持したこの訂正を、ALLOW漏れの新規発生や v1全試験のv2合格としない。v1の64 / 17 / 71 / reverse8と実入口1 PASS / 2 NOTを、新 sourceの受入へ持ち越さない。
+
+fixed-v2に対する同じ独立18入力は14:41:44 JSTに不一致0、通常headerの新しいDUMMY実入口1試行は14:42:19 JSTにPASSを取得した。この新しい通常対照だけで実3 hook dispatch / egress ALLOW / 期待stub markerを確認し、他の対象状態は不変だった。v1のnegative2 NOTを再試行せず、新normalをnegativeのdispatch証拠にしない。全公開bank、API契約、required checks、公開headのCI / fresh reviewはこの有限対照と別に取得する。
+
+同fixed-v2で新66/66（egress ALLOW35 / UNKNOWN27 / FORBIDDEN4）、私有解析18/18、旧Git条件71/71、公開解析95 / parity8 / 停止API6の109契約を再取得した。reverse9は担当停止消失5 / aggregate停止消失4、通常許可精度2、UNKNOWNからFORBIDDENへ変わってDENYが残る理由精度1、独立Bash停止が残るchild必要性未証明1を分ける。14:44:29 JSTの全4821入力は4821/4821・broken0・source / runner不変。旧4755の入力・旧期待を全保持し、新66を追加した。同じ4821を旧03aへ渡した比較のassert不一致26、aggregate差17（8 ALLOW→DENY / 9 DENY→ALLOW）、hook / 理由のみの差18は重なる測度であり、脆弱性数ではない。14:44:43 JSTのlocal root602 / typecheck / lint / duplicate2も成功し、local Node24.13のengine警告は保持する。
+
+この有限なlocal sourceの受入と、公開headのrequired CI・両fresh review・thread・Goalの完了は別である。旧head03aのCI / full CodeRabbit0を変更sourceへ持ち越さない。元 input / ID / cwd / project / envと原FAIL・精度不足・fixture / collector訂正を残し、L1 / L2 / reverse / L3と公開後のCI / fresh reviewを別証拠にする。L3のAPI前段停止とR23のuser-default hookによるwhole-tool strict FAILは担当hook成功へ読み替えず、今回の新入力の実dispatchへ持ち越さない。全shell / 設定 / runtime / production lifecycleの安全認証とせず、negative2実入口未検証を解消したとも記録しない。
 
 ## R23: 修正の条件・結果・例外
 

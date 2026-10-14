@@ -1085,3 +1085,76 @@ test('R23 numbered Git config inputs follow export attributes and do not erase o
   assert.equal(inv.gitConfigurationSources.find(s => s.name === 'GIT_CONFIG_GLOBAL').word.implicitGitConfigRoot, true);
   assert.equal(inv.shellStartupEnvironmentSources.find(s => s.name === 'BASH_ENV').word, null);
 });
+
+test('R24 numbered HTTP metadata keeps the selected value source separate from its key', () => {
+  const source = "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0=\"X-DUMMY:$(cat .e''nv)\" g''it ls-remote https://example.invalid/repo";
+  const analysis = inspect(source);
+  assert.deepEqual(analysis.problems, []);
+  const role = analysis.gits[0].httpMetadataRole;
+  assert.equal(role.kind, 'http-generated-metadata');
+  assert.equal(role.settings[0].field, 'extraheader');
+  assert.equal(role.settings[0].mode, 'configuration-env');
+  const value = role.settings[0].word;
+  assert.equal(value.dynamic, true);
+  assert.equal(value.dynamicMaySplit, false);
+  assert.equal(value.raw.startsWith('GIT_CONFIG_VALUE_0='), true);
+  const reader = analysis.invocations.find(i => i.name === 'cat');
+  assert.equal(reader.args[0].text, '.env');
+  assert.equal(reader.nameWord.start > value.start, true);
+  assert.equal(reader.nameWord.start < value.start + value.raw.length, true);
+  const ordinary = singleGit('GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=never git ls-remote https://example.invalid/repo');
+  assert.equal(ordinary.httpMetadataRole, null);
+});
+
+test('R24 HTTP metadata value uncertainty preserves genuine query and consumed DATA boundaries', () => {
+  const prefix = "g''it -c http.extraHeader=\"X-DUMMY:$(cat .e''nv)\" ls-remote";
+  const query = singleGit(prefix + ' --get-url https://example.invalid/repo');
+  assert.equal(query.dynamicOpt, true);
+  assert.equal(query.dynamicGlobalWords[0].option, '-c');
+  assert.equal(query.dynamicGlobalWords[0].word.dynamicMaySplit, false);
+  assert.equal(query.operationRole.mode, 'query');
+  assert.equal(query.httpMetadataRole, null);
+  const consumed = singleGit(prefix + ' --upload-pack --get-url https://example.invalid/repo').httpMetadataRole;
+  assert.equal(consumed.values[0].option, 'upload-pack');
+  assert.equal(consumed.values[0].word.text, '--get-url');
+  const operand = singleGit(prefix + ' -- --get-url').httpMetadataRole;
+  assert.equal(operand.repositoryWord.text, '--get-url');
+  assert.equal(inspect('git -C "$DIR" -c http.extraHeader=ordinary ls-remote https://example.invalid/repo').problems.length > 0, true);
+});
+
+test('R24 header list order and scalar UserAgent selection retain different metadata roles', () => {
+  // L1 preserves ordered DATA; L2 separately checks header reset and actual outbound decisions.
+  const role = singleGit('GIT_HTTP_USER_AGENT=DUMMY-env git -c http.extraHeader=first -c http.extraHeader= -c http.extraHeader=after -c http.userAgent=old -c http.userAgent=new ls-remote https://example.invalid/repo').httpMetadataRole;
+  assert.deepEqual(role.settings.filter(s => s.field === 'extraheader').map(s => s.word.text), ['first', '', 'after']);
+  assert.deepEqual(role.settings.filter(s => s.field === 'useragent').map(s => s.word.text), ['old', 'new']);
+  assert.deepEqual(role.settings.map(s => s.order), [0, 1, 2, 3, 4]);
+  assert.equal(role.environmentSources[0].name, 'GIT_HTTP_USER_AGENT');
+  assert.equal(role.environmentSources[0].word.text, 'DUMMY-env');
+  const unused = singleGit('GIT_HTTP_USER_AGENT=DUMMY-env git status --short');
+  assert.equal(unused.httpMetadataRole, null);
+});
+
+test('R24 UserAgent environment follows actual exports and preserves partial inherited uncertainty', () => {
+  const local = singleGit('GIT_HTTP_USER_AGENT=DUMMY-local; git ls-remote https://example.invalid/repo');
+  assert.deepEqual(local.gitHttpMetadataSources, []);
+  const removed = singleGit('export GIT_HTTP_USER_AGENT=DUMMY-export; env -u GIT_HTTP_USER_AGENT git ls-remote https://example.invalid/repo');
+  assert.deepEqual(removed.gitHttpMetadataSources, []);
+  const selected = singleGit('export GIT_HTTP_USER_AGENT=DUMMY-export; git ls-remote https://example.invalid/repo');
+  assert.equal(selected.gitHttpMetadataSources[0].word.text, 'DUMMY-export');
+  const empty = singleGit('GIT_HTTP_USER_AGENT= git ls-remote https://example.invalid/repo');
+  assert.equal(empty.gitHttpMetadataSources[0].word.text, '');
+  const inherited = inspect('git ls-remote https://example.invalid/repo', {
+    initialGitHttpEnvNames: ['GIT_HTTP_USER_AGENT'], initialGitHttpSources: [],
+    initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME'],
+    initialGhEnvNames: ['HOME'],
+    initialGhSources: [{ name: 'HOME', word: { text: 'DUMMY-home', dynamic: false, dynamicMaySplit: false } }],
+  }).gits[0];
+  assert.equal(inherited.gitHttpMetadataSources[0].word, null);
+  assert.equal(inherited.gitIdentitySources[0].word, null);
+  // A selected UserAgent does not prove an independent replacement config root.
+  const opaque = singleGit("GIT_CONFIG_GLOBAL=./DUMMY.config GIT_HTTP_USER_AGENT=\"$(cat .e''nv)\" git ls-remote https://example.invalid/repo");
+  assert.equal(opaque.httpMetadataRole.configEnvironmentUnknown, true);
+  assert.equal(opaque.gitHttpMetadataSources[0].word.dynamic, true);
+  assert.equal(opaque.gitConfigurationSources[0].name, 'GIT_CONFIG_GLOBAL');
+  assert.equal(opaque.gitConfigurationSources[0].word.implicitGitConfigRoot, undefined);
+});
