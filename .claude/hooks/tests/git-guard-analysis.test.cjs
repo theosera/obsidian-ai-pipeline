@@ -1037,3 +1037,51 @@ test('R22 inferred Git tokens do not establish an execution actor', () => {
   assert.equal(legacy.sub, 'add');
   assert.equal(legacy.args[0].text, '-A');
 });
+
+test('R23 am retains mailbox and stdin input while consumed control text stays DATA', () => {
+  const mailbox = singleGit("g''it am public.patch").operationRole;
+  assert.equal(mailbox.kind, 'mail-object-input');
+  assert.equal(mailbox.messageFiles[0].text, 'public.patch');
+  assert.equal(mailbox.stdinInput, false);
+  assert.equal(singleGit('git am').operationRole.stdinInput, true);
+  for (const command of ['git am --abort', 'git am --quit']) {
+    assert.equal(singleGit(command).operationRole.mode, 'cleanup', command);
+  }
+  assert.equal(singleGit('git am --show-current-patch=diff').operationRole.mode, 'query');
+  for (const command of ['git am --directory --abort public.patch', 'git am -- --abort']) {
+    const role = singleGit(command).operationRole;
+    assert.notEqual(role.mode, 'cleanup', command);
+    assert.notEqual(role.mode, 'query', command);
+  }
+  assert.equal(singleGit('git am --continue').operationRole.mode, 'resume');
+});
+
+test('R23 HTTP cookie source remains separate from query and inferred Git token roles', () => {
+  const g = singleGit("g''it -c http.cookieFile=public.cookies ls-remote https://example.invalid/repo");
+  assert.equal(g.httpCookieRole.kind, 'http-cookie-file-input');
+  assert.equal(g.httpCookieRole.settings[0].word.text, 'public.cookies');
+  assert.equal(g.httpCookieRole.repositoryWord.text, 'https://example.invalid/repo');
+  assert.equal(singleGit('git -c http.cookieFile=public.cookies ls-remote --get-url https://example.invalid/repo').httpCookieRole, null);
+  const data = inspect('grep -rn git -c http.cookieFile=public.cookies ls-remote https://example.invalid/repo').gits[0];
+  assert.equal(data.gitNamespaceInferred, true);
+  assert.equal(data.httpCookieRole, null);
+});
+
+test('R23 numbered Git config inputs follow export attributes and do not erase other source families', () => {
+  const prefix = inspect('GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.cookieFile GIT_CONFIG_VALUE_0=public.cookies git ls-remote https://example.invalid/repo; git ls-remote https://example.invalid/repo').gits;
+  assert.equal(prefix[0].gitConfigurationSources.find(s => s.name === 'GIT_CONFIG_COUNT').word.text, '1');
+  assert.equal(prefix[0].gitConfigurationSources.find(s => s.name === 'GIT_CONFIG_KEY_0').word.text, 'http.cookieFile');
+  assert.equal(prefix[0].gitConfigurationSources.find(s => s.name === 'GIT_CONFIG_VALUE_0').word.text, 'public.cookies');
+  assert.deepEqual(prefix[1].gitConfigurationSources, []);
+  const local = singleGit('GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=http.cookieFile; GIT_CONFIG_VALUE_0=public.cookies; git ls-remote https://example.invalid/repo');
+  assert.deepEqual(local.gitConfigurationSources, []);
+  const root = { text: '__inherited_default_config_root__', dynamic: false, dynamicMaySplit: false, implicitGitConfigRoot: true };
+  const inv = inspect('bash -c :', {
+    initialGitConfigEnvNames: ['GIT_CONFIG_COUNT', 'GIT_CONFIG_GLOBAL'],
+    initialGitConfigSources: [{ name: 'GIT_CONFIG_GLOBAL', word: root }],
+    initialShellStartupEnvNames: ['BASH_ENV'], initialShellStartupSources: [],
+  }).invocations[0];
+  assert.equal(inv.gitConfigurationSources.find(s => s.name === 'GIT_CONFIG_COUNT').word, null);
+  assert.equal(inv.gitConfigurationSources.find(s => s.name === 'GIT_CONFIG_GLOBAL').word.implicitGitConfigRoot, true);
+  assert.equal(inv.shellStartupEnvironmentSources.find(s => s.name === 'BASH_ENV').word, null);
+});

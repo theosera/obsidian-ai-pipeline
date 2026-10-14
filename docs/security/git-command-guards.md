@@ -1,6 +1,6 @@
 # Bash の Git / secret ガード
 
-この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
+この文書は PR #191 の保護範囲、R19 / R20 / R21 / R22 / R23 の修正条件、拒否されたときの対応を説明する。目的は、秘密の履歴への混入、対象の一括追加、hook の回避、未検査のファイル送信や送信先・実行 source の変更を防ぐことである。コマンド全体や任意の外部プログラムの安全を認証するものではない。各 round の取得時刻・source を付した測定は履歴として残し、新しい source の確認へ持ち越さない。
 
 ## 判定の意味
 
@@ -19,6 +19,59 @@
 既存 main 由来の raw backstop も残す。文字列の形だけが一致し、実 argv・操作と message / コメント / DATA を区別できない停止は **UNKNOWN** である。この一致を、秘密ファイルが実際に送信されることの証明として扱わない。
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
+
+## R23: 修正の条件・結果・例外
+
+R23 は、公開 head `e4560795a6804987e0dd49e959146a8836a7fa3a` に対する正式 review 5512447678（2026-10-14 11:42:53 JST）の 4 P1 と、同じ役割の有限な source selector を修復する。原 4 入力は、同日 11:51:12 JST の固定 e456 と 12:02:25 JST の依頼前 df463a91 で、全 3 hook が ALLOW・broken 0 だった。これは hook に渡した DATA の判定であり、native 実行・実秘密の読取・通信・被害の証拠ではない。旧 parser の引用認識不足と、新しい source 分類の取り残しを原因の層として分ける。R22 の有限な予定修復が完了しても、未発見経路がないことや fresh review の指摘 0 を保証しない。
+
+下表の inactive / 許可対照は、その新しい停止条件を適用しない範囲である。既存の secret・index・hook・source・context・生成元の判定も残る。対応していない処理を保護済みと扱わない。同じ目的・対象・実行条件を維持できる対応形を先に検討し、無理なら owner へ不足を示す。個別操作への了承から、hook の停止や別の場所にコピーした実行を自動的には許可しない。
+
+| 守る対象 | 判定結果 | 判断不能になる条件 | 通常作業への影響 | 同じ目的の代替・維持する対照 | owner への出口 | 試験する境界 |
+|---|---|---|---|---|---|---|
+| **Git am の mailbox / Maildir / stdin / resume による commit** | active な入力、`--reject`、continue / resolved / skip / retry / allow-empty は UNKNOWN | patch が作る path・object・commit metadata を未検査。公開 filename も安全証明ではない。mode・argv・source が不明な場合も UNKNOWN | 通常の公開 mailbox の適用や再開も停止する | 単独 abort / quit、show-current-patch（省略 / raw / diff）、実 stdout `-h` は新 writer 条件では inactive。quiet だけとの併用まで。混合 mode・未知の略記・不足 arity・dynamic は UNKNOWN。cleanup / query は適用や再開の代替ではない | patch / mailbox / source、追加 path、対象 branch、cwd / env / config、必要な apply / resume の目的と不足を提示 | mailbox / Maildir / stdin / resume、消費 DATA と実 query、元入力と正常対照、停止前後の HEAD / refs / index / objects |
+| **Git HTTP が選ぶ cookie file** | active HTTP の未検査 selected file は UNKNOWN。生 file 全送信を確認した FORBIDDEN とはしない | file format・server match・URL scope・有効設定の選択が未検査。generic empty だけでは既存の URL scope 設定を解除した証明にならない。既知 URL と完全一致する scope の selected known empty は、この family だけ inactive。明示 root・不明な PARAMETERS・URL rewrite・dynamic があれば解除しない | 公開 cookie file を使う通常の HTTP query / transfer も停止する | getter / status、確定 non-HTTP、実 `ls-remote --get-url`、remote get-url / show -n 等では未使用 cookie を区別する。必要な cookie 認証を単に消した形を同目的の代替にはしない | HTTP operation / target、selected key / file / URL scope、必要な format / server 条件、cwd / env / config と不足を提示 | `-c` / `--config-env`、URL scope と generic 値、空値と優先順、実 HTTP / non-HTTP、getter / 消費 DATA、元入力 |
+| **cookie 設定の persistent writer と export された環境設定** | 明示 known cookie の将来 source writer は empty / unset / unset-all / local / global を含め UNKNOWN | 将来の HTTP consumer と cookie source が未検査。COUNT / PARAMETERS / config root は実 export と scope を保持して判定 | cookie 設定の保存や、明示 alternate Git config を使う作業が停止し得る | getter / 未使用 consumer、非 export / 実 export 解除を区別する。既知 count が 32 以下で key も既知の non-cookie 設定を、この理由で UNKNOWN にしない。egress の許可と、既存 secret-git が止める全 hook の結果を分ける | key / value / scope、将来の consumer、実 export、COUNT / PARAMETERS / root と不足を提示 | prefix / export / local / 解除、known non-cookie 対照、URL scope writer、既存 family の情報を保持する partial merge、単一 edge の反転 |
+| **SCP / SSH が実際に選ぶ command / config / program / provider** | 対応する禁止 payload を確認すれば FORBIDDEN。残る active command や未検査 config / program / library は UNKNOWN | helper は copy の方向と独立して動く。literal を解析できても、shell / callee / PATH / startup / functions の副作用を認証したことにならない。未知の remote / local、config、activation も UNKNOWN | 通常の ProxyCommand 等の helper、alternate config、接続 program / provider も停止する | SCP が先に置く PermitLocalCommand=no / RemoteCommand=none、先勝ちで未使用の値、確定 local copy、legacy `-O` で未使用の `-D` を区別する。proxy が必要なら helper を消した形を同目的の代替にしない | source の種類と選択順、copy / 接続 mode、target、helper body / config / library、user shell / cwd / env と不足を提示 | forwarded `-o` / 先勝ち / ProxyJump 競合、`-F` / `-S` / `-D`、provider と環境、実 query / 消費 DATA、元入力と普通の helper、単一 edge |
+| **curl の selected ETag / file 由来の送信入力** | 既知 file role は既存 policy の FORBIDDEN、source / argv 境界が不明なら UNKNOWN | file bytes・format・実送信成功を検査しない。公開名や special file も file payload。8.7.1 の ETag filename `-` は stdin と仮定しない | 公開 ETag cache file を使う conditional request も停止する。empty ETag は upstream が拒否する形式であり、成功する許可代替ではない | 同じ header・目的を対応する確認済み非秘密の inline DATA で保てる場合だけ再検査する。file 入力自体が必要なら owner へ | operation / URL / header、selected file と生成元、format / 用途、cwd / env / config と不足を提示 | singleton の後勝ち、`--next` / `-:`、消費 DATA と実 query、未知 arity、empty / `-` / special file、元入力・公開 file・reverse |
+| **curl の file 由来の --alt-svc / --hsts 接続・cache source** | 明示 nonempty selected file は UNKNOWN。生 file の body 送信として FORBIDDEN にしない | cache 内容・route・protocol・target を未検査。未知 selector / argv も UNKNOWN | 公開 cache file を使う通常接続や、cache を永続化する作業も停止する | known empty はこの local file 入力だけ inactive。memory cache・応答・接続全体の安全証明ではない。cache の永続化が目的なら、empty への置換は同目的の代替にならない | cache file / 選択順 / operation / URL、必要な route / protocol / persistence、config / env と不足を提示 | 後勝ち / next / 空値 / 消費 DATA / 実 terminal query、既知 no-URL の非 activation、未証明の protocol 別例外を作らない、単一 edge と正常対照 |
+
+### SCP / rsync の path と selected source
+
+SCP と rsync の remote / local 判定に、Git の `file://` を local とする規則を流用しない。それぞれの colon / URI / 明示 local path の規則に従う。SCP の colon は path separator より前に現れるかを区別し、bracketed IPv6 と先頭 colon の filename DATA を保持する。`./` や absolute path の後の colon は local と判定する。`file:///…` は SCP / rsync では host `file` を選ぶ形で、Git の local-file URL ではない。それぞれの `scp://` / `rsync://` は対応する host / port / module 条件が必要で、未対応 scheme・不正な URI・dynamic な path は UNKNOWN。rsync の remote shell / files-from / askpass 等も、実際に選ばれる copy mode と source の条件を保持する。
+
+SCP の既存 raw 一致を精度修正する範囲は、既知 external SCP、確定 argv / context、単一 statement、2 個以上の実 operand、redirect / pipeline / heredoc / 追加実行 / 未知 launcher / function source がない確認済み受信または local copy に限る。SFTP、未知の方向、実 upload、他の raw pattern と後段の helper / payload / source 判定は残る。通常の受信が許可されることは、別の active ProxyCommand も許可される意味ではない。
+
+SSH config の command / scalar は選択順を保つ。先行 non-none ProxyJump は後続 ProxyCommand を選ばず、先行 literal `none` は後続 command を抑止した証明にならない。SCP の `-F` は後勝ちで、known `none` / `/dev/null` はその config source だけの対照。`-S` は接続 program、`-D` は SFTP mode の direct server。最初の SCP operand 以降の option-looking bytes は filename DATA である。PKCS11Provider / SecurityKeyProvider の先勝ちと、SSH の direct `-I` による選択を分ける。known `none` と SecurityKeyProvider=`internal` は該当 library source だけの対照であり、認証 file 全体の安全証明ではない。
+
+SSH `-V` / `-Q` は config 読込前に終了する。一方 `-G` は config を読むため、接続 helper / provider が inactive でも selected `-F` / Match exec の source を別に判定する。
+
+### curl 8.7.1 の file の役割と版の境界
+
+upstream 8.7.1 の ARG_FILE 23 件は filename を取る表記であり、全 23 件が生 file の body を送る意味ではない。認証・trust・output・cache を送信 payload と混同しない。以下は有限に照合した役割で、未担当の内容・実装・認証・接続まで保護済みとはしない。
+
+| 役割 | option・範囲 | この修復の境界 |
+|---|---|---|
+| outbound payload / auth file | upload-file / etag-compare / netrc-file | 既存 file payload policy と追加 ETag source。既知 file は FORBIDDEN、未知 source は UNKNOWN。file bytes / credential format / 実送信成功は未確認 |
+| config source | config | 独立した selected config の UNKNOWN 条件を保持 |
+| local output | dump-header / etag-save / output / stderr / trace / trace-ascii | 新 payload / cache 入力には分類しない。filesystem 全体の安全認証ではない |
+| client authentication | cert / key / proxy-cert / proxy-key | TLS 認証の表現で、生 file の body ではない。identity / key / credential の有効性は未確認 |
+| local trust / reference | cacert / capath / crlfile / proxy-cacert / proxy-capath / proxy-crlfile | TLS trust の参照で、生 file の body ではない。trust policy / file 内容 / native TLS は未確認 |
+| local transport / entropy | abstract-unix-socket / unix-socket / random-file | socket / entropy の役割で、生 file の body ではない。native / transport 条件は未確認 |
+| embedded file payload（ARG_FILE の表記外） | data / data-ascii / data-binary / json / header / proxy-header の `@`、data-urlencode / query / form の file syntax、cookie file、送信に使う variable file | 既存の有限 syntax と生成元を保持。data-raw と literal form / header の DATA は別に扱い、他の policy も残す |
+| connection cache（ARG_STRG） | alt-svc / hsts | ARG_FILE 23 件とは別の selected file source の UNKNOWN。公式比較で未担当だった 2 selector を追加し、4 review 指摘へ加算しない |
+| local metadata / output / reference 等 | time-cond / write-out / cookie-jar / pinnedpubkey / pubkey 等 | mtime / output / reference と生 file の body を分ける。全 option format / effect / 認証の保証ではない |
+
+singleton は operation ごとに後勝ちとし、`--next` / `-:` の先行 operation を捨てない。実 help / manual / version と、他の option に消費された query-looking DATA を区別する。curlrc の解除には、既存の実 first literal `-q` / `--disable` 条件が必要である。明示 `--config` と未知 context は独立して残る。
+
+照合した一次資料は [Git config 2.54.0](https://git-scm.com/docs/git-config/2.54.0)、[Git am 2.54.0](https://git-scm.com/docs/git-am/2.54.0)、[OpenSSH 10.3p1 SCP](https://github.com/openssh/openssh-portable/blob/V_10_3_P1/scp.c) / [path parser](https://github.com/openssh/openssh-portable/blob/V_10_3_P1/misc.c) / [SSH config parser](https://github.com/openssh/openssh-portable/blob/V_10_3_P1/readconf.c)、[curl 8.7.1 option parser](https://github.com/curl/curl/blob/curl-8_7_1/src/tool_getparam.c) / [operation](https://github.com/curl/curl/blob/curl-8_7_1/src/tool_operate.c) である。query metadata は Apple `/usr/bin/curl` 8.7.1、SSH OpenSSH_10.3p1 / LibreSSL 3.3.6 と報告する。companion SSH の版は、Apple SCP build 全体の認証ではない。installed rsync は openrsync protocol 29 / rsync 2.6.9 互換であり、照合した [OpenBSD upstream source](https://github.com/openbsd/src/blob/master/usr.bin/rsync/main.c) は取得時の内容と blob `26063fcf343b7f45ee03acfe0e9042e8a23911c6` で固定しているが、Apple binary の attestation ではない。Apple patch・build feature・user shell・default config・native helper を保証しない。
+
+### R23 の検証境界
+
+固定 global-v2（2026-10-14 12:55:40 JST）の最終4755入力は同日13:20:45 JSTに4755/4755・broken 0・source4 / runner不変。旧4569のID / cmd / stdin / cwd / project / envを全保持し、Git71＋network115の新186入力を追加した。旧期待の初回全比較は4不一致で原結果を残し、active amと未検査ProxyCommandの4 ALLOW→UNKNOWNを理由付きで採用した。同4755を旧e456へ投入した新期待との差83、観測差84（aggregate72＝ALLOW→deny66 / deny→ALLOW6、hook / reasonだけ12）は重なる測度で、脆弱性件数ではない。公開解析91・filename parity8・private停止API6の105契約、root602試験・typecheck・lint・package重複確認も、この固定sourceで別取得したlocal結果である。
+
+実Claude Code入口のplanned DUMMY7試行は5 PASS / 1 strict FAIL / 1 NOT_EXERCISED。inline ETagはcurl stubの期待markerだけ変わり、ETag file / cookie / am / cacheはegress自身が停止して対象状態は不変。actual hook listはcaseごとに異なり、全試行の3 hook dispatchとはしない。通常SCP受信はowned CJSがALLOWでも別のuser-default hookが実toolを止めたためstrict FAILを保持した。関連default Pythonのrule / message / 同じJSON DATAのDENYは帰属を支持するが、唯一の名前付きruntime traceとは別である。このPRでuser-global設定を修復 / 無効化せず、whole-tool正常成功へ改名しない。active SCP helperはBash / hook前のAPIcyber拒否でNOT_EXERCISED、再試行しない。別のcommand identity準備query1 PASSを修復7試行に加算しない。native transport / 実秘密読取は行っていない。
+
+R23の全受入は未完了で、新公開head・required CI・両fresh review・threadはlocal検証と別に取得する。e456 / df463の原4判定、R22の4569入力・102契約・旧L3成功を変更sourceへ持ち越さない。L1解析、担当hook自身のL2（原入力 / variant / 正常対照）、単一edge reverse、実入口L3を別証拠として扱う。API前段の拒否をhook成功へ数えず、unit3 hookの判定を実3 hook dispatchと読み替えない。DUMMY marker、HEAD / refs / index / objects / 必要fileのbefore / after、原FAIL・過剰拒否・fixture訂正を保存する。
 
 ## R22: GH と shell の source と操作の境界
 

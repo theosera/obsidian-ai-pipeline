@@ -65,6 +65,9 @@ const GIT_OPTS = '(?:\\s+(?:-[cC]\\s*\\S+|--(?:git-dir|work-tree|exec-path|names
 const gitRe = (tail) => new RegExp(`\\bgit${GIT_OPTS}\\s+${tail}`);
 
 // (B) 古典的 exfil 形。
+// SCP's textual copy backstop is checked after argv inspection; only a proven single
+// receive/local operation is exempted. SFTP and every other raw backstop stay independent.
+const SCP_TEXT_COPY_SHAPE = /\bscp\b[^\n]*\s[^\s]+:[^\s]/;
 const EXFIL_SHAPES = [
   /\bgh\s+gist\b/,                                       // gh gist create/...
   /\b(nc|ncat)\b[^\n]*\s-e\b/,                           // reverse shell
@@ -78,7 +81,7 @@ const EXFIL_SHAPES = [
   // named remote への push には URL 形のトークンが無いため誤検知しない。
   gitRe('push\\b[^;&|]*\\s[\'"]?(https?://|git@|ssh://|git://)'),
   /\bcurl\b[^\n]*\s(--data-binary|--upload-file|-T|-F|-d|--data)\b[^\n]*@/,  // ローカルファイル upload
-  /\b(scp|sftp)\b[^\n]*\s[^\s]+:[^\s]/,                  // local -> remote コピー
+  /\bsftp\b[^\n]*\s[^\s]+:[^\s]/,
   /\brsync\b[^\n]*\s[^\s]+:[^\s]/,
 ];
 
@@ -203,6 +206,11 @@ const insp = guard.inspect(cmd, {
   initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_EXTERNAL_DIFF', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
     .filter(name => process.env[name] !== undefined),
   initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL'].filter(name => process.env[name] !== undefined),
+  initialGitConfigEnvNames: Object.keys(process.env).filter(name => /^(?:GIT_CONFIG_(?:COUNT|PARAMETERS|GLOBAL|SYSTEM|(?:KEY|VALUE)_\d+)|GIT_CONFIG)$/.test(name)),
+  initialGitConfigSources: ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG'].filter(name => process.env[name] !== undefined).map(name =>
+    ({ name, word: { text: '__inherited_default_git_config_root__', dynamic: false, dynamicMaySplit: false, implicitGitConfigRoot: true } }))
+    .concat(['GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', ...Object.keys(process.env).filter(name => /^GIT_CONFIG_KEY_\d+$/.test(name))].filter(name => process.env[name] === '' || name === 'GIT_CONFIG_COUNT' && /^\d+$/.test(process.env[name] || '') || /^GIT_CONFIG_KEY_\d+$/.test(name) && /^[A-Za-z][A-Za-z0-9.-]*$/.test(process.env[name] || '')).map(name =>
+      ({ name, word: { text: process.env[name], dynamic: false, dynamicMaySplit: false } }))),
   initialPagerEnvNames: ['GIT_PAGER', 'PAGER'].filter(name => process.env[name] !== undefined),
   initialShellStartupEnvNames: ['BASH_ENV', 'ENV'].filter(name => process.env[name] !== undefined),
   initialShellStartupSources: ['BASH_ENV', 'ENV'].filter(name => process.env[name] === '').map(name =>
@@ -284,6 +292,41 @@ function firstVerdict(invocations, inspect) {
 /** Return whether a repository argument uses a network URL or Git's scp syntax. */
 function destinationArg(value) {
   return URL_ARG_RE.test(value) || (!/^file:\/\//i.test(value) && SCP_ARG_RE.test(value));
+}
+
+/** Copy clients use their own host:path syntax, never Git's local file:// exception. */
+function remoteCopyAddressRole(name, value) {
+  if (typeof value !== 'string' || !value || /[\0\r\n]/.test(value)) return 'UNKNOWN';
+  const uri = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(value);
+  const scheme = uri?.[1].toLowerCase();
+  if (scheme === (name === 'scp' ? 'scp' : 'rsync')) {
+    try {
+      const url = new URL(value);
+      if (!url.hostname || url.password || url.port && (Number(url.port) < 1 || Number(url.port) > 65535) ||
+          /[\s%]/.test(value) || name === 'rsync' && !url.pathname.split('/')[1]) return 'UNKNOWN';
+      return 'REMOTE';
+    } catch { return 'UNKNOWN'; }
+  }
+  // file: is a host specification in these parsers. Other URI-like formats have
+  // no supported native format proof here and cannot establish a local operation.
+  if (scheme && scheme !== 'file') return 'UNKNOWN';
+  let colon = -1;
+  if (name === 'scp') {
+    if (value[0] === ':') return 'LOCAL';
+    let bracket = value[0] === '[';
+    for (let k = 0; k < value.length; k++) {
+      if (value[k] === '@' && value[k + 1] === '[') bracket = true;
+      if (value[k] === ']' && value[k + 1] === ':' && bracket) { colon = k + 1; break; }
+      if (value[k] === ':' && !bracket) { colon = k; break; }
+      if (value[k] === '/') break;
+    }
+  } else {
+    const first = value.search(/[:/]/);
+    if (first >= 0 && value[first] === ':') colon = first;
+  }
+  if (colon < 0) return 'LOCAL';
+  const host = value.slice(0, colon).split('@').at(-1);
+  return /^(?:[A-Za-z0-9_.][A-Za-z0-9_.-]*|\[[0-9A-Fa-f:.]+\])$/.test(host) ? 'REMOTE' : 'UNKNOWN';
 }
 
 /**
@@ -490,6 +533,7 @@ function gitEditorCanRun(g) {
     return g.sub === 'revert' && !parsed.selected.has('no-edit');
   }
   if (g.sub === 'am') {
+    if (g.operationRole && ['query', 'cleanup'].includes(g.operationRole.mode) && !g.operationRole.unknown) return false;
     const parsed = gitEditorOptions(g, ['patch-format', 'directory', 'exclude', 'include', 'whitespace', 'reject'], 'pC',
       ['interactive', 'continue', 'resolved', 'abort', 'quit', 'skip', 'help', 'signoff', '3way', 'quiet', 'keep', 'keep-non-patch',
         'message-id', 'no-message-id', 'scissors', 'no-scissors', 'utf8', 'no-utf8', 'committer-date-is-author-date', 'ignore-date']);
@@ -617,7 +661,9 @@ function rsyncRemoteHelper(invocation) {
       }
       continue;
     }
-    if (destinationArg(text)) remote = true;
+    const role = remoteCopyAddressRole('rsync', text);
+    if (role === 'UNKNOWN') unknown = true;
+    if (role === 'REMOTE') remote = true;
   }
   return selected && (remote || unknown);
 }
@@ -809,6 +855,43 @@ function imapSendRole(g) {
   return { terminal: terminal && !unknown, stdin: !(terminal && !unknown), unknown, folders };
 }
 
+/** Cookie input is conditional on HTTP/format/server matching, so uninspected files stay UNKNOWN. */
+function gitHttpCookieVerdict(g) {
+  const role = guard.gitHttpCookieRole(g);
+  if (!role) return false;
+  const repository = literalSourceWord(role.repositoryWord);
+  if (role.argvUnknown) return 'UNKNOWN';
+  const rewriteSelected = [...(g.configs || []), ...(g.configEnvs || [])].some(value => /^url\..+\.insteadof(?:=|$)/i.test(value));
+  if (!role.configEnvironmentUnknown && repository && /^(?:ssh:\/\/|git:\/\/|git@|file:\/\/|\/|\.\.?\/)/.test(repository.text) &&
+      !rewriteSelected) return false;
+  let target;
+  try { if (!repository || !/^https?:\/\//i.test(repository.text) || /[%*]/.test(repository.text)) return 'UNKNOWN'; target = new URL(repository.text); }
+  catch { return 'UNKNOWN'; }
+  const matches = [];
+  for (const setting of role.settings) {
+    if (!setting.scope) { matches.push({ ...setting, rank: [-1, -1], exact: false }); continue; }
+    let scope;
+    try {
+      if (/[%*]/.test(setting.scope)) return 'UNKNOWN';
+      scope = new URL(setting.scope);
+      if (scope.search || scope.hash || scope.password) return 'UNKNOWN';
+    } catch { return 'UNKNOWN'; }
+    if (scope.protocol !== target.protocol || scope.hostname !== target.hostname || scope.port !== target.port ||
+        scope.username && scope.username !== target.username) continue;
+    const part = scope.pathname.replace(/\/$/, '');
+    if (part && target.pathname !== part && !target.pathname.startsWith(part + '/')) continue;
+    const exact = scope.pathname === target.pathname && scope.username === target.username;
+    matches.push({ ...setting, rank: [part.length, scope.username ? 1 : 0], exact });
+  }
+  if (!matches.length) return role.configEnvironmentUnknown ? 'UNKNOWN' : false;
+  matches.sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1] || a.order - b.order);
+  const selected = matches.at(-1), word = literalSourceWord(selected.word);
+  // An exact URL-specific final empty value outranks unseen generic/path-prefix
+  // values. Generic empty alone does not certify an unseen URL-specific fallback.
+  if (selected.exact && ['value', 'env', 'configuration-env'].includes(selected.mode) && word?.text === '' && !g.dynamicOpt && !role.configEnvironmentUnknown && !rewriteSelected) return false;
+  return 'UNKNOWN';
+}
+
 /** Positive selectors of local Git execution must be gated for their actual operation. */
 function gitExecutableSource(g, invocation) {
   const actual = !g.gitNamespaceInferred;
@@ -874,7 +957,7 @@ function gitExecutableSource(g, invocation) {
 function gitOperationVerdict(g, invocation) {
   if (g.gitNamespaceInferred) return false;
   const role = g.operationRole;
-  if (!role || role.terminal || role.mode === 'query') return false;
+  if (!role || role.terminal || role.mode === 'query' || g.sub === 'am' && role.mode === 'cleanup') return false;
   if (role.kind === 'generated-object') {
     const words = gitCommitObjectWords(g, role);
     const verdict = outboundPayloadVerdict(invocation, words.filter(source => !source.uncertainSelection).map(source => source.word)) ||
@@ -902,8 +985,8 @@ function gitConfigSourceWrite(g) {
   if (operation.read || operation.terminal) return false;
   const [keyWord, valueWord] = operation.operandWords;
   const key = literalSourceWord(keyWord)?.text.toLowerCase();
-  const sourceKey = name => /^(?:core\.(?:editor|pager|hookspath|fsmonitor|askpass)|sequence\.editor|credential\.helper|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|filter\..+\.(?:clean|smudge|process)|tar\..+\.command|gc\.recentobjectshook|trailer\..+\.(?:cmd|command)|hook\..+\.(?:command|event)|merge\..+\.driver|gpg\.(?:program|.+\.program)|submodule\..+\.update)$/i.test(name || '');
-  const sourceSection = name => /^(?:core|sequence|credential|pager|diff(?:\..+)?|filter\..+|tar\..+|gc|trailer\..+|hook\..+|merge\..+|gpg(?:\..+)?|submodule\..+)$/i.test(name || '');
+  const sourceKey = name => /^(?:core\.(?:editor|pager|hookspath|fsmonitor|askpass)|sequence\.editor|credential\.helper|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|filter\..+\.(?:clean|smudge|process)|tar\..+\.command|gc\.recentobjectshook|trailer\..+\.(?:cmd|command)|hook\..+\.(?:command|event)|merge\..+\.driver|gpg\.(?:program|.+\.program)|submodule\..+\.update|http(?:\..+)?\.cookiefile)$/i.test(name || '');
+  const sourceSection = name => /^(?:core|sequence|credential|pager|diff(?:\..+)?|filter\..+|tar\..+|gc|trailer\..+|hook\..+|merge\..+|gpg(?:\..+)?|submodule\..+|http(?:\..+)?)$/i.test(name || '');
   if (operation.rename) return sourceSection(key) || sourceSection(literalSourceWord(valueWord)?.text) ? 'UNKNOWN' : false;
   if (operation.deletion === 'section') return sourceSection(key) ? 'UNKNOWN' : false;
   if (!sourceKey(key)) return false;
@@ -993,6 +1076,41 @@ const CURL_FLAG_LONG = new Set([
 ]);
 const CURL_LONG_NAMES = [...CURL_VALUE_LONG, ...CURL_FLAG_LONG];
 
+/** curl 8.7.1: actual help/manual/version exits argument parsing before transfers. */
+function curlTerminalQuery(words, incomplete) {
+  if (incomplete) return false;
+  const flags = '012346afgGiIjklLMnNOpqRsSvVZ:#';
+  for (let k = 0; k < words.length; k++) {
+    const word = literalSourceWord(words[k]);
+    if (!word) return false;
+    const text = word.text;
+    if (text === '--') return false;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('=');
+      const name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter(option => option.startsWith(name));
+      if (matches.length !== 1) return false;
+      const option = matches[0];
+      if (['help', 'manual', 'version'].includes(option)) return true;
+      // Keep the independent, uninspected explicit configuration source boundary.
+      if (option === 'config') return false;
+      if (CURL_VALUE_LONG.has(option) && eq < 0 && !literalSourceWord(words[++k])) return false;
+    } else if (text.startsWith('-') && text !== '-') {
+      for (let p = 1; p < text.length; p++) {
+        if ('hMV'.includes(text[p])) return true;
+        const option = CURL_VALUE_SHORT[text[p]];
+        if (option === 'config') return false;
+        if (option) {
+          if (p === text.length - 1 && !literalSourceWord(words[++k])) return false;
+          break;
+        }
+        if (!flags.includes(text[p])) return false;
+      }
+    }
+  }
+  return false;
+}
+
 /** Netrc toggles are independent; consume other options before interpreting a selector or reset. */
 function curlImplicitNetrc(words, incomplete) {
   let required = false;
@@ -1036,11 +1154,26 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
   // Additional words from splitting or pathname/brace expansion can introduce payload options,
   // including from a value consumed by a visible option. Never infer the unseen argv from env.
   if (actualClient && words.some(word => word.dynamic && word.dynamicMaySplit !== false || word.globExpanded || word.braceExpanded)) return 'UNKNOWN';
+  if (curlTerminalQuery(words, incomplete)) return false;
   const implicitNetrc = curlImplicitNetrc(words, incomplete);
   if (implicitNetrc) return implicitNetrc;
   // xargs/find can provide an unseen filename to a trailing file-reading option.
   const fileOptions = new Set(['upload-file', 'data', 'data-ascii', 'data-binary', 'json',
-    'header', 'proxy-header', 'data-urlencode', 'url-query', 'form', 'variable', 'cookie', 'netrc-file']);
+    'header', 'proxy-header', 'data-urlencode', 'url-query', 'form', 'variable', 'cookie', 'netrc-file', 'etag-compare']);
+  // ETag comparison is a last-value singleton per operation, unlike additive headers/data.
+  // Its selected file is read by tool_operate.c into the outbound If-None-Match header.
+  let etag = false;
+  const etags = [];
+  let cache = new Map();
+  let operationUrl = false;
+  const cacheVerdicts = [];
+  const finishOperation = () => {
+    etags.push(etag);
+    if (operationUrl && [...cache.values()].some(Boolean)) cacheVerdicts.push('UNKNOWN');
+    etag = false;
+    cache = new Map();
+    operationUrl = false;
+  };
   const variables = new Map();
   let definitionVersion = 0;
   let unknownFileVersion = 0;
@@ -1105,7 +1238,7 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
   for (let k = 0; k < words.length; k++) {
     const optionWord = words[k];
     const t = optionWord.text;
-    if (t === '--') break;
+    if (t === '--') { operationUrl ||= words.slice(k + 1).some(word => word.text !== ''); break; }
     // At an actual argv boundary a prefix-free scalar may be a URL or an upload/cookie flag.
     // Known option values are consumed below and do not reach this boundary as option words.
     if (actualClient && optionWord.dynamic && t.startsWith('\0')) return 'UNKNOWN';
@@ -1119,8 +1252,10 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
         if ('cookie'.startsWith(prefix) || prefix.startsWith('cookie')) return 'UNKNOWN';
       }
       if (optionWord.dynamic && /^url-(?:query)?\0/.test(name)) return 'UNKNOWN';
+      if (optionWord.dynamic && name.includes('\0') && ['hsts', 'alt-svc'].some(option => option.startsWith(name.split('\0')[0]))) return 'UNKNOWN';
       const matches = CURL_LONG_NAMES.includes(name) ? [name] : CURL_LONG_NAMES.filter((option) => option.startsWith(name));
       if (matches.length !== 1 && matches.includes('cookie')) return 'UNKNOWN';
+      if (matches.length === 1 && matches[0] === 'next') { finishOperation(); continue; }
       if (matches.length !== 1 || !CURL_VALUE_LONG.has(matches[0])) continue;
       const option = matches[0];
       if (option === 'config') return 'UNKNOWN';
@@ -1130,6 +1265,18 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
         const source = expanding ? expanded(value.text) : { text: value.text, file: false };
         const verdict = !incomplete && knownWord(optionWord) && knownWord(value) && !source.unknown &&
           (option !== 'url-query' || name === option) ? 'FORBIDDEN' : 'UNKNOWN';
+        if (option === 'etag-compare') {
+          etag = source.text === '' && !source.file && !source.unknown ? false : verdict;
+          continue;
+        }
+        if (option === 'url') operationUrl = true;
+        if (option === 'alt-svc' || option === 'hsts') {
+          // These last-value options load connection/cache conditions, not a raw file body.
+          // Empty disables this file-input family only; other payload/source gates remain active.
+          const literal = expanding ? null : literalSourceWord(value);
+          cache.set(option, source.unknown || source.file || (literal ? literal.text !== '' : source.text !== '' || !knownWord(value)));
+          continue;
+        }
         // Cookie's '=' proves inline syntax only within one actual scalar argument. Its file form
         // reads local bytes; unknown/split input must never be mistaken for empty or inline DATA.
         if (option === 'netrc-file' && !literalSourceWord(value)) return 'UNKNOWN';
@@ -1141,10 +1288,13 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
             (!source.file && !source.text.startsWith('+') && !source.text.includes('=') && source.text.includes('\0')))) return 'UNKNOWN';
         if (expanding && outbound.has(option) && SECRET_LITERALS.some((pattern) => pattern.test(source.text))) return verdict;
         if ((source.file && outbound.has(option)) || payload(option, source.text)) return verdict;
-      } else if (option === 'cookie' || option === 'netrc-file' || incomplete && fileOptions.has(option)) return 'UNKNOWN';
+      } else if (option === 'etag-compare') etag = 'UNKNOWN';
+      else if (option === 'alt-svc' || option === 'hsts') return 'UNKNOWN';
+      else if (option === 'cookie' || option === 'netrc-file' || incomplete && fileOptions.has(option)) return 'UNKNOWN';
     } else if (t.startsWith('-')) {
       for (let p = 1; p < t.length; p++) {
         if (actualClient && optionWord.dynamic && t[p] === '\0') return 'UNKNOWN';
+        if (t[p] === ':') { finishOperation(); continue; }
         const option = CURL_VALUE_SHORT[t[p]];
         if (!option) continue;
         if (option === 'config') return 'UNKNOWN';
@@ -1158,9 +1308,10 @@ function curlReadsUpload(words, incomplete = false, actualClient = false) {
         }
         break;
       }
-    }
+    } else if (t !== '') operationUrl = true;
   }
-  return false;
+  finishOperation();
+  return etags.includes('FORBIDDEN') ? 'FORBIDDEN' : etags.includes('UNKNOWN') || cacheVerdicts.length ? 'UNKNOWN' : false;
 }
 
 // Wget 1.25.0 --help: consume option values so a printed option name is not executable syntax.
@@ -1273,6 +1424,14 @@ function wgetReadsUpload(words) {
 
 /** Extract copy operands without mistaking an SSH/proxy option value for a destination. */
 function remoteCopyDestination(invocation) {
+  if (invocation.name === 'scp') {
+    const operation = scpOperation(invocation);
+    // SCP getopt stops at the first operand; later option-looking words remain filenames.
+    if (operation.unknown || operation.operands.length < 2) return 'UNKNOWN';
+    const roles = operation.operands.map(value => remoteCopyAddressRole('scp', value));
+    if (roles.includes('UNKNOWN')) return 'UNKNOWN';
+    return roles.at(-1) === 'REMOTE' ? 'FORBIDDEN' : false;
+  }
   const shortValues = { scp: 'cDFiJloPSX', rsync: RSYNC_VALUE_SHORT };
   const shortFlags = { scp: '346ABCOpqRrsTv', rsync: RSYNC_FLAG_SHORT };
   const longValues = invocation.name === 'rsync' ? RSYNC_VALUE_LONG : new Set();
@@ -1313,7 +1472,9 @@ function remoteCopyDestination(invocation) {
   }
   const destination = operands[operands.length - 1];
   if (unknown || !literal(destination) || operands.length < 2) return 'UNKNOWN';
-  return destinationArg(textOf(destination)) ? 'FORBIDDEN' : false;
+  const roles = operands.map(word => remoteCopyAddressRole(invocation.name, textOf(word)));
+  if (roles.includes('UNKNOWN')) return 'UNKNOWN';
+  return roles.at(-1) === 'REMOTE' ? 'FORBIDDEN' : false;
 }
 
 /** A local rsync file list transmits requested names on both upload and download routes. */
@@ -1351,7 +1512,9 @@ function rsyncFileListPayload(invocation) {
       }
       continue;
     }
-    if (destinationArg(text) || /^rsync:\/\//i.test(text)) remote = true;
+    const role = remoteCopyAddressRole('rsync', text);
+    if (role === 'UNKNOWN') unknown = true;
+    if (role === 'REMOTE') remote = true;
   }
   if (!files.length || !remote && !unknown) return false;
   if (unknown || files.some(word => !literalSourceWord(word) || literalSourceWord(word).text === '-' || literalSourceWord(word).text.startsWith(':'))) return 'UNKNOWN';
@@ -1359,12 +1522,19 @@ function rsyncFileListPayload(invocation) {
 }
 
 /** scp -S is local executable source even for downloads; only proven entirely local copies ignore it. */
-function scpConnectionSource(invocation, selectedEnv = false) {
-  if (invocation.name !== 'scp') return false;
-  let selected = selectedEnv;
+/** OpenSSH 10.3p1 SCP forwards options before the first operand to its child SSH. */
+function scpOperation(invocation) {
   let unknown = Boolean(invocation.incomplete);
   let afterDD = false;
   const operands = [];
+  const sshArgs = [
+    { text: '-oPermitLocalCommand=no', dynamic: false },
+    { text: '-oRemoteCommand=none', dynamic: false },
+  ];
+  let connectionProgram;
+  let directProgram;
+  let legacy = false;
+  let server = false;
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k];
     const literal = literalSourceWord(word);
@@ -1374,20 +1544,54 @@ function scpConnectionSource(invocation, selectedEnv = false) {
     if (!afterDD && text.startsWith('-') && text !== '-') {
       if (text.startsWith('--')) { unknown = true; continue; }
       for (let p = 1; p < text.length; p++) {
-        if ('cDFiJloPSX'.includes(text[p])) {
-          if (text[p] === 'S') selected = true;
-          const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+        if ('cDFiJlMoPSX'.includes(text[p])) {
+          const value = p + 1 < text.length ? { ...(literal || word), text: text.slice(p + 1), literalValue: undefined } : invocation.args[++k];
           if (!literalSourceWord(value)) unknown = true;
+          if (text[p] === 'S') connectionProgram = value || null;
+          if (text[p] === 'D') directProgram = value || null;
+          if ('ciFJo'.includes(text[p])) {
+            sshArgs.push({ ...(literal || word), text: '-' + text[p], literalValue: undefined }, value || { text: '\0', dynamic: true });
+          }
           break;
         }
-        if (!'346ABCOpqRrsTv'.includes(text[p])) unknown = true;
+        if (text[p] === 'O') legacy = true;
+        if (text[p] === 's') legacy = false;
+        if ('ft'.includes(text[p])) server = true;
+        if (!'12346ABCTdfOpqRrstv'.includes(text[p])) unknown = true;
       }
       continue;
     }
+    // getopt stops here: later option-like operands are filenames, not SSH configuration.
+    afterDD = true;
     operands.push(text);
   }
-  return selected && (unknown || !knownInvocationContext(invocation) || operands.length < 2 ||
-    operands.some(value => destinationArg(value) || /^scp:\/\//i.test(value)));
+  const roles = operands.map(value => remoteCopyAddressRole('scp', value));
+  if (roles.includes('UNKNOWN')) unknown = true;
+  const remote = !server && (unknown || !knownInvocationContext(invocation) || operands.length < 2 || roles.includes('REMOTE'));
+  const direct = remote && !legacy && directProgram !== undefined;
+  return { sshArgs, operands, unknown, sshActive: remote && !direct,
+    programActive: direct || remote && connectionProgram !== undefined };
+}
+
+function scpConnectionSource(invocation, selectedEnv = false) {
+  if (invocation.name !== 'scp') return false;
+  const operation = scpOperation(invocation);
+  return selectedEnv ? operation.sshActive : operation.programActive;
+}
+
+/** Refine only SCP's raw copy match, leaving all selected-source checks below active. */
+function knownSingleScpReceiveOnly(inspection) {
+  if (inspection.invocations.length !== 1 || inspection.gits.length || inspection.problems.length) return false;
+  const invocation = inspection.invocations[0];
+  if (invocation.name !== 'scp' || invocation.nonExec || invocation.definitionName || invocation.functionCallName ||
+      !knownInvocationContext(invocation) || invocation.scope?.parent || invocation.pipelineParticipant ||
+      invocation.redirs.length || invocation.heredocBodies.length || !invocation.args.every(literalSourceWord)) return false;
+  const first = invocation.words[0], last = invocation.words.at(-1);
+  if (!first || !last || first.text !== invocation.nameWord?.text || !Number.isInteger(first.start) ||
+      !Number.isInteger(last.start) || !last.raw || cmd.slice(0, first.start).trim() ||
+      cmd.slice(last.start + last.raw.length).trim()) return false;
+  const operation = scpOperation(invocation);
+  return !operation.unknown && operation.operands.length >= 2 && remoteCopyDestination(invocation) === false;
 }
 
 /** Prove an SSH argv query role rather than confusing a consumed value/remote command with it. */
@@ -1455,8 +1659,10 @@ function rsyncAuthenticationRoute(invocation) {
   }
   if (unknown || operands.length < 2) return true;
   return operands.some(value => {
+    const role = remoteCopyAddressRole('rsync', value);
+    if (role === 'UNKNOWN') return true;
     const daemon = /^rsync:\/\//i.test(value) || /^[^/:]+::/.test(value);
-    return destinationArg(value) && (!daemon || selectedRsh);
+    return role === 'REMOTE' && (!daemon || selectedRsh);
   });
 }
 
@@ -2132,11 +2338,31 @@ function sshCommandSources(invocation) {
   return sshOperation(invocation).sources;
 }
 
+/** The supported scalar ssh_config values may use its documented double quotes. */
+function sshOptionScalar(word) {
+  const literal = literalSourceWord(word);
+  if (!literal) return null;
+  const text = literal.text.trim();
+  if (/^"[^"\\]*"$/.test(text)) return text.slice(1, -1).toLowerCase();
+  return /^[^\s"'\\]+$/.test(text) ? text.toLowerCase() : null;
+}
+
 /** Read SSH's option boundary before and after the host, stopping at the actual remote command. */
 function sshOperation(invocation) {
+  if (invocation.name === 'scp') {
+    const operation = scpOperation(invocation);
+    if (!operation.sshActive) return { sources: [], stdin: false, remoteWords: [] };
+    // SCP already selected the remote endpoint; its path operands are not SSH remote argv.
+    const result = sshOperation({ ...invocation, name: 'ssh',
+      args: [...operation.sshArgs, { text: '__scp_remote__', dynamic: false }],
+      incomplete: invocation.incomplete || operation.unknown });
+    return { ...result, stdin: false, remoteWords: [],
+      sources: operation.unknown || !knownInvocationContext(invocation)
+        ? result.sources.map(source => ({ ...source, dynamic: true, literalValue: undefined })) : result.sources };
+  }
   if (invocation.name !== 'ssh') return { sources: [], stdin: false, remoteWords: [] };
   const options = new Map();
-  const valueOptions = 'bcDEeFIiJLlmOopQRSWw';
+  const valueOptions = 'BbcDEeFIiJLlmOopQRSWw';
   let query = false;
   let earlyQuery = false;
   let requestedQuery = false;
@@ -2170,15 +2396,18 @@ function sshOperation(invocation) {
       if (text[p] === 'n' || text[p] === 'f') detached = true;
       if (text[p] === 'N') noRemoteCommand = true;
       if (!valueOptions.includes(text[p])) continue;
-      const value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+      const original = p + 1 < text.length ? { ...word, text: text.slice(p + 1), literalValue: undefined } : invocation.args[++k];
+      const value = literalSourceWord(original) || original;
       if (value?.dynamic && (value.dynamicMaySplit !== false || (p + 1 < text.length && value.text.startsWith('\0')))) argvUncertain = true;
       if (text[p] === 'F') { selectedConfig = true; configFile = value; }
       if (text[p] === 'o') {
         const match = value && /^\s*([^=\s]+)\s*(?:=\s*|\s+)([\s\S]*)$/.exec(value.text);
         if (!match || value.dynamicMaySplit && value.dynamic) unknown = true;
-        else if (!options.has(match[1].toLowerCase())) options.set(match[1].toLowerCase(), { ...value, text: match[2] });
+        else if (!options.has(match[1].toLowerCase())) options.set(match[1].toLowerCase(), { ...value, text: match[2], literalValue: undefined });
       }
       if (text[p] === 'J' && value && !options.has('proxyjump')) options.set('proxyjump', value);
+      // -I directly assigns the provider, while -o PKCS11Provider obeys first-value wins.
+      if (text[p] === 'I') options.set('pkcs11provider', value || { text: '\0', dynamic: true });
       break;
     }
   }
@@ -2188,16 +2417,29 @@ function sshOperation(invocation) {
   }
   if (selectedConfig ? query : requestedQuery) return { sources: [], stdin: false, remoteWords: [] };
   if (unknown) deny('SSH の -o option が動的で、ローカル実行 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+  for (const key of ['pkcs11provider', 'securitykeyprovider']) {
+    const source = options.get(key);
+    const value = sshOptionScalar(source);
+    if (source && value !== 'none' && !(key === 'securitykeyprovider' && value === 'internal')) {
+      deny('SSH の明示 provider option が選ぶローカル library / environment source と副作用を検査できません。queryまたは意味を確認したnone/internal指定が同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
+    }
+  }
   const sources = [];
   for (const key of ['proxycommand', 'knownhostscommand', 'localcommand']) {
     const source = options.get(key);
     if (!source || source.text.toLowerCase() === 'none') continue;
-    if (key === 'localcommand' && options.get('permitlocalcommand')?.text.toLowerCase() === 'no') continue;
-    if (key === 'proxycommand' && options.has('proxyjump') && [...options.keys()].indexOf('proxyjump') < [...options.keys()].indexOf(key)) continue;
+    if (key === 'localcommand' && sshOptionScalar(options.get('permitlocalcommand')) === 'no') continue;
+    if (key === 'proxycommand' && options.has('proxyjump') &&
+        [...options.keys()].indexOf('proxyjump') < [...options.keys()].indexOf(key)) {
+      const jump = literalSourceWord(options.get('proxyjump'));
+      if (!jump) deny('SSH の ProxyJump / ProxyCommand の実選択が未知で、command source の無効を証明できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+      if (jump.text.toLowerCase() !== 'none') continue;
+    }
     // OpenSSH expands these bytes before execution; the shell parser cannot prove the resulting argv.
-    sources.push({ ...source, dynamic: source.dynamic || source.text.includes('%') || /\$\{/.test(source.text), mediated: true });
+    sources.push({ ...source, dynamic: source.dynamic || source.text.includes('%') || /\$\{/.test(source.text), mediated: true,
+      sshCommandSource: key });
   }
-  if (options.get('sessiontype')?.text.toLowerCase() === 'none') noRemoteCommand = true;
+  if (sshOptionScalar(options.get('sessiontype')) === 'none') noRemoteCommand = true;
   if (noRemoteCommand) remoteWords = [];
   else if (options.has('remotecommand')) remoteWords.push(options.get('remotecommand'));
   return { sources, stdin: host && !detached, remoteWords, argvUncertain };
@@ -2325,6 +2567,7 @@ function unsafeNetworkInput(invocation, all) {
 }
 
 const invocationSources = new WeakMap();
+const pendingSshCommandSources = [];
 /** Check only producers inside this exact payload word in this source and execution order. */
 function outboundPayloadVerdict(invocation, words) {
   const source = invocationSources.get(invocation) || [];
@@ -2476,6 +2719,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
   return {
     initialHelperEnvNames: invocation.helperEnvNames,
     initialGitIdentitySources: invocation.gitIdentitySources || [],
+    initialGitConfigSources: invocation.gitConfigurationSources || [],
     initialPagerSources: invocation.gitPagerEnvSources || [],
     initialShellStartupSources: invocation.shellStartupEnvironmentSources || [],
     initialGhSources: (invocation.ghEnvironmentSources || []).concat(invocation.ghHelperEnvironmentSources || []),
@@ -2511,6 +2755,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
   const activeCommits = inspection.gits.filter(g => g.sub === 'commit' && !guard.parseCommitArgs(g.args).terminal);
   for (const g of inspection.gits) {
     if (g.gitNamespaceUnknown) deny(`Git namespace (${g.sub}) が選ぶ external helper / alias の実行 source・lookup・argv/context を検査できません。alias 不在や query風の子argvはsource認証ではありません。同目的・同条件の対応済みbuiltin/queryがなければownerに実helper/body・対象・cwd/env/config/sourceと不明点を確認してください。` + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+    if (gitHttpCookieVerdict(g)) deny('Git HTTP client が選ぶ http.cookieFile / Git config environment の file input・URL scope・format・server matching を検査できません。通常ファイルも非秘密の証明ではありません。未使用operation/queryや同条件を保つ対応済みselectorにできなければownerに対象・cwd/env/config/sourceと不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
     if (gitConfigSourceWrite(g)) deny('Git config の actual setter/delete/rename が、将来の Git 呼出しで選ぶ helper/callback/program の source または fallback を変更します。設定保存だけを即実行や送信と断定せず、future context・本文・副作用が未検査なので判断不能です。getterや意味を証明したdisable設定を使って同目的を保てなければownerにkey・操作・cwd/env/config/sourceと不明点を確認してください。' + UNKNOWN_OWNER_GATE);
     const operation = gitOperationVerdict(g, gitInvocationContexts.get(g));
     if (operation) deny(operation === 'FORBIDDEN' ?
@@ -2549,7 +2794,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
     if (['.', 'source'].includes(invocation.name)) deny('dot / source が実行する filename の本文と副作用を検査できません。literal な filename も実行 source の内容を証明しません。' + UNKNOWN_OWNER_GATE);
     if (arrayReaderCallback(invocation)) deny('mapfile / readarray の -C callback または callback を選びうる argv は未対応の実行 source です。callback が literal でも内部や副作用を検査できません。同目的を保てる callback-free 形式を検討してください。' + UNKNOWN_OWNER_GATE);
     if (rsyncRemoteHelper(invocation)) deny('remote rsync の -e / --rsh / RSYNC_RSH が選ぶ helper source、または remote/local の argv 条件を検査できません。download でも helper はローカルで実行されます。' + UNKNOWN_OWNER_GATE);
-    if (scpConnectionSource(invocation)) deny('scp の -S が選ぶローカルの connection program と副作用を検査できません。download でも helper は実行され得ます。local-only の operands/argv を証明できない形も判断不能です。' + UNKNOWN_OWNER_GATE);
+    if (scpConnectionSource(invocation)) deny('scp の -S connection program または有効な -D local SFTP server が選ぶ実行 source と副作用を検査できません。download でも helper は実行され得ます。local-only の operands/argv を証明できない形も判断不能です。' + UNKNOWN_OWNER_GATE);
     if (sshAuthenticationSource(invocation)) deny('SSH_ASKPASS が actual SSH / SCP / SFTP / rsync remote-shell の authentication route で選ぶローカル helper source を検査できません。download と不明な route も判断不能です。' + UNKNOWN_OWNER_GATE);
     result.push(invocation);
     const scripts = [];
@@ -2617,6 +2862,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
     for (const script of scripts) {
       const literal = literalSourceWord(script);
       if (!literal) deny('interpreter / helper の executable source bytes または argv boundary を確定できません。' + UNKNOWN_OWNER_GATE);
+      if (script.sshCommandSource) pendingSshCommandSources.push(script.sshCommandSource);
       const options = sourceInspectionOptions(invocation, { initialPositionals: script.initialPositionals });
       const nested = script.mediated ? guard.inspectMediatedSource(script, options) :
         guard.inspect(literal.text, options);
@@ -2655,6 +2901,9 @@ function parsedExfil(invocation) {
   return contextualVerdict(invocation, verdict);
 }
 
+if (SCP_TEXT_COPY_SHAPE.test(cmd) && !knownSingleScpReceiveOnly(insp)) {
+  deny('文字列に SCP copy に似た形があり、単一の既知 external actor・argv/context・receive/local destination を証明できません。他の送信・helper/source 条件とは独立した textual backstop です (egress guard)。' + UNKNOWN_OWNER_GATE);
+}
 const invocations = collectNetworkInvocations(insp);
 for (const invocation of invocations) {
   const remote = sshOperation(invocation);
@@ -2737,6 +2986,12 @@ if (networkInputVerdict) {
   deny(networkInputVerdict === 'FORBIDDEN' ?
     'stdin を消費する network client と、その入力の secret filename operand が同じ読取・pipeline 関係に当たり、既存の禁止形式です。ファイル内容や実送信の成立を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。' :
     'stdin を消費する network client の入力について source・argv・実行 identity・cwd/context を確認できません (egress guard, fail-closed)。owner に対象・操作・cwd・env/config/source と不明点を確認してください。', networkInputVerdict);
+}
+// Parsing literal helper text can reveal a prohibited payload; it does not authenticate the
+// selected shell, callee body, startup/function/PATH context, or native activation conditions.
+// Preserve confirmed payload verdicts above before the remaining active-source fallback.
+if (pendingSshCommandSources.length) {
+  deny('SSH / SCP の有効な command-valued option が選ぶ shell・callee 本文・startup/function/PATH・実行条件を検査できません。literal source を parse しただけでは副作用の証明になりません。known none・forced inactive・local-only/query 条件が同目的を保てなければ' + UNKNOWN_OWNER_GATE);
 }
 const parsedFileRefs = invocations.flatMap((invocation) => {
   const readsFiles = ['cat', 'head', 'tail', 'base64', 'xxd'].includes(invocation.name);
