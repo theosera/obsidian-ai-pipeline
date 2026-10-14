@@ -1299,18 +1299,30 @@ const RISKY_SUBS = new Set([
   'am', 'push', 'send-pack', 'http-push', 'fast-import', 'remote', 'config',
 ]);
 
+// Fixed upstream Git 2.54 help-a inventory plus the documented protocol servers.
+// Registration identifies an operation; it does not approve its argv or helper body.
+const OFFICIAL_GIT_OPERATIONS = new Set('add am archive backfill bisect branch bundle checkout cherry-pick citool clean clone commit describe diff fetch format-patch gc grep gui history init log maintenance merge mv notes pull push range-diff rebase reset restore revert rm scalar shortlog show sparse-checkout stash status submodule switch tag worktree config fast-export fast-import filter-branch mergetool pack-refs prune reflog refs remote repack replace annotate blame bugreport count-objects diagnose difftool fsck gitweb help instaweb merge-tree rerere show-branch verify-commit verify-tag version whatchanged archimport cvsexportcommit cvsimport cvsserver imap-send p4 quiltimport request-pull send-email svn apply checkout-index commit-graph commit-tree hash-object index-pack merge-file merge-index mktag mktree multi-pack-index pack-objects prune-packed read-tree replay symbolic-ref unpack-objects update-index update-ref write-tree cat-file cherry diff-files diff-index diff-pairs diff-tree for-each-ref for-each-repo get-tar-commit-id last-modified ls-files ls-remote ls-tree merge-base name-rev pack-redundant repo rev-list rev-parse show-index show-ref unpack-file var verify-pack daemon fetch-pack http-backend send-pack update-server-info check-attr check-ignore check-mailmap check-ref-format column credential credential-cache credential-store fmt-merge-msg hook interpret-trailers mailinfo mailsplit merge-one-file patch-id sh-i18n sh-setup stripspace upload-pack upload-archive receive-pack'.split(' '));
+// Documented protocol helpers are omitted by the fixed help-a catalog. Known
+// builtins include compatibility names which must not become unknown aliases.
+const REGISTERED_GIT_OPERATIONS = new Set([...OFFICIAL_GIT_OPERATIONS, ...BUILTIN_SUBS, 'gitk', 'http-push', 'http-fetch']);
+// A direct git-* name identifies the namespace, not an inspected helper body.
+const directGitOperation = name => name === 'gitk' ? 'gitk' : /^git-.+/.test(name) ? name.slice(4) : null;
+
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish']);
 const CD_LIKE = new Set(['cd', 'pushd', 'popd']);
 const EXPORT_LIKE = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 const CONFIG_ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME']);
 // Track explicit external-helper selectors separately from Git target/config variables.
-const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS', 'ENV', 'GIT_EXTERNAL_DIFF', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_PAGER', 'PAGER']);
+const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS', 'ENV', 'GIT_EXTERNAL_DIFF', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_PAGER', 'PAGER', 'GH_EDITOR', 'GH_BROWSER', 'GH_PAGER', 'GH_CONFIG_DIR', 'BROWSER']);
 /** Include Git's configuration-root variables in per-invocation environment effects. */
 const affectsGitEnvironment = (name) => /^GIT_/.test(name) || CONFIG_ROOT_ENV.has(name);
 const GIT_IDENTITY_ENV = new Set(['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE',
   'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL']);
 const GIT_PAGER_ENV = new Set(['GIT_PAGER', 'PAGER']);
-const TRACKED_VALUE_ENV = new Set([...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, 'PS4']);
+const GH_METADATA_ENV = new Set(['GH_REPO', 'GH_HOST']);
+const GH_HELPER_ENV = new Set(['GH_EDITOR', 'GH_BROWSER', 'GH_PAGER', 'GH_CONFIG_DIR', 'BROWSER', 'HOME', 'XDG_CONFIG_HOME', 'AppData']);
+const SHELL_STARTUP_ENV = new Set(['BASH_ENV', 'ENV']);
+const TRACKED_VALUE_ENV = new Set([...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, 'PS4']);
 /** A stored shell value enters a child environment only with a selected export attribute. */
 function identityEnvironmentSources(state) {
   return new Map([...state.identitySources].flatMap(([name, word]) => {
@@ -1468,7 +1480,8 @@ function shellInvocation(args, name) {
   // Redirection expansions were parsed independently and retain their executable effects.
   if (name === 'bash' && args[0] && !args[0].dynamic && ['--help', '--version'].includes(args[0].text)) {
     return { scripts: [], commandMode: false, readsStdin: false, unknown: false, positionals: [], terminal: true,
-      interactive: false, privileged: false, posix: false, posixExplicit: false };
+      interactive: false, privileged: false, posix: false, posixExplicit: false,
+      login: false, noProfile: false, noRc: false, rcfileWords: [], debugger: false, fishNoConfig: false };
   }
   const scripts = [];
   let commandMode = false;
@@ -1479,6 +1492,8 @@ function shellInvocation(args, name) {
   let xtrace = false;
   let posix = name === 'sh';
   let posixExplicit = false;
+  let login = false, noProfile = false, noRc = false, debuggerMode = false, fishNoConfig = false;
+  const rcfileWords = [];
   let k = 0;
   const fishLong = {
     command: 'c', 'init-command': 'C', features: 'f', debug: 'd', 'debug-output': 'o',
@@ -1505,12 +1520,19 @@ function shellInvocation(args, name) {
         const matches = names.includes(option) ? [option] : names.filter((n) => n.startsWith(option));
         if (matches.length !== 1) { unknown = true; continue; }
         const ch = fishLong[matches[0]];
+        if (ch === 'l') login = true;
+        if (ch === 'N') fishNoConfig = true;
         if ('cCdofpD'.includes(ch)) fishValue(ch, eq < 0 ? args[++k] : { ...w, text: t.slice(eq + 1) });
         else if (eq >= 0) unknown = true;
       } else if (['rcfile', 'init-file', 'emulate'].includes(option)) {
         const value = eq < 0 ? args[++k] : { ...w, text: t.slice(eq + 1) };
         if (!value || value.dynamicMaySplit) unknown = true;
+        if (option !== 'emulate' && value) rcfileWords.push(value);
       } else if (option === 'posix' && eq < 0) { posix = true; posixExplicit = true; }
+      else if (option === 'login' && eq < 0) login = true;
+      else if (option === 'noprofile' && eq < 0) noProfile = true;
+      else if (option === 'norc' && eq < 0) noRc = true;
+      else if (option === 'debugger' && eq < 0) debuggerMode = true;
       else if (!['debugger', 'dump-po-strings', 'dump-strings', 'help', 'login', 'noediting',
         'noprofile', 'norc', 'posix', 'restricted', 'verbose', 'version'].includes(option) || eq >= 0) unknown = true;
       continue;
@@ -1519,6 +1541,8 @@ function shellInvocation(args, name) {
       const ch = t[p];
       if (!/[A-Za-z]/.test(ch)) { unknown = true; break; }
       if (name === 'fish') {
+        if (ch === 'l') login = true;
+        if (ch === 'N') fishNoConfig = true;
         if ('cCdofpD'.includes(ch)) {
           const attached = t.slice(p + 1);
           const value = attached ? { ...w, text: attached } : args[++k];
@@ -1539,6 +1563,7 @@ function shellInvocation(args, name) {
         break;
       } else {
         if (ch === 'i') interactive = t[0] === '-';
+        if (ch === 'l') login = t[0] === '-';
         if (ch === 'p') privileged = t[0] === '-';
         if (ch === 'x') xtrace = t[0] === '-';
         if (t[0] === '-' && ch === 'c') commandMode = true;
@@ -1559,7 +1584,9 @@ function shellInvocation(args, name) {
   return { scripts, commandMode, readsStdin, unknown, positionals,
     interactive: unknown ? null : interactive === null && (commandMode || !readsStdin) ? false : interactive,
     privileged: unknown ? null : privileged, posix: unknown ? null : posix, posixExplicit,
-    xtrace: unknown ? null : xtrace };
+    xtrace: unknown ? null : xtrace, login: unknown ? null : login,
+    noProfile: unknown ? null : noProfile, noRc: unknown ? null : noRc, rcfileWords,
+    debugger: unknown ? null : debuggerMode, fishNoConfig: unknown ? null : fishNoConfig };
 }
 
 /** Detect Git text that a shell can expose after tokenization, without executing its input. */
@@ -1848,6 +1875,114 @@ function promptvarsSet(args, before) {
 }
 
 /** These Git operations have argv-selected sources or repository egress outside inspection. */
+/** Preserve Git option consumption and source words without evaluating their contents. */
+function gitTypedArguments(g, spec = {}) {
+  const result = { values: [], operands: [], flags: [], unknown: Boolean(g.incomplete || g.dynamicOpt) };
+  let afterDD = false;
+  const required = new Set(spec.values || []), flags = new Set(spec.flags || []);
+  const selectedText = word => typeof word?.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word?.text;
+  const boundary = word => word && !word.ansiCUnknown && !word.globExpanded && !word.braceExpanded && !word.tildeExpanded && word.dynamicMaySplit === false;
+  const take = (option, word) => { result.values.push({ option, word }); if (!boundary(word)) result.unknown = true; };
+  for (let k = 0; k < g.args.length; k++) {
+    const word = g.args[k], text = selectedText(word);
+    if (!afterDD && text === '--' && (!word.dynamic || typeof word.literalValue === 'string')) { afterDD = true; continue; }
+    if (afterDD || !text.startsWith('-') || text === '-') {
+      result.operands.push(word);
+      if (!boundary(word) || !afterDD && word.dynamic && typeof word.literalValue !== 'string') result.unknown = true;
+      continue;
+    }
+    if (!boundary(word)) result.unknown = true;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
+      if (required.has(option)) take(option, eq < 0 ? g.args[++k] : commitInlineValue(word, word, text.slice(eq + 1), eq + 1));
+      else if (flags.has(option) && eq < 0 && (!word.dynamic || typeof word.literalValue === 'string')) result.flags.push(option);
+      else result.unknown = true;
+    } else {
+      for (let p = 1; p < text.length; p++) {
+        const option = spec.shortValues?.[text[p]];
+        if (option) { take(option, p + 1 < text.length ? commitInlineValue(word, word, text.slice(p + 1), p + 1) : g.args[++k]); break; }
+        if (spec.shortOptional?.[text[p]]) { take(spec.shortOptional[text[p]], p + 1 < text.length ? commitInlineValue(word, word, text.slice(p + 1), p + 1) : { text: '', dynamic: false, dynamicMaySplit: false }); break; }
+        if ((spec.shortFlags || '').includes(text[p])) result.flags.push(spec.shortNames?.[text[p]] || text[p]);
+        else result.unknown = true;
+      }
+    }
+  }
+  return result;
+}
+
+/** Official executable operations which need a source/context decision distinct from name parsing. */
+function gitOperationRole(g) {
+  const role = { operation: g.sub, mode: 'active', kind: null, sourceWords: [], values: [], operands: [],
+    unknown: Boolean(g.incomplete || g.dynamicOpt), terminal: g.terminal && g.helpKind === 'stdout' };
+  if (role.terminal) return role;
+  if (['upload-pack', 'upload-archive', 'receive-pack', 'http-backend', 'cvsserver', 'gitweb', 'instaweb'].includes(g.sub)) role.kind = 'server';
+  else if (g.sub === 'http-fetch') role.kind = 'protocol-input';
+  else if (['p4', 'svn', 'cvsexportcommit', 'archimport', 'cvsimport', 'quiltimport'].includes(g.sub)) role.kind = 'external-scm';
+  else if (['mergetool', 'history', 'verify-commit', 'verify-tag', 'gui', 'citool', 'gitk', 'scalar', 'sh-i18n', 'sh-setup'].includes(g.sub)) {
+    role.kind = 'selected-program';
+    if (g.sub === 'mergetool') {
+      const parsed = gitTypedArguments(g, { values: ['tool'], shortValues: { t: 'tool' }, flags: ['tool-help', 'no-prompt', 'prompt', 'gui', 'no-gui'] });
+      Object.assign(role, parsed);
+      if (!parsed.unknown && parsed.flags.includes('tool-help') && !parsed.operands.length && !parsed.values.length) role.mode = 'query';
+    }
+  } else if (g.sub === 'help' || g.helpKind === 'manual') {
+    role.kind = 'manual-viewer';
+    if (!g.helpKind && g.args.every(word => !word.dynamic && ['-a', '--all', '-g', '--guides', '--user-interfaces', '--developer-interfaces', '--config', '--no-external-commands', '--no-aliases', '--verbose'].includes(word.text))) role.mode = 'query';
+  } else if (g.sub === 'bisect' && g.args[0]?.text === 'run') {
+    role.kind = 'argv-program'; role.sourceWords = g.args.slice(1);
+  } else if (g.sub === 'merge-index' || g.sub === 'for-each-repo') {
+    role.kind = 'argv-program';
+    const parsed = gitTypedArguments(g, g.sub === 'for-each-repo' ? { values: ['config'], flags: ['keep-going'] } : { shortFlags: 'oq', flags: [] });
+    Object.assign(role, parsed); role.sourceWords = parsed.operands;
+  } else if (g.sub === 'submodule') {
+    const parsed = gitTypedArguments(g, { values: ['branch', 'name', 'depth', 'jobs', 'reference'], shortValues: { b: 'branch', j: 'jobs' },
+      flags: ['quiet', 'recursive', 'cached', 'init', 'remote', 'force', 'checkout', 'merge', 'rebase', 'none', 'recommend-shallow', 'no-recommend-shallow'], shortFlags: 'qf' });
+    const action = parsed.operands[0], text = typeof action?.literalValue === 'string' ? action.literalValue : action?.text;
+    if (text === 'foreach') {
+      Object.assign(role, parsed); role.kind = 'shell-source';
+      role.sourceWords = g.args.slice(g.args.indexOf(action) + 1).filter((word, k) => k > 0 || word.text !== '--recursive');
+    } else if (parsed.unknown) { Object.assign(role, parsed); role.kind = 'argv-boundary'; }
+  } else if (g.sub === 'rebase') {
+    const parsed = gitTypedArguments(g, { values: ['exec', 'onto', 'strategy', 'strategy-option', 'empty'], shortValues: { x: 'exec', s: 'strategy', X: 'strategy-option' },
+      flags: ['no-edit', 'root', 'interactive', 'no-interactive', 'continue', 'abort', 'quit', 'skip', 'quiet', 'verbose', 'show-current-patch', 'force-rebase', 'no-ff', 'fork-point', 'no-fork-point', 'keep-base', 'reapply-cherry-picks', 'no-reapply-cherry-picks', 'autosquash', 'no-autosquash', 'autostash', 'no-autostash', 'keep-empty', 'no-keep-empty', 'rebase-merges', 'no-rebase-merges', 'apply', 'merge', 'stat', 'no-stat', 'committer-date-is-author-date', 'ignore-date', 'reset-author-date'], shortFlags: 'iqvf' });
+    if (parsed.values.some(value => value.option === 'exec')) { role.kind = 'shell-source'; Object.assign(role, parsed); role.sourceWords = parsed.values.filter(value => value.option === 'exec').map(value => value.word); }
+    else if (parsed.unknown) { role.kind = 'argv-boundary'; Object.assign(role, parsed); }
+  } else if (['clone', 'fetch', 'fetch-pack', 'archive', 'ls-remote'].includes(g.sub)) {
+    const parsed = gitTypedArguments(g, { values: ['upload-pack', 'exec', 'remote', 'branch', 'origin', 'filter', 'depth', 'output', 'format'], shortValues: { u: 'upload-pack', b: 'branch', o: 'origin' },
+      flags: ['quiet', 'verbose', 'bare', 'no-checkout', 'mirror', 'list', 'all', 'tags', 'no-tags', 'prune', 'no-prune', 'force', 'atomic', 'dry-run', 'progress', 'no-progress', 'single-branch', 'no-single-branch', 'local', 'no-local', 'shared', 'no-hardlinks'], shortFlags: 'qvnft' });
+    if (parsed.values.some(value => ['upload-pack', 'exec'].includes(value.option))) { role.kind = 'selected-program'; Object.assign(role, parsed); role.sourceWords = parsed.values.filter(value => ['upload-pack', 'exec'].includes(value.option)).map(value => value.word); }
+    else if (parsed.unknown) { role.kind = 'argv-boundary'; Object.assign(role, parsed); }
+  } else if (g.sub === 'hook') {
+    role.kind = 'hook-source';
+    if (g.args[0] && !g.args[0].dynamic && g.args[0].text === 'list') {
+      const parsed = gitTypedArguments({ ...g, args: g.args.slice(1) }, { flags: ['show-scope'], shortFlags: 'z' });
+      Object.assign(role, parsed); if (!parsed.unknown && parsed.operands.every(word => !word.dynamic)) role.mode = 'query';
+    }
+  } else if (g.sub === 'interpret-trailers') {
+    const parsed = gitTypedArguments(g, { values: ['trailer', 'where', 'if-exists', 'if-missing'],
+      flags: ['parse', 'only-input', 'no-only-input', 'only-trailers', 'no-only-trailers', 'unfold', 'no-unfold', 'trim-empty', 'in-place', 'no-in-place'] });
+    Object.assign(role, parsed); role.kind = 'trailer-source';
+    const input = parsed.flags.filter(flag => ['parse', 'only-input', 'no-only-input'].includes(flag)).at(-1);
+    if (!parsed.unknown && ['parse', 'only-input'].includes(input)) role.mode = 'query';
+  } else if (g.sub === 'commit-tree') {
+    const parsed = gitTypedArguments(g, { shortValues: { m: 'message', F: 'file', p: 'parent' }, shortOptional: { S: 'sign' }, flags: ['no-gpg-sign'] });
+    Object.assign(role, parsed); role.kind = 'generated-object';
+    role.inlineObjectWords = parsed.values.filter(value => value.option === 'message').map(value => ({ kind: 'message', word: value.word }));
+    role.messageFiles = parsed.values.filter(value => value.option === 'file').map(value => value.word);
+  } else if (['mktree', 'index-pack', 'unpack-objects', 'update-ref', 'write-tree', 'read-tree', 'replay'].includes(g.sub)) role.kind = 'object-ref-input';
+  else if (g.sub === 'update-index') {
+    const parsed = gitTypedArguments(g, { values: ['cacheinfo', 'index-version', 'chmod'], flags: ['add', 'remove', 'force-remove', 'replace', 'refresh', 'really-refresh', 'unmerged', 'ignore-missing', 'info-only', 'index-info', 'stdin', 'show-index-version', 'verbose'], shortFlags: 'qz' });
+    Object.assign(role, parsed); role.kind = 'index-file-input';
+    if (!parsed.unknown && parsed.flags.includes('show-index-version') && !parsed.operands.length && parsed.flags.length === 1) role.mode = 'query';
+  } else if (g.sub === 'commit' && parseCommitArgs(g.args).signingSelected) {
+    role.kind = 'signature-program';
+  } else if (['merge', 'pull'].includes(g.sub) &&
+      (parseMergeMessageArgs(g.args).signingSelected || parseMergeMessageArgs(g.args).verificationSelected)) {
+    role.kind = 'signature-program';
+  }
+  return role.kind || role.terminal ? role : null;
+}
+
 function gitOutboundRole(g) {
   if (!['send-email', 'filter-branch', 'daemon'].includes(g.sub)) return null;
   const role = { operation: g.sub, terminal: false, files: [], values: [], noSend: false,
@@ -2017,18 +2152,22 @@ function inspect(cmd, options = {}) {
   if (Array.isArray(options.initialHelperEnvNames)) {
     for (const name of options.initialHelperEnvNames) if (HELPER_SOURCE_ENV.has(name)) stateFor(parsed.scope).helperEnv.add(name);
   }
-  if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames)) {
+  if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames) || Array.isArray(options.initialGhEnvNames) || Array.isArray(options.initialShellStartupEnvNames)) {
     const initial = stateFor(parsed.scope);
-    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || [])]) if (TRACKED_VALUE_ENV.has(name)) {
+    for (const name of [...(options.initialGitIdentityEnvNames || []), ...(options.initialPagerEnvNames || []), ...(options.initialGhEnvNames || []), ...(options.initialShellStartupEnvNames || [])]) if (TRACKED_VALUE_ENV.has(name)) {
       initial.identitySources.set(name, null); initial.identityExports.set(name, true);
     }
   }
-  if (Array.isArray(options.initialGitIdentitySources) || Array.isArray(options.initialPagerSources)) {
+  if (Array.isArray(options.initialGitIdentitySources) || Array.isArray(options.initialPagerSources) || Array.isArray(options.initialGhSources) || Array.isArray(options.initialShellStartupSources)) {
     const initial = stateFor(parsed.scope);
-    const selected = childIdentityState(new Map([...(options.initialGitIdentitySources || []), ...(options.initialPagerSources || [])]
+    const selected = childIdentityState(new Map([...(options.initialGitIdentitySources || []), ...(options.initialPagerSources || []), ...(options.initialGhSources || []), ...(options.initialShellStartupSources || [])]
       .filter(source => TRACKED_VALUE_ENV.has(source.name)).map(source => [source.name, source.word])));
-    initial.identitySources = selected.identitySources;
-    initial.identityExports = selected.identityExports;
+    // Presence names may include unknown inherited values while source arrays only
+    // supply partial known values. Preserve every presence seed across families.
+    // Child inspections pass selected sources without presence names, so [] still
+    // leaves that child's environment empty (including an actual env -u removal).
+    for (const [name, word] of selected.identitySources) initial.identitySources.set(name, word);
+    for (const [name, exported] of selected.identityExports) initial.identityExports.set(name, exported);
   }
   const sourcePlaceholder = (name) => ({ definitionName: name, redirs: [], heredocBodies: [], functionBody: null });
   const initial = stateFor(parsed.scope);
@@ -2200,6 +2339,9 @@ function inspect(cmd, options = {}) {
       helperEnvNames: [...helperEnv],
       gitIdentitySources: [...identitySources].filter(([name]) => GIT_IDENTITY_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitPagerEnvSources: [...identitySources].filter(([name]) => GIT_PAGER_ENV.has(name)).map(([name, word]) => ({ name, word })),
+      ghEnvironmentSources: [...identitySources].filter(([name]) => GH_METADATA_ENV.has(name)).map(([name, word]) => ({ name, word })),
+      ghHelperEnvironmentSources: [...identitySources].filter(([name]) => GH_HELPER_ENV.has(name)).map(([name, word]) => ({ name, word })),
+      shellStartupEnvironmentSources: [...identitySources].filter(([name]) => SHELL_STARTUP_ENV.has(name)).map(([name, word]) => ({ name, word })),
       traceModeBefore: state.xtrace, tracePromptWord: promptWord,
       promptVarsBefore: state.promptvars,
       tracePromptEnvSources: [...identitySources].filter(([name]) => name === 'PS4').map(([name, word]) => ({ name, word })),
@@ -2218,6 +2360,9 @@ function inspect(cmd, options = {}) {
       shellPositionals: shell && !shell.unknown ? shell.positionals : null,
       shellInteractive: shell ? shell.interactive : null, shellPrivileged: shell ? shell.privileged : null,
       shellPosix: shell ? shell.posix : null, shellTerminal: !!shell?.terminal,
+      shellLogin: shell ? shell.login : null, shellNoProfile: shell ? shell.noProfile : null,
+      shellNoRc: shell ? shell.noRc : null, shellRcfileWords: shell ? shell.rcfileWords : [],
+      shellDebugger: shell ? shell.debugger : null, shellFishNoConfig: shell ? shell.fishNoConfig : null,
       trapScripts: trap ? trap.scripts : [], trapSourceUnknown: trap ? trap.unknown : false,
       aliasScripts: alias ? alias.scripts : [], aliasSourceUnknown: alias ? alias.unknown : false,
       // Carrier offsets allow template/data evidence to be mapped back to a known executable body.
@@ -2265,7 +2410,16 @@ function inspect(cmd, options = {}) {
           if (ancestor === body.scope) { scopeStates.delete(cachedScope); break; }
         }
       }
+      // A prefix assignment to a shell function is visible/exported during that
+      // call, including to children, but must not replace unexported caller locals.
+      const functionIdentitySources = new Map(state.identitySources);
+      const functionIdentityExports = new Map(state.identityExports);
+      for (const name of info.assigns) if (TRACKED_VALUE_ENV.has(name)) {
+        functionIdentitySources.set(name, identitySources.get(name) ?? null);
+        functionIdentityExports.set(name, true);
+      }
       seedScope(body.scope, env, cdBefore, { ...state, helperEnv, pathChanged,
+        identitySources: functionIdentitySources, identityExports: functionIdentityExports,
         exportedFunctions, exportedFunctionUnknown, environmentFunctions, environmentFunctionUnknown,
         localNames: new Set(), localShellOptions: false, positionals: knownPositionals(info.args), positionalsTainted: !!info.incomplete });
       for (const evaluation of selectedFunction.evaluations || []) checkEvaluation(evaluation, stateFor(body.scope));
@@ -2475,7 +2629,7 @@ function inspect(cmd, options = {}) {
       if (target) {
         if (state.promptRefNames.has(target[1])) state.identitySources.set('PS4', null);
         if (target[2] !== undefined && !numericArithmetic(target[2], state)) res.problems.push('printf -v が評価する配列の添字を検査できない');
-        if (GIT_IDENTITY_ENV.has(target[1])) state.identitySources.set(target[1], null);
+        if (TRACKED_VALUE_ENV.has(target[1])) state.identitySources.set(target[1], null);
         if (target[1] === 'PS4') {
           const offset = info.args[0].text === '-v' ? 2 : 1;
           const format = invocation.args[offset], value = invocation.args[offset + 1];
@@ -2495,7 +2649,7 @@ function inspect(cmd, options = {}) {
       const target = targetWord && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(targetWord.text);
       for (const name of ['OPTARG', 'OPTIND', ...(target ? [target[1]] : [])]) {
         if (state.promptRefNames.has(name)) state.identitySources.set('PS4', null);
-        if (GIT_IDENTITY_ENV.has(name)) state.identitySources.set(name, null);
+        if (TRACKED_VALUE_ENV.has(name)) state.identitySources.set(name, null);
         if (name === 'PS4') state.identitySources.set(name, null);
         state.values.set(name, null); state.pathProofs.delete(name);
         if (affectsGitEnvironment(name)) state.env.add(name);
@@ -2735,10 +2889,10 @@ function inspect(cmd, options = {}) {
       }
       return;
     }
-    if (name !== 'git') {
+    const directOperation = directGitOperation(name);
+    if (name !== 'git' && !directOperation) {
       // Literal printf/echo argv is data, including in a tuple or inspected source string.
-      if ((positionalExec || sourceDepth > 0 || c.mediated || info.args.some((word) => word.ansiCQuoted)) &&
-          ['echo', 'printf'].includes(name) &&
+      if (['echo', 'printf'].includes(name) &&
           [name, '/bin/' + name, '/usr/bin/' + name].includes(info.nameWord.text)) return;
       // git 以外の名前で包んで git を走らせる形（`arch -arm64 git commit …` など・v3）。
       // `git` の語の後が書き込む側の subcommand（または読みきれない語の後に目印の subcommand）
@@ -2759,17 +2913,23 @@ function inspect(cmd, options = {}) {
             environmentFunctions, environmentFunctionUnknown });
           const sub = resolveCommand(tail);
           sub.incomplete = info.incomplete || sub.incomplete;
-          visit({ words: tail, redirs: [], piped: false, heredocBodies: [], scope, effects: c.effects }, sub, depth + 1);
+          visit({ words: tail, redirs: [], piped: false, heredocBodies: [], scope, effects: c.effects,
+            gitNamespaceInferred: true }, sub, depth + 1);
         }
       }
       return;
     }
-    const g = parseGit(info.args.map((word, index) => {
+    const gitWords = info.args.map((word, index) => {
       const proven = literalScalarWord(word, state);
       return info.args[index - 1]?.text === '-c' && typeof proven.literalValue === 'string' &&
         /^(?:user|author|committer)\.(?:name|email)=/i.test(proven.literalValue)
         ? { ...proven, text: proven.literalValue, dynamic: false, dynamicMaySplit: false } : word;
-    }));
+    });
+    const g = directOperation ? { ...parseGit([]), sub: directOperation, args: gitWords, directHelper: true } : parseGit(gitWords);
+    // The legacy token fallback protects risky Git-looking wrappers; it does not
+    // prove that a reader's argv token is an actual executable Git identity.
+    g.gitNamespaceInferred = Boolean(c.gitNamespaceInferred);
+    g.gitNamespaceUnknown = Boolean(!g.gitNamespaceInferred && g.sub && !REGISTERED_GIT_OPERATIONS.has(g.sub));
     if (g.problems.length) { res.problems.push(...g.problems); return; }
     g.args = g.args.map(word => literalScalarWord(word, state));
     if (g.sub === 'commit') {
@@ -2790,6 +2950,7 @@ function inspect(cmd, options = {}) {
     }
     g.incomplete = info.incomplete;
     g.outboundRole = gitOutboundRole(g);
+    g.operationRole = gitOperationRole(g);
     if (info.nameWord.ansiCQuoted && g.sub && !g.terminal && !READ_ONLY_SUBS.has(g.sub) && !readOnlyGitMode(g)) {
       res.problems.push('ANSI-C 引用で作った git の名前からの書込みは、直接の git guard の対象と確かめられない');
       return;
@@ -2802,7 +2963,7 @@ function inspect(cmd, options = {}) {
       res.problems.push('HOME / XDG_CONFIG_HOME の設定・解除で git の設定ファイルの場所が変わり、書込みや helper の実行を検査できない');
       return;
     }
-    if (!trustedGitExecutable(info.nameWord) || pathChanged || state.searchChanged || state.gitShadowed) {
+    if ((!directOperation && !trustedGitExecutable(info.nameWord)) || pathChanged || state.searchChanged || state.gitShadowed) {
       res.problems.push('git の実行ファイルやコマンド探索が変わっていて、検査に使う git と同じ実行先か確かめられない');
       return;
     }
@@ -2891,7 +3052,7 @@ function problemMessage(problems, guardLabel) {
 
 /** Reject configured aliases because their executable body is outside the inspected command. */
 function aliasProblem(g, baseDir) {
-  if (!g.sub || BUILTIN_SUBS.has(g.sub)) return null;
+  if (!g.sub || g.directHelper || BUILTIN_SUBS.has(g.sub)) return null;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(g.sub)) return `git の subcommand の形を読めない（${g.sub}）`;
   if (g.gitDir || g.workTree) return `--git-dir / --work-tree を付けた builtin でない subcommand（${g.sub}）は検査できない`;
   const dir = resolveDir(baseDir, g.cdirs);
@@ -2965,7 +3126,7 @@ function commitInlineValue(carrier, value, attached, prefixLength) {
 /** Identify commit-time staging and pathspecs while accepting single-word dynamic option values. */
 function parseCommitArgs(words) {
   const r = { all: false, patch: false, fromFile: false, noVerify: false, terminal: false, dynamic: false, unknown: [], pathspecs: [],
-    messageFiles: [], inlineMessageWords: [], inlineObjectWords: [], messageFileUnknown: false, messageFileSelectionUnknown: false, editorMayRun: true };
+    messageFiles: [], inlineMessageWords: [], inlineObjectWords: [], messageFileUnknown: false, messageFileSelectionUnknown: false, editorMayRun: true, signingSelected: false };
   const identityWords = new Map();
   const trailerWords = [];
   let inlineMessage = false;
@@ -3026,6 +3187,7 @@ function parseCommitArgs(words) {
       if (full === 'patch' || full === 'interactive') r.patch = true;
       if (full === 'pathspec-from-file') r.fromFile = true;
       if (full === 'no-verify') r.noVerify = true;
+      if (full === 'gpg-sign' || full === 'no-gpg-sign') r.signingSelected = full === 'gpg-sign';
       const takesValue = !full.startsWith('no-') && (kind.startsWith('v') || kind.startsWith('o'));
       if (w.dynamic && !takesValue) r.dynamic = true;
       if (['message', 'file', 'reuse-message', 'reedit-message'].includes(full)) {
@@ -3079,7 +3241,7 @@ function parseCommitArgs(words) {
           }
           break;
         }
-        if (COMMIT_SHORT_ATTACHED.has(ch)) break;
+        if (COMMIT_SHORT_ATTACHED.has(ch)) { if (ch === 'S') r.signingSelected = true; break; }
         if (ch === 'a') r.all = true;
         if (ch === 'p') r.patch = true;
         if (ch === 'n') r.noVerify = true;
@@ -3097,7 +3259,8 @@ function parseCommitArgs(words) {
 
 /** Select merge's real file-message operands while keeping option values and refs as DATA. */
 function parseMergeMessageArgs(words) {
-  const r = { terminal: false, messageFiles: [], messageFileUnknown: false, messageFileSelectionUnknown: false, editorMayRun: true };
+  const r = { terminal: false, messageFiles: [], messageFileUnknown: false, messageFileSelectionUnknown: false, editorMayRun: true,
+    signingSelected: false, verificationSelected: false };
   const required = new Set(['file', 'message', 'strategy', 'strategy-option', 'into-name', 'cleanup']);
   const optional = new Set(['log', 'gpg-sign']);
   const flags = new Set(['stat', 'summary', 'compact-summary', 'squash', 'commit', 'edit', 'ff', 'ff-only',
@@ -3146,6 +3309,8 @@ function parseMergeMessageArgs(words) {
       const option = names.includes(name) ? name : matches.length === 1 ? matches[0] : null;
       if (!option || name.includes(DYN)) { unknown = true; continue; }
       if (option === 'no-message') sourceOverride = true;
+      if (option === 'gpg-sign' || option === 'no-gpg-sign') r.signingSelected = option === 'gpg-sign';
+      if (option === 'verify-signatures' || option === 'no-verify-signatures') r.verificationSelected = option === 'verify-signatures';
       if (option === 'edit' || option === 'no-edit') editorSelected = option === 'edit';
       if (required.has(option)) {
         if (eq >= 0) consume(option, { ...w, text: t.slice(eq + 1) }, w, true);
@@ -3165,7 +3330,7 @@ function parseMergeMessageArgs(words) {
           else consume(option, words[++i], w, false);
           break;
         }
-        if (ch === 'S') break; // Its key is optional and attached only.
+        if (ch === 'S') { r.signingSelected = true; break; } // Its key is optional and attached only.
         if (ch === 'e') editorSelected = true;
         if (!['n', 'e', 'q', 'v'].includes(ch) || w.dynamic) { unknown = true; break; }
       }
@@ -3695,6 +3860,8 @@ module.exports = {
   preCommitConfigKey,
   messageFileSource,
   grepPagerEffect,
+  gitTypedArguments,
+  gitOperationRole,
   parseAddArgs,
   isSecretPath,
   readOnlyGitMode,

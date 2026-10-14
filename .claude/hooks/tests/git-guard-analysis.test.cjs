@@ -941,3 +941,99 @@ test('R15 quoted scalar proof keeps mutations, unknown values and same-command p
     assert.equal(inspect(`V=ordinary; ssh -n host ${arg}`).invocations.findLast(i => i.name === 'ssh').args.at(-1).literalValue, undefined);
   }
 });
+
+
+test('R22 startup export attributes select child sources without promoting local DATA', () => {
+  const last = source => inspect(source).invocations.at(-1).shellStartupEnvironmentSources;
+  assert.deepEqual(last('ENV=DUMMY; BASH_ENV=DUMMY; bash -c :'), []);
+  assert.equal(last('BASH_ENV=DUMMY bash -c :')[0].name, 'BASH_ENV');
+  assert.equal(last('export ENV=DUMMY; bash --posix -i -c :')[0].word.text, 'DUMMY');
+  assert.deepEqual(last('export ENV=DUMMY; export -n ENV; bash --posix -i -c :'), []);
+  assert.deepEqual(last('export BASH_ENV=DUMMY; env -u BASH_ENV bash -c :'), []);
+  assert.equal(last("ENV= bash --posix -i -c :")[0].word.text, '');
+});
+
+test('R22 separate environment families retain inherited unknown selectors beside known roots', () => {
+  const ordinary = { text: 'cat', raw: "'cat'", quoted: true, dynamic: false, dynamicMaySplit: false };
+  const root = { ...ordinary, text: '__inherited_default_config_root__', defaultGhConfigRoot: true };
+  const inv = inspect('bash -c :', {
+    initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME'], initialPagerEnvNames: ['GIT_PAGER'],
+    initialGhEnvNames: ['GH_EDITOR', 'HOME', 'GH_PAGER'], initialShellStartupEnvNames: ['BASH_ENV'],
+    initialGhSources: [{ name: 'HOME', word: root }, { name: 'GH_PAGER', word: ordinary }],
+    initialShellStartupSources: [],
+  }).invocations[0];
+  assert.equal(inv.gitIdentitySources.find(s => s.name === 'GIT_AUTHOR_NAME').word, null);
+  assert.equal(inv.gitPagerEnvSources.find(s => s.name === 'GIT_PAGER').word, null);
+  assert.equal(inv.ghHelperEnvironmentSources.find(s => s.name === 'GH_EDITOR').word, null);
+  assert.equal(inv.ghHelperEnvironmentSources.find(s => s.name === 'GH_PAGER').word.text, 'cat');
+  assert.equal(inv.shellStartupEnvironmentSources.find(s => s.name === 'BASH_ENV').word, null);
+});
+
+test('R22 shell mode metadata distinguishes active startup switches from consumed DATA', () => {
+  const login = inspect('bash --noprofile --norc -l -c :').invocations[0];
+  assert.equal(login.shellLogin, true);
+  assert.equal(login.shellNoProfile, true);
+  assert.equal(login.shellNoRc, true);
+  const rc = inspect('bash --rcfile --help -i -c :').invocations[0];
+  assert.equal(rc.shellRcfileWords[0].text, '--help');
+  assert.equal(rc.shellInteractive, true);
+  assert.equal(rc.shellCommandMode, true);
+  assert.equal(inspect('bash --debugger -c :').invocations[0].shellDebugger, true);
+});
+
+test('R22 direct installed Git entrypoints retain operation and consumed callback DATA', () => {
+  const g = inspect("g''it-send-email --subject '--no-verify' public.patch").gits[0];
+  assert.equal(g.sub, 'send-email');
+  assert.equal(g.outboundRole.values.find(v => v.option === 'subject').word.text, '--no-verify');
+  assert.equal(inspect("g''it-upload-pack .").gits[0].operationRole.kind, 'server');
+  assert.equal(inspect("g''it bisect run printf DUMMY").gits[0].operationRole.kind, 'argv-program');
+  assert.equal(inspect("g''it submodule \"$UNPROVED\" 'printf ordinary'").gits[0].operationRole.kind, 'argv-boundary');
+});
+
+
+test('R22 function prefix startup sources reach the child and restore outer attributes', () => {
+  const calls = inspect('function f { (bash -c :); }; f; BASH_ENV=DUMMY f; bash -c :').invocations.filter(i => i.name === 'bash');
+  assert.deepEqual(calls[0].shellStartupEnvironmentSources, []);
+  assert.equal(calls[1].shellStartupEnvironmentSources.find(s => s.name === 'BASH_ENV').word.text, 'DUMMY');
+  assert.deepEqual(calls[2].shellStartupEnvironmentSources, []);
+  const removed = inspect('function f { export -n BASH_ENV; bash -c :; }; BASH_ENV=DUMMY f').invocations.find(i => i.name === 'bash');
+  assert.deepEqual(removed.shellStartupEnvironmentSources, []);
+});
+
+
+test('R22 unknown Git namespaces are execution identities while printer words remain DATA', () => {
+  const driver = inspect("g''it r22-opaque ordinary").gits[0];
+  const direct = inspect("g''it-r22-opaque --help").gits[0];
+  assert.equal(driver.gitNamespaceUnknown, true);
+  assert.equal(direct.gitNamespaceUnknown, true);
+  assert.deepEqual(inspect('printf %s git r22-opaque').gits, []);
+  assert.deepEqual(inspect('echo git r22-opaque').gits, []);
+  assert.equal(inspect('git status').gits[0].gitNamespaceUnknown, false);
+});
+
+test('R22 CGI child help does not acquire parent Git stdout-query identity', () => {
+  for (const command of ['git http-backend -h', 'git gitweb -h']) {
+    const g = inspect(command).gits[0];
+    assert.equal(g.terminal, false, command);
+    assert.equal(g.operationRole.kind, 'server', command);
+  }
+  const parent = inspect('git -h http-backend').gits[0];
+  assert.equal(parent.terminal, true);
+  assert.equal(parent.helpKind, 'stdout');
+});
+
+
+test('R22 inferred Git tokens do not establish an execution actor', () => {
+  for (const command of ['grep -rn git src', 'grep -rn git http-backend']) {
+    const g = inspect(command).gits[0];
+    assert.equal(g.gitNamespaceInferred, true, command);
+    assert.equal(g.gitNamespaceUnknown, false, command);
+  }
+  for (const command of ['git http-backend', 'env git src ordinary', 'command git src ordinary']) {
+    assert.equal(inspect(command).gits[0].gitNamespaceInferred, false, command);
+  }
+  const legacy = inspect('opaque-wrapper git add -A').gits[0];
+  assert.equal(legacy.gitNamespaceInferred, true);
+  assert.equal(legacy.sub, 'add');
+  assert.equal(legacy.args[0].text, '-A');
+});

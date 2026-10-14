@@ -61,8 +61,16 @@ function hasNoVerifyOption(g) {
   // values remain the responsibility of the existing config/path/action guards.
   const unknownCanSkipHooks = !['config', 'branch', 'remote', 'add', 'stage'].includes(g.sub);
   const maySplit = (word) => word && (word.dynamic || word.text.includes('\0')) && word.dynamicMaySplit !== false;
+  const requiredDataWords = (g.outboundRole?.values || []).concat(g.operationRole?.values || []).map(value => value.word).filter(Boolean);
   for (let k = 0; k < g.args.length; k++) {
     const original = g.args[k];
+    // The shared parser retains required mail/helper option values as DATA. A value
+    // spelled --no-verify is not that Git option; a splitting value still leaves argv unknown.
+    if (requiredDataWords.some(value => value === original || Number.isInteger(value.start) &&
+        value.start === original.start && value.raw === original.raw)) {
+      if (maySplit(original) && unknownCanSkipHooks) return 'UNKNOWN';
+      continue;
+    }
     const proven = typeof original.literalValue === 'string' && original.dynamicMaySplit === false &&
       !original.literalValue.includes('\0');
     const word = proven ? { ...original, text: original.literalValue, dynamic: false } : original;

@@ -204,6 +204,19 @@ const insp = guard.inspect(cmd, {
     .filter(name => process.env[name] !== undefined),
   initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL'].filter(name => process.env[name] !== undefined),
   initialPagerEnvNames: ['GIT_PAGER', 'PAGER'].filter(name => process.env[name] !== undefined),
+  initialShellStartupEnvNames: ['BASH_ENV', 'ENV'].filter(name => process.env[name] !== undefined),
+  initialShellStartupSources: ['BASH_ENV', 'ENV'].filter(name => process.env[name] === '').map(name =>
+    ({ name, word: { text: '', raw: "''", quoted: true, dynamic: false, dynamicMaySplit: false } })),
+  initialGhEnvNames: ['GH_REPO', 'GH_HOST', 'GH_EDITOR', 'GH_BROWSER', 'GH_PAGER', 'GH_CONFIG_DIR', 'BROWSER', 'HOME', 'XDG_CONFIG_HOME', 'AppData']
+    .filter(name => process.env[name] !== undefined),
+  // Retain only the existing non-executing empty/cat pager controls; other inherited bodies stay unknown.
+  initialGhSources: ['GH_PAGER'].filter(name => ['', 'cat'].includes(process.env[name])).map(name =>
+    ({ name, word: { text: process.env[name], raw: "'" + process.env[name] + "'", quoted: true, dynamic: false, dynamicMaySplit: false } }))
+    .concat(['HOME', 'XDG_CONFIG_HOME', 'AppData'].filter(name => process.env[name] !== undefined).map(name =>
+      ({ name, word: { text: process.env[name] === '' ? '' : '__inherited_default_config_root__', raw: "'__inherited_default_config_root__'",
+        quoted: true, dynamic: false, dynamicMaySplit: false, defaultGhConfigRoot: true } }))),
+  initialPagerSources: ['PAGER', 'GIT_PAGER'].filter(name => ['', 'cat'].includes(process.env[name])).map(name =>
+    ({ name, word: { text: process.env[name], raw: "'" + process.env[name] + "'", quoted: true, dynamic: false, dynamicMaySplit: false } })),
   initialPromptEnvPresent: process.env.PS4 !== undefined,
   initialTraceMode: process.env.SHELLOPTS === undefined ? false : null,
   initialFunctionSourceNames: inheritedFunctionNames,
@@ -798,10 +811,12 @@ function imapSendRole(g) {
 
 /** Positive selectors of local Git execution must be gated for their actual operation. */
 function gitExecutableSource(g, invocation) {
+  const actual = !g.gitNamespaceInferred;
   if (g.terminal && g.helpKind === 'stdout' && knownInvocationContext(invocation)) return false;
   if (gitPagerSource(g, invocation)) return true;
+  if (actual && g.operationRole?.mode === 'query' && ['hook', 'interpret-trailers', 'mergetool'].includes(g.sub)) return false;
   if (g.sub === 'config' && configOperation(g.args).read) return false;
-  const diff = ['diff', 'show', 'log', 'diff-tree', 'diff-index', 'diff-files', 'format-patch', 'whatchanged'].includes(g.sub);
+  const diff = (actual || g.sub !== 'diff-pairs') && ['diff', 'show', 'log', 'diff-tree', 'diff-index', 'diff-files', 'diff-pairs', 'format-patch', 'whatchanged'].includes(g.sub);
   const modes = diff ? gitDiffModes(g) : null;
   if (modes?.terminal && knownInvocationContext(invocation)) return false;
   const keys = [...g.configs, ...g.configEnvs].map(config => config.split('=')[0].toLowerCase());
@@ -819,11 +834,92 @@ function gitExecutableSource(g, invocation) {
   if (diff && (keys.some(key => /^diff\.(?:external|.+\.command)$/.test(key)) ||
       [...g.gitEnvNames, ...(invocation.helperEnvNames || [])].includes('GIT_EXTERNAL_DIFF')) && (modes.external || uncertain)) return true;
   if (diff && keys.some(key => /^diff\..+\.textconv$/.test(key)) && (modes.textconv || uncertain)) return true;
+  if (actual && ['grep', 'cat-file'].includes(g.sub) && keys.some(key => /^diff\..+\.textconv$/.test(key))) {
+    const selected = guard.gitTypedArguments(g, g.sub === 'grep' ? {
+      values: ['regexp', 'file', 'max-depth', 'threads', 'max-count'], shortValues: { e: 'regexp', f: 'file', A: 'context', B: 'context', C: 'context', m: 'max-count' },
+      flags: ['textconv', 'no-textconv', 'cached', 'no-index', 'untracked', 'ignore-case', 'quiet', 'line-number', 'files-with-matches'], shortFlags: 'aIiwnlLqvEFGPzohH'
+    } : { values: ['path'], flags: ['textconv', 'no-textconv', 'filters', 'batch', 'batch-check'], shortFlags: 'pet' });
+    if (selected.unknown || selected.flags.filter(flag => ['textconv', 'no-textconv'].includes(flag)).at(-1) === 'textconv') return true;
+  }
+  if (actual && (['gc', 'repack', 'pack-objects'].includes(g.sub) || g.sub === 'maintenance' && g.args[0]?.text === 'run')) {
+    if (g.configs.some(config => /^gc\.recentobjectshook=.+/i.test(config)) ||
+        g.configEnvs.some(config => /^gc\.recentobjectshook(?:=|$)/i.test(config))) return true;
+  }
+  if (actual && ['merge', 'pull', 'rebase', 'cherry-pick', 'revert', 'am', 'merge-tree'].includes(g.sub) &&
+      keys.some(key => /^merge\..+\.driver$/.test(key))) return true;
+  if (actual && g.sub === 'submodule' && keys.some(key => /^submodule\..+\.update$/.test(key))) {
+    const parsed = guard.gitTypedArguments(g, { values: ['branch', 'name', 'depth', 'jobs', 'reference'], shortValues: { b: 'branch', j: 'jobs' },
+      flags: ['quiet', 'recursive', 'init', 'remote', 'force', 'checkout', 'merge', 'rebase', 'none', 'recommend-shallow', 'no-recommend-shallow'], shortFlags: 'qf' });
+    const action = literalSourceWord(parsed.operands[0]);
+    const override = parsed.flags.some(flag => ['checkout', 'merge', 'rebase', 'none'].includes(flag));
+    if (parsed.unknown || action?.text === 'update' && !override &&
+        (g.configEnvs.some(config => /^submodule\..+\.update(?:=|$)/i.test(config)) ||
+         g.configs.some(config => /^submodule\..+\.update=!/i.test(config)))) return true;
+  }
+  if (actual && ['merge', 'pull', 'rebase', 'cherry-pick', 'revert'].includes(g.sub)) {
+    const parsed = guard.gitTypedArguments(g, { values: ['strategy', 'strategy-option', 'onto', 'exec', 'mainline', 'message', 'file'],
+      shortValues: { ...(['merge', 'pull', 'rebase'].includes(g.sub) ? { s: 'strategy' } : {}), X: 'strategy-option', x: 'exec', m: g.sub === 'merge' ? 'message' : 'mainline', F: 'file' },
+      flags: ['no-edit', 'edit', 'no-commit', 'commit', 'ff', 'no-ff', 'ff-only', 'quiet', 'verbose', 'continue', 'abort', 'quit', 'skip', 'root', 'interactive'], shortFlags: 'qvns' });
+    if (parsed.values.some(value => value.option === 'strategy' &&
+        (!literalSourceWord(value.word) || !['ort', 'recursive', 'octopus', 'resolve', 'ours', 'subtree'].includes(literalSourceWord(value.word).text)))) return true;
+  }
   if (keys.some(key => /^filter\..+\.(?:clean|smudge|process)$/.test(key)) &&
       (!['rev-parse', 'ls-files', 'ls-tree', 'config', 'version', 'show-ref', 'for-each-ref', 'merge-base', 'count-objects'].includes(g.sub) || uncertain)) return true;
   if (keys.some(key => /^core\.hookspath$/.test(key)) &&
       (!['log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'config', 'version'].includes(g.sub) || uncertain)) return true;
   return keys.some(key => /^include(?:if\..+)?\.path$/.test(key));
+}
+
+/** Operation policy for official source/server/object roles not covered by staged filename checks. */
+function gitOperationVerdict(g, invocation) {
+  if (g.gitNamespaceInferred) return false;
+  const role = g.operationRole;
+  if (!role || role.terminal || role.mode === 'query') return false;
+  if (role.kind === 'generated-object') {
+    const words = gitCommitObjectWords(g, role);
+    const verdict = outboundPayloadVerdict(invocation, words.filter(source => !source.uncertainSelection).map(source => source.word)) ||
+      (outboundPayloadVerdict(invocation, words.filter(source => source.uncertainSelection).map(source => source.word)) ? 'UNKNOWN' : false);
+    if (verdict) return role.unknown ? 'UNKNOWN' : verdict;
+    if (!role.unknown && role.messageFiles.some(word => literalSourceWord(word) && guard.isSecretPath(literalSourceWord(word).text))) return 'FORBIDDEN';
+    return 'UNKNOWN';
+  }
+  if (role.kind === 'index-file-input') {
+    if (role.unknown) return 'UNKNOWN';
+    if (role.flags.includes('add') && role.operands.length && !role.values.length &&
+        role.operands.every(word => literalSourceWord(word))) {
+      return role.operands.some(word => guard.isSecretPath(literalSourceWord(word).text)) ? 'FORBIDDEN' : false;
+    }
+  }
+  return 'UNKNOWN';
+}
+
+/** A persistent selected helper setting is future source, not an immediate send or execution. */
+function gitConfigSourceWrite(g) {
+  if (g.gitNamespaceInferred) return false;
+  if (g.sub !== 'config') return false;
+  const words = g.args.map(word => literalSourceWord(word) || word);
+  const operation = configOperation(words);
+  if (operation.read || operation.terminal) return false;
+  const [keyWord, valueWord] = operation.operandWords;
+  const key = literalSourceWord(keyWord)?.text.toLowerCase();
+  const sourceKey = name => /^(?:core\.(?:editor|pager|hookspath|fsmonitor|askpass)|sequence\.editor|credential\.helper|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|filter\..+\.(?:clean|smudge|process)|tar\..+\.command|gc\.recentobjectshook|trailer\..+\.(?:cmd|command)|hook\..+\.(?:command|event)|merge\..+\.driver|gpg\.(?:program|.+\.program)|submodule\..+\.update)$/i.test(name || '');
+  const sourceSection = name => /^(?:core|sequence|credential|pager|diff(?:\..+)?|filter\..+|tar\..+|gc|trailer\..+|hook\..+|merge\..+|gpg(?:\..+)?|submodule\..+)$/i.test(name || '');
+  if (operation.rename) return sourceSection(key) || sourceSection(literalSourceWord(valueWord)?.text) ? 'UNKNOWN' : false;
+  if (operation.deletion === 'section') return sourceSection(key) ? 'UNKNOWN' : false;
+  if (!sourceKey(key)) return false;
+  if (operation.deletion) return 'UNKNOWN';
+  if (operation.operands.length < 2) return false; // Legacy one-key form is a getter.
+  if (operation.unknownOption) return 'UNKNOWN';
+  const value = literalSourceWord(valueWord)?.text;
+  if (value === undefined) return 'UNKNOWN';
+  if (key === 'core.fsmonitor' && /^(?:false|no|off|0)$/i.test(value)) return false;
+  if ((key === 'core.pager' || /^pager\./.test(key)) && ['', 'cat'].includes(value)) return false;
+  if (/^pager\./.test(key) && /^(?:false|no|off|0)$/i.test(value)) return false;
+  if (key === 'core.hookspath' && value === '/dev/null') return false;
+  if (key === 'credential.helper' && value === '') return false; // Documented reset of the helper list.
+  if (/^submodule\..+\.update$/.test(key) && ['checkout', 'merge', 'rebase', 'none'].includes(value)) return false;
+  if (/^hook\..+\.event$/.test(key) && value === '') return false; // Documented event-list reset.
+  return 'UNKNOWN';
 }
 
 /** Identify section names whose renamed contents can activate a destination or transport override. */
@@ -1377,53 +1473,475 @@ function sshAuthenticationSource(invocation) {
 }
 
 /** Identify an executable network verb using parsed command names, never names printed as data. */
-function networkInvocation(invocation) {
-  return ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet'].includes(invocation.name) ||
-    (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
-}
+// Bounded gh 2.102.0 builtin option-arity facts. Operation membership is not a safety proof.
+const GH_ARG_ROLES = new Map([
+  ["agent-task",["","",{}]],
+  ["agent-task create",["base custom-agent from-file","follow",{"b":"base","a":"custom-agent","F":"from-file"}]],
+  ["agent-task list",["jq json limit template","web",{"q":"jq","L":"limit","t":"template","w":"web"}]],
+  ["agent-task view",["jq json template","follow log web",{"q":"jq","t":"template","w":"web"}]],
+  ["alias",["","",{}]],
+  ["alias delete",["","all",{}]],
+  ["alias import",["","clobber",{}]],
+  ["alias list",["","",{}]],
+  ["alias set",["","clobber shell",{"s":"shell"}]],
+  ["api",["cache field header hostname input jq method preview raw-field template","allow-escape-sequences include paginate silent slurp verbose",{"F":"field","H":"header","i":"include","q":"jq","X":"method","p":"preview","f":"raw-field","t":"template"}]],
+  ["attestation",["","",{}]],
+  ["attestation download",["digest-alg hostname limit owner predicate-type repo","",{"d":"digest-alg","L":"limit","o":"owner","R":"repo"}]],
+  ["attestation trusted-root",["hostname tuf-root tuf-url","verify-only",{}]],
+  ["attestation verify",["bundle cert-identity cert-identity-regex cert-oidc-issuer custom-trusted-root digest-alg format hostname jq limit owner predicate-type repo signer-digest signer-repo signer-workflow source-digest source-ref template","bundle-from-oci deny-self-hosted-runners no-public-good",{"b":"bundle","i":"cert-identity-regex","d":"digest-alg","q":"jq","L":"limit","o":"owner","R":"repo","t":"template"}]],
+  ["auth",["","",{}]],
+  ["auth login",["git-protocol hostname scopes","clipboard insecure-storage skip-ssh-key web with-token",{"c":"clipboard","p":"git-protocol","h":"hostname","s":"scopes","w":"web"}]],
+  ["auth logout",["hostname user","",{"h":"hostname","u":"user"}]],
+  ["auth refresh",["hostname remove-scopes scopes","clipboard insecure-storage reset-scopes",{"c":"clipboard","h":"hostname","r":"remove-scopes","s":"scopes"}]],
+  ["auth setup-git",["force hostname","",{"f":"force","h":"hostname"}]],
+  ["auth status",["hostname jq json template","active show-token",{"a":"active","h":"hostname","t":"show-token"}]],
+  ["auth switch",["hostname user","",{"h":"hostname","u":"user"}]],
+  ["auth token",["hostname user","",{"h":"hostname","u":"user"}]],
+  ["browse",["branch commit","actions blame no-browser projects releases settings wiki",{"a":"actions","b":"branch","c":"commit","n":"no-browser","p":"projects","r":"releases","s":"settings","w":"wiki"}]],
+  ["cache",["","",{}]],
+  ["cache delete",["ref succeed-on-no-caches","all",{"a":"all","r":"ref"}]],
+  ["cache list",["jq json key limit order ref sort template","",{"q":"jq","k":"key","L":"limit","O":"order","r":"ref","S":"sort","t":"template"}]],
+  ["codespace",["","",{}]],
+  ["codespace code",["codespace repo repo-owner","insiders web",{"c":"codespace","R":"repo","w":"web"}]],
+  ["codespace cp",["codespace profile repo repo-owner","expand recursive",{"c":"codespace","e":"expand","p":"profile","r":"recursive","R":"repo"}]],
+  ["codespace create",["branch devcontainer-path display-name idle-timeout location machine repo retention-period","default-permissions status web",{"b":"branch","d":"display-name","l":"location","m":"machine","R":"repo","s":"status","w":"web"}]],
+  ["codespace delete",["codespace days org repo repo-owner user","all force",{"c":"codespace","f":"force","o":"org","R":"repo","u":"user"}]],
+  ["codespace edit",["codespace display-name machine repo repo-owner","",{"c":"codespace","d":"display-name","m":"machine","R":"repo"}]],
+  ["codespace jupyter",["codespace repo repo-owner","",{"c":"codespace","R":"repo"}]],
+  ["codespace list",["jq json limit org repo template user","web",{"q":"jq","L":"limit","o":"org","R":"repo","t":"template","u":"user","w":"web"}]],
+  ["codespace logs",["codespace repo repo-owner","follow",{"c":"codespace","f":"follow","R":"repo"}]],
+  ["codespace ports",["codespace jq json repo repo-owner template","",{"c":"codespace","q":"jq","R":"repo","t":"template"}]],
+  ["codespace ports forward",["","all-interfaces",{}]],
+  ["codespace ports visibility",["","",{}]],
+  ["codespace rebuild",["codespace repo repo-owner","full",{"c":"codespace","R":"repo"}]],
+  ["codespace ssh",["codespace debug-file profile repo repo-owner server-port","config debug",{"c":"codespace","d":"debug","R":"repo"}]],
+  ["codespace stop",["codespace org repo repo-owner user","",{"c":"codespace","o":"org","R":"repo","u":"user"}]],
+  ["codespace view",["codespace jq json repo repo-owner template","",{"c":"codespace","q":"jq","R":"repo","t":"template"}]],
+  ["completion",["shell","",{"s":"shell"}]],
+  ["config",["","",{}]],
+  ["config clear-cache",["","",{}]],
+  ["config get",["host","",{"h":"host"}]],
+  ["config list",["host","",{"h":"host"}]],
+  ["config set",["host","",{"h":"host"}]],
+  ["copilot",["","remove",{}]],
+  ["discussion",["","",{}]],
+  ["discussion comment",["body body-file","delete edit yes",{"b":"body","F":"body-file"}]],
+  ["discussion create",["body body-file category label title","",{"b":"body","F":"body-file","c":"category","l":"label","t":"title"}]],
+  ["discussion edit",["add-label body body-file category remove-label title","",{"b":"body","F":"body-file","c":"category","t":"title"}]],
+  ["discussion list",["after author category jq json label limit order search sort state template","answered web",{"A":"author","c":"category","q":"jq","l":"label","L":"limit","S":"search","s":"state","t":"template","w":"web"}]],
+  ["discussion view",["after jq json limit order template","comments web",{"c":"comments","q":"jq","L":"limit","t":"template","w":"web"}]],
+  ["extension",["","",{}]],
+  ["extension browse",["","debug single-column",{"s":"single-column"}]],
+  ["extension create",["precompiled","",{}]],
+  ["extension exec",["","",{}]],
+  ["extension install",["pin","force",{}]],
+  ["extension list",["","",{}]],
+  ["extension remove",["","",{}]],
+  ["extension search",["jq json license limit order owner sort template","web",{"q":"jq","L":"limit","t":"template","w":"web"}]],
+  ["extension upgrade",["","all dry-run force",{}]],
+  ["gist",["","",{}]],
+  ["gist clone",["","",{}]],
+  ["gist create",["desc filename","public web",{"d":"desc","f":"filename","p":"public","w":"web"}]],
+  ["gist delete",["","yes",{}]],
+  ["gist edit",["add desc filename remove","",{"a":"add","d":"desc","f":"filename","r":"remove"}]],
+  ["gist list",["filter limit","include-content public secret",{"L":"limit"}]],
+  ["gist rename",["","",{}]],
+  ["gist view",["filename","allow-escape-sequences files raw web",{"f":"filename","r":"raw","w":"web"}]],
+  ["gpg-key",["","",{}]],
+  ["gpg-key add",["title","",{"t":"title"}]],
+  ["gpg-key delete",["","yes",{"y":"yes"}]],
+  ["gpg-key list",["","",{}]],
+  ["issue",["","",{}]],
+  ["issue close",["comment duplicate-of reason","",{"c":"comment","r":"reason"}]],
+  ["issue comment",["attach body body-file","create-if-none delete-last edit-last editor web yes",{"b":"body","F":"body-file","e":"editor","w":"web"}]],
+  ["issue create",["assignee attach blocked-by blocking body body-file label milestone parent project recover template title type","editor web",{"a":"assignee","b":"body","F":"body-file","e":"editor","l":"label","m":"milestone","p":"project","T":"template","t":"title","w":"web"}]],
+  ["issue delete",["","yes",{}]],
+  ["issue develop",["base branch-repo name worktree","checkout list",{"b":"base","c":"checkout","l":"list","n":"name"}]],
+  ["issue edit",["add-assignee add-blocked-by add-blocking add-label add-project add-sub-issue attach body body-file milestone parent remove-assignee remove-blocked-by remove-blocking remove-label remove-project remove-sub-issue title type","remove-milestone remove-parent remove-type",{"b":"body","F":"body-file","m":"milestone","t":"title"}]],
+  ["issue list",["app assignee author jq json label limit mention milestone search state template type","web",{"a":"assignee","A":"author","q":"jq","l":"label","L":"limit","m":"milestone","S":"search","s":"state","t":"template","w":"web"}]],
+  ["issue lock",["reason","",{"r":"reason"}]],
+  ["issue pin",["","",{}]],
+  ["issue reopen",["comment","",{"c":"comment"}]],
+  ["issue status",["jq json template","",{"q":"jq","t":"template"}]],
+  ["issue transfer",["","",{}]],
+  ["issue unlock",["","",{}]],
+  ["issue unpin",["","",{}]],
+  ["issue view",["jq json template","comments web",{"c":"comments","q":"jq","t":"template","w":"web"}]],
+  ["label",["","",{}]],
+  ["label clone",["","force",{"f":"force"}]],
+  ["label create",["color description","force",{"c":"color","d":"description","f":"force"}]],
+  ["label delete",["","yes",{}]],
+  ["label edit",["color description name","",{"c":"color","d":"description","n":"name"}]],
+  ["label list",["jq json limit order search sort template","web",{"q":"jq","L":"limit","S":"search","t":"template","w":"web"}]],
+  ["licenses",["","",{}]],
+  ["org",["","",{}]],
+  ["org list",["limit","",{"L":"limit"}]],
+  ["pr",["repo","help",{"R":"repo"}]],
+  ["pr checkout",["branch worktree","detach force recurse-submodules",{"b":"branch","f":"force"}]],
+  ["pr checks",["interval jq json template","fail-fast required watch web",{"i":"interval","q":"jq","t":"template","w":"web"}]],
+  ["pr close",["comment","delete-branch",{"c":"comment","d":"delete-branch"}]],
+  ["pr comment",["attach body body-file","create-if-none delete-last edit-last editor web yes",{"b":"body","F":"body-file","e":"editor","w":"web"}]],
+  ["pr create",["assignee attach base body body-file head label milestone project recover reviewer template title","draft dry-run editor fill fill-first fill-verbose no-maintainer-edit web",{"a":"assignee","B":"base","b":"body","F":"body-file","d":"draft","e":"editor","f":"fill","H":"head","l":"label","m":"milestone","p":"project","r":"reviewer","T":"template","t":"title","w":"web"}]],
+  ["pr diff",["color exclude","allow-escape-sequences name-only patch web",{"e":"exclude","w":"web"}]],
+  ["pr edit",["add-assignee add-label add-project add-reviewer attach base body body-file milestone remove-assignee remove-label remove-project remove-reviewer title","remove-milestone",{"B":"base","b":"body","F":"body-file","m":"milestone","t":"title"}]],
+  ["pr list",["app assignee author base head jq json label limit search state template","draft web",{"a":"assignee","A":"author","B":"base","d":"draft","H":"head","q":"jq","l":"label","L":"limit","S":"search","s":"state","t":"template","w":"web"}]],
+  ["pr lock",["reason","",{"r":"reason"}]],
+  ["pr merge",["author-email body body-file match-head-commit subject","admin auto delete-branch disable-auto merge rebase squash",{"A":"author-email","b":"body","F":"body-file","d":"delete-branch","m":"merge","r":"rebase","s":"squash","t":"subject"}]],
+  ["pr ready",["","undo",{}]],
+  ["pr reopen",["comment","",{"c":"comment"}]],
+  ["pr revert",["body body-file title","draft",{"b":"body","F":"body-file","d":"draft","t":"title"}]],
+  ["pr review",["body body-file","approve comment request-changes",{"a":"approve","b":"body","F":"body-file","c":"comment","r":"request-changes"}]],
+  ["pr status",["jq json template","conflict-status",{"c":"conflict-status","q":"jq","t":"template"}]],
+  ["pr unlock",["","",{}]],
+  ["pr update-branch",["","rebase",{}]],
+  ["pr view",["jq json template","comments web",{"c":"comments","q":"jq","t":"template","w":"web"}]],
+  ["preview",["","",{}]],
+  ["preview prompter",["","",{}]],
+  ["project",["","",{}]],
+  ["project close",["format jq owner template","undo",{"q":"jq","t":"template"}]],
+  ["project copy",["format jq source-owner target-owner template title","drafts",{"q":"jq","t":"template"}]],
+  ["project create",["format jq owner template title","",{"q":"jq","t":"template"}]],
+  ["project delete",["format jq owner template","",{"q":"jq","t":"template"}]],
+  ["project edit",["description format jq owner readme template title visibility","",{"d":"description","q":"jq","t":"template"}]],
+  ["project field-create",["data-type format jq name owner single-select-options template","",{"q":"jq","t":"template"}]],
+  ["project field-delete",["format id jq template","",{"q":"jq","t":"template"}]],
+  ["project field-list",["format jq limit owner template","",{"q":"jq","L":"limit","t":"template"}]],
+  ["project item-add",["format jq owner template url","",{"q":"jq","t":"template"}]],
+  ["project item-archive",["format id jq owner template","undo",{"q":"jq","t":"template"}]],
+  ["project item-create",["body format jq owner template title","",{"q":"jq","t":"template"}]],
+  ["project item-delete",["format id jq owner template","",{"q":"jq","t":"template"}]],
+  ["project item-edit",["body date field field-id format id iteration-id jq number owner project-id single-select-option-id template text title url value","clear",{"q":"jq","t":"template"}]],
+  ["project item-list",["field field-id format jq limit owner query template","",{"q":"jq","L":"limit","t":"template"}]],
+  ["project link",["owner repo team","",{"R":"repo","T":"team"}]],
+  ["project list",["format jq limit owner template","closed web",{"q":"jq","L":"limit","t":"template","w":"web"}]],
+  ["project mark-template",["format jq owner template","undo",{"q":"jq","t":"template"}]],
+  ["project unlink",["owner repo team","",{"R":"repo","T":"team"}]],
+  ["project view",["format jq owner template","web",{"q":"jq","t":"template","w":"web"}]],
+  ["release",["","",{}]],
+  ["release create",["discussion-category notes notes-file notes-start-tag target title","draft fail-on-no-commits generate-notes latest notes-from-tag prerelease verify-tag",{"d":"draft","n":"notes","F":"notes-file","p":"prerelease","t":"title"}]],
+  ["release delete",["","cleanup-tag yes",{"y":"yes"}]],
+  ["release delete-asset",["","yes",{"y":"yes"}]],
+  ["release download",["archive dir output pattern","allow-escape-sequences clobber skip-existing",{"A":"archive","D":"dir","O":"output","p":"pattern"}]],
+  ["release edit",["discussion-category notes notes-file tag target title","draft latest prerelease verify-tag",{"n":"notes","F":"notes-file","t":"title"}]],
+  ["release list",["jq json limit order template","exclude-drafts exclude-pre-releases",{"q":"jq","L":"limit","O":"order","t":"template"}]],
+  ["release upload",["","clobber",{}]],
+  ["release verify",["format jq template","",{"q":"jq","t":"template"}]],
+  ["release verify-asset",["format jq template","",{"q":"jq","t":"template"}]],
+  ["release view",["jq json template","web",{"q":"jq","t":"template","w":"web"}]],
+  ["repo",["","",{}]],
+  ["repo archive",["","yes",{"y":"yes"}]],
+  ["repo autolink",["","",{}]],
+  ["repo autolink create",["","numeric",{"n":"numeric"}]],
+  ["repo autolink delete",["","yes",{}]],
+  ["repo autolink list",["jq json template","web",{"q":"jq","t":"template","w":"web"}]],
+  ["repo autolink view",["jq json template","",{"q":"jq","t":"template"}]],
+  ["repo clone",["upstream-remote-name","no-upstream",{"u":"upstream-remote-name"}]],
+  ["repo create",["description gitignore homepage license remote source team template","add-readme clone disable-issues disable-wiki include-all-branches internal private public push",{"c":"clone","d":"description","g":"gitignore","h":"homepage","l":"license","r":"remote","s":"source","t":"team","p":"template"}]],
+  ["repo delete",["","yes",{}]],
+  ["repo deploy-key",["","",{}]],
+  ["repo deploy-key add",["title","allow-write",{"w":"allow-write","t":"title"}]],
+  ["repo deploy-key delete",["","",{}]],
+  ["repo deploy-key list",["jq json template","",{"q":"jq","t":"template"}]],
+  ["repo edit",["add-topic default-branch description homepage remove-topic squash-merge-commit-message visibility","accept-visibility-change-consequences allow-forking allow-update-branch delete-branch-on-merge enable-advanced-security enable-auto-merge enable-discussions enable-issues enable-merge-commit enable-projects enable-rebase-merge enable-secret-scanning enable-secret-scanning-push-protection enable-squash-merge enable-wiki template",{"d":"description","h":"homepage"}]],
+  ["repo fork",["fork-name org remote-name","clone default-branch-only remote",{}]],
+  ["repo gitignore",["","",{}]],
+  ["repo gitignore list",["","",{}]],
+  ["repo gitignore view",["","",{}]],
+  ["repo license",["","",{}]],
+  ["repo license list",["","",{}]],
+  ["repo license view",["","web",{"w":"web"}]],
+  ["repo list",["jq json language limit template topic visibility","archived fork no-archived source",{"q":"jq","l":"language","L":"limit","t":"template"}]],
+  ["repo read-dir",["jq json ref template","",{"q":"jq","t":"template"}]],
+  ["repo read-file",["jq json output ref template","allow-escape-sequences clobber",{"q":"jq","o":"output","t":"template"}]],
+  ["repo rename",["","yes",{"y":"yes"}]],
+  ["repo set-default",["","unset view",{"u":"unset","v":"view"}]],
+  ["repo sync",["branch source","force",{"b":"branch","s":"source"}]],
+  ["repo unarchive",["","yes",{"y":"yes"}]],
+  ["repo view",["branch jq json template","web",{"b":"branch","q":"jq","t":"template","w":"web"}]],
+  ["ruleset",["","",{}]],
+  ["ruleset check",["","default web",{"w":"web"}]],
+  ["ruleset list",["limit org","parents web",{"L":"limit","o":"org","p":"parents","w":"web"}]],
+  ["ruleset view",["org","parents web",{"o":"org","p":"parents","w":"web"}]],
+  ["run",["","",{}]],
+  ["run cancel",["","force",{}]],
+  ["run delete",["","",{}]],
+  ["run download",["dir name pattern","",{"D":"dir","n":"name","p":"pattern"}]],
+  ["run list",["branch commit created event jq json limit status template user workflow","all",{"a":"all","b":"branch","c":"commit","e":"event","q":"jq","L":"limit","s":"status","t":"template","u":"user","w":"workflow"}]],
+  ["run rerun",["job","debug failed",{"d":"debug","j":"job"}]],
+  ["run view",["attempt job jq json template","exit-status log log-failed verbose web",{"a":"attempt","j":"job","q":"jq","t":"template","v":"verbose","w":"web"}]],
+  ["run watch",["interval","compact exit-status",{"i":"interval"}]],
+  ["search",["","",{}]],
+  ["search code",["extension filename jq json language limit match owner repo size template","web",{"q":"jq","L":"limit","R":"repo","t":"template","w":"web"}]],
+  ["search commits",["author author-date author-email author-name committer committer-date committer-email committer-name hash jq json limit order owner parent repo sort template tree visibility","merge web",{"q":"jq","L":"limit","R":"repo","t":"template","w":"web"}]],
+  ["search issues",["app assignee author closed commenter comments created interactions involves jq json label language limit match mentions milestone order owner project reactions repo search-type sort state team-mentions template updated visibility","archived include-prs locked no-assignee no-label no-milestone no-project web",{"q":"jq","L":"limit","R":"repo","t":"template","w":"web"}]],
+  ["search prs",["app assignee author base checks closed commenter comments created head interactions involves jq json label language limit match mentions merged-at milestone order owner project reactions repo review review-requested reviewed-by sort state team-mentions template updated visibility","archived draft locked merged no-assignee no-label no-milestone no-project web",{"B":"base","H":"head","q":"jq","L":"limit","R":"repo","t":"template","w":"web"}]],
+  ["search repos",["created followers forks good-first-issues help-wanted-issues include-forks jq json language license limit match number-topics order owner size sort stars template topic updated visibility","archived web",{"q":"jq","L":"limit","t":"template","w":"web"}]],
+  ["secret",["","",{}]],
+  ["secret delete",["app env org","user",{"a":"app","e":"env","o":"org","u":"user"}]],
+  ["secret list",["app env jq json org template","user",{"a":"app","e":"env","q":"jq","o":"org","t":"template","u":"user"}]],
+  ["secret set",["app body env env-file org repos visibility","no-repos-selected no-store user",{"a":"app","b":"body","e":"env","f":"env-file","o":"org","r":"repos","u":"user","v":"visibility"}]],
+  ["skill",["","",{}]],
+  ["skill install",["agent dir pin scope","all allow-hidden-dirs force from-local upstream",{"f":"force"}]],
+  ["skill list",["agent dir jq json scope template","",{"q":"jq","t":"template"}]],
+  ["skill preview",["","allow-hidden-dirs",{}]],
+  ["skill publish",["tag","dry-run fix",{}]],
+  ["skill search",["jq json limit owner page template","",{"q":"jq","L":"limit","t":"template"}]],
+  ["skill update",["dir","all dry-run force unpin",{}]],
+  ["ssh-key",["","",{}]],
+  ["ssh-key add",["title type","",{"t":"title"}]],
+  ["ssh-key delete",["","yes",{"y":"yes"}]],
+  ["ssh-key list",["","",{}]],
+  ["status",["exclude org","",{"e":"exclude","o":"org"}]],
+  ["variable",["","",{}]],
+  ["variable delete",["env org","",{"e":"env","o":"org"}]],
+  ["variable get",["env jq json org template","",{"e":"env","q":"jq","o":"org","t":"template"}]],
+  ["variable list",["env jq json org template","",{"e":"env","q":"jq","o":"org","t":"template"}]],
+  ["variable set",["body env env-file org repos visibility","",{"b":"body","e":"env","f":"env-file","o":"org","r":"repos","v":"visibility"}]],
+  ["workflow",["","",{}]],
+  ["workflow disable",["","",{}]],
+  ["workflow enable",["","",{}]],
+  ["workflow list",["jq json limit template","all",{"a":"all","q":"jq","L":"limit","t":"template"}]],
+  ["workflow run",["field raw-field ref","json",{"F":"field","f":"raw-field","r":"ref"}]],
+  ["workflow view",["ref","web yaml",{"r":"ref","w":"web","y":"yaml"}]],
+]);
+const GH_BUILTIN_ALIASES = new Map([["agent","agent-task"],["agent-tasks","agent-task"],["agents","agent-task"],["alias ls","alias list"],["at","attestation"],["cache ls","cache list"],["codespace ls","codespace list"],["config ls","config list"],["cs","codespace"],["cs ls","codespace list"],["discussion ls","discussion list"],["ext","extension"],["ext ls","extension list"],["ext uninstall","extension remove"],["extension ls","extension list"],["extension uninstall","extension remove"],["extensions","extension"],["extensions ls","extension list"],["extensions uninstall","extension remove"],["gist ls","gist list"],["gist new","gist create"],["gpg-key ls","gpg-key list"],["issue ls","issue list"],["issue new","issue create"],["label ls","label list"],["org ls","org list"],["pr co","pr checkout"],["pr ls","pr list"],["pr new","pr create"],["project ls","project list"],["release ls","release list"],["release new","release create"],["repo autolink ls","repo autolink list"],["repo autolink new","repo autolink create"],["repo deploy-key ls","repo deploy-key list"],["repo gitignore ls","repo gitignore list"],["repo license ls","repo license list"],["repo ls","repo list"],["repo new","repo create"],["rs","ruleset"],["rs ls","ruleset list"],["ruleset ls","ruleset list"],["run ls","run list"],["secret ls","secret list"],["secret remove","secret delete"],["skill add","skill install"],["skill ls","skill list"],["skill show","skill preview"],["skills","skill"],["skills add","skill install"],["skills ls","skill list"],["skills show","skill preview"],["ssh-key ls","ssh-key list"],["variable ls","variable list"],["variable remove","variable delete"],["workflow ls","workflow list"]]);
 
-/** Inspect gh api payload options, keeping raw fields and consumed option values as data. */
-function ghApiUpload(invocation) {
-  if (invocation.args[0]?.text !== 'api') return false;
-  const values = new Set(['field', 'raw-field', 'header', 'hostname', 'input', 'jq', 'method', 'preview', 'template', 'cache']);
-  const shortValues = { F: 'field', f: 'raw-field', H: 'header', q: 'jq', X: 'method', p: 'preview', t: 'template' };
-  let verdict = false;
-  for (let k = 1; k < invocation.args.length; k++) {
-    const word = invocation.args[k];
-    const text = word.text;
-    if (text === '--') break;
-    if (word.dynamic && (word.dynamicMaySplit !== false || text.startsWith('\0'))) verdict ||= 'UNKNOWN';
-    let option;
-    let value;
-    if (text.startsWith('--')) {
-      const eq = text.indexOf('=');
-      option = text.slice(2, eq < 0 ? undefined : eq);
-      if (option === 'help' && eq < 0) return false;
-      if (!values.has(option)) continue;
-      value = eq < 0 ? invocation.args[++k] : { ...word, text: text.slice(eq + 1) };
-    } else if (text.startsWith('-')) {
-      for (let p = 1; p < text.length; p++) {
-        option = shortValues[text[p]];
-        if (!option) continue;
-        value = p + 1 < text.length ? { ...word, text: text.slice(p + 1) } : invocation.args[++k];
+/** Resolve a builtin operation and option roles without executing GH or consulting user configuration. */
+function ghCommandRoles(invocation) {
+  const words = invocation.args;
+  const metadata = [];
+  let k = 0, unknown = !!invocation.incomplete;
+  const boundary = word => !!word && word.dynamicMaySplit === false && !word.ansiCUnknown &&
+    !word.globExpanded && !word.braceExpanded && !word.tildeExpanded;
+  const takeRepo = () => {
+    const word = words[k], literal = literalSourceWord(word), text = literal?.text || word?.text || '';
+    if (!['--repo', '-R'].includes(text) && !text.startsWith('--repo=') && !/^-R./.test(text)) return false;
+    const value = ['--repo', '-R'].includes(text) ? words[++k] : { ...word,
+      text: text.startsWith('--repo=') ? text.slice(7) : text.slice(2),
+      literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(text.startsWith('--repo=') ? 7 : 2) : word.literalValue };
+    if (!boundary(word) || !boundary(value)) unknown = true;
+    metadata.splice(0, metadata.length, value); k++; return true;
+  };
+  while (k < words.length && takeRepo()) { /* persistent repo consumes a DATA value */ }
+  const first = literalSourceWord(words[k]);
+  if (!first) return { unknown: true, metadata, values: [], operands: [] };
+  if (['--help', '-h', '--version', 'help'].includes(first.text)) {
+    return { terminal: !unknown, unknown, metadata, values: [], operands: [] };
+  }
+  let operation = null, used = 0;
+  for (let count = 1; count <= 3 && k + count <= words.length; count++) {
+    const parts = words.slice(k, k + count).map(literalSourceWord);
+    if (parts.some(word => !word)) break;
+    let name = parts.map(word => word.text).join(' ');
+    // Builtin group aliases may precede a canonical child command.
+    for (let prefix = count; prefix >= 1; prefix--) {
+      const head = parts.slice(0, prefix).map(word => word.text).join(' ');
+      if (GH_BUILTIN_ALIASES.has(head)) {
+        name = GH_BUILTIN_ALIASES.get(head) + (prefix < count ? ' ' + parts.slice(prefix).map(word => word.text).join(' ') : '');
         break;
       }
     }
-    if (!option) continue;
-    if (value?.dynamic && value.dynamicMaySplit !== false) verdict ||= 'UNKNOWN';
-    if (option === 'input' && (value || invocation.incomplete)) {
-      verdict ||= !invocation.incomplete && knownWord(word) && knownWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
-    }
-    if (option === 'field') {
-      const eq = value ? value.text.indexOf('=') : -1;
-      const payload = eq < 0 ? '' : value.text.slice(eq + 1);
-      if ((!value && invocation.incomplete) || /^@/.test(payload) ||
-          Boolean(value?.dynamic && (value.dynamicMaySplit !== false || eq < 0 || payload.startsWith('\0')))) {
-        verdict ||= !invocation.incomplete && knownWord(word) && knownWord(value) && /^@/.test(payload) ? 'FORBIDDEN' : 'UNKNOWN';
+    if (GH_ARG_ROLES.has(name)) { operation = name; used = count; }
+  }
+  if (!operation) return { unknown: true, metadata, values: [], operands: [] };
+  // These entrypoints forward argv to external bodies; their --help may belong to that body.
+  if (['extension exec', 'copilot'].includes(operation)) return { operation, sourceUnknown: true, metadata, values: [], operands: [] };
+  const [valueNames, flagNames, shortNames] = GH_ARG_ROLES.get(operation);
+  const takesValue = new Set((valueNames + ' repo').split(' '));
+  const flags = new Set((flagNames + ' help').split(' '));
+  // Command-specific shorthands win: auth login -h consumes hostname, rather than selecting help.
+  const short = { R: 'repo', h: 'help', ...shortNames };
+  const values = [], operands = [], selectedFlags = new Map();
+  // These builtin string flags select one effective value; earlier evaluated DATA is not sent.
+  // Repeatable field/header/label collections keep all their values.
+  const singleValueOptions = new Set(['body', 'title', 'body-file', 'notes', 'notes-file', 'input', 'from-file',
+    'head', 'base', 'repo', 'hostname', 'env-file', 'env', 'org', 'visibility', 'app', 'ref', 'jq', 'template', 'recover']);
+  let afterDD = false;
+  for (k += used; k < words.length; k++) {
+    const word = words[k], literal = literalSourceWord(word), text = literal?.text || word.text;
+    if (!afterDD && text === '--' && literal) { afterDD = true; continue; }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      let option, value;
+      if (text.startsWith('--')) {
+        const eq = text.indexOf('='); option = text.slice(2, eq < 0 ? undefined : eq);
+        if (takesValue.has(option)) value = eq < 0 ? words[++k] : { ...word, text: text.slice(eq + 1),
+          literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(eq + 1) : word.literalValue };
+        else if (flags.has(option)) {
+          if (!literal || eq >= 0 && !['true', 'false'].includes(text.slice(eq + 1))) unknown = true;
+          const enabled = eq < 0 || text.slice(eq + 1) !== 'false';
+          selectedFlags.set(option, enabled);
+          if (option === 'help' && enabled && !unknown) return { operation, terminal: true, unknown: false, metadata, values, operands };
+          continue;
+        } else { unknown = true; continue; }
+      } else {
+        for (let p = 1; p < text.length; p++) {
+          const name = short[text[p]];
+          if (!name) { unknown = true; continue; }
+          if (takesValue.has(name)) {
+            option = name; value = p + 1 < text.length ? { ...word, text: text.slice(p + 1),
+              literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(p + 1) : word.literalValue } : words[++k]; break;
+          }
+          if (!literal) unknown = true;
+          selectedFlags.set(name, true);
+          if (name === 'help' && !unknown) return { operation, terminal: true, unknown: false, metadata, values, operands };
+        }
       }
+      if (option) {
+        if (!boundary(word) || !boundary(value)) unknown = true;
+        if (option === 'repo') metadata.splice(0);
+        if (singleValueOptions.has(option)) {
+          for (let prior = values.length - 1; prior >= 0; prior--) if (values[prior].option === option) values.splice(prior, 1);
+        }
+        values.push({ option, word: value });
+      }
+    } else {
+      if (!boundary(word)) unknown = true;
+      operands.push(word);
     }
   }
-  return verdict;
+  return { operation, unknown, metadata, values, operands, flags: selectedFlags };
+}
+
+/** Classify official operation roles separately from argv, local sources and payload provenance. */
+function ghOfficialVerdict(invocation) {
+  const role = ghCommandRoles(invocation);
+  if (role.terminal) return false;
+  if (role.unknown || role.sourceUnknown) return 'UNKNOWN';
+  const operation = role.operation;
+  const [group, action] = operation.split(' ');
+  if (group === 'gist') return 'FORBIDDEN'; // Preserve the existing explicit gist policy, including its query scope.
+  const selected = option => role.values.filter(value => value.option === option).map(value => value.word);
+  const enabled = option => role.flags?.get(option) === true;
+  const local = ['alias', 'config', 'completion', 'help', 'licenses'].includes(group);
+  const repoSelected = role.metadata.length > 0 || selected('repo').length > 0;
+  const apiRepoPlaceholder = operation === 'api' && role.operands.concat(selected('field')).some(word => {
+    const literal = literalSourceWord(word); return !literal || /\{(?:owner|repo)\}|:(?:owner|repo)\b/.test(literal.text);
+  });
+  // The reference inventory omits inherited flags. Repository groups still select GH_REPO.
+  const repoGroups = ['issue', 'pr', 'release', 'workflow', 'run', 'cache', 'label', 'discussion', 'agent-task', 'ruleset', 'browse'];
+  const explicitRepoOperand = ['repo view', 'repo edit', 'repo delete', 'repo rename', 'repo fork'].includes(operation) && role.operands.length;
+  const usesRepoEnvironment = operation === 'api' ? apiRepoPlaceholder :
+    repoGroups.includes(group) || ['secret', 'variable'].includes(group) && !selected('org').length && !enabled('user') ||
+    group === 'repo' && !explicitRepoOperand &&
+      ['view', 'edit', 'delete', 'rename', 'fork', 'deploy-key', 'autolink'].includes(action);
+  const ghMetadataSources = (invocation.ghEnvironmentSources || []).filter(source =>
+    source.name === 'GH_REPO' ? !repoSelected && usesRepoEnvironment :
+    source.name === 'GH_HOST' ? !selected('hostname').length : true);
+  if (operation === 'config set' && role.operands.length >= 2) {
+    const key = literalSourceWord(role.operands[0]), value = literalSourceWord(role.operands[1]);
+    if (!key) return 'UNKNOWN';
+    if (['pager', 'editor', 'browser', 'api_host', 'http_unix_socket'].includes(key.text)) {
+      const hostPager = key.text === 'pager' && selected('host').length && selected('host').every(literalSourceWord);
+      const disabledPager = key.text === 'pager' && value && ['', 'cat'].includes(value.text);
+      if (!hostPager && !disabledPager) return 'UNKNOWN'; // Persistent source selection also affects later Bash calls.
+    }
+  }
+  const fileOptions = operation === 'api' ? ['input'] :
+    operation === 'agent-task create' ? ['from-file'] :
+    ['secret set', 'variable set'].includes(operation) ? [] : // Existing set/collection policy is retained below.
+    ['release create', 'release edit'].includes(operation) ? ['notes-file'] :
+    ['issue create', 'issue edit', 'issue comment', 'pr create', 'pr edit', 'pr comment', 'pr review', 'pr merge', 'pr revert',
+      'discussion create', 'discussion edit', 'discussion comment'].includes(operation) ? ['body-file', 'attach'] : [];
+  let stdin = false;
+  for (const option of fileOptions) for (const word of selected(option)) {
+    const file = literalSourceWord(word);
+    if (!file || !file.text) return 'UNKNOWN';
+    if (file.text === '-') stdin = true;
+    else return 'FORBIDDEN';
+  }
+  if (operation === 'api') for (const word of selected('field')) {
+    const literal = literalSourceWord(word), eq = literal?.text.indexOf('=');
+    if (literal && eq > 0 && literal.text.slice(eq + 1).startsWith('@')) {
+      const source = literal.text.slice(eq + 2);
+      if (!source) return 'UNKNOWN';
+      if (source === '-') stdin = true;
+      else return 'FORBIDDEN';
+    }
+  }
+  if (['gpg-key add', 'ssh-key add', 'repo deploy-key add'].includes(operation)) {
+    if (role.operands.length > 1) return 'UNKNOWN';
+    if (!role.operands.length || literalSourceWord(role.operands[0])?.text === '-') stdin = true;
+    else return literalSourceWord(role.operands[0]) ? 'FORBIDDEN' : 'UNKNOWN';
+  }
+  const localSkillValidation = operation === 'skill publish' && (enabled('dry-run') || enabled('fix'));
+  if (operation === 'skill publish' && !localSkillValidation) {
+    return role.operands.length && role.operands.every(literalSourceWord) ? 'FORBIDDEN' : 'UNKNOWN';
+  }
+  if (stdin) {
+    const verdict = stdinPayloadVerdict(invocation, invocationSources.get(invocation) || [], true);
+    if (verdict) return verdict;
+    if (!shellStdinSource(invocation)) return 'UNKNOWN';
+  }
+  const selectedHelpers = invocation.ghHelperEnvironmentSources || [];
+  const configRootNames = ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME', ...(process.platform === 'win32' ? ['AppData'] : []), 'HOME'];
+  const configRoot = configRootNames.map(name => selectedHelpers.find(source => source.name === name))
+    .find(source => source && literalSourceWord(source.word)?.text !== '');
+  if (!local && configRoot && !configRoot.word?.defaultGhConfigRoot) return 'UNKNOWN';
+  const pageable = !local && (['list', 'view', 'diff', 'checks', 'status', 'search'].includes(action) || group === 'search');
+  const ghPager = selectedHelpers.find(source => source.name === 'GH_PAGER');
+  const pagerSource = ghPager ||
+    (invocation.gitPagerEnvSources || []).find(source => source.name === 'PAGER');
+  const pagerWord = pagerSource && literalSourceWord(pagerSource.word);
+  // v2.102.0 issue list calls StartPager before Exporter.Write; --json is not a source-disabling proof.
+  if (pageable && pagerSource && (!pagerWord || !['', 'cat'].includes(pagerWord.text))) return 'UNKNOWN';
+  const configuredBefore = (invocationSources.get(invocation) || []).filter(prior => prior.name === 'gh' &&
+    prior.order < invocation.order && !prior.nonExec && !prior.definitionName && !prior.functionCallName)
+    .map(ghCommandRoles).filter(prior => prior.operation === 'config set' && !prior.terminal && !prior.unknown &&
+      prior.operands.length >= 2 && !prior.values.some(value => value.option === 'host'));
+  // Official root selection is GH_PAGER presence > config pager > PAGER. A consumed host setting is not global pager.
+  if (pageable && !ghPager && configuredBefore.some(prior => literalSourceWord(prior.operands[0])?.text === 'pager')) return 'UNKNOWN';
+  if (!local && configuredBefore.some(prior => ['http_unix_socket', 'api_host'].includes(literalSourceWord(prior.operands[0])?.text))) return 'UNKNOWN';
+  if (group === 'browse' && !enabled('no-browser') || enabled('web') || enabled('editor')) return 'UNKNOWN';
+  if (['auth login', 'auth refresh', 'auth setup-git'].includes(operation) ||
+      ['attestation download', 'attestation verify', 'attestation trusted-root', 'extension create'].includes(operation)) {
+    return 'UNKNOWN'; // Credential collection, artifact-derived requests or constructor-selected sources are uninspected.
+  }
+  if (['codespace ssh', 'codespace cp', 'codespace code', 'codespace jupyter', 'codespace ports forward',
+    'extension install', 'extension upgrade', 'skill install', 'skill preview', 'skill update',
+    'pr checkout', 'issue develop', 'repo clone'].includes(operation)) return 'UNKNOWN';
+  if (operation === 'repo create' && (enabled('push') || enabled('clone') || selected('source').length || !role.operands.length) ||
+      operation === 'repo fork' && role.flags?.get('clone') !== false) return 'UNKNOWN';
+  // Retain a proven payload prohibition before the additional implicit-source uncertainty below.
+  const scalarWords = local || localSkillValidation || group === 'browse' && enabled('no-browser') ? [] : role.metadata.concat(role.operands,
+    role.values.filter(value => !fileOptions.includes(value.option) && !['jq', 'template'].includes(value.option)).map(value => value.word),
+    ghMetadataSources.map(source => source.word));
+  const scalar = outboundPayloadVerdict(invocation, scalarWords);
+  if (scalar) return scalar;
+  if (['issue create', 'pr create', 'issue comment', 'pr comment', 'discussion create', 'discussion comment', 'agent-task create'].includes(operation)) {
+    const body = selected('body');
+    const suppliedBody = body.length || selected('body-file').length || selected('from-file').length ||
+      operation === 'agent-task create' && role.operands.length;
+    const needsTitle = ['issue create', 'pr create', 'discussion create'].includes(operation);
+    if (!suppliedBody || needsTitle && !selected('title').length || selected('template').length || selected('recover').length ||
+        ['fill', 'fill-first', 'fill-verbose'].some(enabled)) return 'UNKNOWN';
+    if (operation === 'pr create' && !selected('head').some(word => {
+      const head = literalSourceWord(word); return head && head.text !== '';
+    })) return 'UNKNOWN'; // Explicit nonempty head skips the documented implicit push/fork path.
+  }
+  if (localSkillValidation) return false; // No publishing, after independent source/context boundaries above.
+  if (group === 'browse' && enabled('no-browser')) return role.metadata.concat(role.operands,
+    role.values.map(value => value.word), ghMetadataSources.map(source => source.word)).every(literalSourceWord) ? false : 'UNKNOWN';
+  // Local registration/getters do not send their scalar operands. Later invocation is independently classified.
+  if (role.values.some(value => ['jq', 'template'].includes(value.option) && !literalSourceWord(value.word))) return 'UNKNOWN';
+  // Reuse the specialized workflow/set/release contracts on canonical operation bytes.
+  const canonical = operation.split(' ').map(text => ({ text, raw: "'" + text + "'", quoted: true, dynamic: false, dynamicMaySplit: false }));
+  // Reuse effective roles, preserving original payload-word offsets and provenance.
+  // Reparsing original argv would revive overwritten singleton values as transmitted data.
+  const optionWord = text => ({ text, raw: "'" + text + "'", quoted: true, dynamic: false, dynamicMaySplit: false });
+  const normalizedArgs = canonical.concat(role.metadata.flatMap(word => [optionWord('--repo'), word]),
+    role.values.flatMap(value => [optionWord('--' + value.option), value.word]),
+    [...role.flags].map(([name, enabled]) => optionWord('--' + name + (enabled ? '' : '=false'))),
+    role.operands.length ? [optionWord('--'), ...role.operands] : []);
+  const normalized = { ...invocation, args: normalizedArgs,
+    ghStdinPayloadProven: stdin && Boolean(shellStdinSource(invocation)) };
+  invocationSources.set(normalized, invocationSources.get(invocation) || []);
+  if (['release', 'issue', 'pr', 'ssh-key', 'repo', 'secret', 'variable', 'workflow'].includes(group)) return ghFilePayload(normalized);
+  return false;
+}
+
+function networkInvocation(invocation) {
+  return ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet'].includes(invocation.name) ||
+    (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
 }
 
 /** Bounded GH writes share file/stdin payload roles while keeping literal option values as DATA. */
@@ -1552,7 +2070,8 @@ function ghFilePayload(invocation) {
       if (spec?.files.includes(option)) {
         const file = literalSourceWord(value);
         if (spec.setValue && file?.text === '-') envFileStdin = true;
-        else if (!file || file.text === '-') sourceUnknown = true;
+        else if (!file || file.text === '-' && !invocation.ghStdinPayloadProven) sourceUnknown = true;
+        else if (file.text === '-') { /* The operation's actual fd 0 source was proved above. */ }
         else payload = true;
       } else if (spec?.workflow && ['field', 'raw-field'].includes(option)) {
         const scalar = literalSourceWord(value), pair = scalar?.text.indexOf('=');
@@ -1603,7 +2122,7 @@ function ghFilePayload(invocation) {
     if (!operands.length) return 'UNKNOWN';
     return outboundPayloadVerdict(invocation, [bodyWord]);
   }
-  if (spec.implicitStdin && !operands.length || spec.implicitStdin && operands[0]?.text === '-') return 'UNKNOWN';
+  if (spec.implicitStdin && !operands.length || spec.implicitStdin && operands[0]?.text === '-') return invocation.ghStdinPayloadProven ? false : 'UNKNOWN';
   return payload || operands.length > spec.assetStart ? 'FORBIDDEN' :
     outboundPayloadVerdict(invocation, transmittedValueWords);
 }
@@ -1958,6 +2477,8 @@ function sourceInspectionOptions(invocation, extra = {}) {
     initialHelperEnvNames: invocation.helperEnvNames,
     initialGitIdentitySources: invocation.gitIdentitySources || [],
     initialPagerSources: invocation.gitPagerEnvSources || [],
+    initialShellStartupSources: invocation.shellStartupEnvironmentSources || [],
+    initialGhSources: (invocation.ghEnvironmentSources || []).concat(invocation.ghHelperEnvironmentSources || []),
     initialPromptSources: childShell ? invocation.tracePromptEnvSources || [] :
       [{ name: 'PS4', word: invocation.tracePromptWord }],
     initialTraceMode: childShell ? invocation.shellXtrace ?? null : invocation.traceModeBefore ?? false,
@@ -1989,6 +2510,13 @@ function collectNetworkInvocations(inspection, depth = 0) {
     inspection.invocations.find((invocation) => invocation.order === g.invocationOrder));
   const activeCommits = inspection.gits.filter(g => g.sub === 'commit' && !guard.parseCommitArgs(g.args).terminal);
   for (const g of inspection.gits) {
+    if (g.gitNamespaceUnknown) deny(`Git namespace (${g.sub}) が選ぶ external helper / alias の実行 source・lookup・argv/context を検査できません。alias 不在や query風の子argvはsource認証ではありません。同目的・同条件の対応済みbuiltin/queryがなければownerに実helper/body・対象・cwd/env/config/sourceと不明点を確認してください。` + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+    if (gitConfigSourceWrite(g)) deny('Git config の actual setter/delete/rename が、将来の Git 呼出しで選ぶ helper/callback/program の source または fallback を変更します。設定保存だけを即実行や送信と断定せず、future context・本文・副作用が未検査なので判断不能です。getterや意味を証明したdisable設定を使って同目的を保てなければownerにkey・操作・cwd/env/config/sourceと不明点を確認してください。' + UNKNOWN_OWNER_GATE);
+    const operation = gitOperationVerdict(g, gitInvocationContexts.get(g));
+    if (operation) deny(operation === 'FORBIDDEN' ?
+      `Git ${g.sub} の typed object/index input が既存の禁止された secret filename/source policy に当たります。native操作の成立を確認したものではありません。` :
+      `Git ${g.sub} の ${g.operationRole.kind} が選ぶ executable/source・child repository・object/ref/input・destination/config 条件を検査できません。literal な callbackやprogram名も本文や当該操作contextの認証にはなりません。同目的・同条件を保てる対応済みquery/source-free形式がなければownerに対象・cwd/env/config/sourceと不明点を確認してください。` + UNKNOWN_OWNER_GATE,
+      gitVerdict(g, operation));
     const decision = guard.gitObjectInputDecision(g);
     if (decision) deny(decision.reason, gitVerdict(g, decision.category));
     if (gitExecutableSource(g, gitInvocationContexts.get(g))) {
@@ -2007,7 +2535,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
     if (configKey) {
       deny(`commit 前または当該 commit の Git config key (${configKey}) が選ぶ実行条件・外部 source と index の維持を検査できません。key 自体を危険と断定したものではありません。対応済みの表示・identity key 以外の override を除いて同目的・同条件を保てなければ owner に確認してください。` + UNKNOWN_OWNER_GATE);
     }
-    if (beforeCommit && (pager.opensFiles || pager.unknown)) {
+    if (pager.opensFiles || beforeCommit && pager.unknown) {
       deny('commit 前の git grep が開く外部 pager または argv/source の選択を検査できず、index の維持を確認できません。pager を開かない対応済みの同目的形式にできなければ owner に対象・操作・cwd/env/config/source を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
     }
   }
@@ -2034,16 +2562,37 @@ function collectNetworkInvocations(inspection, depth = 0) {
     }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
       if (terminalBashQuery(invocation)) continue;
+      if (invocation.shellLogin !== false) {
+        deny('login shell の profile / logout source と実装ごとの startup 選択を検査できません。--noprofile だけでは logout source が無効と確認できません。目的と条件を保つ非 login の対応済み source へ書き換えられなければ' + UNKNOWN_OWNER_GATE);
+      }
+      if (invocation.name === 'bash' && invocation.shellDebugger !== false) {
+        deny('Bash debugger が選ぶ追加 startup source を検査できません。debugger を使わない同目的の対応済み source を検討してください。' + UNKNOWN_OWNER_GATE);
+      }
+      if (invocation.name === 'zsh' || invocation.name === 'fish') {
+        deny('当該 interpreter の system startup / configuration / autoload source を検査できません。zsh -f または fish --no-config だけでは全 source の無効を証明しません。対応済み Bash の直接 source で同目的を保てなければ' + UNKNOWN_OWNER_GATE);
+      }
+      if (invocation.name === 'bash' && invocation.shellInteractive === true && invocation.shellPosix !== true && invocation.shellNoRc !== true) {
+        deny('interactive Bash の bashrc / rcfile startup source を検査できません。実 --norc を使う対応済み source が同目的と条件を保てる場合に検討してください。' + UNKNOWN_OWNER_GATE);
+      }
+      if (['ksh', 'mksh'].includes(invocation.name) &&
+          (invocation.shellInteractive !== false || invocation.shellPrivileged !== false)) {
+        deny('ksh / mksh の interactive または privileged startup / default rc source と実装条件を検査できません。Bash の startup 規則で代用していません。' + UNKNOWN_OWNER_GATE);
+      }
+      if (invocation.shellInteractive === true && !invocation.shellCommandMode && invocation.shellReadsStdin) {
+        deny('interactive shell が stdin の各 command 前後に選ぶ prompt / callback source を検査できません。--norc / --noprofile は prompt source の無効を証明しません。目的を保つ非 interactive の対応済み source を検討してください。' + UNKNOWN_OWNER_GATE);
+      }
       if (invocation.exportedFunctionUnknown && !(['bash', 'sh'].includes(invocation.name) && invocation.shellPrivileged === true)) {
         deny('child shell に渡る exported function の名前・選択を確定できず、本文や実行条件を検査できません。対応する直接 source または実 env -i で同じ目的を保てる場合に検討してください。' + UNKNOWN_OWNER_GATE);
       }
-      if (invocation.name === 'bash' && (invocation.helperEnvNames || []).includes('BASH_ENV') &&
+      const activeStartupSource = (name) => (invocation.shellStartupEnvironmentSources || [])
+        .some(source => source.name === name && literalSourceWord(source.word)?.text !== '');
+      if (invocation.name === 'bash' && activeStartupSource('BASH_ENV') &&
           invocation.shellInteractive !== true && invocation.shellPrivileged !== true && invocation.shellPosix !== true) {
         deny('child Bash の BASH_ENV が選ぶ startup filename / expansion / code source を検査できません。-c の本文が literal でも startup source は先に実行され得ます。' + UNKNOWN_OWNER_GATE);
       }
       if (['bash', 'sh', 'dash', 'ksh', 'mksh'].includes(invocation.name) &&
-          (invocation.helperEnvNames || []).includes('ENV') && invocation.shellInteractive !== false &&
-          invocation.shellPrivileged !== true) {
+          activeStartupSource('ENV') && invocation.shellInteractive !== false &&
+          invocation.shellPrivileged !== true && (invocation.name !== 'bash' || invocation.shellPosix !== false)) {
         deny('interactive child shell の ENV が選ぶ startup filename・展開・本文を検査できません。literal な -c source も、それより先に実行され得る startup source を証明しません。' + UNKNOWN_OWNER_GATE);
       }
       if (invocation.shellSourceUnknown || invocation.incomplete) deny('シェルの option / argv 境界から実行する source を確定できず、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
@@ -2091,8 +2640,7 @@ function parsedExfil(invocation) {
   // query/help word cannot prove what the generated argv will select for these clients.
   if (invocation.incomplete && ['curl', 'wget', 'gh'].includes(invocation.name)) return 'UNKNOWN';
   let verdict = false;
-  if (invocation.name === 'gh') verdict = invocation.args[0]?.text === 'gist' ?
-    knownWord(invocation.args[0]) ? 'FORBIDDEN' : 'UNKNOWN' : ghApiUpload(invocation) || ghFilePayload(invocation);
+  if (invocation.name === 'gh') verdict = ghOfficialVerdict(invocation);
   if (invocation.name === 'curl') {
     verdict = curlReadsUpload(invocation.args, invocation.incomplete, true);
     // Only the actual first literal argv -q/--disable prevents curl's implicit curlrc load.
@@ -2252,7 +2800,7 @@ for (const g of inspectedGits) {
   if (g.sub === 'fast-import' && !(g.args.length === 1 && !g.args[0].dynamic && ['-h', '--help'].includes(g.args[0].text))) {
     deny('git fast-import の stdin から作られる履歴と ref を、このガードで検査できません (fail-closed)。owner に対象・操作・source と不明点を確認してください。');
   }
-  if (['send-pack', 'http-push'].includes(g.sub)) {
+  if (['send-pack', 'http-push'].includes(g.sub) && !(g.terminal && g.helpKind === 'stdout')) {
     deny(`git ${g.sub} の送信先と対象履歴は、このガードの supported inspection 外で確認できません (fail-closed)。owner に対象・操作・source と不明点を確認してください。`);
   }
   if (g.outboundRole && !g.outboundRole.terminal) {
