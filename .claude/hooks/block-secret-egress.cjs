@@ -2029,6 +2029,67 @@ function rsyncRequestValue(word, text, start = 0) {
     outboundLiteralValue: typeof word.outboundLiteralValue === 'string' ? word.outboundLiteralValue.slice(start) : undefined };
 }
 
+/** Keep selected daemon-authentication input independent of file-transfer direction. */
+function rsyncDaemonCredentialVerdict(invocation) {
+  if (invocation.name !== 'rsync') return false;
+  const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  let passwordFile = null, selectedFile = false, unknown = Boolean(invocation.incomplete), afterDD = false;
+  const operands = [];
+  for (let k = 0; k < invocation.args.length; k++) {
+    const original = invocation.args[k], word = literalSourceWord(original) || original;
+    const text = word.text;
+    if (!afterDD && text === '--' && literalSourceWord(original)) { afterDD = true; continue; }
+    if (!afterDD && ['--help', '--version'].includes(text) && literalSourceWord(original) && !unknown) return false;
+    if (!afterDD && text.startsWith('--')) {
+      const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
+      if (RSYNC_VALUE_LONG.has(option)) {
+        const value = eq < 0 ? invocation.args[++k] : rsyncRequestValue(original, text, eq + 1);
+        if (option === 'password-file') { selectedFile = true; passwordFile = value; }
+        if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
+      } else if (!RSYNC_FLAG_LONG.has(option) || eq >= 0) unknown = true;
+      if (!literalSourceWord(original) && !quotedAttachedOptionValue(original, text, RSYNC_VALUE_SHORT, [...RSYNC_VALUE_LONG])) unknown = true;
+      continue;
+    }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      for (let p = 1; p < text.length; p++) {
+        if (RSYNC_VALUE_SHORT.includes(text[p])) {
+          const value = p + 1 < text.length ? rsyncRequestValue(original, text, p + 1) : invocation.args[++k];
+          if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
+          break;
+        }
+        if (!RSYNC_FLAG_SHORT.includes(text[p])) unknown = true;
+      }
+      if (!literalSourceWord(original)) unknown = true;
+      continue;
+    }
+    operands.push(original);
+  }
+  if (!selectedFile && !environment.has('RSYNC_PASSWORD') && !invocation.outboundEnvironmentUnknown) return false;
+  let daemon = false, routeUnknown = unknown;
+  for (const word of operands) {
+    const literal = literalSourceWord(word);
+    if (!literal) { routeUnknown = true; continue; }
+    const text = literal.text;
+    // Even an empty-module request can receive AUTHREQD from the selected daemon.
+    // A cooperating server's usual module-list reply does not prove auth inactivity.
+    const url = /^rsync:\/\/[^/]+(?:\/.*)?$/i.test(text);
+    const shorthand = /^[^/:]+::/.test(text);
+    if (url || shorthand) daemon = true;
+    else if (/^rsync:\/\//i.test(text)) routeUnknown = true;
+    else if (remoteCopyAddressRole('rsync', text) === 'UNKNOWN') routeUnknown = true;
+  }
+  if (!daemon) return routeUnknown ? 'UNKNOWN' : false;
+  if (routeUnknown) return 'UNKNOWN';
+  if (selectedFile) {
+    const file = literalSourceWord(passwordFile);
+    if (!file) return 'UNKNOWN';
+    if (file.text === '-') return stdinPayloadVerdict(invocation, invocationSources.get(invocation) || []);
+    return guard.isSecretPath(file.text) ? 'FORBIDDEN' : false;
+  }
+  if (invocation.outboundEnvironmentUnknown) return 'UNKNOWN';
+  return outboundPayloadVerdict(invocation, [environment.get('RSYNC_PASSWORD')]);
+}
+
 /** The stable filter prefix chooses sender/receiver roles before generated pattern DATA is checked. */
 function rsyncRequestRule(word, option) {
   if (!word) return { unknown: true };
@@ -2798,6 +2859,76 @@ function ghOfficialVerdict(invocation) {
   return false;
 }
 
+/** Retain the exported token selected by the actual request host, not every token-shaped name. */
+function ghAuthenticationVerdict(invocation) {
+  if (invocation.name !== 'gh') return false;
+  const role = ghCommandRoles(invocation);
+  if (role.terminal || !role.operation) return false;
+  const [group, action] = role.operation.split(' ');
+  if (['alias', 'config', 'completion', 'help', 'licenses'].includes(group) ||
+      group === 'auth' && ['token', 'logout', 'switch', 'setup-git'].includes(action) ||
+      role.operation === 'skill publish' && (role.flags?.get('dry-run') || role.flags?.get('fix')) ||
+      group === 'browse' && role.flags?.get('no-browser')) return false;
+  const names = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'];
+  const env = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  if (!names.some(name => env.has(name)) && !invocation.outboundEnvironmentUnknown) return false;
+  if (role.unknown || role.sourceUnknown) return 'UNKNOWN';
+  const selected = name => role.values.filter(value => value.option === name).map(value => value.word);
+  let host, hostUnknown = false;
+  const hostOf = word => {
+    const literal = literalSourceWord(word);
+    if (!literal || /[%\s\0]/.test(literal.text)) return null;
+    const value = literal.text;
+    if (value.includes('://')) {
+      try { return new URL(value).hostname.toLowerCase(); } catch { return null; }
+    }
+    return /^[A-Za-z0-9_.-]+(?::[0-9]+)?$/.test(value) ? value.split(':')[0].toLowerCase() : null;
+  };
+  const explicit = selected('hostname').at(-1);
+  if (explicit) { host = hostOf(explicit); hostUnknown = !host; }
+  else if (env.has('GH_HOST') && literalSourceWord(env.get('GH_HOST'))?.text !== '') {
+    host = hostOf(env.get('GH_HOST')); hostUnknown = !host;
+  }
+  if (role.operation === 'api') {
+    const endpoint = role.operands[0], literal = literalSourceWord(endpoint);
+    if (literal?.text.includes('://')) { host = hostOf(literal); hostUnknown = !host; }
+    else if (endpoint && !literal) hostUnknown = true;
+    let authorizationSeen = false;
+    for (const word of selected('header')) {
+      const literal = literalSourceWord(word);
+      if (!literal) { hostUnknown = true; continue; }
+      const colon = literal.text.indexOf(':');
+      if (colon < 0) continue;
+      const name = literal.text.slice(0, colon).toLowerCase(), value = literal.text.slice(colon + 1).trim();
+      if (name === 'authorization' && !authorizationSeen) {
+        authorizationSeen = true;
+        if (value) return false; // AddAuthTokenHeader preserves the first nonempty header Get value.
+      }
+    }
+  } else {
+    const repo = role.metadata.concat(selected('repo')).at(-1) ||
+      (invocation.ghEnvironmentSources || []).find(source => source.name === 'GH_REPO')?.word;
+    const literal = repo && literalSourceWord(repo);
+    if (literal && literal.text.includes('://')) { host = hostOf(literal); hostUnknown = !host; }
+    else if (literal && literal.text.split('/').length === 3) {
+      host = hostOf({ text: literal.text.split('/')[0], dynamic: false }); hostUnknown = !host;
+    } else if (repo && !literal) hostUnknown = true;
+  }
+  const publicHost = host && (host === 'github.com' || host.endsWith('.github.com') ||
+    host === 'github.localhost' || host.endsWith('.github.localhost') || host.endsWith('.ghe.com'));
+  const families = host && !hostUnknown ? [publicHost ? names.slice(0, 2) : names.slice(2)] : [names.slice(0, 2), names.slice(2)];
+  let unknown = !!invocation.outboundEnvironmentUnknown;
+  for (const family of families) for (const name of family) {
+    if (!env.has(name)) continue;
+    const word = env.get(name), literal = literalSourceWord(word);
+    if (literal?.text === '') continue;
+    if (literal) break; // First known nonempty value suppresses the lower-priority token.
+    if (!host || hostUnknown) { unknown = true; break; }
+    return outboundPayloadVerdict(invocation, [word]);
+  }
+  return unknown ? 'UNKNOWN' : false;
+}
+
 function networkInvocation(invocation) {
   return ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet'].includes(invocation.name) ||
     (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
@@ -3010,7 +3141,7 @@ function sshCanonicalProxySelection(options) {
   if (jumpFirst) {
     const literal = literalSourceWord(jump);
     if (!literal) return unknown(false);
-    const raw = literal.text.replace(/^[ \t=]+/, '');
+    const raw = sshJumpRawValue(jump);
     // Exact raw none is a no-op. A later command may still be selected.
     if (raw.toLowerCase() !== 'none') {
       // parse_jump strips comments/rtrims, then installs the final jump's host.
@@ -3081,6 +3212,40 @@ function sshCanonicalDomainPayload(invocation, selection) {
     if (!proxy.direct) return empty;
   }
   return { words: [domain], unknown: false };
+}
+
+/** readconf trims only config-line ASCII EOL bytes; raw -J reaches parse_jump unchanged. */
+function sshJumpRawValue(word) {
+  const literal = literalSourceWord(word);
+  if (!literal) return null;
+  return word.sshJumpConfig ? literal.text.replace(/[ \t\r\n\f]+$/, '').replace(/^[ \t\r\n=]+/, '') : literal.text;
+}
+
+/** Select jump-chain metadata only when the pinned first-value proxy parser can start it. */
+function sshJumpPayload(options, host, argvUncertain) {
+  const jump = options.get('proxyjump'), command = options.get('proxycommand');
+  const empty = { words: [], unknown: false };
+  if (!host || !jump) return empty;
+  const keys = [...options.keys()];
+  if (command && keys.indexOf('proxycommand') < keys.indexOf('proxyjump')) return empty;
+  const literal = literalSourceWord(jump);
+  if (literal) {
+    // oProxyJump uses its trimmed raw config line, not argv_split's dequoted tokens.
+    const raw = sshJumpRawValue(jump);
+    if (raw.toLowerCase() === 'none') return empty;
+    const chain = raw.split('#')[0].trimEnd().split(',');
+    // Unsupported URI/token expansion is not a complete jump-source proof.
+    const ordinaryHop = hop => {
+      if (hop.includes('%') || /\$\{|[\s'"\\]/.test(hop)) return false;
+      const value = hop.startsWith('ssh://') ? hop.slice(6).replace(/\/$/, '') : hop;
+      const match = /^(?:[A-Za-z0-9_.-]+@)?(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9_.-]+)(?::([0-9]+))?$/.exec(value);
+      return !!match && (!match[2] || Number(match[2]) > 0 && Number(match[2]) <= 65535) &&
+        (!match[1].startsWith('[') || require('node:net').isIP(match[1].slice(1, -1)) === 6);
+    };
+    if (!chain.length || !chain.every(ordinaryHop)) return { words: [jump], unknown: true };
+  }
+  return { words: [jump], unknown: argvUncertain || !literal && (jump.dynamicMaySplit !== false ||
+    jump.text.includes('%') || jump.text.includes('#') || /\$\{/.test(jump.text)) };
 }
 
 /** Read SSH's option boundary before and after the host, stopping at the actual remote command. */
@@ -3181,6 +3346,7 @@ function sshOperation(invocation) {
         else {
           const key = match[1].toLowerCase();
           const optionWord = sshConsumedValueWord(value, value.text.length - match[2].length);
+          if (key === 'proxyjump') optionWord.sshJumpConfig = true;
           if (key === 'remoteforward' || key === 'localforward' || key === 'dynamicforward') forwards.push({ kind: key === 'remoteforward' ? 'R' : key === 'localforward' ? 'L' : 'D', word: optionWord, config: true });
           if (key === 'sendenv') sendEnvOptions.push(optionWord);
           if (key === 'sessiontype' && sessionType === undefined) sessionType = sshOptionScalar(optionWord) || 'unknown';
@@ -3274,7 +3440,7 @@ function sshOperation(invocation) {
         [...options.keys()].indexOf('proxyjump') < [...options.keys()].indexOf(key)) {
       const jump = literalSourceWord(options.get('proxyjump'));
       if (!jump) deny('SSH の ProxyJump / ProxyCommand の実選択が未知で、command source の無効を証明できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
-      if (jump.text.toLowerCase() !== 'none') continue;
+      if (sshJumpRawValue(options.get('proxyjump')).toLowerCase() !== 'none') continue;
     }
     // OpenSSH expands these bytes before execution; the shell parser cannot prove the resulting argv.
     sources.push({ ...source, dynamic: source.dynamic || source.text.includes('%') || /\$\{/.test(source.text), mediated: true,
@@ -3305,7 +3471,9 @@ function sshOperation(invocation) {
     setEnv: options.get('setenv'), sendEnvOptions });
   const forwarding = sshForwardPayload(invocation, { forwards, options, host, hostArgumentWord, controlOperation, argvUncertain });
   const canonicalDomains = sshCanonicalDomainPayload(invocation, { options, host, destinationWord, hostArgumentWord, argvUncertain });
+  const jump = sshJumpPayload(options, host, argvUncertain);
   return { sources, stdin: host && !detached, remoteWords, argvUncertain, metadataWords, metadataUnknown,
+    jumpWords: jump.words, jumpUnknown: jump.unknown,
     canonicalDomainWords: canonicalDomains.words, canonicalDomainUnknown: canonicalDomains.unknown,
     forwardingWords: forwarding.words, forwardingUnknown: forwarding.unknown,
     environmentWords: environment.words, environmentUnknown: environment.unknown };
@@ -3343,7 +3511,7 @@ function socketAuthenticationRole(invocation) {
     m: 'max-conns', g: 'route', G: 'route-pointer', q: 'quit-delay', o: 'output', x: 'hex-dump',
     e: 'exec', c: 'sh-exec' } : { b: 'bind', e: 'escape', l: 'user', n: 'trace', k: 'realm', X: 'disable-auth' };
   const shortFlags = ncat ? '46UCulkn tvz'.replace(/ /g, '') : '468ac dEKLrx'.replace(/ /g, '');
-  const selected = new Map(), operands = [];
+  const selected = new Map(), operands = [], selectedFlags = new Set();
   let unknown = !!invocation.incomplete, terminal = false, hasAuth = false, listen = false, localSocket = false;
   const select = (name, value) => {
     if (name === (ncat ? 'proxy-auth' : 'user')) hasAuth = true;
@@ -3356,7 +3524,7 @@ function socketAuthenticationRole(invocation) {
     // A fixed auth option prefix can have one generated scalar value without making its name dynamic.
     const attachedAuth = !literal && word.dynamicMaySplit === false && !word.globExpanded &&
       !word.braceExpanded && !word.tildeExpanded && !word.ansiCUnknown &&
-      (ncat ? word.text.startsWith('--proxy-auth=') :
+      (ncat ? ['--proxy-auth=', '--ssl-servername=', '--ssl-alpn='].some(prefix => word.text.startsWith(prefix)) :
         word.text.startsWith('--user=') || word.text.startsWith('-l') && word.text.length > 2);
     if (!literal && !attachedAuth) { unknown = true; continue; }
     const text = literal ? literal.text : word.text;
@@ -3369,6 +3537,7 @@ function socketAuthenticationRole(invocation) {
       if (required.has(name)) select(name, eq < 0 ? invocation.args[++k] : socketAuthenticationValue(word, eq + 1));
       else if (eq >= 0 || !flags.has(name)) unknown = true;
       else {
+        selectedFlags.add(name);
         if (['listen', 'broker', 'chat'].includes(name)) listen = true;
         if (['unixsock', 'vsock'].includes(name)) localSocket = true;
       }
@@ -3383,11 +3552,12 @@ function socketAuthenticationRole(invocation) {
         if (!shortFlags.includes(key)) unknown = true;
         if (ncat && key === 'l') listen = true;
         if (ncat && key === 'U') localSocket = true;
+        if (ncat && key === 'u') selectedFlags.add('udp');
       }
       if (terminal) break;
     } else operands.push(word);
   }
-  return { ncat, selected, operands, unknown, terminal, hasAuth, listen, localSocket };
+  return { ncat, selected, selectedFlags, operands, unknown, terminal, hasAuth, listen, localSocket };
 }
 
 /** The selected proxy/USER authentication bytes are outbound DATA even with /dev/null or receive-only stdin. */
@@ -3415,6 +3585,24 @@ function socketAuthenticationVerdict(invocation) {
   if (fallbackUnknown) return 'UNKNOWN';
   const value = role.hasAuth ? role.selected.get(role.ncat ? 'proxy-auth' : 'user') : fallback?.word;
   return outboundPayloadVerdict(invocation, [socketAuthenticationLiteralWord(value) || value]);
+}
+
+/** Client TLS handshake DATA survives -z / recv-only; pinned server and Unix modes do not send it. */
+function ncatTlsMetadataVerdict(invocation) {
+  if (invocation.name !== 'ncat') return false;
+  const role = socketAuthenticationRole(invocation);
+  if (role.terminal || role.listen || role.localSocket) return false;
+  const tls = role.selectedFlags.has('ssl') || role.selectedFlags.has('ssl-verify') ||
+    ['ssl-cert', 'ssl-key', 'ssl-trustfile', 'ssl-ciphers', 'ssl-servername', 'ssl-alpn'].some(name => role.selected.has(name));
+  if (!tls) return false;
+  const words = [];
+  // nsock does not install TLS SNI on UDP/DTLS; ALPN remains an independent client selection.
+  if (!role.selectedFlags.has('udp')) words.push(role.selected.has('ssl-servername')
+    ? role.selected.get('ssl-servername') : role.operands[0]);
+  if (role.selected.has('ssl-alpn')) words.push(role.selected.get('ssl-alpn'));
+  if (!words.length) return false;
+  if (role.unknown || !role.operands.length || role.operands.length > 2) return 'UNKNOWN';
+  return outboundPayloadVerdict(invocation, words.map(word => socketAuthenticationLiteralWord(word) || word));
 }
 
 /** Identify network clients that actually consume pipeline/stdin data, excluding explicit query/receive-only modes. */
@@ -4451,7 +4639,7 @@ function parsedExfil(invocation) {
   // query/help word cannot prove what the generated argv will select for these clients.
   if (invocation.incomplete && ['curl', 'wget', 'gh'].includes(invocation.name)) return 'UNKNOWN';
   let verdict = false;
-  if (invocation.name === 'gh') verdict = ghOfficialVerdict(invocation);
+  if (invocation.name === 'gh') verdict = ghOfficialVerdict(invocation) || ghAuthenticationVerdict(invocation);
   if (invocation.name === 'curl') {
     verdict = curlReadsUpload(invocation.args, invocation.incomplete, true, invocation) || proxyEnvironmentVerdict(invocation);
     // Only the actual first literal argv -q/--disable prevents curl's implicit curlrc load.
@@ -4461,10 +4649,11 @@ function parsedExfil(invocation) {
     (wgetSourceBoundary(invocation) ? 'UNKNOWN' : wgetInlinePayloadVerdict(invocation)) || proxyEnvironmentVerdict(invocation);
   if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
   if (['ncat', 'telnet'].includes(invocation.name)) verdict = verdict || socketAuthenticationVerdict(invocation);
+  if (invocation.name === 'ncat') verdict = verdict || ncatTlsMetadataVerdict(invocation);
   // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.
   if (invocation.name === 'sftp') verdict = sftpSession(invocation.args) ? 'UNKNOWN' : false;
   if (['scp', 'rsync'].includes(invocation.name)) verdict = invocation.incomplete ? 'UNKNOWN' :
-    rsyncFileListPayload(invocation) || remoteCopyDestination(invocation);
+    rsyncDaemonCredentialVerdict(invocation) || rsyncFileListPayload(invocation) || remoteCopyDestination(invocation);
   return contextualVerdict(invocation, verdict);
 }
 
@@ -4480,6 +4669,12 @@ for (const invocation of invocations) {
     if (verdict) deny(verdict === 'FORBIDDEN' ?
       'SSH の選択された login / destination metadata を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-N/-n や remote command の有無とは独立した送信 DATA です。内容・認証・実送信の成立は確認していません。' :
       'SSH の選択された login / destination metadata の source・部分選択・展開・argv/context を確定できません。-N/-n は metadata の検査を省略する条件ではありません。' + UNKNOWN_OWNER_GATE, verdict);
+  }
+  if (remote.jumpUnknown || remote.jumpWords?.length) {
+    const verdict = remote.jumpUnknown ? 'UNKNOWN' : outboundPayloadVerdict(invocation, remote.jumpWords);
+    if (verdict) deny(verdict === 'FORBIDDEN' ?
+      'SSH の有効な ProxyJump chain が送る login / host DATA を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-N/-n や stdin と独立した役割です。native format・認証・接続・実送信は確認していません。' :
+      'SSH の選択された ProxyJump chain の source・hop 成分・展開・argv/context を確定できません。同目的の known ordinary chain を保てなければ' + UNKNOWN_OWNER_GATE, verdict);
   }
   if (remote.forwardingUnknown || remote.forwardingWords?.length) {
     const verdict = remote.forwardingUnknown ? 'UNKNOWN' : outboundPayloadVerdict(invocation, remote.forwardingWords);

@@ -20,6 +20,70 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<a id="r32-selected-source-auth-metadata"></a>
+
+## R32: 実行source・認証入力・送信metadataの有限修復
+
+<!-- PR191:R32:CONTRACT:BEGIN -->
+本節は 2026-10-15T09:00:38.732232+09:00 JST / 2026-10-15T00:00:38.732232+00:00 UTC の**公開準備時の測定記録**である。公開基底は`4727b00fa02b16ba6da89779282bcd3515b12e78`。正式reviewの7件に対応する有限契約を記し、隣接境界の追加対照を独立したfinding数へ加算しない。**合成固定sourceの再測定は6450/6450・broken0で完了した**。初回6450の原二FAILを保存し、全入力・旧6235期待を保持、通常revert二件だけ旧ALLOW→UNKNOWN/denyのnormal-policy採用を理由付きで改訂した。新公開head・同一head CI/fresh review/全thread/必要実入口はこのnote記録cut時点でPENDING。componentの旧版測定を新版の証拠へ持ち越さない。公開後の受入状態はPR本文と別監査台帳で更新する。既存R31以下のcut・source・当時のPENDING記録はそのまま歴史として保持する。
+
+ALLOWはこの新roleから停止を要求しない結果で、既存guardの解除ではない。FORBIDDENは既存policyの禁止source/payloadを確認した結果、UNKNOWNはactive source・argv・値の生成元・選択条件が未確認の結果で、どちらも既存deny wireで停止する。値や語の存在だけから、実行・選択・送信を推測しない。
+
+| 守る対象 / 公式の版・backend | 対応条件と判定 / UNKNOWNになる点 | 正常対照・このroleの期待 | 止まる通常作業 / 同目的の対応済み形式 / owner出口 | 有限試験 / native未確認条件 |
+|---|---|---|---|---|
+| **Git add blanket alias** / Git v2.53.0・取得したinstalled版v2.54.0のbuiltin/add.cとparse-options | 実optionとして選んだ`--no-ignore-removal`と一意略記を既存`--all`と同じFORBIDDENへ分類。消費値や`--`後のDATAへ昇格しない。不明境界は既存UNKNOWN。 | 個別path、`--ignore-removal a.txt`、`--no-all a.txt`、`--`後の同綴りDATAはownAG ALLOW。実helpには新拒否を加えない。 | aliasによる一括追加は停止。必要な対象pathを明示する。対象の確定ができない場合はcwd・pathspec・ignore・index/worktreeと目的をownerへ提示する。 | 原alias2入力のownAG FORBIDDEN、role対照、新分類とconsumerを別々に除去。実Git add/index書換えは未実行。`-U`の必須整数値としてflag状DATAを消費する試験は構造負例で、nativeで有効な通常操作とは呼ばない。 |
+| **scriptが起動するsource** / util-linux v2.41.2、別にFreeBSD releng/14.3・取得hashで固定したApple shell_cmds main | 実command string、BSD argv child、暗黙interactive shellはいずれもSHELL・startup・PTY・backend未検査のためUNKNOWN。正常にtyped解析でき、bare operandより前に到達したutil-linux互換の実help/versionはこのrole inactive。 | 対応queryと既知commandのDATAにあるscriptは新role ALLOW。消費値・`--`後・不明argvのquery状tokenはquery証明にしない。 | 通常の端末記録も停止する。記録/PTYが不要で目的と実行条件を同じに保てる場合のみ、対応済みの直接sourceを使う。記録が必要ならbackend/version・SHELL/startup・child/cwd/env・PTY条件をownerへ示す。 | 原入力byte保持・ownEG UNKNOWN、L1役割/各新判定の単独逆検証。short timingのbackend間arity、queryの到達順を対照に含む。実script/PTY/childは未実行。Apple/FreeBSD source取得はinstalled executableの同定ではない。 |
+| **Git revertのobject処理** / Git v2.54.0 builtin/revert.c・revert.adoc | operand、暗黙入力、`--no-commit`、continue/skip/abortはobject/index/tree/sequencer/configを未検査のためUNKNOWN。純粋な`--quit`だけobject role inactive。混合mode/消費値/境界不明はcleanup証明にしない。 | pure quit、実Git parent query/sole revert helpは新role ALLOW。既存helper/config/外側source判定は残る。 | no-commitやrollbackを含む通常revertも停止し得る。reset/restoreへの目的変更は自動代替にしない。inverse patchが必要なら正確なobject・parent・index/tree/sequencer/config・cwd/envと未確認点をownerへ提示する。 | 元`D`はtemplateとして保持し、EMPTY秘密形fileを削除したowned DUMMY OIDへ別profileで対応付ける。templateと有効OIDを同じnative証拠にしない。実revert/commit/rollbackは未実行。 |
+| **rsync daemon認証入力** / GNU Rsync v3.4.1 authenticate.c・options.c・clientserver.c・main.c | daemon exchangeはempty/no-path URIや`host::`も含む。実選択password-fileが禁止filenameならFORBIDDEN。選択env値の禁止source証明もFORBIDDEN。file優先・最後のfile選択を保持し、source/route/argv不足はUNKNOWN。通常名fileの内容安全までは認証しない。 | 通常credential file、非選択env、真query、actual unset、last ordinary file、local/SSH routeのinactive sourceは新role ALLOW。既存raw PASSWORD形や無関係readerの独立UNKNOWNは残す。 | unquoted先行変数exportなどscalar証明が失われた通常値もUNKNOWN。実行条件を変えずquoted対応済みscalar proofで表せる場合に限り書換え。そうできなければ選択file/env・daemon route・権限・cwd等をownerへ提示する。 | 元入力ownEG FORBIDDEN、file/env/stdinと選択優先・empty-route対照、新credential判定単独の除去。AUTHREQD・認証成功・protocol/algorithm・file権限/first-line/NUL/CR/LFはnative未確認。送るのはpasswordから生成した応答であり、file全文平文送信とは記さない。 |
+| **Ncat client TLS metadata** / Nmap d5134b0181e378d09ebfad564ea4d1e1d8b25380（7.99SVN source）、SSL/backend条件付き | 選択SNI/ALPN値と生成元を扱う。両optionはSSLを有効にし、zero-I/O/recv-onlyだけではhandshake inactiveにならない。証明済み秘密sourceはFORBIDDEN、active option/endpoint/source/context不足はUNKNOWN。 | 選択された既知ordinary値・last overwrite・真help/versionは新role ALLOW。UDP/DTLSのSNI、ALPN、listen/Unix経路はそれぞれconsumer条件を分け、一括SSL非活性としない。 | 証明不能な通常metadataも停止。TLS目的を保つ既知ordinary値なら対応書式を使う。必要sourceを証明できない場合はcompiled SSL/backend・endpoint・mode・selected値をownerへ提示する。 | 原入力と選択/非選択controls、新TLS caller単独除去。private v5の有限component測定を取得済み。合成sourceの受入は別gate。OpenSSL対応・ALPN長/形式・実接続/handshakeは未測定。証明はSSL file/trust/cache全体へ広げない。 |
+| **SSHで選ばれたjump metadata** / OpenSSH V_10_3_P1 ssh.c・readconf.c | stdin/session/remote argvと別に、first ProxyCommand/ProxyJump選択と各active hopのlogin/host生成元を確認。秘密sourceが証明できればFORBIDDEN、選択grammar/expansion/contextが未確定ならUNKNOWN。configとCLI引数の字句処理を同一視しない。 | 既知ordinary選択chain・非選択later値、証明済みqueryと真正なinactive noneは新role ALLOW。既存canonical/login/config判定は残る。quoted noneをnative noneと仮定せず、config末尾trimとCLI raw `-J`値を区別する。 | 有効jumpを一律に除去しない。同じ接続目的を保つ既知ordinary chain/設定で表せる場合に限り案内する。必要なら正確なclient/version・接続先・全jump順・選択config/expansion・cwd/envをownerへ提示する。 | 原入力、first選択、query/chain/quoted-none/config末尾space・formfeed対照、新jump consumer単独除去。private v5でconfig-only trim選択とcanonical helperの第3consumerを接続済み。config-none＋later ProxyCommandのyes-modeはdirect=falseでdomain inactive、always-modeやraw CLI peerは独立に判定する。合成受入は別gate。DNS/子SSH/接続/認証/transportは未実行。 |
+| **GHで選ばれたexported auth env** / cli v2.102.0・go-gh v2.16.1 | remote操作と実request hostでpublic/enterpriseのtoken familyを選び、各familyの優先とknown-empty fallback、実export/unsetを追跡。選択秘密sourceはFORBIDDEN、host/config/env/source不足はUNKNOWN。API Authorizationの実選択も別判定。 | unexported/unset、非選択family/lower値、既知ordinary quoted scalar、真help/local getterは新role ALLOW。APIの`Host` header DATAはreq.Host/URL.Hostの置換証明ではない。既存header/body-file判定は残る。 | unquoted scalarなどexport/source証明不足の通常authも停止。目的を保つ既知ordinary・選択host/authなら対応済み書式を使う。確認不能ならhost/repo/config・選択source・export/permissionsをownerへ提示する。 | family/priority/empty/export/remove/host/Authorization対照、新auth caller単独除去。private v5の有限component測定を取得済み。合成sourceの受入は別gate。実認証/transport/keyring/redirect/plugin全体は未検証。 |
+
+各ALLOW対照はこの有限roleについての期待であり、aggregate ALLOWを約束しない。settingsは変更しない。egressは全Bashで起動対象、secret-git/add-allは既存`if: "Bash(git *)"`条件を持つ。quote結合aliasをownAGへ直接渡して止めたL2結果は、Claude Codeがそのhookを実dispatchする証拠ではない。新入力はHookへ渡すDATAであり、元の操作をshell/native clientとして実行していない。
+
+### 停止後の出口と三段階の受入
+
+1. **有限修復の受入**: 対応版/backend・固定source・入力の同一性を確定し、原入力のown target停止と理由prefix、正常対照、解析role、source/fixture不変を検査する。新判定は一つずつ除去して効果を測る。独立した既存停止が残る場合は、分類差と停止の単独必要性未証明を分ける。旧62件の複合除去を今回単独の証明には使わない。
+2. **native成立の確認**: 選択code/値から実DNS・child・接続・認証・protocol・副作用へ至る条件は別証拠を要する。狭いUNKNOWN修復を受け入れても、この未確認欄は残す。Hook通過もdenyもnative成立や被害の実証にはならない。過去R31のL3結果を新sourceへ持ち越さない。
+3. **PR全体Goal**: 合成後の固定sourceで旧6237 input/presence/orderと旧6235期待を保持し、二件のnormal-policy期待改訂と原FAILを明示した差分・新全件を取得し、同一公開headのrequired CI・fresh review・全thread・必要L3を確認する。APIがBashより前で停止した試行はNOT_EXERCISEDとして残し、Hook成功に数えない。現在のcomponent合格からGoal達成やZIP作成へ進めない。
+
+同じ目的・対象・実行条件を保つ対応済み形式がない場合は、表のowner確認事項とUNKNOWN理由を提示する。操作の個別了承とhook停止の了承は別であり、hook無効化や別場所への移動を自動許可の迂回路にしない。
+
+### このcutで取得済みの測定と未取得の測定
+
+| 固定sourceの範囲 | 取得済みcomponent証拠 | 現在の限界 |
+|---|---|---|
+| root private v3（alias/daemon） | 65/65 profiles、broken0、195 Hook inputs。L1は新12＋旧198＝210（shell parityは含めない）。単独6 mutations /216 case pairs /432 observations /1296 inputs。 | 合成sourceでの測定ではない。独立停止が残るempty URI/stdinの一部はownF→U分類差のみで、単独停止必要性を証明しない。 |
+| common private final-v4（script/revert） | 49/49 profiles、broken0、147 Hook inputs。L1役割21。単独6 mutations /18 pairs /36 observations /108 inputs（sole stop-loss4、precision-loss2、control12、unproved0）。 | 専用owned fixtureはfamily手渡し時点の要求条件だった。合成v1/v2では別dirs.revertとして実装し、fixtureを実測済み。旧cherry fixtureと旧6237入力の意味を変える転用はしていない。 |
+| EG private v5（Ncat/SSH/GH） | 108/108 profiles、broken0、324 Hook inputs。private VM role L1は18/18。単独5 features /21 pairs /42 observations /126 inputs：新3callerとconfig-EOL選択の停止必要性4、canonical allowance精度1。独立25/25・75 inputsと静的182/182は別readback。 | isolated public L1 proposal8はprivate18や旧public210へ加算しない。v2/v3/v4の結果・失敗・誤仮説を残し、current v5に流用しない。合成source・native・実dispatch証拠とは区別する。 |
+| 合成source/入力固定 v1→v2 | EG `697831f0ae06…`、common `14386784ab49…`、AG `7bb176f3c946…`、SG `273f6be441ba…`。準備6450 case＝旧6237＋新213 unique、normalized6313（旧137 alias保持）。v1準備時は旧6237全fields/keys順序/期待をdeep照合した。v2は全6450入力不変・旧6235期待exact、二revert期待だけ理由付き改訂、専用revert fixtureを分離。 | 初回二FAILと改訂後v2の全件合格は下表で別に保持。prepared件数と実測を区別する。新公開head/同一head CI・fresh review・必要L3は別の未完了gate。 |
+| 初回full6450 v1 | 2026-10-15 08:35:07.842〜08:45:38.086 JST（UTC2026-10-14 23:35:07.842〜23:45:38.086）、6450件・2 FAIL・broken0・19350 actual Hook inputs、source4/runner/defs/owned全Git-file状態不変。 | 旧R12X070とR22G-NORMAL-SIGNOFF-revertが旧ALLOW→ownEG UNKNOWN。二入力・旧期待・生FAILを保存し、新契約の通常影響として明示改訂。sourceを変えて通した修復ではない。 |
+| 旧6237差分 / public251 | 旧aggregate判定差2、Hook/理由を含む差11。残九件は既存aggregate FORBIDDENへownAG FORBIDDENが加わる差でaggregate不変。別に239 analysis＋12 parity＝251 PASS/exit0を08:37:18.926125〜08:37:23.881611 JST（UTC23:37:18.926125〜23:37:23.881611）に取得。v2へ同実行依存sourceのcode bindingを行い、再実行とは記さない。 | 二通常revertは非秘密でもinverse object/index/tree/state未検査のためUNKNOWN。旧R31/R32全件はfixture rootが別でactual env/JSON/cwd同一とは称しない。251はfull/CI/実入口の代用ではない。 |
+| 改訂後full6450 v2 | 2026-10-15 08:46:09.207〜08:56:48.905 JST（UTC2026-10-14 23:46:09.207〜23:56:48.905）、6450/6450・failed0・broken0・19350 actual Hook inputs。CJS4/runner/definitions/owned全Git-file状態がbefore/after一致。 | 全6450入力keys/値/presence/order、旧6235期待、新213期待を保持し、二通常revert期待だけ明示改訂。旧aggregate差2/Hook理由差11を消さず、全件合格をnativeや新headCIへ昇格しない。 |
+| 合成single-predicate reverse / local | 合成17 mutations /51 pairs /102 observations /306 inputs、broken0。own＋aggregate停止必要性13・正常許可精度4・未証明0、34control pairsを維持。08:46:41.524〜08:46:52.912 JST（UTC23:46:41.524〜23:46:52.912）の別実測。local root602/602・failed0、typecheck/lint/diffcheck exit0も別に取得。 | 各pairのactual input/envSHA/cwd/project/hookpath同一、単独spanだけ除去しundo4/source/owned状態を確認。local602はguard6450やrequiredCIではない。Node24.13.0とmanifest ^24.15||>=26のengine warningは環境条件として残す。 |
+
+component件数・L1・逆検証観測は役割が違い、加算して脆弱性件数や新全件合格数にしない。旧6237の実測aggregate判定差分は二件で、判定差分0とは記さない。初回二FAILと改訂理由を残し、旧6235期待は変えない。
+
+
+合成固定v1は上表のcomponent sourceとは別の3-way合成である。EG `697831f0ae06af85f31e2985c4a8c5cfb10d45946264993630ade26a4d97ecbe`、common `14386784ab49cb4216a87afc26b5350e94d6fb82c5ba537ecbb3bab69a619a1d`、AG `7bb176f3c94695c29d171134cc4cee1489da291ba7124f66396d712e9ff4f8a2`、SG `273f6be441ba85cb295303b929a8427e2a88e5f883800f9cd1d0f51f875c9664`を固定した。componentごとのraw結果・逆検証をこの合成sourceの全件測定に読み替えない。runnerと新case定義は専用revert fixture追加を含む別hashで固定した。二normal-policy期待改訂後v2はrunner `3811bdbcc1762bd61df529529578c71fc77c28bd35c7fb07cd7d2fb0b8e725a7`、definitions `6fabdf84e048bc7a94db253ced1597da0b83fca674a4d903560b2b56c57525e8`、CJS4はv1とbyte同一。旧caseの意味を変えるfixture転用をしない。
+
+
+public251のraw測定は合成v1で一度だけ実行した。同じCJS4・analysis/parity・production wrapperの七bindingがv2でもbyte同一で、analysis/parityが使うsourceへ静的に対応付けた。監査用binding九件のうちrunner/definitionsは二期待改訂で変わるため、九bindingすべてがv2と同一とは主張しない。新たに251件を再実行した結果へ数えない。
+
+
+正式七指摘の受入対応は、CRの二つの原literal形式がownAG FORBIDDEN、Codexの五exact commandとliteral-D templateがownEG 4 FORBIDDEN/2 UNKNOWN、別の有効owned deletion OID対応がownEG UNKNOWNである。七指摘に対し原literal八profileと別OID mapping一profileを区別し、全件実測から選んだ27 actual Hook input argumentsを再構成・hash照合した。追加のHook実行や九脆弱性の主張ではなく、template Dを有効な原native commandへ読み替えていない。
+
+「公開準備時」はこの記録cutの状態であり、恒久的に公開codeが未完成と断言するものではない。固定sourceの6450/251/単一逆検証の有限契約はこの測定で確認済みとし、公開後の同一head CI/fresh/全thread/必要実入口とwhole GoalはPR本文・別監査台帳で更新する。これら未来結果を本noteへ先取りしない。
+
+### 一次sourceと反証の扱い
+
+一次sourceは取得したtag/commitとbyte hashで固定した。[Git add v2.54.0](https://raw.githubusercontent.com/git/git/v2.54.0/builtin/add.c)、[parse-options.h v2.54.0](https://raw.githubusercontent.com/git/git/v2.54.0/parse-options.h)、[script util-linux v2.41.2](https://raw.githubusercontent.com/util-linux/util-linux/v2.41.2/term-utils/script.c)、[Git revert v2.54.0](https://raw.githubusercontent.com/git/git/v2.54.0/Documentation/git-revert.adoc)、[rsync auth v3.4.1](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/authenticate.c)、[rsync daemon exchange v3.4.1](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/clientserver.c)、[OpenSSH V_10_3_P1 readconf.c](https://raw.githubusercontent.com/openssh/openssh-portable/V_10_3_P1/readconf.c)、[Nmap固定commit nsock SSL](https://raw.githubusercontent.com/nmap/nmap/d5134b0181e378d09ebfad564ea4d1e1d8b25380/nsock/src/nsock_ssl.c)、[GH CLI v2.102.0 HTTP](https://raw.githubusercontent.com/cli/cli/v2.102.0/api/http_client.go)、[go-gh v2.16.1 auth](https://raw.githubusercontent.com/cli/go-gh/v2.16.1/pkg/auth/auth.go)を照合した。取得済みsourceとinstalled backend/native実行を分ける。
+
+空daemon moduleをinactiveとする初期仮説はAUTHREQD consumerで反証され、空routeも契約へ含めた。Git addのunified値をoptionalとする仮説もv2.53/v2.54の同一required-value macroで反証され、arity修復は加えていない。SSH quoted config noneをdequoteすればnative noneになるという仮説はraw parse_jump consumerで反証された。一方config末尾ASCII whitespace/formfeedのtrimは別の選択境界で、CLI raw引数へ一般化しない。v4ではそのselectorが旧canonical helperへ未接続のため正常yes-mode domainを余分にFORBIDDENにした1件を保存し、v5は同じselectorを第3consumerへ接続した。逆検証でこの正常許可A→Fの精度差を確認し、停止必要性の証明とは数え分ける。旧仮説・source・生のFAIL/対照・oracle訂正・工程障害は別監査記録に保持し、正常対照の期待だけを都合よく書き換えて合格にしない。
+
+残り5系統の全体調査は未完了/STOPのままで、今回の有限subrouteをその全体閉鎖とは記さない。93への再依頼と分類器内部調査は行わない。責務を分ける段階的refactoringや全面許可リスト化は将来参考で、今回の有限修復には持ち込まない。
+<!-- PR191:R32:CONTRACT:END -->
+
 <a id="r31-selected-child-domain-remote-option"></a>
 
 ## R31: selected child・canonical domain・remote metadataの有限修復

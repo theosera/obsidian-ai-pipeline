@@ -18,6 +18,14 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R32:README-CONTRACT:BEGIN -->
+R32では、Git addの一括追加alias、scriptの実行source、Git revertのobject入力、rsync daemonの認証入力、Ncatのclient TLS metadata、SSHの選択jump、GHの選択auth環境という**7件の有限修復**を扱う。確定した禁止source/payloadはFORBIDDEN、実行source・値・選択条件を確認できない場合はUNKNOWNで停止する。通常のscript記録やrevertの`--no-commit`・再開・rollbackもUNKNOWNになり得る。秘密と無関係な既知DATA、実query、非選択sourceを一律禁止へ広げない。
+
+対応版、正常対照、同じ目的を保つ書換えとownerへの確認事項は[受入guideのR32契約](docs/security/git-command-guards.md#r32-selected-source-auth-metadata)を参照。hookの無効化や目的の変わる操作への置換を自動的な出口にしない。
+
+このnoteは 2026-10-15T09:00:38.732232+09:00 JST / 2026-10-15T00:00:38.732232+00:00 UTC の**公開準備時の測定記録**で、公開基底は`4727b00fa02b16ba6da89779282bcd3515b12e78`。合成固定sourceは2026-10-15 08:46:09.207〜08:56:48.905 JST（UTC2026-10-14 23:46:09.207〜23:56:48.905）に6450/6450・broken0で合格した。初回二FAILと通常revert二件の旧ALLOW→UNKNOWN採用を保存し、全入力・旧6235期待を保持した。既取得L1/parity251は同じ実行依存sourceへcode bindingし再実行とは数えない。単一判定逆検証・local検査も別に取得した。新公開head/同一head CI・fresh review・全thread・必要実入口はこのcut時点でPENDINGである。component合格、native通信・認証の成立、PR全体Goalは別条件。以後の同一head受入はPR本文と別監査台帳で更新し、下記R31 noteの過去cutを現在状態へ読み替えない。
+<!-- PR191:R32:README-CONTRACT:END -->
+
 <!-- PR191:R31:README-CONTRACT:BEGIN -->
 R31は **prlimitの実child / active SSH CanonicalDomains / rsync remote-option metadata** の有限修復である。util-linux v2.41.2 / OpenSSH V_10_3_P1 / GNU rsync v3.4.1の固定一次sourceで、引数役割・実selection・値の生成元を分ける。確定禁止はFORBIDDEN、必要source/context不足はUNKNOWN。staticなprlimit no-child get/setを一般process可変性だけで新禁止へせず、knownnative事前拒否、SSH numeric/anchored/proxy条件、rsync provennon-dash prefix等のinactiveを保持する。既存独立guardを解除しない。必要limit / canonicalization / proxy / remote-optionの削除や目的変更を自動代替にせず、同対象・操作・条件を保てるsupportedsourceかowner出口へ進む。
 

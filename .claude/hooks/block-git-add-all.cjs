@@ -259,7 +259,7 @@ for (const g of insp.gits) {
     if (!value || value.startsWith('-') || value.startsWith(':')) return false;
     return roots.has(path.resolve(inspectCwd, value));
   });
-  if (blanket || normalizedRoot) {
+  if (blanket || normalizedRoot || (!parsed.terminal && parsed.actualBlanket)) {
     const confirmed = !parsed.terminal && !parsed.unsafePathspec && (parsed.actualBlanket ||
       parsed.pathspecs.some((word) => ['.', './', '..', '../'].includes(word.literalPath) ||
         roots.has(path.resolve(inspectCwd, word.literalPath))));

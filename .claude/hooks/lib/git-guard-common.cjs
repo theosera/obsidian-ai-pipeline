@@ -1290,7 +1290,62 @@ function prlimitArgs(rest, info) {
   return k;
 }
 
+/** script has util-linux command strings and BSD argv children; selected shell/backend stays opaque. */
+function scriptArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  const required = new Set(['command', 'echo', 'log-in', 'log-out', 'log-io', 'log-timing', 'logging-format', 'output-limit']);
+  const flags = new Set(['append', 'return', 'flush', 'force', 'quiet', 'help', 'version']);
+  const names = [...required, ...flags, 'timing'];
+  const shorts = { c: 'command', E: 'echo', I: 'log-in', O: 'log-out', B: 'log-io', T: 'log-timing', m: 'logging-format', o: 'output-limit' };
+  const role = { mode: 'active', backend: 'unproved-util-linux-or-BSD', values: [], operands: [], unknown: false };
+  info.scriptLauncher = role;
+  const textOf = word => typeof word?.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word?.text;
+  const boundary = word => word && word.dynamicMaySplit === false && !word.ansiCUnknown && !word.globExpanded && !word.braceExpanded && !word.tildeExpanded;
+  const take = (name, word) => {
+    role.values.push({ option: name, word });
+    if (!boundary(word)) role.unknown = true;
+    const text = textOf(word);
+    // These parsers can exit before a later help/version is reached.
+    if (name === 'echo' && (!word || word.dynamic && typeof word.literalValue !== 'string' || !['auto', 'always', 'never'].includes(text))) role.unknown = true;
+    if (name === 'logging-format' && (!word || word.dynamic && typeof word.literalValue !== 'string' || !['classic', 'advanced'].includes(text?.toLowerCase()))) role.unknown = true;
+    if (name === 'output-limit') role.unknown = true; // strtosize grammar is not certified here
+    if (['timing', 'log-timing'].includes(name) && role.values.some(value => ['timing', 'log-timing'].includes(value.option) && value.option !== name)) role.unknown = true;
+  };
+  let afterDD = false;
+  for (let k = 0; k < rest.length; k++) {
+    const word = rest[k], text = textOf(word);
+    if (!boundary(word) || word.dynamic && typeof word.literalValue !== 'string') role.unknown = true;
+    if (!afterDD && text === '--') { afterDD = true; continue; }
+    if (afterDD || !text?.startsWith('-') || text === '-') { role.operands.push(word); continue; }
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = names.includes(option) ? [option] : names.filter(name => name.startsWith(option));
+      if (!option || matches.length !== 1) { role.unknown = true; continue; }
+      const name = matches[0];
+      if (['help', 'version'].includes(name) && eq < 0 && !role.unknown && !role.operands.length) { role.mode = 'query'; return -1; }
+      if (required.has(name)) take(name, eq < 0 ? rest[++k] : { ...word, text: text.slice(eq + 1), literalValue: undefined });
+      else if (name === 'timing') take(name, eq < 0 ? { text: '', raw: "''", dynamic: false, dynamicMaySplit: false } : { ...word, text: text.slice(eq + 1), literalValue: undefined });
+      else if (eq >= 0) role.unknown = true;
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        const ch = text[j];
+        if ('hV'.includes(ch) && !role.unknown && !role.operands.length) { role.mode = 'query'; return -1; }
+        if (shorts[ch]) { take(shorts[ch], j + 1 < text.length ? { ...word, text: text.slice(j + 1), literalValue: undefined } : rest[++k]); break; }
+        if (ch === 't') {
+          if (j + 1 === text.length) role.unknown = true; // BSD requires the next value; GNU does not.
+          take('timing', { ...word, text: text.slice(j + 1), literalValue: undefined }); break;
+        }
+        if (!'aefq'.includes(ch)) { role.unknown = true; break; }
+      }
+    }
+  }
+  // Includes -c source strings, BSD filename+argv, and implicit interactive SHELL.
+  info.launcherUnknown = true;
+  return rest.length;
+}
+
 const WRAPPERS = {
+  script: scriptArgs,
   prlimit: (rest, info) => prlimitArgs(rest, info),
   setpriv: (rest, info) => setprivArgs(rest, info),
   chroot: (rest, info) => {
@@ -1445,7 +1500,7 @@ const WRAPPERS = {
 };
 
 /** Unwrap known launchers and retain the invocation's ordered environment changes. */
-function resolveCommand(words, localFunctions = null) {
+function resolveCommand(words, localFunctions = null, launcherScalarState = null) {
   const info = {
     name: null, nameWord: null, args: [], assigns: [], assignRaws: [],
     cdLike: false, incomplete: false, nonExec: false, dynamicName: false, executableExpansionUnknown: false, splitString: false,
@@ -1489,8 +1544,12 @@ function resolveCommand(words, localFunctions = null) {
       if (base === 'exec' && !info.wrapped) info.persistsEnv = true;
       info.wrapped = true;
       info.wrapperNames.push(base);
-      const r = wrapper(rest, info);
+      const r = wrapper(base === 'script' && launcherScalarState
+        ? rest.map(word => literalScalarWord(word, launcherScalarState)) : rest, info);
       if (r < 0) { info.nonExec = true; info.name = base; return info; }
+      if (base === 'script' && info.launcherUnknown) {
+        info.name = base; info.nameWord = w; info.args = rest; return info;
+      }
       k = k + 1 + r;
       continue;
     }
@@ -2241,6 +2300,20 @@ function gitOperationRole(g) {
       parsed.values.every(value => value.option === 'show-current-patch' && ['raw', 'diff'].includes(value.word.text));
     if (onlyControl) { role.mode = modes[0] === 'show-current-patch' ? 'query' : 'cleanup'; role.stdinInput = false; }
     else if (modes.length) role.mode = 'resume';
+  } else if (g.sub === 'revert') {
+    const parsed = gitTypedArguments(g, { values: ['cleanup', 'mainline', 'strategy', 'strategy-option'],
+      optionalValues: ['gpg-sign'], shortValues: { m: 'mainline', X: 'strategy-option' }, shortOptional: { S: 'gpg-sign' },
+      flags: ['quit', 'continue', 'abort', 'skip', 'no-commit', 'edit', 'no-edit', 'signoff', 'no-signoff',
+        'reference', 'no-reference', 'rerere-autoupdate', 'no-rerere-autoupdate', 'no-gpg-sign'],
+      shortFlags: 'ners', shortNames: { n: 'no-commit', e: 'edit', s: 'signoff' } });
+    Object.assign(role, parsed); role.kind = 'object-ref-input'; role.inputCommits = parsed.operands;
+    const modes = parsed.flags.filter(flag => ['quit', 'continue', 'abort', 'skip'].includes(flag));
+    if (modes.length === 1) role.mode = modes[0] === 'quit' ? 'cleanup' : modes[0] === 'abort' ? 'rollback' : 'resume';
+    if (modes.length > 1 || modes.length && parsed.operands.length) role.unknown = true;
+    const onlyQuit = !parsed.unknown && modes.length === 1 && modes[0] === 'quit' &&
+      !parsed.operands.length && !parsed.values.length && parsed.flags.every(flag => flag === 'quit');
+    g.revertInputRole = { ...role, objectInputInactive: onlyQuit };
+    if (onlyQuit) return null; // quit forgets sequence; all other config/helper guards still run
   } else if (g.sub === 'cherry-pick') {
     const parsed = gitTypedArguments(g, { values: ['cleanup', 'mainline', 'strategy', 'strategy-option', 'empty'],
       optionalValues: ['gpg-sign'], shortValues: { m: 'mainline', X: 'strategy-option' }, shortOptional: { S: 'gpg-sign' },
@@ -2704,6 +2777,10 @@ function inspect(cmd, options = {}) {
       }
       return; // Initializer elements are data; their direct substitutions were collected separately.
     }
+    // Keep scalar option DATA proof local to script's new arity/query boundary.
+    if (!c.definitionName && !info.incomplete && info.wrapperNames.includes('script')) {
+      info = resolveCommand(c.words, state.functions, expansionState);
+    }
     const positionalExec = positionalExecutable(info.nameWord);
     const positionalsBefore = state.positionals;
     let positionalUnknown = !!positionalExec && (state.positionalsTainted || state.searchChanged);
@@ -2778,6 +2855,7 @@ function inspect(cmd, options = {}) {
       executableExpansionUnknown: info.executableExpansionUnknown,
       wrapperNames: info.wrapperNames,
       launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
+      scriptLauncherRole: info.scriptLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
       definitionName: c.definitionName,
@@ -3154,7 +3232,7 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script'].includes(name)))) {
       res.problems.push(info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
@@ -3929,8 +4007,8 @@ function parseAddArgs(words) {
       const full = names[0];
       const negative = full.startsWith('no-');
       const base = negative ? full.slice(3) : full;
-      if (!word.dynamic && eq < 0 && !negative && base === 'all') result.actualBlanket = true;
-      if (typeof original.literalValue === 'string' && !negative && base === 'all') result.runtimeBlanket = true;
+      if (!word.dynamic && eq < 0 && ((!negative && base === 'all') || (negative && base === 'ignore-removal'))) result.actualBlanket = true;
+      if (typeof original.literalValue === 'string' && ((!negative && base === 'all') || (negative && base === 'ignore-removal'))) result.runtimeBlanket = true;
       if (!negative && ['pathspec-from-file', 'pathspec-file-nul'].includes(base)) unsafe('file からの pathspec を検査できない');
       if (!negative && ADD_LONG[base] === 'v') {
         value(eq >= 0 ? { ...word, text: text.slice(eq + 1) } : words[++k]);
