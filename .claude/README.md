@@ -71,6 +71,14 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R34:CLAUDE-README:BEGIN -->
+**R34の契約（公開前・ローカル受入済み、as-of 2026-10-16T01:32:55.539+09:00 JST）**: [guard受入ガイド](../docs/security/git-command-guards.md#r34-current-contract)に固定版/backend・正常対照・通常影響・owner出口をまとめます。watchの実child/source、NcatのLua/ACL、SSHのBindAddress、GNU2.8 Telnetのlogin/forwarding・USER・DISPLAY/PRINTER・TERMとargv0 DTOを扱います。確定した禁止payloadを先にFORBIDDENとし、新しい未検査source UNKNOWNで隠しません。UNKNOWNは危険と確定した記録と分けます。
+
+実query、既知ordinary値、非選択sourceを対照に残します。通常argv0のTelnet fwd-only原入力はautologin既定falseで当該source非選択のALLOW、active credential sourceはUNKNOWN。ASCIIの既知認証無効化名とUnicode似字を同一視しません。SSHの有効`-O`＋証明済みno-ControlPathは接続前終了としてALLOWを保ち、選択されたbind DNSと区別します。普通のLua/ACL file、必要な認証・環境値も未検査なら止まり得ます。同目的・同条件を保つ対応形式がなければ、対象・操作・mode・cwd/env/config/sourceと不明点をownerへ渡します。個別操作の了承をhook無効化・別経路実行へ広げません。
+
+全Bash egressと`if: "Bash(git *)"`のsecret-git/add-all登録は変更しません。統合私有sourceはEG`c7991eae…`/common`35e676b4…`。**全件7272/7272 PASS**＝旧7018 exact＋新254（alias1は別加算なし）、実Hook入力21816/broken0/typed EG1298、L1 **479/479 PASS**、単独reverse33機能137pairs/822入力。旧7018の判定・ownEG・denied・理由prefix・brokenの差は0ですが、過去の一時fixture/env/cwdを同一とする比較ではありません。公開head/CI/fresh/thread/L3は **PENDING**。L1解析、Hook DATA L2、実settings dispatch L3、nativeのbackend/権限/DNS/認証/transportを別gateにします。Node26/93/責務refactor/mergeの既存方針は維持します。**直後のR33以下は当時のas-ofを保った履歴**です。
+<!-- PR191:R34:CLAUDE-README:END -->
+
 <!-- PR191:R33:CLAUDE-README:BEGIN -->
 **R33の現契約（公開準備）**: [guard受入ガイド](../docs/security/git-command-guards.md#r33-current-contract)を参照してください。対応calleeのoption/値/queryとDATA、Git object/state/ref/autostash、選択された認証・実行sourceと送信metadataを区別します。childが実行されない/queryの場合も、外側のsocket redirection等を独立検査します。
 

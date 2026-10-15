@@ -1396,6 +1396,7 @@ function shortValueWrapperArgs(rest, info, name) {
     (!word.dynamic || typeof word.literalValue === 'string');
   const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
   let k = 0, clear = false, validate = false, shell = false;
+  let childArgv0Word = null, childArgv0Login = false, childArgv0Carrier = null, childArgv0Offset = 0;
   while (k < rest.length && textOf(rest[k])?.startsWith('-') && textOf(rest[k]) !== '-') {
     const word = rest[k], text = textOf(word);
     if (!known(word)) info.launcherUnknown = true;
@@ -1408,10 +1409,15 @@ function shortValueWrapperArgs(rest, info, name) {
       if (name === 'caffeinate' && option === 'h' && !info.launcherUnknown) return -1;
       if (name === 'doas' && option === 'L' && !info.launcherUnknown) return -1;
       if (name === 'exec' && option === 'c') clear = true;
+      if (name === 'exec' && option === 'l') childArgv0Login = true;
       if (name === 'doas' && option === 's') shell = true;
       if (spec.values.includes(option)) {
         const value = j + 1 < text.length ? { ...word, text: text.slice(j + 1), literalValue: undefined } : rest[++k];
         if (!known(value)) info.launcherUnknown = true;
+        if (name === 'exec' && option === 'a') {
+          childArgv0Word = value; childArgv0Carrier = j + 1 < text.length ? word : value;
+          childArgv0Offset = j + 1 < text.length ? j + 1 : 0;
+        }
         if (name === 'doas' && option === 'C') validate = true;
         if (name === 'doas' && option === 'a') info.launcherUnknown = true; // selected auth backend is not inspected
         break;
@@ -1423,6 +1429,76 @@ function shortValueWrapperArgs(rest, info, name) {
   if (info.launcherUnknown) return rest.length;
   if (name === 'doas' && validate || k >= rest.length) return -1; // no child; config validation is not permission/auth certification
   if (name === 'exec' && clear) info.envOps.push({ clear: true });
+  if (name === 'exec') info.childArgv0 = { word: childArgv0Word, login: childArgv0Login,
+    carrier: childArgv0Carrier, offset: childArgv0Offset };
+  return k;
+}
+
+/** procps-ng watch 4.0.5: '+' getopt stops at the child; default joins argv for system(). */
+function watchArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true; // -x passes argv to execvp, not shell assignment syntax.
+  const role = { mode: 'unknown', childIndex: null, source: null, priorLauncherUnknown: info.launcherUnknown };
+  info.watchLauncher = role;
+  const required = new Set(['interval', 'equexit', 'shotsdir']);
+  const names = ['color', 'no-color', 'differences', 'help', 'interval', 'beep', 'errexit',
+    'chgexit', 'equexit', 'exec', 'precise', 'no-rerun', 'shotsdir', 'no-title', 'no-wrap', 'version'];
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  const take = (name, word) => {
+    if (!known(word)) { info.launcherUnknown = true; return; }
+    const text = textOf(word);
+    // Numeric errors can exit before a later query. Support finite decimal forms only.
+    if (name === 'interval' && !/^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:[eE][+-]?\d+)?$/.test(text)) info.launcherUnknown = true;
+    if (name === 'equexit' && !/^[+-]?\d+$/.test(text)) info.launcherUnknown = true;
+  };
+  let k = 0, direct = false;
+  while (k < rest.length) {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) { info.launcherUnknown = true; break; }
+    if (text === '--') { k++; break; }
+    if (!text.startsWith('-') || text === '-') break;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = names.includes(name) ? [name] : names.filter(option => option.startsWith(name));
+      if (!name || matches.length !== 1) { info.launcherUnknown = true; break; }
+      const option = matches[0];
+      if (required.has(option)) take(option, eq < 0 ? rest[++k] : { ...word, text: text.slice(eq + 1), literalValue: undefined });
+      else if (option === 'differences') { /* GNU optional value is attached only and remains DATA. */ }
+      else if (eq >= 0) { info.launcherUnknown = true; break; }
+      else if (['help', 'version'].includes(option) && !info.launcherUnknown) { role.mode = 'query'; return -1; }
+      else if (option === 'exec') direct = true;
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        const option = text[j];
+        if ('hv'.includes(option) && !info.launcherUnknown) { role.mode = 'query'; return -1; }
+        if ('nqs'.includes(option)) {
+          take({ n: 'interval', q: 'equexit', s: 'shotsdir' }[option], j + 1 < text.length
+            ? { ...word, text: text.slice(j + 1), literalValue: undefined } : rest[++k]);
+          break;
+        }
+        if (option === 'd') break; // all remaining bytes are its optional attached DATA.
+        if (option === 'x') direct = true;
+        else if (!'bCcegprtw'.includes(option)) { info.launcherUnknown = true; break; }
+      }
+    }
+    if (info.launcherUnknown) break;
+    k++;
+  }
+  if (info.launcherUnknown) return rest.length;
+  if (k >= rest.length) { role.mode = 'no-child'; return -1; }
+  role.childIndex = k;
+  if (direct) {
+    // Scalar DATA proof does not certify a generated executable identity. Keep this
+    // watch-owned uncertainty typed so egress can preserve an independent confirmed refusal.
+    if (rest[k].dynamic) { info.launcherUnknown = true; return rest.length; }
+    role.mode = 'exec'; return k;
+  }
+  const command = rest.slice(k);
+  if (!command.every(known)) { info.launcherUnknown = true; return rest.length; }
+  role.mode = 'shell';
+  role.source = command.map(textOf).join(' '); // watch.c 1216-1228; quoting is not reinserted.
   return k;
 }
 
@@ -1444,9 +1520,10 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
+const SCALAR_LAUNCHERS = new Set(['watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
 
 const WRAPPERS = {
+  watch: watchArgs,
   script: scriptArgs,
   prlimit: (rest, info) => prlimitArgs(rest, info),
   setpriv: (rest, info) => setprivArgs(rest, info),
@@ -1483,9 +1560,10 @@ const WRAPPERS = {
     const longNames = ['ignore-environment', 'null', 'unset', 'chdir', 'split-string', 'argv0', 'debug',
       'default-signal', 'ignore-signal', 'block-signal', 'list-signal-handling', 'help', 'version'];
     const required = new Set(['unset', 'chdir', 'split-string', 'argv0']);
-    const apply = (name, value) => {
+    const apply = (name, value, carrier = value, offset = 0) => {
       if (name === 'ignore-environment') info.envOps.push({ clear: true });
       if (name === 'chdir') info.cdLike = true;
+      if (name === 'argv0') info.childArgv0 = { word: value, login: false, carrier, offset };
       if (name === 'split-string') {
         info.splitString = true;
         if (value) info.splitWords.push(value);
@@ -1510,7 +1588,7 @@ const WRAPPERS = {
         if (eq >= 0) value = { ...w, text: t.slice(eq + 1) };
         else if (required.has(full)) value = rest[++k];
         if (required.has(full) && !value) info.envUnknown = true;
-        apply(full, value);
+        apply(full, value, eq >= 0 ? w : value, eq >= 0 ? eq + 1 : 0);
         k++;
         continue;
       }
@@ -1523,7 +1601,7 @@ const WRAPPERS = {
             const name = { S: 'split-string', C: 'chdir', u: 'unset', a: 'argv0', P: 'path' }[ch];
             const value = p + 1 < t.length ? { ...w, text: t.slice(p + 1) } : rest[++k];
             if (!value) info.envUnknown = true;
-            apply(name, value);
+            apply(name, value, p + 1 < t.length ? w : value, p + 1 < t.length ? p + 1 : 0);
             break;
           }
           info.envUnknown = true;
@@ -1582,7 +1660,7 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
     name: null, nameWord: null, args: [], assigns: [], assignRaws: [],
     cdLike: false, incomplete: false, nonExec: false, dynamicName: false, executableExpansionUnknown: false, splitString: false,
     envOps: [], wrapped: false, wrapperNames: [], persistsEnv: false, envUnknown: false, splitWords: [],
-    launcherUnknown: false, launcherArgs: [],
+    launcherUnknown: false, launcherArgs: [], childArgv0: null, argv0Word: null, argv0Unknown: false,
   };
   let k = 0;
   for (;;) {
@@ -1610,6 +1688,12 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
     }
     const base = path.posix.basename(w.text);
     const rest = words.slice(k + 1);
+    // Selected argv0 belongs only to this immediate executable, never its next external child.
+    const selectedArgv0 = info.childArgv0;
+    info.childArgv0 = null;
+    info.argv0Word = selectedArgv0?.word || w;
+    info.argv0Selection = { carrier: selectedArgv0?.carrier || selectedArgv0?.word || w,
+      offset: selectedArgv0?.offset || 0, login: !!selectedArgv0?.login };
     // Shell function lookup precedes builtin/external wrapper handling for a direct literal call.
     if (!info.wrapped && localFunctions && localFunctions.has(w.text)) {
       info.name = w.text; info.nameWord = w; info.args = rest;
@@ -1617,6 +1701,8 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
     }
     const wrapper = Object.prototype.hasOwnProperty.call(WRAPPERS, base) ? WRAPPERS[base] : null;
     if (wrapper) {
+      // exec/env naming a shell lookup builtin is not proof that a second builtin executes.
+      if (selectedArgv0 && ['command', 'builtin', 'exec'].includes(base)) info.argv0Unknown = true;
       // exec は POSIX special builtin。プログラムを付けない形でも代入が残りうる。
       if (base === 'exec' && !info.wrapped) info.persistsEnv = true;
       info.wrapped = true;
@@ -1624,6 +1710,14 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
       const r = wrapper(SCALAR_LAUNCHERS.has(base) && launcherScalarState
         ? rest.map(word => literalScalarWord(word, launcherScalarState)) : rest, info);
       if (r < 0) { info.nonExec = true; info.name = base; return info; }
+      if (base === 'watch' && info.watchLauncher?.mode === 'shell') {
+        // Preserve the actual default system(command) source via the existing sh -c path.
+        const literal = text => ({ text, raw: "'" + text.replace(/'/g, "'\\''") + "'",
+          quoted: true, dynamic: false, dynamicMaySplit: false });
+        info.name = 'sh'; info.nameWord = literal('sh');
+        info.args = [literal('-c'), literal(info.watchLauncher.source)];
+        return info;
+      }
       if (base === 'script' && info.launcherUnknown) {
         info.name = base; info.nameWord = w; info.args = rest; return info;
       }
@@ -2760,6 +2854,17 @@ function inspect(cmd, options = {}) {
     return typeof value === 'string' && word.dynamicMaySplit === false && !state.integers.has(name) && !state.associatives.has(name)
       ? { ...selected, outboundLiteralValue: match[1] + match[2] + value + match[5] } : selected;
   };
+  // Resolve the original carrier once, then remove only the consumed option prefix.
+  // Re-proving a sliced word from its unsliced raw text would promote --argv0= DATA into argv0.
+  const selectedChildArgv0Word = (info, state) => {
+    const selection = info.argv0Selection;
+    if (!selection?.carrier) return null;
+    const word = outboundScalarWord(selection.carrier, state), offset = selection.offset;
+    const prefix = selection.login ? '-' : '';
+    return { ...word, text: prefix + word.text.slice(offset),
+      literalValue: typeof word.literalValue === 'string' ? prefix + word.literalValue.slice(offset) : undefined,
+      outboundLiteralValue: typeof word.outboundLiteralValue === 'string' ? prefix + word.outboundLiteralValue.slice(offset) : undefined };
+  };
   const sourceDepth = options.sourceDepth || 0;
   const inspectionId = ++inspectionSerial;
   const pipelineIds = new Map();
@@ -2890,7 +2995,7 @@ function inspect(cmd, options = {}) {
           res.problems.push('@P で再評価する prompt の値を確かめられず、保存された source の実行を検査できない');
         }
       } else if (evaluation.kind === 'source') {
-        const inner = inspectMediatedSource(evaluation.text, sourceDepth);
+        const inner = inspectMediatedSource(evaluation.text, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true });
         if (inner.problems.length) res.problems.push(`Bash の current-environment command substitution を検査できない（${inner.problems[0]}）`);
       }
     };
@@ -3009,8 +3114,10 @@ function inspect(cmd, options = {}) {
       wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
       executableExpansionUnknown: info.executableExpansionUnknown,
       wrapperNames: info.wrapperNames,
+      argv0Word: selectedChildArgv0Word(info, expansionState), argv0Unknown: info.argv0Unknown,
       launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
       scriptLauncherRole: info.scriptLauncher || null,
+      watchLauncherRole: info.watchLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
       definitionName: c.definitionName,
@@ -3387,8 +3494,10 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
-      res.problems.push(info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+      const watchUnknown = info.watchLauncher?.mode === 'unknown' && !info.watchLauncher.priorLauncherUnknown;
+      // Only egress explicitly defers this new watch-owned source uncertainty; other problems stay immediate.
+      if (!(watchUnknown && options.deferWatchSourceProblems === true)) res.problems.push(watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
     if (positionalUnknown || (positionalExec && info.name === 'git')) {
@@ -3451,7 +3560,7 @@ function inspect(cmd, options = {}) {
     if (trap) {
       if (trap.unknown) res.problems.push('trap の action の位置を読みきれず、実行する source を検査できない');
       for (const script of trap.scripts) {
-        const inner = inspectMediatedSource(script, sourceDepth);
+        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true });
         if (inner.problems.length) res.problems.push(`trap の action を検査できない（${inner.problems[0]}）`);
         const trace = sourceTraceEffects(inner);
         if (trace.prompt) state.identitySources.set('PS4', null);
@@ -3472,7 +3581,7 @@ function inspect(cmd, options = {}) {
     if (alias) {
       if (alias.unknown) res.problems.push('alias の定義の位置や値を読みきれず、実行する source を検査できない');
       for (const script of alias.scripts) {
-        const inner = inspectMediatedSource(script, sourceDepth);
+        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true });
         if (inner.problems.length) res.problems.push(`alias の値を検査できない（${inner.problems[0]}）`);
         if (sourceChangesValues(inner)) state.valuesTainted = true;
       }

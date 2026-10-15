@@ -204,6 +204,7 @@ const inheritedFunctionNames = [...new Set(Object.entries(process.env).flatMap((
 }))];
 const insp = guard.inspect(cmd, {
   trackOutboundEnvironment: true,
+  deferWatchSourceProblems: true,
   initialOutboundEnvironmentNames: Object.keys(process.env),
   initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_EXTERNAL_DIFF', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
     .filter(name => process.env[name] !== undefined),
@@ -3523,6 +3524,34 @@ function sshJumpPayload(options, host, argvUncertain) {
     jump.text.includes('%') || jump.text.includes('#') || /\$\{/.test(jump.text)) };
 }
 
+/** Direct OpenSSH9.6 BindAddress is resolver DATA, separate from local interface selection. */
+function sshBindAddressPayload(invocation, selection) {
+  const { options, host, argvUncertain, controlOperation } = selection;
+  const empty = { words: [], unknown: false };
+  const source = options.get('bindaddress');
+  if (!host || !source) return empty;
+  // The caller has already rejected implicit/opaque config. A valid -O with no
+  // selected ControlPath fatals before connect; an existing path may fall through after mux failure.
+  const pathSource = options.get('controlpath'), pathLiteral = literalSourceWord(pathSource);
+  const pathTokens = pathLiteral && (pathSource.sshControlPathConfig ? sshConfigTokens(pathLiteral) : [pathLiteral.text]);
+  const noControlPath = !options.has('controlpath') || pathTokens?.length === 1 && pathTokens[0].toLowerCase() === 'none';
+  if (knownInvocationContext(invocation) && !argvUncertain && !invocation.incomplete && noControlPath &&
+      ['check', 'forward', 'exit', 'stop', 'cancel', 'proxy'].includes(literalSourceWord(controlOperation)?.text)) return empty;
+  const proxy = sshCanonicalProxySelection(options);
+  if (!proxy.unknown && !proxy.direct) return empty;
+  const attempts = options.get('connectionattempts');
+  if (attempts && sshOptionScalar(attempts) === '0') return empty;
+  let word = source;
+  if (source.sshBindConfig) {
+    const tokens = sshConfigTokens(source);
+    if (!tokens || tokens.length !== 1) return { words: [source], unknown: true };
+    word = { ...source, text: tokens[0], literalValue: undefined, outboundLiteralValue: undefined };
+    const literal = literalSourceWord(source);
+    if (literal) word = { ...word, dynamic: false };
+  }
+  return { words: [word], unknown: argvUncertain || invocation.incomplete || proxy.unknown };
+}
+
 /** Read SSH's option boundary before and after the host, stopping at the actual remote command. */
 function sshOperation(invocation) {
   if (invocation.name === 'scp') {
@@ -3609,10 +3638,14 @@ function sshOperation(invocation) {
       const original = p + 1 < text.length ? sshConsumedValueWord(word, p + 1) : invocation.args[++k];
       const value = literalSourceWord(original) || original;
       if (!original || expandsArgument(original)) argvUncertain = true;
-      if (value?.dynamic && (value.dynamicMaySplit !== false || (!'RLWDw'.includes(text[p]) && p + 1 < text.length && value.text.startsWith('\0')))) argvUncertain = true;
+      if (value?.dynamic && (value.dynamicMaySplit !== false || (!'bRLWDw'.includes(text[p]) && p + 1 < text.length && value.text.startsWith('\0')))) argvUncertain = true;
       if ('RLWDw'.includes(text[p])) forwards.push({ kind: text[p], word: value });
       if (text[p] === 'F') { selectedConfig = true; configFile = value; }
+      // CLI -b assigns every time; -o BindAddress below retains first-value selection.
+      if (text[p] === 'b') options.set('bindaddress', value || { text: '\0', dynamic: true });
       if (text[p] === 'O') controlOperation = value;
+      // CLI -S assigns every time, while -o ControlPath retains first-value selection.
+      if (text[p] === 'S') options.set('controlpath', value || { text: '\0', dynamic: true });
       // OpenSSH assigns CLI -l only while options.user is NULL.
       if (text[p] === 'l' && !selectedUser) { selectedUser = true; loginWord = value; }
       if (text[p] === 'o') {
@@ -3622,6 +3655,8 @@ function sshOperation(invocation) {
           const key = match[1].toLowerCase();
           const optionWord = sshConsumedValueWord(value, value.text.length - match[2].length);
           if (key === 'proxyjump') optionWord.sshJumpConfig = true;
+          if (key === 'bindaddress') optionWord.sshBindConfig = true;
+          if (key === 'controlpath') optionWord.sshControlPathConfig = true;
           if (key === 'remoteforward' || key === 'localforward' || key === 'dynamicforward') forwards.push({ kind: key === 'remoteforward' ? 'R' : key === 'localforward' ? 'L' : 'D', word: optionWord, config: true });
           if (key === 'sendenv') sendEnvOptions.push(optionWord);
           if (key === 'sessiontype' && sessionType === undefined) sessionType = sshOptionScalar(optionWord) || 'unknown';
@@ -3747,7 +3782,9 @@ function sshOperation(invocation) {
   const forwarding = sshForwardPayload(invocation, { forwards, options, host, hostArgumentWord, controlOperation, argvUncertain });
   const canonicalDomains = sshCanonicalDomainPayload(invocation, { options, host, destinationWord, hostArgumentWord, argvUncertain });
   const jump = sshJumpPayload(options, host, argvUncertain);
+  const bind = sshBindAddressPayload(invocation, { options, host, argvUncertain, controlOperation });
   return { sources, stdin: host && !detached, remoteWords, argvUncertain, metadataWords, metadataUnknown,
+    bindAddressWords: bind.words, bindAddressUnknown: bind.unknown,
     jumpWords: jump.words, jumpUnknown: jump.unknown,
     canonicalDomainWords: canonicalDomains.words, canonicalDomainUnknown: canonicalDomains.unknown,
     forwardingWords: forwarding.words, forwardingUnknown: forwarding.unknown,
@@ -3777,16 +3814,19 @@ function socketAuthenticationRole(invocation, destinationRoles = false) {
   const required = new Set(ncat ? ['source-port', 'source', 'wait', 'idle-timeout', 'delay', 'max-conns',
     'proxy', 'proxy-type', 'proxy-auth', 'output', 'hex-dump', 'allow', 'allowfile', 'deny', 'denyfile',
     'proxy-dns', 'ssl-cert', 'ssl-key', 'ssl-trustfile', 'ssl-ciphers', 'ssl-servername', 'ssl-alpn',
-    'exec', 'sh-exec', 'lua-exec', 'nsock-engine', 'g', 'G'] : ['bind', 'escape', 'user', 'trace', 'realm', 'disable-auth']);
+    'exec', 'sh-exec', 'lua-exec', 'lua-exec-internal', 'nsock-engine', 'g', 'G'] : ['bind', 'escape', 'user', 'trace', 'realm', 'disable-auth']);
   const flags = new Set(ncat ? ['listen', 'udp', 'sctp', 'unixsock', 'vsock', 'crlf', 'keep-open', 'nodns',
     'telnet', 'verbose', 'append-output', 'send-only', 'recv-only', 'no-shutdown', 'broker', 'chat',
-    'ssl', 'ssl-verify', 'test', '4', '6'] : ['ipv4', 'ipv6', 'binary', 'login', 'no-rc', 'debug', 'no-escape',
-    'no-login', 'binary-output', 'rlogin', 'encrypt']);
+    'ssl', 'ssl-verify', 'test', 'talk', '4', '6'] : ['ipv4', 'ipv6', 'binary', 'login', 'no-rc', 'debug', 'no-escape',
+    'no-login', 'binary-output', 'rlogin', 'encrypt', 'fwd-credentials']);
   const shorts = ncat ? { p: 'source-port', w: 'wait', s: 'source', i: 'idle-timeout', d: 'delay',
     m: 'max-conns', g: 'route', G: 'route-pointer', q: 'quit-delay', o: 'output', x: 'hex-dump',
     e: 'exec', c: 'sh-exec' } : { b: 'bind', e: 'escape', l: 'user', n: 'trace', k: 'realm', X: 'disable-auth' };
-  const shortFlags = ncat ? '46UCulkn tvz'.replace(/ /g, '') : '468ac dEKLrx'.replace(/ /g, '');
-  const selected = new Map(), operands = [], selectedFlags = new Set(), earlyDnsWords = [], routeWords = [];
+  const shortFlags = ncat ? '46UCulkn tvz'.replace(/ /g, '') : '468ac dEKLrxfF'.replace(/ /g, '');
+  const ncatLongNames = ["4", "6", "unixsock", "vsock", "crlf", "g", "G", "exec", "sh-exec", "lua-exec", "lua-exec-internal", "max-conns", "help", "delay", "listen", "output", "hex-dump", "append-output", "idle-timeout", "keep-open", "recv-only", "source-port", "source", "send-only", "no-shutdown", "broker", "chat", "talk", "deny", "denyfile", "allow", "allowfile", "telnet", "udp", "sctp", "version", "verbose", "wait", "nodns", "proxy", "proxy-type", "proxy-auth", "proxy-dns", "nsock-engine", "test", "ssl", "ssl-cert", "ssl-key", "ssl-verify", "ssl-trustfile", "ssl-ciphers", "ssl-servername", "ssl-alpn"];
+  const selected = new Map(), operands = [], selectedFlags = new Set(), earlyDnsWords = [], routeWords = [], aclSpecs = [], aclFiles = [];
+  const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+  let internalExit = false, argumentExit = false, execCount = 0;
   let socketFamily = 'default';
   let unknown = !!invocation.incomplete, terminal = false, hasAuth = false, listen = false, localSocket = false;
   const select = (name, value) => {
@@ -3795,16 +3835,22 @@ function socketAuthenticationRole(invocation, destinationRoles = false) {
     if (!value) unknown = true;
     if (ncat && ['proxy', 'proxy-type', 'proxy-auth'].includes(name) && selected.has(name)) unknown = true;
     selected.set(name, value);
+    if (ncat && ['allow', 'deny'].includes(name)) aclSpecs.push(value);
+    if (ncat && ['allowfile', 'denyfile'].includes(name)) aclFiles.push(value);
+    if (ncat && ['exec', 'sh-exec', 'lua-exec'].includes(name) && ++execCount > 1) argumentExit = true;
+    if (ncat && name === 'lua-exec-internal') internalExit = true;
     // Ncat -g resolves route hops while parsing argv, before a later help/nodns option.
     if (destinationRoles && name === 'route' && !selectedFlags.has('nodns')) earlyDnsWords.push(value);
     if (destinationRoles && name === 'route') routeWords.push(value);
   };
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k], literal = socketAuthenticationLiteralWord(word);
+    if (ncat && posix && operands.length) { operands.push(word); continue; }
+    if (ncat && operands.length && invocation.outboundEnvironmentUnknown && literal?.text.startsWith('-')) unknown = true;
     // A fixed auth option prefix can have one generated scalar value without making its name dynamic.
     const attachedAuth = !literal && word.dynamicMaySplit === false && !word.globExpanded &&
       !word.braceExpanded && !word.tildeExpanded && !word.ansiCUnknown &&
-      (ncat ? ['--proxy-auth=', '--ssl-servername=', '--ssl-alpn='].some(prefix => word.text.startsWith(prefix)) :
+      (ncat ? /^--[A-Za-z0-9-]+=/.test(word.text) :
         word.text.startsWith('--user=') || word.text.startsWith('-l') && word.text.length > 2);
     if (!literal && !attachedAuth) {
       if (destinationRoles && word.dynamicMaySplit === false && !word.globExpanded &&
@@ -3816,7 +3862,12 @@ function socketAuthenticationRole(invocation, destinationRoles = false) {
     const text = literal ? literal.text : word.text;
     if (text === '--') { operands.push(...invocation.args.slice(k + 1)); break; }
     if (text.startsWith('--')) {
-      const eq = text.indexOf('='), name = text.slice(2, eq < 0 ? undefined : eq);
+      const eq = text.indexOf('='); let name = text.slice(2, eq < 0 ? undefined : eq);
+      if (ncat && !ncatLongNames.includes(name)) {
+        const matches = ncatLongNames.filter(option => option.startsWith(name));
+        if (matches.length !== 1) { unknown = true; continue; }
+        name = matches[0];
+      }
       if (eq < 0 && ['help', 'version', ...(!ncat ? ['usage'] : [])].includes(name)) {
         terminal = !unknown; break;
       }
@@ -3824,7 +3875,7 @@ function socketAuthenticationRole(invocation, destinationRoles = false) {
       else if (eq >= 0 || !flags.has(name)) unknown = true;
       else {
         selectedFlags.add(name);
-        if (['listen', 'broker', 'chat'].includes(name)) listen = true;
+        if (['listen', 'broker', ...(!ncat ? ['chat'] : [])].includes(name)) listen = true;
         if (ncat && ['unixsock', 'vsock', '4', '6'].includes(name)) {
           socketFamily = name === '4' ? 'ipv4' : name === '6' ? 'ipv6' : name;
           localSocket = ['unixsock', 'vsock'].includes(name);
@@ -3851,8 +3902,60 @@ function socketAuthenticationRole(invocation, destinationRoles = false) {
       }
       if (terminal) break;
     } else operands.push(word);
+    // This internal interpreter exits or asserts during option parsing; later query/ACL/targets are inactive.
+    if (internalExit || argumentExit) { terminal = !unknown; break; }
   }
-  return { ncat, selected, selectedFlags, operands, unknown, terminal, hasAuth, listen, localSocket, socketFamily, earlyDnsWords, routeWords };
+  return { ncat, selected, selectedFlags, operands, unknown, terminal, hasAuth, listen, localSocket, socketFamily, earlyDnsWords, routeWords, aclSpecs, aclFiles, internalExit, argumentExit, execCount,
+    argcKnown: invocation.args.every(word => !!socketAuthenticationLiteralWord(word) || word.dynamicMaySplit === false &&
+      !word.ansiCUnknown && !word.globExpanded && !word.braceExpanded && !word.tildeExpanded) };
+}
+
+/** Ncat ACL conversion is deferred until after final nodns and before connect-mode ACL rejection. */
+function ncatAclDnsVerdict(invocation) {
+  if (invocation.name !== 'ncat') return false;
+  const role = socketAuthenticationRole(invocation, true);
+  if (!role.aclSpecs.length && !role.aclFiles.length || role.terminal || role.internalExit || role.argumentExit) return false;
+  if (!role.unknown && role.selectedFlags.has('nodns')) return false;
+  const literal = word => socketAuthenticationLiteralWord(word)?.text;
+  const proxyType = role.selected.has('proxy-type') ? literal(role.selected.get('proxy-type')) : 'http';
+  const proxyDns = role.selected.has('proxy-dns') ? literal(role.selected.get('proxy-dns')) : 'remote';
+  const beforeAclError = proxyType && (!['http', 'socks4', '4', 'socks5', '5'].includes(proxyType) ||
+      role.selected.has('proxy-type') && !role.selected.has('proxy') && (!role.listen || proxyType !== 'http')) ||
+    proxyDns && !['none', 'local', 'remote', 'both'].includes(proxyDns) ||
+    role.listen && (role.selected.has('proxy') || role.selected.has('source')) ||
+    role.selectedFlags.has('zero') && (role.listen || role.selectedFlags.has('telnet') || role.execCount > 0);
+  if (!role.unknown && beforeAclError) return false;
+  const specs = role.aclSpecs.map(word => socketAuthenticationLiteralWord(word) || word);
+  const explicit = outboundPayloadVerdict(invocation, specs);
+  const files = role.aclFiles.map(word => socketAuthenticationLiteralWord(word));
+  // Filenames are not DNS labels. Their contents are selected host specifications; inspect no actual file.
+  const secretFile = files.some(word => word && guard.isSecretPath(word.text));
+  const opaqueFile = files.some(word => !word || word.text !== '/dev/null');
+  const uncertain = role.unknown || role.localSocket || !proxyType || !proxyDns || invocation.incomplete;
+  if (explicit === 'FORBIDDEN' || secretFile) return uncertain ? 'UNKNOWN' : 'FORBIDDEN';
+  if (explicit || opaqueFile) return 'UNKNOWN';
+  return false;
+}
+
+/** A selected Lua program is an uninspected executable file source, not a proven outbound body. */
+function ncatLuaSourceVerdict(invocation) {
+  if (invocation.name !== 'ncat') return false;
+  const role = socketAuthenticationRole(invocation, true);
+  if (role.internalExit) {
+    // The fixed source asserts argc==3 before loading argv[2], independently of optarg spelling.
+    return !role.unknown && role.argcKnown && invocation.args.length !== 2 ? false : 'UNKNOWN';
+  }
+  if (role.terminal) return false;
+  if (!role.selected.has('lua-exec')) return role.unknown ? 'UNKNOWN' : false;
+  if (!role.unknown && role.selectedFlags.has('zero')) return false;
+  const proxyType = role.selected.has('proxy-type') ? socketAuthenticationLiteralWord(role.selected.get('proxy-type'))?.text : 'http';
+  const proxyDns = role.selected.has('proxy-dns') ? socketAuthenticationLiteralWord(role.selected.get('proxy-dns'))?.text : 'remote';
+  if (!role.unknown && (proxyType && !['http', 'socks4', '4', 'socks5', '5'].includes(proxyType) ||
+      proxyDns && !['none', 'local', 'remote', 'both'].includes(proxyDns) ||
+      role.listen && (role.selected.has('proxy') || role.selected.has('source')) ||
+      role.selected.has('proxy-type') && !role.selected.has('proxy') && (!role.listen || proxyType !== 'http') ||
+      !role.listen && !role.operands.length || role.operands.length > 2 || role.execCount > 1)) return false;
+  return 'UNKNOWN';
 }
 
 /** Names used by resolution/proxy/connection are outbound roles independently of stdin or TLS. */
@@ -3861,7 +3964,7 @@ function ncatDestinationVerdict(invocation) {
   const role = socketAuthenticationRole(invocation, true);
   const early = outboundPayloadVerdict(invocation, role.earlyDnsWords);
   if (early) return early;
-  if (role.terminal || role.localSocket) return false;
+  if (role.terminal || role.internalExit || role.argumentExit || role.localSocket) return false;
   const proxyType = role.selected.has('proxy-type') ? socketAuthenticationLiteralWord(role.selected.get('proxy-type'))?.text : 'http';
   if (!proxyType) return 'UNKNOWN';
   if (!['http', 'socks4', '4', 'socks5', '5'].includes(proxyType) ||
@@ -3935,13 +4038,27 @@ function ncTelnetDestinationRole(invocation) {
     ['user', 'l'], ['binary-output', 'L'], ['trace', 'n'], ['rlogin', 'r'], ['encrypt', 'x'],
     ['disable-auth', 'X'], ['realm', 'k'], ['fwd-credentials', 'f'], ['help', '?'], ['usage', '?'], ['version', 'V']]);
   const selected = new Map(), operands = [], selectedFlags = new Set();
+  let autologin = null, rlogin = null, forwardCount = 0;
+  const disabledAuth = [];
   const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
   let unknown = !!invocation.incomplete, terminal = false, terminalArgumentError = false, family = 'default', afterDash = false;
-  const take = (key, value) => { if (!value) unknown = true; selected.set(required[key] || 'platform-value', value); };
+  const take = (key, value) => {
+    if (!value) unknown = true;
+    selected.set(required[key] || 'platform-value', value);
+    if (!nc && key === 'l') autologin = true;
+    if (!nc && key === 'X') disabledAuth.push(value);
+  };
   const flag = key => {
     if (nc && key === 'h' || !nc && ['?', 'V'].includes(key)) { terminal = !unknown; return; }
     if (!flags.includes(key) && key !== '.' && key !== 'm') { unknown = true; return; }
     selectedFlags.add(key);
+    if (!nc) {
+      if (key === 'a') autologin = true;
+      if (key === 'K') autologin = false;
+      if (key === 'r') rlogin = true;
+      if (key === 'E') rlogin = false;
+      if (key === 'f' || key === 'F') forwardCount++;
+    }
     if (['4', '6', ...(nc ? ['U'] : [])].includes(key)) family = key === 'U' ? 'unix' : key === '4' ? 'ipv4' : 'ipv6';
   };
   for (let k = 0; k < invocation.args.length; k++) {
@@ -3985,7 +4102,8 @@ function ncTelnetDestinationRole(invocation) {
     } else operands.push(word);
     if (terminal) break;
   }
-  return { nc, selected, selectedFlags, operands, unknown, terminal, terminalArgumentError, family };
+  return { nc, selected, selectedFlags, operands, unknown, terminal, terminalArgumentError, family,
+    autologin, rlogin, forwardCount, disabledAuth };
 }
 
 /** Selected address generation is independent of socket stdin and scan/read-only labels. */
@@ -4030,6 +4148,59 @@ function ncTelnetDestinationVerdict(invocation) {
     if (selected.has('bind')) words.push(selected.get('bind'));
   }
   return outboundPayloadVerdict(invocation, words.map(word => socketAuthenticationLiteralWord(word) || word));
+}
+
+/** GNU2.8's selected host and ordered login state are independent of stdin EOF and cmdrc. */
+function telnetSessionRole(invocation) {
+  const role = ncTelnetDestinationRole(invocation);
+  if (!role || role.nc || role.terminal || role.terminalArgumentError ||
+      !role.operands.length || role.operands.length > 2 || role.forwardCount > 1) return null;
+  const host = socketAuthenticationLiteralWord(role.operands[0]);
+  if (host && (host.text === 'help' || host.text === '?')) return null;
+  let login = role.autologin;
+  if (login === null) {
+    if (role.rlogin !== null) login = role.rlogin;
+    else {
+      const argv0 = invocation.argv0Unknown ? null : socketAuthenticationLiteralWord(invocation.argv0Word || invocation.nameWord);
+      login = argv0 ? argv0.text.split('/').pop().startsWith('rlog') : null;
+    }
+  }
+  return { ...role, login };
+}
+
+/** Default ENVIRON exports and explicit USER retain their selected producer; no native byte claim. */
+function telnetEnvironmentPayloadVerdict(invocation) {
+  const role = telnetSessionRole(invocation);
+  if (!role) return false;
+  const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  const words = ['DISPLAY', 'PRINTER'].filter(name => environment.has(name)).map(name => environment.get(name));
+  if (role.selected.has('user')) words.push(role.selected.get('user'));
+  const verdicts = words.map(word => outboundPayloadVerdict(invocation, [word]));
+  const verdict = verdicts.find(value => value === 'FORBIDDEN') || verdicts.find(Boolean);
+  if (role.unknown) return verdict || words.length ? 'UNKNOWN' : false;
+  if (verdict === 'FORBIDDEN') return verdict;
+  if (invocation.outboundEnvironmentUnknown) return 'UNKNOWN';
+  if (verdict) return verdict;
+  // TTYPE passes termcap/uppercase/length selection; unknown generated TERM is not an unchanged-byte proof.
+  if (environment.has('TERM') && !socketAuthenticationLiteralWord(environment.get('TERM'))) return 'UNKNOWN';
+  return false;
+}
+
+/** Active implicit passwd identity / KRB5 forwarding source is uninspected, not confirmed leakage. */
+function telnetCredentialSourceVerdict(invocation) {
+  const role = telnetSessionRole(invocation);
+  if (!role) return false;
+  if (role.login === false && !role.unknown) return false;
+  // Even -K retains an explicit -l USER as ENVIRON DATA, checked independently above.
+  if (role.login !== false && !role.selected.has('user')) return 'UNKNOWN';
+  if (!role.forwardCount) return false;
+  // auth_disable_name uses the compiled AUTH_NAMES spelling; this exact KRB5 name disables that source.
+  if (role.disabledAuth.some(word => {
+    const name = socketAuthenticationLiteralWord(word)?.text;
+    // GNU auth_disable_name's byte-oriented strcasecmp is not JS Unicode case folding.
+    return typeof name === 'string' && /^[\x00-\x7f]+$/.test(name) && name.toUpperCase() === 'KERBEROS_V5';
+  })) return false;
+  return role.login !== false || role.unknown ? 'UNKNOWN' : false;
 }
 
 /** GNU telnet2.8 reads cmdrc only after a successful selected-host connection. */
@@ -4703,6 +4874,13 @@ function sftpSession(words) {
 
 /** Detect netcat execution options without interpreting consumed port/address/proxy values as flags. */
 function reverseShell(invocation) {
+  if (invocation.name === 'ncat') {
+    const role = socketAuthenticationRole(invocation);
+    if (role.terminal || role.internalExit || role.argumentExit) return false;
+    const value = role.selected.get('exec') || role.selected.get('sh-exec');
+    if (!value) return false;
+    return !role.unknown && socketAuthenticationLiteralWord(value) ? 'FORBIDDEN' : 'UNKNOWN';
+  }
   const shortValues = invocation.name === 'ncat' ? 'pwsimgG' : 'piwsqmxXP';
   const longValues = new Set(['source-port', 'source', 'wait', 'idle-timeout', 'delay', 'max-conns',
     'proxy', 'proxy-type', 'proxy-auth', 'ssl-cert', 'ssl-key', 'ssl-trustfile']);
@@ -4764,6 +4942,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
   const childShell = ['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name);
   return {
     trackOutboundEnvironment: true,
+    deferWatchSourceProblems: true,
     initialOutboundEnvironmentSources: invocation.outboundEnvironmentSources || [],
     initialOutboundEnvironmentUnknown: !!invocation.outboundEnvironmentUnknown,
     initialHelperEnvNames: invocation.helperEnvNames,
@@ -4785,6 +4964,12 @@ function sourceInspectionOptions(invocation, extra = {}) {
     initialExportedFunctionUnknown: !!invocation.exportedFunctionUnknown,
     ...extra,
   };
+}
+
+/** Only watch-owned unresolved argv/source is deferred; ordinary parser problems remain immediate. */
+function watchSourceVerdict(invocation) {
+  const role = invocation.watchLauncherRole;
+  return role?.mode === 'unknown' && !role.priorLauncherUnknown && invocation.launcherUnknown ? 'UNKNOWN' : false;
 }
 
 const inspectedGits = [];
@@ -5162,7 +5347,10 @@ function parsedExfil(invocation) {
     (wgetSourceBoundary(invocation) ? 'UNKNOWN' : wgetInlinePayloadVerdict(invocation)) || proxyEnvironmentVerdict(invocation) || wgetNetrcCredentialSourceVerdict(invocation);
   if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
   if (['ncat', 'telnet'].includes(invocation.name)) verdict = verdict || socketAuthenticationVerdict(invocation);
-  if (invocation.name === 'ncat') verdict = verdict || ncatTlsMetadataVerdict(invocation) || ncatDestinationVerdict(invocation);
+  // Preserve a confirmed explicit USER/default-export payload before the new implicit-source fallback.
+  if (invocation.name === 'telnet' && telnetEnvironmentPayloadVerdict(invocation) === 'FORBIDDEN') verdict = 'FORBIDDEN';
+  if (invocation.name === 'ncat') verdict = verdict || ncatTlsMetadataVerdict(invocation) || ncatDestinationVerdict(invocation) ||
+    (ncatAclDnsVerdict(invocation) === 'FORBIDDEN' ? 'FORBIDDEN' : false);
   if (['nc', 'telnet'].includes(invocation.name)) {
     const destination = ncTelnetDestinationVerdict(invocation);
     verdict = invocation.name === 'telnet' && destination === 'FORBIDDEN' ? destination : verdict || destination;
@@ -5178,8 +5366,10 @@ if (SCP_TEXT_COPY_SHAPE.test(cmd) && !knownSingleScpReceiveOnly(insp)) {
   deny('文字列に SCP copy に似た形があり、単一の既知 external actor・argv/context・receive/local destination を証明できません。他の送信・helper/source 条件とは独立した textual backstop です (egress guard)。' + UNKNOWN_OWNER_GATE);
 }
 const invocations = collectNetworkInvocations(insp);
+const selectedSshBindPayloads = [];
 for (const invocation of invocations) {
   const remote = sshOperation(invocation);
+  if (remote.bindAddressWords?.length || remote.bindAddressUnknown) selectedSshBindPayloads.push({ invocation, remote });
   if (remote.metadataWords?.length) {
     const verdict = remote.argvUncertain || remote.metadataUnknown ? 'UNKNOWN' :
       outboundPayloadVerdict(invocation, remote.metadataWords);
@@ -5303,6 +5493,18 @@ if (networkInputVerdict) {
     'stdin を消費する network client と、その入力の secret filename operand が同じ読取・pipeline 関係に当たり、既存の禁止形式です。ファイル内容や実送信の成立を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。' :
     'stdin を消費する network client の入力について source・argv・実行 identity・cwd/context を確認できません (egress guard, fail-closed)。owner に対象・操作・cwd・env/config/source と不明点を確認してください。', networkInputVerdict);
 }
+// New selected DATA checks retain independent existing payload/stdin FORBIDDEN priority.
+const selectedResolverAndEnvironmentVerdicts = selectedSshBindPayloads.map(({ invocation, remote }) => {
+  const verdict = outboundPayloadVerdict(invocation, remote.bindAddressWords || []);
+  return contextualVerdict(invocation, remote.bindAddressUnknown ? verdict ? 'UNKNOWN' : false : verdict);
+}).concat(invocations.filter(invocation => invocation.name === 'telnet').map(invocation =>
+  contextualVerdict(invocation, telnetEnvironmentPayloadVerdict(invocation))));
+const selectedResolverAndEnvironmentVerdict = selectedResolverAndEnvironmentVerdicts.find(verdict => verdict === 'FORBIDDEN') ||
+  selectedResolverAndEnvironmentVerdicts.find(Boolean);
+if (selectedResolverAndEnvironmentVerdict) deny(selectedResolverAndEnvironmentVerdict === 'FORBIDDEN' ?
+  'SSH の選択された BindAddress resolver DATA または telnet の export された環境 / USER DATA の生成元が、禁止された secret filename operand に当たります。native resolver / protocol・認証・実送信は確認していません。' :
+  'SSH の selected BindAddress resolver DATA または telnet の selected 環境 DATA・変換・生成元・argv/context を確定できません。同目的・同条件を保つ known ordinary / 実 query / 未選択形式が可能でなければ' + UNKNOWN_OWNER_GATE, selectedResolverAndEnvironmentVerdict);
+if (invocations.some(telnetCredentialSourceVerdict)) deny('telnet の有効な自動ログインが選ぶ USER / passwd identity または明示 credential forwarding が選ぶ compiled authentication / local credential source と実行条件を検査できません。no-rc・stdin EOF は認証を無効にしません。実 query・実 no-login・未使用の同目的形式を保てなければ' + UNKNOWN_OWNER_GATE);
 // Defer only the new opaque-source UNKNOWN fallbacks until independent payload/stdin verdicts.
 if (invocations.some(rsyncDaemonProgramSource)) deny('rsync direct daemon の RSYNC_CONNECT_PROG / RSYNC_SHELL が選ぶローカル command・interpreter source と実行条件を検査できません。空の CONNECT_PROG も native の source 選択を無効にしません。local / remote-shell / query の対応済み条件以外は owner に対象・操作・cwd/env/config/source を確認してください。' + UNKNOWN_OWNER_GATE);
 if (invocations.some(invocation => telnetStartupSourceVerdict(invocation) || telnetCommandSourceVerdict(invocation))) deny('telnet が選ぶ接続後の cmdrc または host 未指定時の stdin command source と実行条件を検査できません。既知の EOF / 実 query / 対応する設定無効化で同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
@@ -5427,10 +5629,20 @@ for (const g of inspectedGits) {
   }
 }
 
+// Selected Ncat file/argv uncertainty cannot hide an existing definite payload/auth/DNS refusal above.
+if (invocations.some(invocation => ncatAclDnsVerdict(invocation) === 'UNKNOWN' || ncatLuaSourceVerdict(invocation))) {
+  deny('Ncat が選択した Lua 実行 source・ACL file の host 内容・option 境界を検査できません。実 query / 同じ ACL の確定 host 指定などで同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
 // Keep every existing independent refusal/category above this new source fallback.
 // No metadata absence or unproved backend/profile is used to clear configuration.
 if (invocations.some((invocation) => rsyncPoptConfigRole(invocation).active)) {
   deny('GNU rsync/popt が到達する option selector は、既知の -a・help・version より先に default alias / exec source を選び得ます。実 backend・設定・選択された argv/program を検査できないため判断不能です。設定の読取や実実行・通信が成立した証明ではありません。必要な option の意味を保つ対応済み形式がなければ owner に対象・操作・source/config/profile・cwd/env と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// New watch uncertainty cannot replace an existing confirmed refusal/category above.
+if (invocations.some(watchSourceVerdict)) {
+  deny('watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

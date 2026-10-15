@@ -18,6 +18,14 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R34:README-CONTRACT:BEGIN -->
+**R34 guard契約（公開前・ローカル受入済み、as-of 2026-10-16T01:32:55.539+09:00 JST）**: 公開親は `03fdb5cd6ce537f916648c5db581d2910ecc67b9`。有限修復は watch の実child/source、Ncat の Lua sourceとACL DNS、SSH の選択されたBindAddress DNS、GNU Telnet の実選択された認証・環境値とexec/env argv0 carrierを扱います。統合私有runtimeは egress `c7991eae…` / common `35e676b4…`。**全件試験7272/7272 PASS**（旧7018の入力・期待を保持＋新規254、alias1は旧入力と完全一致）。実Hook入力21816、broken0、typed own-egress期待1298件、source/runner/definitionsとowned Git/files/modesは不変です。L1は解析467＋parity12＝**479/479 PASS**。統合単独逆検証は33機能137pairs/822Hook入力で閉鎖していますが、新head・CI・fresh review/thread・実project入口は **PENDING** です。旧componentや解析・逆検証の成功を全件/L3へ持ち越しません。
+
+未検査watch source・Lua file・ACL file・active Telnet credential sourceはUNKNOWN、秘密由来の有効DNS/環境payloadはFORBIDDENです。実query・非選択source・既知ordinaryの対照を残し、一律禁止へ広げません。Telnetの元exact fwd-only入力は通常argv0のautologin既定falseにより当該sourceが非選択でALLOW、active variantはUNKNOWNです。認証無効化名の照合はASCIIだけに限定します。SSHの有効な`-O`と証明済みno-ControlPathは接続前終了としてALLOWを維持し、active bindの停止とは分けます。
+
+[版・正常対照・owner出口・有限原因表・受入gate](docs/security/git-command-guards.md#r34-current-contract)を参照してください。普通のLua/ACL fileや必要な認証・未対応sourceも止まり得ます。同じ対象・目的・mode・argv・cwd/envを保つ対応済み形式がなければownerへ確認します。settingsの全Bash egress／conditional secret-git・add-allは変更しません。Node24.22.0で検証し、Node26は2026年11月以降のowner判断、93への依頼は終了、大規模責務refactorは本PR外、mergeは行いません。**以下のR33以下は記載日時の履歴**で、当時のPENDINGや成功数をR34の現在状態に読み替えません。
+<!-- PR191:R34:README-CONTRACT:END -->
+
 <!-- PR191:R33:README-CONTRACT:BEGIN -->
 **R33 guard契約（公開準備）**: wrapperのcallee・option値・queryとDATA、Gitのobject/state/ref・autostash、選択された実行/認証sourceと送信値を区別します。確定禁止はFORBIDDEN、active source/argv/contextの不足はUNKNOWNで停止します。子commandが無い場合やqueryでも、外側のsocket redirection等は独立して検査します。
 

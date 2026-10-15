@@ -20,6 +20,78 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R34:CONTRACT:BEGIN -->
+<a id="r34-current-contract"></a>
+
+## R34: child・実行source・DNS・認証/環境値の有限契約（公開前・ローカル受入済み）
+
+本節は **2026-10-16T01:32:55.539+09:00 JST** の文書準備cut。公開親は `03fdb5cd6ce537f916648c5db581d2910ecc67b9`、親runtimeは common `487353ab…` / egress `fe3d75e5…` / secret-git `273f6be4…` / add-all `7bb176f3…`。R34の固定統合私有runtimeは egress `c7991eae4c1bc428152005399b90e1a0520b70fac4ca702a2f47893ac7c28352` / common `35e676b42d3efc75ac9ebcc2a451d49ca750212354668a5f516247d48d4dbb19`、secret-git/add-allは親と同一。L1は479/479 PASS、統合単独reverseは33機能137pairs/822Hook入力で閉鎖済みです。**全件7272/7272 PASS**（21816 actual Hook入力、broken0、typed EG期待1298件）を固定統合sourceで取得し、source/runner/definitionsとowned HEAD/refs/index/objects/files/modesの不変を確認しました。公開head/CI/fresh/thread/L3は **PENDING**。L2の合格を実settings dispatchやnativeの成立へ持ち越しません。R33以下のmarker/body/dated記録は全文byte保持した履歴で、旧成功・当時のPENDINGを現在へ読み替えません。
+
+### 対応範囲・結果・停止後の出口
+
+ALLOWは対応条件内でそのguardが停止を要求しない結果、FORBIDDENは既存policyに当たる確定した形式、UNKNOWNは選択されたsource・argv・値の生成元・contextが不足する結果です。後二者は既存deny wireと`[禁止] `/`[判断不能] `で分けます。確定した送信/操作の禁止を新source UNKNOWNで覆いません。一部のguardのALLOWは他guardのALLOW、owner承認、whole commandの安全認証を意味しません。
+
+settingsは変更しません。egressは全Bash、secret-git/add-allは既存`if: "Bash(git *)"`です。HookへcommandをJSON DATAとして渡すL2、実Claude project settingsのdispatch、公式consumerの選択、nativeのfile存在・build/OS・DNS・接続・認証・権限/副作用を別欄に残します。元レビューの危険な入力をnative実行する試験は行いません。
+
+| 守るrole・固定tool/backendとguard親 | 条件／判定・未検査事項 | 正常対照と期待結果 | 止まる通常作業／同目的代替とowner出口 | 現在の受入状態・native成立条件 |
+| --- | --- | --- | --- | --- |
+| watchのchild argv／既定shell source。procps-ng4.0.5 tag v4.0.5、commit `f46b2f7929cdfe2913ed0a7f585b09d6adbf994e`。親03 | `-x`/`--exec`はexecvp argv、既定modeは値を単一空白で結合したsystem source。required/optional値、先頭operandでのoption終了、実query、`--`、単意long略記を解く。未知境界・生成exec子名はwatch固有U、独立した既存禁止payloadはF | ordinary printf、前置の実help/version、印字DATA・実関数はA。子の後のoption風語と消費済みhelpはqueryへ昇格しない。外側redirection/置換は独立 | 未対応option・数値表記・動的子名・未知sourceも止まる。shell再評価が不要で同目的の場合だけdirect modeが候補。必要mode/引数を削除せず、対象・mode・argv・cwd/env/sourceをownerへ | 私有component44/L1 51/既存349。統合登録edge単独reverseはNcatと合計10機能56pairsで再取得済み。統合full7272は実測PASS。installed watch・TERM/TTY/curses・child/file・権限/接続は未確認 |
+| NcatのLua source。Nmap `d5134b0181e378d09ebfad564ea4d1e1d8b25380` /7.991SVN、HAVE_LUA条件付き。親03 | regular Lua実行fileはU。内部用Lua selectorはargc3でoption parse中にsourceを選ぶ別role。本文は読まない。未検査sourceの停止と実行成功を分ける | true query、確定no-host/zero/argc assertion終了、消費DATAはA。regular/internalのsource edgeを個別undo。秘密stdinや他の確定Fは維持 | 普通のLua programも未検査なら止まる。内部用optionを利用手段に案内しない。必要program/file/build/mode・接続条件をownerへ。別場所コピーやhook停止を許可へ広げない | component66/L1 15/旧Ncat131。統合bankは新65＋旧exact alias1、Ncat/watch合計reverse10機能56pairsを実統合sourceで再取得。統合full7272は実測PASS。対応build、file存在/内容、実行/transportは未確認 |
+| Ncat allow/denyとfile-backed ACLのDNS。上記版/backend、親03 | 全occurrenceを保持し、option解析後の最終nodns/familyで分類。connectのinvalid-ACL errorより先にresolverへ到達する。秘密由来host値F、生成元/role/backend不明U。既知secret fileはresolver payload source F、普通fileは内容未検査U。filename自体をDNS labelにはしない | literal/既知ordinary ACLはA。実query、最終nodns、確定前段error、`/dev/null`空sourceはA対照。nodns下の数値ACLはlocal判定で、numeric connection targetとは別。`--`/POSIX/abbreviation/繰返しを保持 | 正当なACL fileも止まる。内容・意味が同じと確認できる場合だけexplicit static ACLが候補。ACL削除、DNS抑止やroute変更を自動代替にしない。必要source/条件をownerへ | exact原ACLは旧91/03で全3A→私有ownEG F。統合sourceでも当該判定edgeを再取得。DNS-label-safe値、有効file文法、先行list成功、resolver/権限/実通信は別の未確認条件。Hook拒否だけで送信成立としない |
+| SSHのbind address DNS。固定OpenSSH9.6p1、親03、R34統合EG`c7991eae…` | CLI `-b`は最後の代入、`-o BindAddress`は先に選択された値（後のCLI代入は優先）を使う。BindInterfaceのlocal interfaceと分離。秘密由来F、未証明source/context U。stdin EOFや`-N`はDNS非選択証明にならない | 静的ordinary bind、実Q/V/G、no-host、既知ConnectionAttempts0、証明済みproxy非directのroleを分ける。有効`-O`とno-ControlPath/実noneは接続前fatalとしてA。`-S`はlast、`-o ControlPath`はfirstを保持し、空・raw引用・不明pathをなしへ昇格しない | 必要bindを削除、別interface/routeへ変更することを自動代替にしない。同対象・同目的・同modeを保つ対応形式がなければ、実版・selected bind/config・cwd/envと不明点をownerへ | 独立原6比較でno-ControlPath A→v4F→統合A、active bind A→F→Fを再確認。known pathはmux失敗後direct接続し得るため全`-O`を免除しない。native DNS-label/OS/resolver/socket/mux成立は未測定 |
+| Telnetのcredential forwarding／local identity。GNU Inetutils2.8、AUTHENTICATION/KRB5/FORWARD build条件。親03 | autologinは`-a/-l/-K`順序、`-r/-E`と実argv0に従う。通常argv0の元exact fwd-only入力はautologin既定falseで当該source非選択のA。active forwardingとimplicit USER/passwd sourceはU。明示`-l` payloadは独立 | 原exact Aをactive variant Uと混ぜない。ordinary明示USER、実no-login/query、ASCIIだけの既知K5無効化名を対照にする。Unicode似字はbyte-oriented native比較と一致する証明がなく、active Uを維持。no-rc/stdin EOFだけを認証無効化にしない | 正当な自動login/credential forwardingも未検査なら止まる。必要認証/forwardingを外して同目的と扱わず、build・mode・identity/cache・peer・権限をownerへ。実資格は試験しない | 独立原6比較でactive U/U/U、ASCII disabled U/A/A、Unicode U/A/Uを確認。U受入とnative AUTH/KRB5・cache/ticket・peer認証/転送成立は別。実native未測定 |
+| Telnetが実選択する環境値。GNU2.8、親03 | 初期exportのDISPLAY/PRINTER、実選択されたUSERの秘密生成元F、未検査値U。TERMはtermcap/uppercase/長さ選択があり生成・未証明値はU、元bytesそのままの送信とは主張しない | ordinary値、証明済み不在/実unset、query/no-host EOFの非選択条件を分ける。ENVIRON SENDが任意名を明示してもenv_getvalue(name,true)がexport flagを検査し、非export値は返さない | 普通の継承GUI/端末値でも未検査なら停止し得る。同目的を保つ既知ordinary/実unsetが無理ならsource/export順・mode・peerと不明点をownerへ。必要値の削除を自動代替にしない | 固定GNU consumerのexported-only経路をsourceで閉鎖。cmdrc/command sourceによるexport変更は別のU境界。protocol negotiation、compile/backend、peer・実送信は未測定 |
+| exec/env argv0・実carrier/offset DTO。既存commonと各固定consumer、親03、R34統合common`35e676b4…` | argv表示名と実calleeを分け、選択はimmediate childだけに適用。次external wrapperでreset。実carrierを一度証明して消費済みASCII prefix分だけsliceし、option DATAをargv0へ昇格しない | env attached/`=`/別引数、known scalar、消費DATA、次wrapperへのresetを対照にする。既存attached dynamic execの未対応境界はUのまま。旧DTO106有限比較は新keysだけを除外し一致 | 不明identity/値はU。同じ対象・実callee・順序を保つ形式がなければowner出口へ。表示名/export変更の迂回を承認扱いしない | 統合23逆検証で関連edgeを個別undo。exec-attached1profileは独立旧launcher Uにmaskされ必要性UNPROVED、他guardの解除0。同edgeのenv対照は効果を測定。全callee/nativeの一般認証ではない |
+
+### 有限の原因表と閉じる条件
+
+| 原因family | R34で確認・準備する有限範囲 | 修正対象／対象外／未確認を閉じる条件 |
+| --- | --- | --- |
+| launcher / child boundary | watchを既存wrapper registryへ接続。既存21名の正常metadata各1件とwatchを含む22名/16familyの表 | watchの実child/sourceが既存判定へ届き、正常とunknownを区別し、登録edgeだけのundoで効果を失うこと。これは全wrapper/全shellの悉皆認証ではない |
+| selected executable source | Ncat regular/internal Luaと、引き続き独立する既存helper/source | active consumerと無効条件を固定し、未検査source U、対応正常A、各新edge単独undoを取得。異なる任意programまで対象を増やさない |
+| local resolution / outbound payload | Ncat ACL DNS、SSH bind DNS。stdin/connection/TLSとは役割を分ける | 既存対象内の選択漏れは修正。明示した無効条件はそのroleだけ対象外。backend/word/実resolver条件が未証明なら未確認Uとして残す。成立した危険ALLOWを対象外の語だけで先送りしない |
+| implicit authentication / selected environment | GNU Telnetのautologin/forwarding/local identityと選択された環境source | exact inputの不成立条件、active variant、normal、proof不足を分離。原exact Aを別variantのF/Uへすり替えず、実資格/通信の未測定は残す |
+| value provenance / identity DTO | argv0/calleeとexport値のcarrier/offsetの引継ぎ | 同じ入力で旧/候補/修正版のactual argv/env/cwd/projectを保持し、危険ALLOW・通常overdeny・理由精度・新oracle誤前提を分ける。共通原因を必要な範囲だけ直す |
+
+先に対応範囲・A/F/U・例外とowner出口を決め、必要部分だけ分けます。大規模な責務再編や全面許可リスト化は本PR外です。新しい未確認を保護済みと扱いません。
+
+**版表示の訂正**: Nmap固定commitの`ncat.h`にある`NCAT_VERSION`は**7.991SVN**です（header SHA256 `ba5e7150541fecb7b38c53e2a9df0ed780ac6d98e7fbcbc41c31f0ad66007d10`、rootの独立一次QAから受領）。旧Ncat componentと初回docs候補の7.99SVNは転記誤りとして原記録を保持し、ここへ合格証拠を移し替えません。固定commitと取得済consumerのbytesに変更はありません。`ncat_assert`はNDEBUGで無効化されない独自macroであるという同QAの確認も、一般のC assertと区別します。installed/backendのnative同定は引き続き未測定です。
+
+### component実測とR34統合gate（数を持ち越さない）
+
+| 証拠単位 | このcutで確認できる内容 | 未完了／持越し禁止 |
+| --- | --- | --- |
+| 原レビューDATAと成立条件 | 固定fullの原5入力は元文字列を維持し、ownEGがLua U / watch F / ACL F / Telnet A / SSH Fを実測。GNU2.8 Telnetの原exactは通常argv0/autologin既定falseでforward source非選択、active variantは別IDでU。Ncat2件・watch1件は旧91/03とも3guard Aの既存不足 | 元exactを別variantへすり替えない。Hook判定、consumer選択条件、nativeの認証/送信/副作用は別。全件合格を実Claude dispatchや実被害・全版の完全性へ変換しない |
+| 個別component | Ncat66/L1 15/旧Ncat131、watch44/L1 51/旧analysis+parity349、SSH/Telnet focused144/L1 413。各source・初回FAIL・修復・器具事故を保全 | component数はsourceが違う履歴。これらを足して統合全件PASSにしない |
+| 固定R34統合bank / full | **ACTUAL 7272/7272 PASS**、fail0/broken0、21816 actual Hook入力、typed ownEG期待1298。旧7018の入力・key順序・期待を保持＋新規254（Ncat65、watch44、SSH/Telnet/argv0 135、cross10）、Ncat alias1は旧typed-Fと完全一致し二重加算なし、oracle relaxation0。source/runner/definitions/owned Git/files/modes不変 | root資格receipt SHA `e4c31271…` にbind。過去7018とのdecision/ownEG/denied/理由prefix/broken差0は確認したが、別の一時fixtureのactual env/cwd/serializationを同一とする因果比較ではない |
+| 固定R34統合L1 | 実TAP **479/479 PASS**＝解析467（旧337＋Ncat15＋watch51＋SSH/Telnet64）＋parity12。fail0 | L1は意味/DTO/filename parityの契約であり、Hook全件判定や実settings dispatchを保証しない |
+| 固定R34統合単独reverse | Ncat/watch10機能56pairs/336入力＋SSH/Telnet/DTO23機能81pairs/486入力＝**33機能137pairs/822Hook入力**、fail0/broken0。分類はsole-stop15、F/U精度3、ALLOW精度15 | 各mutantは新edge1つだけを外し他guardを維持。SSH/Telnetのexec-attached1profileは独立旧launcherにmaskされ必要性UNPROVED、追加解除0。別profileの同edge証明と区別。修復edge数は脆弱性数ではない |
+| 独立QAの修復受入 | 元6入力を03/v4/統合で再実測：18観測54Hook入力、ownEG期待18/18、b0、actual入力/env/cwd/project/Hookpath一致、owned全Git/files/modes/source不変。no-ControlPath過剰停止とUnicode認証名の危険ALLOWを正常対照と一緒に修復 | 原v4のA→FとU→A失敗を保全。native DNS/認証/通信や全件/L3の証明にはしない |
+| 公開head / CI / fresh / threads / L3 | **PENDING**。新固定sourceの公開headとrequired CI、fresh Codex/CodeRabbit、全thread、必要な実project入口をrootが別資格化 | 公開親03のCI・旧L3を持ち越さない。API-before-Bash停止はNOT_EXERCISED。元review危険commandのnative実行は不要 |
+
+統合証拠: [全件root資格receipt](/private/tmp/pr191-r34-integrated-candidate-v1/root-qualified-full7272-v1.json) SHA `e4c31271…`（actual full SHA `6e872514…`）、[bank manifest](/private/tmp/pr191-r34-integrated-candidate-v1/prepared-full-manifest-v3.json)、[L1 TAP](/private/tmp/pr191-r34-integrated-candidate-v1/analysis-parity-actual-v3.tap)、[Ncat/watch reverse](/private/tmp/pr191-r34-composed-finite-reverse-v1/closed-composed-finite-reverse-v1.json) SHA `77a1c681…`、[SSH/Telnet reverse](/private/tmp/pr191-r34-ssh-telnet-v1/integrated23-closed-handoff-v1.json) SHA `ac7bcfe8…`、[独立受入](/private/tmp/pr191-r34-ssh-telnet-readonly-qa-v1/composed-v6-independent-acceptance-closed-v1.json) SHA `71877cfa…`。本機リンクは私有監査receiptであり公開URLではありません。
+
+Node24.22.0/ABI137を固定し、Hook timeout20秒の既存条件を維持します。Node26移行はowner判断で2026年11月以降、93への依頼は終了しています。分類器内部の原因調査や回避、実資格/実秘密/外部送信の試験、mergeは行いません。Goal完了時の全記録ZIPは別の最終工程で、今は作成しません。
+
+### 途中の退行・新oracle誤前提・器具事故（後段記録）
+
+本節はリポの契約と通常影響を優先し、全台帳は固定source/原FAIL/修復/条件を詳述する別レポートへ保ちます。ここでは各componentのclosed receiptを参照します。以下の本機リンクは監査用の私有記録で、公開URLや統合受入証明ではありません。配布時は監査台帳の同名receipt/SHA対応を参照してください。
+
+| 種類 | 保持した事実 | closed receipt／後続記録 |
+| --- | --- | --- |
+| Ncat実装prototype | focused初回63PASS/3FAIL。duplicate Luaの確定前段errorでA→Fの過剰拒否1件、secret-stdinのF→U分類退行2件。元期待を変えず別v2でA/F/Fへ復元し、同fixtureの03→v1→v2を取得 | [Ncat closed receipt](/private/tmp/pr191-r34-ncat-v1/closed-handoff.json)、SHA `6682470d…`。source・初回raw・三版比較・単独reverseを含む |
+| Ncat逆器具／source取得 | 初回reverseは同basename stageのEEXISTで2機能目のHook前に停止。原部分/stackを残して器具v2で9機能すべて再取得。Python GET失敗と通常TLSのsystem curl成功を別記録 | 同Ncat receipt。器具の失敗をproduction findingへ数えず、初回部分を閉鎖数へ加算しない |
+| watch実装prototype | 未知watch＋独立upload、生成exec子名＋独立uploadでFをUへ落とした2経路を記録。egressだけwatch固有Uを後段fallbackへ移しFを復元。既存generic problemsは解除しない | [watch closed receipt](/private/tmp/pr191-r34-watch-v1/closed-watch-component-handoff-v1.json)、SHA `825008a7…` |
+| watchの新oracle／新L1前提 | v2 raw3FAILのうち2件は新prospectiveのF期待が既存context条件を落とした誤前提。入力を保ちF→Uへ明示訂正、旧7018期待変更0。新L1の引用符/problemlist前提もraw51中1FAILを保持して訂正 | 同watch receipt。実装退行1件と新期待の訂正2件を合算して3件の製品退行にしない |
+| watch器具依存／取得 | parity起動時helper未配置ENOENTを349合格とせず、exact public helper配置後に349を再取得。source GET/CA失敗、pathglob、表示truncationの各事故を保存 | 同watch receipt。885は全試行Hook入力総数であり、最終396やreverse66とは別 |
+| SSH/Telnetの原指摘前提・新oracle | 原fwd-only入力はdefault autologin不足でA、active variantを別入力としてU。新profileのcontext/proof field/既存launcher前提が誤ったL1/L2/逆期待を原FAILのまま保持し、新期待の訂正とsource修復を分けた。SCP3は旧03/候補U/U・A/A・U/Uで、新F/A期待2失敗を製品退行やPASSへ変換しない | [SSA closed v2](/private/tmp/pr191-r34-ssh-telnet-v1/closed-handoff-final-v2.json)、[全incident index v2](/private/tmp/pr191-r34-ssh-telnet-v1/incident-index-v2.json) SHA `902639a3…`。個別失敗・器具取得/抽出事故は全台帳を参照 |
+| SSH/Telnet/DTOの私有実装退行 | attached-b不確実扱いとexplicit-l inventoryが確定FをUへ落とした途中版、argv0 raw carrier再適用がrloginを取り違えAにした私有版、v4のno-ControlPath A→F過剰停止とUnicode auth名U→A過少停止を保全。carrier offsetと狭いearly-exit/ASCII証明で修復 | 同SSA incident index。独立QA原失敗と03/v4/統合の同一入力比較を保存。修正版だけを残さず、未公開の退行と公開03の既存不足を分ける |
+| 逆検証の独立停止・新mutant期待 | exec-attached scalarは旧launcher Uでmaskされ単独必要性UNPROVED。ASCII guard単独mutantのunknown-cwdに新U期待を置いた誤前提は原rawを保存し、新muted期待だけAへ訂正。固定sourceのUは変えず、他guard解除0で新2機能を再取得 | 同SSA closed v2と統合23 receipt。masked profileをsole-stopへ数えず、source修復と新試験期待訂正を混ぜない |
+| 統合準備・parity器具 | 初回builderは既存observer path ENOENT、full preflightは過去JSONと公開runnerの既存130 key順差を検出してHook前停止。値/旧期待は不変のままeffective公開03定義を別pin。誤parity filenameは未実施、後のApple git shimがowned TMPDIRへxcrun_dbを作った失敗も保持し、既存Homebrew Gitを明示してL1 479を再取得 | prepared-full-manifest-v3のpreparationErrata。器具失敗をproduction findingや全件結果へ混ぜず、初回失敗を上書きしない |
+| L3器具 | 旧準備/source cut、早期raw backstopとparser routeの差、将来launcherのambient key分類などはproduction5指摘と別の器具記録 | rootのL3監査台帳で管理。actual R34 CLI/APIの成功とは扱わず、本節で原因を推測しない |
+
+<!-- PR191:R34:CONTRACT:END -->
+
 <!-- PR191:R33:CONTRACT:BEGIN -->
 <a id="r33-current-contract"></a>
 
