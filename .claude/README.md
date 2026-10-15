@@ -71,6 +71,14 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R33:CLAUDE-README:BEGIN -->
+**R33の現契約（公開準備）**: [guard受入ガイド](../docs/security/git-command-guards.md#r33-current-contract)を参照してください。対応calleeのoption/値/queryとDATA、Git object/state/ref/autostash、選択された認証・実行sourceと送信metadataを区別します。childが実行されない/queryの場合も、外側のsocket redirection等を独立検査します。
+
+GNU rsyncの到達optionはpopt alias/exec sourceが先に選ばれ得るため、通常の`-a`・help・versionを含めUNKNOWNになる広い制約があります。option無し/先頭literal `--`はそのedgeだけinactiveで、他guardは維持します。同目的のarchive/queryにoption削除を案内せず、source/profile条件をownerへ確認します。Git cleanupもflagだけで安全扱いせず、必要なstate/ref/autostash条件が未検査なら止まります。
+
+egressの全Bash登録とsecret-git/add-allの既存conditional登録は変更しません。直接Hook DATA、実settings dispatch、native通信/認証/権限は別の検証単位です。R33新head/CI/fresh/入口の資格は本公開準備cutでPENDINGで、以下の旧dated結果は履歴として保持します。公開後の同一head受入はPR本文と監査台帳で更新し、本節cutを現在へ読み替えません。
+<!-- PR191:R33:CLAUDE-README:END -->
+
 `block-secret-git.cjs` と `block-git-add-all.cjs` の設定には `if: "Bash(git *)"` の記述があり、`block-secret-egress.cjs` は全 Bash 入力を対象にする。共通 parser で引用・escape・選ばれた実行 source を検査し、確定できない pathspec、設定 root、送信先や実行 source は該当経路を fail-closed とする。設定の記述と実際の dispatch 測定を分ける。旧 a464 の CLI 2.1.296 測定では、引用 Git の例も含めて全 3 wrapper が起動した。
 
 従来許可されていた未知の変数 / glob による add、環境の消去・差替えを伴う Git の書込みなども拒否される場合がある。許可する入力、安全な書換え、対応範囲と test command は [Git ガードの説明](../docs/security/git-command-guards.md)を参照する。

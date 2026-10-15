@@ -18,6 +18,16 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R33:README-CONTRACT:BEGIN -->
+**R33 guard契約（公開準備）**: wrapperのcallee・option値・queryとDATA、Gitのobject/state/ref・autostash、選択された実行/認証sourceと送信値を区別します。確定禁止はFORBIDDEN、active source/argv/contextの不足はUNKNOWNで停止します。子commandが無い場合やqueryでも、外側のsocket redirection等は独立して検査します。
+
+GNU rsyncのpopt alias/execは既知optionより先に選択され得るため、到達したoptionやargv境界が未証明なら局所UNKNOWNです。通常の`-a`・`--help`・`--version`も止まり得る大きな制約です。option無しoperand・先頭のliteral `--`はこのedgeだけinactiveで、他guardは維持します。`-a`を外すことを同目的の代替にはしません。必要なarchive/query/profile条件はownerへ確認してください。
+
+merge/rebase/pullとcleanupの通常操作も、未検査object/state/ref/autostash・子sourceにより止まります。`merge HEAD`等が新treeを取り込まない場合も、lifecycle/ref経路の安全はflagだけでは証明しません。late builtin usageのwriter停止と、parse中のlocal message-file読取は別です。Wget netrc、telnet cmdrc/command-loop、curl engine、rsyncの接続program/remote program、GH/Ncat等のselected値も同じ役割ごとの条件で扱います。
+
+対応21wrapperの原因matrix、通常影響、同目的の条件、owner出口、固定版sourceと測定境界は[受入ガイド](docs/security/git-command-guards.md#r33-current-contract)にまとめています。新fe3版はNode24.22.0で解析337＋parity12＝349成功。旧8917版の全7010件は初回2FAIL・broken1を保存し、新caseの矛盾したglobal期待だけを明示訂正して再試行7010/7010・broken0でした。AG timeoutは20秒制限を変えず単独再試行でも再現せず、元の原因は未特定です。その後、既存の禁止を新sourceの判断不能で覆う分類退行2経路をfe3版で修復しました。新fe3版の全7018件は7018/7018・broken0で完走しました（2026-10-15 23:49:45.395 JST）。旧7010成功を持ち越した結果ではありません。新head/同headCI/fresh両review/実project入口は本公開準備cutでPENDINGです。公開後の同一head受入はPR本文と監査台帳で更新し、本節cutを現在へ読み替えません。settingsのconditional secret-git/add-allと全Bash egressは変更しません。Node26移行はowner判断で2026年11月以降へ延期しています。
+<!-- PR191:R33:README-CONTRACT:END -->
+
 <!-- PR191:R32:README-CONTRACT:BEGIN -->
 R32では、Git addの一括追加alias、scriptの実行source、Git revertのobject入力、rsync daemonの認証入力、Ncatのclient TLS metadata、SSHの選択jump、GHの選択auth環境という**7件の有限修復**を扱う。確定した禁止source/payloadはFORBIDDEN、実行source・値・選択条件を確認できない場合はUNKNOWNで停止する。通常のscript記録やrevertの`--no-commit`・再開・rollbackもUNKNOWNになり得る。秘密と無関係な既知DATA、実query、非選択sourceを一律禁止へ広げない。
 

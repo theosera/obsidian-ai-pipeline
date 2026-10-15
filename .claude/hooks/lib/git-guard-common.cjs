@@ -1067,7 +1067,7 @@ function sudoArgs(rest, info) {
       // sudo's native carrier grammar is broader than our supported metadata names.
       if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { info.launcherUnknown = true; k++; continue; }
       const name = t.split('=')[0];
-      info.assigns.push(name); info.assignRaws.push(w.raw); info.envOps.push({ set: name });
+      info.assigns.push(name); info.assignRaws.push(w.raw); info.envOps.push({ set: name, carrier: w, carrierStart: w.start ?? null, occurrence: info.envOps.length, assignmentStage: 'sudo-operand' });
       if (w.dynamicMaySplit) info.launcherUnknown = true;
       k++; continue;
     }
@@ -1344,6 +1344,108 @@ function scriptArgs(rest, info) {
   return rest.length;
 }
 
+/** GNU time 1.9 required DATA; common -p/-- boundary also has an owned Apple delimiter control. */
+function timeArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  const longs = { append: 'a', format: 'f', output: 'o', portability: 'p', quiet: 'q', verbose: 'v', version: 'V', help: 'h' };
+  let k = 0;
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  while (k < rest.length && textOf(rest[k])?.startsWith('-') && textOf(rest[k]) !== '-') {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) info.launcherUnknown = true;
+    if (text === '--' && known(word)) { k++; break; }
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = Object.hasOwn(longs, name) ? [name] : Object.keys(longs).filter(x => x.startsWith(name));
+      if (!name || matches.length !== 1) info.launcherUnknown = true;
+      else {
+        const option = longs[matches[0]];
+        if ('fo'.includes(option)) {
+          const value = eq < 0 ? rest[++k] : { ...word, text: text.slice(eq + 1), literalValue: undefined };
+          if (!known(value)) info.launcherUnknown = true;
+        } else if (eq >= 0) info.launcherUnknown = true;
+        else if ('hV'.includes(option) && !info.launcherUnknown) return -1;
+      }
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        const option = text[j];
+        if (option === 'V' && !info.launcherUnknown) return -1;
+        if ('fo'.includes(option)) {
+          const value = j + 1 < text.length ? { ...word, text: text.slice(j + 1), literalValue: undefined } : rest[++k];
+          if (!known(value)) info.launcherUnknown = true;
+          break;
+        }
+        if (!'apqv'.includes(option)) info.launcherUnknown = true;
+      }
+    }
+    k++;
+  }
+  if (info.launcherUnknown) return rest.length;
+  return k >= rest.length ? -1 : k;
+}
+
+/** Bash 5.2 exec / pinned Apple caffeinate / OpenBSD doas: consume each bundled value once. */
+function shortValueWrapperArgs(rest, info, name) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const specs = { exec: { flags: 'cl', values: 'a' }, caffeinate: { flags: 'mdhisu', values: 'tw' }, doas: { flags: 'Lns', values: 'aCu' } };
+  const spec = specs[name];
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  let k = 0, clear = false, validate = false, shell = false;
+  while (k < rest.length && textOf(rest[k])?.startsWith('-') && textOf(rest[k]) !== '-') {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) info.launcherUnknown = true;
+    if (text === '--' && known(word)) { k++; break; }
+    if (name === 'exec' && text === '--help' && !info.launcherUnknown) return -1;
+    if (text.startsWith('--')) info.launcherUnknown = true;
+    else for (let j = 1; j < text.length; j++) {
+      const option = text[j];
+      if (!spec.flags.includes(option) && !spec.values.includes(option)) { info.launcherUnknown = true; break; }
+      if (name === 'caffeinate' && option === 'h' && !info.launcherUnknown) return -1;
+      if (name === 'doas' && option === 'L' && !info.launcherUnknown) return -1;
+      if (name === 'exec' && option === 'c') clear = true;
+      if (name === 'doas' && option === 's') shell = true;
+      if (spec.values.includes(option)) {
+        const value = j + 1 < text.length ? { ...word, text: text.slice(j + 1), literalValue: undefined } : rest[++k];
+        if (!known(value)) info.launcherUnknown = true;
+        if (name === 'doas' && option === 'C') validate = true;
+        if (name === 'doas' && option === 'a') info.launcherUnknown = true; // selected auth backend is not inspected
+        break;
+      }
+    }
+    k++;
+  }
+  if (name === 'doas' && shell && !validate) info.launcherUnknown = true;
+  if (info.launcherUnknown) return rest.length;
+  if (name === 'doas' && validate || k >= rest.length) return -1; // no child; config validation is not permission/auth certification
+  if (name === 'exec' && clear) info.envOps.push({ clear: true });
+  return k;
+}
+
+/** Bash 5.2 builtin / GNU nohup 9.4: consume only a pre-callee option terminator. */
+function calleeTerminatorArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  const word = rest[0];
+  if (!word) return -1;
+  const text = typeof word.literalValue === 'string' ? word.literalValue : word.text;
+  if (!wrapperValueKnown(word) || word.ansiCUnknown || word.dynamic && typeof word.literalValue !== 'string') {
+    info.launcherUnknown = true;
+    return rest.length;
+  }
+  if (text === '--') return rest.length > 1 ? 1 : -1;
+  // Both pinned parsers return help/error before a child for another leading option.
+  // Once a callee was selected its later options and DATA are not consumed here.
+  if (text.startsWith('-') && text !== '-') return -1;
+  return 0;
+}
+
+// Only these parsers accept the existing finite quoted-scalar argv proof.
+const SCALAR_LAUNCHERS = new Set(['script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
+
 const WRAPPERS = {
   script: scriptArgs,
   prlimit: (rest, info) => prlimitArgs(rest, info),
@@ -1366,42 +1468,17 @@ const WRAPPERS = {
     if (rest[k]?.text === '--' && !rest[k].dynamic) k++;
     return k;
   },
-  builtin: () => 0,
-  exec: (rest) => {
-    let k = 0;
-    while (k < rest.length && rest[k].text.startsWith('-')) {
-      if (rest[k].text === '-a') k++;
-      k++;
-    }
-    return k;
-  },
-  nohup: () => 0,
-  time: (rest) => {
-    let k = 0;
-    while (k < rest.length && rest[k].text === '-p') k++;
-    return k;
-  },
+  builtin: (rest, info) => calleeTerminatorArgs(rest, info),
+  exec: (rest, info) => shortValueWrapperArgs(rest, info, 'exec'),
+  nohup: (rest, info) => calleeTerminatorArgs(rest, info),
+  time: timeArgs,
   nice: (rest, info) => coreutilsValueLauncher(rest, info, 'nice'),
   stdbuf: (rest, info) => coreutilsValueLauncher(rest, info, 'stdbuf'),
   timeout: timeoutArgs,
-  caffeinate: (rest) => {
-    let k = 0;
-    while (k < rest.length && rest[k].text.startsWith('-')) {
-      if (/^-[tw]$/.test(rest[k].text)) k++;
-      k++;
-    }
-    return k;
-  },
+  caffeinate: (rest, info) => shortValueWrapperArgs(rest, info, 'caffeinate'),
   sudo: sudoArgs,
   unshare: unshareArgs,
-  doas: (rest) => {
-    let k = 0;
-    while (k < rest.length && rest[k].text.startsWith('-')) {
-      if (/^-[uC]$/.test(rest[k].text)) k++;
-      k++;
-    }
-    return k;
-  },
+  doas: (rest, info) => shortValueWrapperArgs(rest, info, 'doas'),
   env: (rest, info) => {
     const longNames = ['ignore-environment', 'null', 'unset', 'chdir', 'split-string', 'argv0', 'debug',
       'default-signal', 'ignore-signal', 'block-signal', 'list-signal-handling', 'help', 'version'];
@@ -1463,7 +1540,7 @@ const WRAPPERS = {
       const name = rest[k].text.split('=')[0];
       info.assigns.push(name);
       info.assignRaws.push(rest[k].raw);
-      info.envOps.push({ set: name });
+      info.envOps.push({ set: name, carrier: rest[k], carrierStart: rest[k].start ?? null, occurrence: info.envOps.length, assignmentStage: 'env-operand' });
       const imported = functionEnvironmentAssignment(rest[k], name, rest[k].text.slice(name.length + 1));
       if (imported) info.envOps.push({ functionEnvironment: imported });
       k++;
@@ -1513,7 +1590,7 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
     while (k < words.length && !info.launcherChildNoAssignments && isAssignWord(words[k])) {
       info.assigns.push(assignName(words[k]));
       info.assignRaws.push(words[k].raw);
-      info.envOps.push({ set: assignName(words[k]) });
+      info.envOps.push({ set: assignName(words[k]), carrier: words[k], carrierStart: words[k].start ?? null, occurrence: info.envOps.length, assignmentStage: 'shell-prefix' });
       const assignment = scalarAssignment(words[k]);
       const imported = assignment && functionEnvironmentAssignment(words[k], assignment.name, assignment.value);
       if (imported) info.envOps.push({ functionEnvironment: imported });
@@ -1544,7 +1621,7 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
       if (base === 'exec' && !info.wrapped) info.persistsEnv = true;
       info.wrapped = true;
       info.wrapperNames.push(base);
-      const r = wrapper(base === 'script' && launcherScalarState
+      const r = wrapper(SCALAR_LAUNCHERS.has(base) && launcherScalarState
         ? rest.map(word => literalScalarWord(word, launcherScalarState)) : rest, info);
       if (r < 0) { info.nonExec = true; info.name = base; return info; }
       if (base === 'script' && info.launcherUnknown) {
@@ -2209,6 +2286,19 @@ function gitTypedArguments(g, spec = {}) {
       continue;
     }
     if (!boundary(word)) result.unknown = true;
+    // Git 2.54 parse_options internal usage is reached after consumed values, before object IO.
+    // First --help is the parent/manual route; after -- it is an operand, never usage.
+    if (spec.stdoutUsage && !result.unknown && (!word.dynamic || typeof word.literalValue === 'string') &&
+        ['-h', '--help', '--help-all'].includes(text) && (text !== '--help' || k > 0)) {
+      result.terminal = true; result.helpKind = 'stdout'; result.objectWriterInactive = true;
+      result.usageReachedAfterOptionCallbacks = true;
+      result.preUsageReadFiles = result.values.filter(value => (spec.preUsageReadFiles || []).includes(value.option));
+      // A prior -F callback may already have read bytes. Terminal here suppresses the writer,
+      // not that local reader or independently selected config/helper/outer substitutions.
+      result.priorReadCallbackActive = result.preUsageReadFiles.length > 0;
+      result.priorOptionValuesRetained = true;
+      return result;
+    }
     if (text.startsWith('--')) {
       const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
       if (required.has(option)) take(option, eq < 0 ? g.args[++k] : commitInlineValue(word, word, text.slice(eq + 1), eq + 1));
@@ -2265,10 +2355,35 @@ function gitOperationRole(g) {
       role.sourceWords = g.args.slice(g.args.indexOf(action) + 1).filter((word, k) => k > 0 || word.text !== '--recursive');
     } else if (parsed.unknown) { Object.assign(role, parsed); role.kind = 'argv-boundary'; }
   } else if (g.sub === 'rebase') {
-    const parsed = gitTypedArguments(g, { values: ['exec', 'onto', 'strategy', 'strategy-option', 'empty'], shortValues: { x: 'exec', s: 'strategy', X: 'strategy-option' },
+    const parsed = gitTypedArguments(g, { stdoutUsage: true, values: ['exec', 'onto', 'strategy', 'strategy-option', 'empty'], shortValues: { x: 'exec', s: 'strategy', X: 'strategy-option' },
       flags: ['no-edit', 'root', 'interactive', 'no-interactive', 'continue', 'abort', 'quit', 'skip', 'quiet', 'verbose', 'show-current-patch', 'force-rebase', 'no-ff', 'fork-point', 'no-fork-point', 'keep-base', 'reapply-cherry-picks', 'no-reapply-cherry-picks', 'autosquash', 'no-autosquash', 'autostash', 'no-autostash', 'keep-empty', 'no-keep-empty', 'rebase-merges', 'no-rebase-merges', 'apply', 'merge', 'stat', 'no-stat', 'committer-date-is-author-date', 'ignore-date', 'reset-author-date'], shortFlags: 'iqvf' });
-    if (parsed.values.some(value => value.option === 'exec')) { role.kind = 'shell-source'; Object.assign(role, parsed); role.sourceWords = parsed.values.filter(value => value.option === 'exec').map(value => value.word); }
-    else if (parsed.unknown) { role.kind = 'argv-boundary'; Object.assign(role, parsed); }
+    Object.assign(role, parsed); role.inputCommits = parsed.operands;
+    const modes = parsed.flags.filter(flag => ['continue', 'abort', 'quit', 'skip', 'show-current-patch'].includes(flag));
+    if (modes.length > 1 || modes.length && parsed.operands.length) role.unknown = true;
+    if (modes.includes('show-current-patch')) {
+      // Git 2.54 merge backend runs show REBASE_HEAD; apply backend runs am --show-current-patch.
+      // It is a query, but not a certified no-child/no-helper terminal operation.
+      role.kind = 'selected-program'; role.mode = 'query-source'; role.queryOnly = true;
+      role.queryProgramUninspected = true; role.sourceWords = [];
+    } else {
+      role.kind = parsed.values.some(value => value.option === 'exec') ? 'shell-source' : 'object-ref-input';
+      role.sourceWords = parsed.values.filter(value => value.option === 'exec').map(value => value.word);
+      if (modes.length === 1) role.mode = modes[0] === 'quit' ? 'cleanup' : modes[0] === 'abort' ? 'rollback' : 'resume';
+    }
+    g.rebaseInputRole = { ...role, objectInputInactive: Boolean(role.terminal) || role.mode === 'query-source',
+      autostashSourceUninspected: role.mode === 'cleanup' || role.mode === 'rollback' || role.mode === 'resume' };
+  } else if (g.sub === 'pull') {
+    const parsed = gitTypedArguments(g, { stdoutUsage: true, values: ['upload-pack', 'depth', 'filter', 'jobs', 'strategy', 'strategy-option', 'cleanup', 'server-option', 'refmap', 'shallow-since', 'shallow-exclude'],
+      optionalValues: ['rebase', 'log', 'gpg-sign', 'recurse-submodules'], shortValues: { u: 'upload-pack', j: 'jobs', s: 'strategy', X: 'strategy-option' }, shortOptional: { S: 'gpg-sign' },
+      flags: ['quiet', 'verbose', 'all', 'append', 'tags', 'no-tags', 'prune', 'no-prune', 'force', 'keep', 'unshallow', 'update-shallow', 'progress', 'no-progress',
+        'commit', 'no-commit', 'edit', 'no-edit', 'ff', 'no-ff', 'ff-only', 'squash', 'no-squash', 'stat', 'no-stat', 'summary', 'no-summary',
+        'no-rebase', 'autostash', 'no-autostash', 'verify', 'no-verify', 'verify-signatures', 'no-verify-signatures', 'allow-unrelated-histories', 'no-allow-unrelated-histories',
+        'signoff', 'no-signoff', 'dry-run', 'ipv4', 'ipv6', 'set-upstream'], shortFlags: 'qvftn46', shortNames: { q: 'quiet', v: 'verbose', f: 'force', t: 'tags', n: 'dry-run' } });
+    Object.assign(role, parsed); role.kind = 'object-ref-input'; role.inputCommits = parsed.operands.slice(1);
+    // Even ff/no-edit/no-commit pulls fetch objects and select merge/rebase over FETCH_HEAD.
+    // Dry-run returns after its child fetch: not an incoming writer, but transport/source is uninspected.
+    if (parsed.flags.includes('dry-run')) { role.kind = 'selected-program'; role.mode = 'fetch-only-source'; }
+    g.pullInputRole = { ...role, objectInputInactive: Boolean(role.terminal) || role.mode === 'fetch-only-source', autostashSourceUninspected: true };
   } else if (['clone', 'fetch', 'fetch-pack', 'archive', 'ls-remote'].includes(g.sub)) {
     const parsed = gitTypedArguments(g, { values: ['upload-pack', 'exec', 'remote', 'branch', 'origin', 'filter', 'depth', 'output', 'format'], shortValues: { u: 'upload-pack', b: 'branch', o: 'origin' },
       flags: ['quiet', 'verbose', 'bare', 'no-checkout', 'mirror', 'list', 'all', 'tags', 'no-tags', 'prune', 'no-prune', 'force', 'atomic', 'dry-run', 'progress', 'no-progress', 'single-branch', 'no-single-branch', 'local', 'no-local', 'shared', 'no-hardlinks', ...(g.sub === 'ls-remote' ? ['get-url'] : [])], shortFlags: 'qvnft' });
@@ -2301,7 +2416,7 @@ function gitOperationRole(g) {
     if (onlyControl) { role.mode = modes[0] === 'show-current-patch' ? 'query' : 'cleanup'; role.stdinInput = false; }
     else if (modes.length) role.mode = 'resume';
   } else if (g.sub === 'revert') {
-    const parsed = gitTypedArguments(g, { values: ['cleanup', 'mainline', 'strategy', 'strategy-option'],
+    const parsed = gitTypedArguments(g, { stdoutUsage: true, values: ['cleanup', 'mainline', 'strategy', 'strategy-option'],
       optionalValues: ['gpg-sign'], shortValues: { m: 'mainline', X: 'strategy-option' }, shortOptional: { S: 'gpg-sign' },
       flags: ['quit', 'continue', 'abort', 'skip', 'no-commit', 'edit', 'no-edit', 'signoff', 'no-signoff',
         'reference', 'no-reference', 'rerere-autoupdate', 'no-rerere-autoupdate', 'no-gpg-sign'],
@@ -2312,10 +2427,39 @@ function gitOperationRole(g) {
     if (modes.length > 1 || modes.length && parsed.operands.length) role.unknown = true;
     const onlyQuit = !parsed.unknown && modes.length === 1 && modes[0] === 'quit' &&
       !parsed.operands.length && !parsed.values.length && parsed.flags.every(flag => flag === 'quit');
-    g.revertInputRole = { ...role, objectInputInactive: onlyQuit };
-    if (onlyQuit) return null; // quit forgets sequence; all other config/helper guards still run
+    // Git 2.54 pure quit also calls remove_branch_state -> remove_merge_branch_state,
+    // which may save uninspected MERGE_AUTOSTASH using child git stash store.
+    g.revertInputRole = { ...role, objectInputInactive: Boolean(role.terminal), controlOnlyQuit: onlyQuit,
+      autostashSourceUninspected: onlyQuit };
+  } else if (g.sub === 'merge') {
+    const parsed = gitTypedArguments(g, { stdoutUsage: true, preUsageReadFiles: ['file'], values: ['cleanup', 'strategy', 'strategy-option', 'message', 'file', 'into-name'],
+      optionalValues: ['log', 'gpg-sign'], shortValues: { s: 'strategy', X: 'strategy-option', m: 'message', F: 'file' }, shortOptional: { S: 'gpg-sign' },
+      flags: ['quit', 'continue', 'abort', 'commit', 'no-commit', 'edit', 'no-edit', 'squash', 'no-squash',
+        'stat', 'no-stat', 'summary', 'no-summary', 'compact-summary', 'no-compact-summary',
+        'ff', 'no-ff', 'ff-only', 'rerere-autoupdate', 'no-rerere-autoupdate',
+        'verify-signatures', 'no-verify-signatures', 'allow-unrelated-histories', 'no-allow-unrelated-histories',
+        'progress', 'no-progress', 'autostash', 'no-autostash', 'overwrite-ignore', 'no-overwrite-ignore',
+        'signoff', 'no-signoff', 'no-verify', 'verify', 'quiet', 'verbose', 'no-gpg-sign'],
+      shortFlags: 'neqv', shortNames: { e: 'edit', q: 'quiet', v: 'verbose' } });
+    Object.assign(role, parsed); role.kind = 'object-ref-input'; role.inputCommits = parsed.operands;
+    const modes = parsed.flags.filter(flag => ['quit', 'continue', 'abort'].includes(flag));
+    if (modes.length === 1) role.mode = modes[0] === 'quit' ? 'cleanup' : modes[0] === 'abort' ? 'rollback' : 'resume';
+    if (modes.length > 1 || modes.length && parsed.operands.length) role.unknown = true;
+    // Git 2.54 requires pure --quit; rollback/continue and no-commit/ff still consume trees/index state.
+    const onlyQuit = !parsed.unknown && g.args.length === 1 && modes.length === 1 && modes[0] === 'quit' &&
+      !parsed.operands.length && !parsed.values.length && parsed.flags.length === 1;
+    // Even pure --quit may save MERGE_AUTOSTASH through a child git stash store/ref update.
+    // No absence/object/context proof is held here, so cleanup is not an inactive object source.
+    g.mergeInputRole = { ...role, controlOnlyQuit: onlyQuit, objectInputInactive: Boolean(role.terminal),
+      autostashSourceUninspected: onlyQuit };
+    // Preserve an existing proven message-file FORBIDDEN before the new generic
+    // object-context UNKNOWN. Its later consumer still denies; this is not inactivity.
+    if (gitObjectInputDecision(g)?.category === 'FORBIDDEN') {
+      g.mergeInputRole.delegatedKnownMessageForbidden = true;
+      return null;
+    }
   } else if (g.sub === 'cherry-pick') {
-    const parsed = gitTypedArguments(g, { values: ['cleanup', 'mainline', 'strategy', 'strategy-option', 'empty'],
+    const parsed = gitTypedArguments(g, { stdoutUsage: true, values: ['cleanup', 'mainline', 'strategy', 'strategy-option', 'empty'],
       optionalValues: ['gpg-sign'], shortValues: { m: 'mainline', X: 'strategy-option' }, shortOptional: { S: 'gpg-sign' },
       flags: ['quit', 'continue', 'abort', 'skip', 'no-commit', 'edit', 'no-edit', 'signoff', 'no-signoff',
         'ff', 'no-ff', 'allow-empty', 'no-allow-empty', 'allow-empty-message', 'no-allow-empty-message',
@@ -2777,8 +2921,8 @@ function inspect(cmd, options = {}) {
       }
       return; // Initializer elements are data; their direct substitutions were collected separately.
     }
-    // Keep scalar option DATA proof local to script's new arity/query boundary.
-    if (!c.definitionName && !info.incomplete && info.wrapperNames.includes('script')) {
+    // Keep scalar option DATA proof local to the supported launcher/callee boundary.
+    if (!c.definitionName && !info.incomplete && info.wrapperNames.some(name => SCALAR_LAUNCHERS.has(name))) {
       info = resolveCommand(c.words, state.functions, expansionState);
     }
     const positionalExec = positionalExecutable(info.nameWord);
@@ -2814,7 +2958,19 @@ function inspect(cmd, options = {}) {
     const environmentFunctions = new Map(state.environmentFunctions);
     const environmentFunctionUnknown = new Set(state.environmentFunctionUnknown);
     let pathChanged = state.pathChanged;
+    const priorShellPrefixNames = new Set(), environmentCarrierValues = new Map();
     for (const op of info.envOps) {
+      if (op.set) {
+        const carrier = op.carrier;
+        const reference = /^([A-Za-z0-9_./=:-]*)"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"$/.exec(carrier?.raw || '');
+        // Shell assignment RHS ordering differs from env/sudo argv expansion. Do not
+        // certify a pre-command scalar value after an earlier shell prefix replaced it.
+        const earlierPrefixDependency = op.assignmentStage === 'shell-prefix' && reference &&
+          priorShellPrefixNames.has(reference[2] || reference[3]);
+        environmentCarrierValues.set(op, carrier ? earlierPrefixDependency ?
+          { ...carrier, literalValue: undefined } : literalScalarWord(carrier, expansionState) : null);
+        if (op.assignmentStage === 'shell-prefix') priorShellPrefixNames.add(op.set);
+      }
       if (op.clear) { outboundEnvironmentUnknown = false; identitySources.clear(); env.clear(); helperEnv.clear(); exportedFunctions.clear(); exportedFunctionUnknown = false;
         environmentFunctions.clear(); environmentFunctionUnknown.clear(); for (const root of CONFIG_ROOT_ENV) env.add(root); pathChanged = false; }
       if (op.unset) {
@@ -2826,8 +2982,7 @@ function inspect(cmd, options = {}) {
       }
       if (op.set && affectsGitEnvironment(op.set)) env.add(op.set);
       if (op.set && trackedEnv(op.set)) {
-        const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(op.set + '='));
-        const value = carrier && literalScalarWord(carrier, expansionState);
+        const value = environmentCarrierValues.get(op);
         identitySources.set(op.set, value ? commitInlineValue(value, value, value.text.slice(op.set.length + 1), op.set.length + 1) : null);
       }
       if (op.set && HELPER_SOURCE_ENV.has(op.set)) helperEnv.add(op.set);
@@ -3232,7 +3387,7 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
       res.problems.push(info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
@@ -3553,11 +3708,13 @@ function inspect(cmd, options = {}) {
     g.gitTransportSources = invocation.gitTransportSources;
     for (const config of g.configSelections) if (config.mode === 'env') {
       const variable = config.text.slice(config.text.indexOf('=') + 1);
-      const carrier = c.words.find(word => info.assignRaws.includes(word.raw) && word.text.startsWith(variable + '='));
-      if (carrier) {
-        const value = literalScalarWord(carrier, expansionState);
+      const selectedOp = info.envOps.filter(op => op.clear || op.unset === variable || op.set === variable).at(-1);
+      const value = selectedOp?.set === variable ? environmentCarrierValues.get(selectedOp) : null;
+      if (value) {
         config.word = commitInlineValue(value, value, value.text.slice(variable.length + 1), variable.length + 1);
         config.prefixSourceKnown = true;
+      } else if (selectedOp) {
+        config.word = null; config.prefixSourceKnown = false;
       } else {
         const value = !state.valuesTainted && state.values.get(variable);
         config.word = typeof value === 'string' ? { text: value, dynamic: false, dynamicMaySplit: false, literalValue: value } : null;

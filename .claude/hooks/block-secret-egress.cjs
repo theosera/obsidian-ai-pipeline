@@ -657,6 +657,29 @@ const RSYNC_VALUE_SHORT = 'efBMT';
 const RSYNC_FLAG_SHORT = 'avrlpgoDHtOUJSLkKNnWxuzqsIbcdRACEXyih460';
 
 /** A selected rsync remote shell is opaque local executable source; a proven local copy does not select it. */
+/** Pinned GNU popt can select aliases/exec before even known built-in options. */
+function rsyncPoptConfigRole(invocation) {
+  if (invocation.name !== 'rsync' || invocation.nonExec || invocation.definitionName || invocation.functionCallName) {
+    return { active: false, mode: 'not-external-rsync', word: null };
+  }
+  for (const word of invocation.args) {
+    const literal = literalSourceWord(word);
+    if (!literal) {
+      // A fixed non-dash first byte cannot become an option without splitting.
+      // This proves only the popt selector boundary, not filename/destination DATA.
+      if (word?.dynamicMaySplit === false && !word.ansiCUnknown && !word.globExpanded &&
+          !word.braceExpanded && !word.tildeExpanded && typeof word.text === 'string' &&
+          word.text && word.text[0] !== '-' && word.text[0] !== '\0') continue;
+      return { active: true, mode: 'unknown-boundary', word };
+    }
+    if (literal.text === '--') return { active: false, mode: 'delimiter', word };
+    if (literal.text.startsWith('-') && literal.text !== '-') {
+      return { active: true, mode: 'selector', word };
+    }
+  }
+  return { active: false, mode: 'no-selector', word: null };
+}
+
 function rsyncRemoteHelper(invocation) {
   if (invocation.name !== 'rsync') return false;
   const values = RSYNC_VALUE_LONG;
@@ -699,6 +722,56 @@ function rsyncRemoteHelper(invocation) {
     if (role === 'REMOTE') remote = true;
   }
   return selected && (remote || unknown);
+}
+
+/** GNU rsync's direct-daemon connection can select a local program and its interpreter. */
+function rsyncDaemonProgramSource(invocation) {
+  if (invocation.name !== 'rsync') return false;
+  const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  // RSYNC_SHELL is consumed by shell_exec only after CONNECT_PROG selected that route.
+  if (!environment.has('RSYNC_CONNECT_PROG') && !invocation.outboundEnvironmentUnknown) return false;
+  let unknown = Boolean(invocation.incomplete), afterDD = false, remoteShell = false;
+  const operands = [];
+  for (let k = 0; k < invocation.args.length; k++) {
+    const original = invocation.args[k], literal = literalSourceWord(original), text = literal?.text ?? original.text;
+    if (!afterDD && text === '--' && literal) { afterDD = true; continue; }
+    if (!afterDD && ['--help', '--version'].includes(text) && literal && !unknown) return false;
+    if (!afterDD && text.startsWith('--')) {
+      const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
+      if (option === 'rsh') remoteShell = true;
+      if (RSYNC_VALUE_LONG.has(option)) {
+        const value = eq < 0 ? invocation.args[++k] : rsyncRequestValue(original, text, eq + 1);
+        if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
+      } else if (!RSYNC_FLAG_LONG.has(option) || eq >= 0) unknown = true;
+      if (!literal && !quotedAttachedOptionValue(original, text, RSYNC_VALUE_SHORT, [...RSYNC_VALUE_LONG])) unknown = true;
+      continue;
+    }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      for (let j = 1; j < text.length; j++) {
+        if (RSYNC_VALUE_SHORT.includes(text[j])) {
+          if (text[j] === 'e') remoteShell = true;
+          const value = j + 1 < text.length ? rsyncRequestValue(original, text, j + 1) : invocation.args[++k];
+          if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
+          break;
+        }
+        if (!RSYNC_FLAG_SHORT.includes(text[j])) unknown = true;
+      }
+      if (!literal) unknown = true;
+      continue;
+    }
+    operands.push(original);
+  }
+  let daemon = false;
+  for (const word of operands) {
+    const literal = literalSourceWord(word);
+    if (!literal) { unknown = true; continue; }
+    if (/^rsync:\/\/[^/]+(?:\/.*)?$/i.test(literal.text) ||
+        /^(?:[^/@:\s]+@)?(?:\[[^\]]+\]|[^/:\s]+)::/.test(literal.text)) daemon = true;
+    else if (remoteCopyAddressRole('rsync', literal.text) === 'UNKNOWN') unknown = true;
+  }
+  // A proven explicit remote shell bypasses open_socket_out_wrapped; its own guard remains.
+  if (remoteShell && !unknown) return false;
+  return daemon || unknown;
 }
 
 /** Reconstruct credential-helper shell commands only for consumers or persistent helper writes. */
@@ -1263,7 +1336,12 @@ function curlTerminalQuery(words, incomplete) {
       if (['help', 'manual', 'version'].includes(option)) return true;
       // Keep the independent, uninspected explicit configuration source boundary.
       if (option === 'config') return false;
-      if (CURL_VALUE_LONG.has(option) && eq < 0 && !scalarValue(words[++k])) return false;
+      if (CURL_VALUE_LONG.has(option) && eq < 0) {
+        const value = words[++k];
+        if (!scalarValue(value)) return false;
+        // Literal/known-scalar engine list is a global PARAM_ENGINES_REQUESTED exit.
+        if (option === 'engine' && literalSourceWord(value)?.text === 'list') return true;
+      }
     } else if (text.startsWith('-') && text !== '-') {
       for (let p = 1; p < text.length; p++) {
         if ('hMV'.includes(text[p])) return true;
@@ -1278,6 +1356,80 @@ function curlTerminalQuery(words, incomplete) {
     }
   }
   return false;
+}
+
+/** curl 8.7.1: explicit engine source is selected only by an actual operation. */
+function curlSelectedEngineSource(invocation) {
+  if (invocation.name !== 'curl') return false;
+  let engine = null;
+  let operationUrl = false;
+  let active = false;
+  let afterDD = false;
+  const flags = '012346afgGiIjklLMnNOpqRsSvVZ:#';
+  const finishOperation = () => {
+    if (engine && operationUrl) active = true;
+    engine = null;
+    operationUrl = false;
+  };
+  for (let k = 0; k < invocation.args.length; k++) {
+    const original = invocation.args[k];
+    const literal = literalSourceWord(original);
+    const text = literal ? literal.text : original.text;
+    if (!afterDD && text === '--' && literal) { afterDD = true; continue; }
+    if (afterDD || !text.startsWith('-') || text === '-') {
+      if (text !== '') operationUrl = true;
+      continue;
+    }
+    if (text.startsWith('--')) {
+      // This pinned native long-option parser does not accept equals or abbreviation.
+      // A parse failure precedes every operation; independent argv/config guards remain.
+      if (text.includes('=')) return false;
+      let name = text.slice(2);
+      const expanding = name.startsWith('expand-');
+      if (expanding) name = name.slice(7);
+      if (name.startsWith('no-')) {
+        const base = name.slice(3);
+        if (!CURL_BOOLEAN_LONG.has(base)) return false;
+        continue;
+      }
+      if (!CURL_LONG_NAMES.includes(name)) return false;
+      if (!expanding && ['help', 'manual', 'version'].includes(name)) return false;
+      if (name === 'next') {
+        if (!operationUrl) return false; // parse_args rejects missing URL before --next.
+        finishOperation();
+        continue;
+      }
+      if (name === 'metalink') return false; // PARAM_BAD_USE in this pinned release.
+      if (CURL_VALUE_LONG.has(name)) {
+        const value = invocation.args[++k];
+        if (!value) return false;
+        const known = literalSourceWord(value);
+        if (name === 'engine') {
+          // list is a global parse terminal, including after an earlier --next.
+          if (!expanding && known && known.text === 'list') return false;
+          if (!expanding && known && known.text === '') return false; // DENY_BLANK.
+          engine = value; // Last value in this operation; ordinary names still lack source proof.
+        } else if (name === 'url' && (!known || known.text !== '')) operationUrl = true;
+      }
+      continue;
+    }
+    for (let p = 1; p < text.length; p++) {
+      const option = text[p];
+      if ('hMV'.includes(option)) return false;
+      if (option === ':') {
+        if (!operationUrl) return false;
+        finishOperation();
+        continue;
+      }
+      if (CURL_VALUE_SHORT[option]) {
+        if (p + 1 === text.length && !invocation.args[++k]) return false;
+        break; // Consumed -A--engine and -H --engine are DATA, not selectors.
+      }
+      if (!flags.includes(option)) return false;
+    }
+  }
+  finishOperation();
+  return active;
 }
 
 /** Netrc toggles are independent; consume other options before interpreting a selector or reset. */
@@ -1688,7 +1840,7 @@ const WGET_VALUE_LONG = new Set([
 const WGET_VALUE_SHORT = 'eoaiBtOTwQPUlARDIX';
 const WGET_FLAG_LONG = new Set([
   'help', 'version', 'background', 'debug', 'quiet', 'verbose', 'no-verbose', 'no-config',
-  'retry-connrefused', 'retry-on-host-error', 'no-clobber', 'no-netrc', 'continue', 'show-progress',
+  'retry-connrefused', 'retry-on-host-error', 'no-clobber', 'netrc', 'no-netrc', 'continue', 'show-progress',
   'timestamping', 'no-if-modified-since', 'no-use-server-timestamps', 'server-response', 'spider',
   'no-dns-cache', 'inet4-only', 'inet6-only', 'unlink', 'xattr', 'ask-password', 'random-wait',
   'no-proxy', 'no-cache', 'adjust-extension', 'ignore-length', 'no-cookies', 'keep-session-cookies',
@@ -1730,6 +1882,11 @@ function wgetSourceBoundary(invocation) {
       if (WGET_VALUE_LONG.has(option) && option !== 'use-askpass') {
         const value = eq < 0 ? invocation.args[++k] : { ...word, text: text.slice(eq + 1) };
         if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded) unknown = true;
+      } else if (option === 'netrc' || option === 'no-netrc') {
+        // Positive netrc takes an optional attached boolean; no-netrc takes no value.
+        const value = eq < 0 ? null : literalSourceWord(wgetValueWord(word, eq + 1));
+        if (name !== option || option === 'no-netrc' && eq >= 0 ||
+            eq >= 0 && (!value || !/^(?:on|yes|1|off|no|0)$/i.test(value.text))) unknown = true;
       } else if (eq >= 0 && option !== 'use-askpass') unknown = true;
       continue;
     }
@@ -1795,6 +1952,7 @@ function wgetPayloadRole(invocation) {
   let terminal = false;
   let noProxy = false;
   let forceHtml = false;
+  let netrc = true;
   let afterDD = false;
   const takeValue = (option, value) => {
     if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.ansiCUnknown ||
@@ -1835,6 +1993,11 @@ function wgetPayloadRole(invocation) {
       if (WGET_VALUE_LONG.has(option)) {
         // askpass takes an optional attached source; the old source boundary owns it.
         if (option !== 'use-askpass') takeValue(option, eq < 0 ? invocation.args[++k] : wgetValueWord(word, eq + 1));
+      } else if (option === 'netrc' || option === 'no-netrc') {
+        const value = eq < 0 ? null : literalSourceWord(wgetValueWord(word, eq + 1));
+        if (name !== option || option === 'no-netrc' && eq >= 0 ||
+            eq >= 0 && (!value || !/^(?:on|yes|1|off|no|0)$/i.test(value.text))) unknown = true;
+        else netrc = eq < 0 ? option === 'netrc' : /^(?:on|yes|1)$/i.test(value.text);
       } else if (eq >= 0) unknown = true;
       else flag(option);
       continue;
@@ -1858,7 +2021,37 @@ function wgetPayloadRole(invocation) {
     if (!proven && (word.dynamicMaySplit !== false || word.ansiCUnknown || word.globExpanded || word.braceExpanded)) unknown = true;
     urls.push(word);
   }
-  return { values, headers, unknownHeaders, urls, unknown, terminal, noProxy, forceHtml, htmlTagValues };
+  return { values, headers, unknownHeaders, urls, unknown, terminal, noProxy, forceHtml, htmlTagValues, netrc };
+}
+
+/** These existing parsed option combinations exit before Wget starts URL retrieval. */
+function wgetInvalidBodyOptions(role) {
+  const value = name => role.values.get(name);
+  return value('post-data') && value('method') || value('body-data') && !value('method') ||
+    value('post-data') && value('body-data') || value('post-data') && value('post-file') ||
+    value('body-data') && value('body-file');
+}
+
+/** Wget defaults to implicit credential-file selection independently of wgetrc. */
+function wgetNetrcCredentialSourceVerdict(invocation) {
+  if (invocation.name !== 'wget') return false;
+  const role = wgetPayloadRole(invocation);
+  if (role.terminal && !role.unknown || !role.netrc && !role.unknown) return false;
+  if (!role.unknown && wgetInvalidBodyOptions(role)) return false;
+  const input = role.values.get('input-file');
+  const inputState = input ? wgetInputListState(invocation, role) : { inactive: true, body: '' };
+  if (!role.urls.length && !role.unknown &&
+      (inputState.inactive || wgetLiteralInputLinks(role, inputState)?.length === 0)) return false;
+  if (role.unknown || invocation.outboundEnvironmentUnknown) return 'UNKNOWN';
+  // Both global fields are non-NULL for HTTP and FTP, including after redirects.
+  // Initial URL-only / protocol-specific pairs do not prove future consumer selection.
+  const supplied = (name) => {
+    const value = role.values.get(name);
+    return value && value.dynamicMaySplit === false && !value.ansiCUnknown && !value.globExpanded && !value.braceExpanded && !value.tildeExpanded;
+  };
+  if (supplied('user') && supplied('password')) return false;
+  // No credential contents or existence are inspected: active implicit matching is unproved.
+  return 'UNKNOWN';
 }
 
 /** Wget's selected URL-list source composes with CLI URLs; it is not an upload body. */
@@ -1880,24 +2073,24 @@ function wgetInputListState(invocation, role) {
   if (nullInput || source && source.text.trim() === '') return { verdict: false, inactive: true, body: '' };
   const all = invocationSources.get(invocation) || [];
   // Selected fd 0 proof is separately owned; HTML extraction is not a raw URL-line body.
-  let verdict = requestDataStdinVerdict(invocation, all);
+  const selection = {};
+  let verdict = requestDataStdinVerdict(invocation, all, false, selection);
   if (role.forceHtml && verdict === 'FORBIDDEN') verdict = 'UNKNOWN';
-  return { verdict, inactive: false, body: source?.text ?? null };
+  return { verdict, inactive: selection.noOutput === true, body: selection.noOutput ? '' : source?.text ?? null };
 }
 
-/** Only selected relative URLs consume a base; unknown links/components stay unknown. */
-function wgetBasePayloadVerdict(invocation, role, input) {
-  const base = role.values.get('base');
-  if (!base || literalSourceWord(base) || input.inactive) return false;
-  if (input.body === null) return 'UNKNOWN';
+/** Reuse the same small URL-list/anchor/tag proof for base selection and operation activation. */
+function wgetLiteralInputLinks(role, input) {
+  if (input.inactive) return [];
+  if (input.body === null) return null;
   let links;
   if (role.forceHtml) {
     // A deliberately small literal anchor grammar proves the href attribute itself;
     // DATA inside title/data-href, comments, scripts or other HTML is not a link proof.
     const clean = input.body.trim();
-    if (!clean) return false;
+    if (!clean) return [];
     const anchor = /^<a\s+href\s*=\s*(["'])([A-Za-z0-9_.\/-]+)\1\s*>[^<>]*<\/a\s*>$/i.exec(clean);
-    if (!anchor) return 'UNKNOWN';
+    if (!anchor) return null;
     const tags = option => {
       const words = role.htmlTagValues.get(option) || [];
       const values = words.map(word => literalSourceWord(word)?.text);
@@ -1906,10 +2099,19 @@ function wgetBasePayloadVerdict(invocation, role, input) {
     };
     const ignored = tags('ignore-tags');
     const followed = tags('follow-tags');
-    if (!ignored || !followed) return 'UNKNOWN';
-    if (ignored.has('a') || followed.size && !followed.has('a')) return false;
+    if (!ignored || !followed) return null;
+    if (ignored.has('a') || followed.size && !followed.has('a')) return [];
     links = [anchor[2]];
   } else links = input.body.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  return links;
+}
+
+/** Only selected relative URLs consume a base; unknown links/components stay unknown. */
+function wgetBasePayloadVerdict(invocation, role, input) {
+  const base = role.values.get('base');
+  if (!base || literalSourceWord(base) || input.inactive) return false;
+  const links = wgetLiteralInputLinks(role, input);
+  if (links === null) return 'UNKNOWN';
   if (!links.length || links.every(link => /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(link))) return false;
   if (!links.every(link => /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\/?$/.test(link) &&
       !link.split('/').some(part => part === '.' || part === '..'))) return 'UNKNOWN';
@@ -1940,9 +2142,7 @@ function wgetInlinePayloadVerdict(invocation) {
     if (generated(url)) selected.push(url);
   }
   const body = value('post-data') || value('body-data');
-  const invalidBody = value('post-data') && value('method') || value('body-data') && !value('method') ||
-    value('post-data') && value('body-data') || value('post-data') && value('post-file') ||
-    value('body-data') && value('body-file');
+  const invalidBody = wgetInvalidBodyOptions(role);
   const httpWords = [body, value('method'), ...role.headers.values(), ...role.unknownHeaders,
     ...(!role.headers.has('user-agent') ? [value('user-agent')] : []),
     ...(!role.headers.has('referer') ? [value('referer')] : [])].filter(Boolean);
@@ -2133,6 +2333,8 @@ function rsyncFileListPayload(invocation) {
   if (invocation.name !== 'rsync') return false;
   const requests = [];
   const remoteOptions = [];
+  let remoteProgram = null;
+  let selectedRsh = (invocation.helperEnvNames || []).includes('RSYNC_RSH');
   const operands = [];
   let unknown = Boolean(invocation.incomplete);
   let afterDD = false;
@@ -2149,6 +2351,9 @@ function rsyncFileListPayload(invocation) {
         const value = eq < 0 ? invocation.args[++k] : rsyncRequestValue(word, text, eq + 1);
         if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
         if (name === 'remote-option') remoteOptions.push(value);
+        // GNU rsync uses the last selected remote program as outgoing remote-shell argv DATA.
+        if (name === 'rsync-path') remoteProgram = value;
+        if (name === 'rsh') selectedRsh = true;
         if (['filter', 'include', 'exclude', 'include-from', 'exclude-from', 'files-from'].includes(name)) {
           const request = rsyncRequestRule(value, name);
           if (request.clear) requests.splice(0, requests.length, ...requests.filter(previous => previous.mode === 'file-list'));
@@ -2164,6 +2369,7 @@ function rsyncFileListPayload(invocation) {
           const value = p + 1 < text.length ? rsyncRequestValue(word, text, p + 1) : invocation.args[++k];
           if (!value || value.dynamic && value.dynamicMaySplit !== false || value?.globExpanded || value?.braceExpanded || value?.ansiCUnknown) unknown = true;
           if (text[p] === 'M') remoteOptions.push(value);
+          if (text[p] === 'e') selectedRsh = true;
           if (text[p] === 'f') {
             const request = rsyncRequestRule(value, 'filter');
             if (request.clear) requests.splice(0, requests.length, ...requests.filter(previous => previous.mode === 'file-list'));
@@ -2179,7 +2385,7 @@ function rsyncFileListPayload(invocation) {
     if (!literal) unknown = true;
     operands.push(literal ? literal.text : null);
   }
-  if (!requests.length && !remoteOptions.length) return false;
+  if (!requests.length && !remoteOptions.length && !remoteProgram) return false;
   const roles = operands.map(text => remoteCopyAddressRole('rsync', text));
   const remote = roles.includes('REMOTE');
   if (!remote && !unknown && !roles.includes('UNKNOWN')) return false;
@@ -2201,6 +2407,14 @@ function rsyncFileListPayload(invocation) {
   const remoteOptionVerdict = outboundPayloadVerdict(invocation, selectedRemoteOptions);
   if (remoteOptionVerdict) return remoteOptionVerdict;
   const pull = roles[0] === 'REMOTE' && (operands.length === 1 || roles.at(-1) === 'LOCAL');
+  // A direct daemon and an entirely local copy do not send --rsync-path to SSH.
+  // Uploads retain the independent destination prohibition rather than being downgraded to UNKNOWN.
+  const remoteShell = selectedRsh || operands.some((value, index) => roles[index] === 'REMOTE' &&
+    !/^rsync:\/\//i.test(value) && !/^[^/:]+::/.test(value));
+  if (pull && remoteShell && remoteProgram) {
+    const remoteProgramVerdict = outboundPayloadVerdict(invocation, [remoteProgram]);
+    if (remoteProgramVerdict) return remoteProgramVerdict;
+  }
   // Remote uploads retain the independent file-upload prohibition below. A role
   // selected only on the opposite remote side does not inherit a coincident local read.
   if (!pull && !requests.some(request => request.mode === 'file-list')) return false;
@@ -2859,6 +3073,30 @@ function ghOfficialVerdict(invocation) {
   return false;
 }
 
+/** Host-bearing operands follow their actual operation consumer; URL-shaped DATA is not a selector. */
+function ghRequestHostWords(role) {
+  const operation = role.operation;
+  const pr = new Set(['checkout', 'checks', 'close', 'comment', 'diff', 'edit', 'merge', 'ready',
+    'reopen', 'revert', 'review', 'update-branch', 'view']);
+  const issue = new Set(['close', 'comment', 'delete', 'develop', 'edit', 'lock', 'pin', 'reopen',
+    'transfer', 'unlock', 'unpin', 'view']);
+  const repo = new Set(['archive', 'clone', 'delete', 'edit', 'fork', 'sync', 'unarchive', 'view']);
+  const [group, action] = operation.split(' ');
+  const entries = [];
+  if (group === 'pr' && pr.has(action) && role.operands[0]) entries.push({ kind: 'pr', word: role.operands[0] });
+  if (group === 'pr' && ['lock', 'unlock'].includes(action) && role.operands[0]) entries.push({ kind: 'issue', word: role.operands[0] });
+  if (group === 'issue' && issue.has(action)) {
+    for (const word of action === 'edit' ? role.operands : role.operands.slice(0, 1)) entries.push({ kind: 'issue', word });
+    if (action === 'transfer' && role.operands[1]) entries.push({ kind: 'repository-relative', word: role.operands[1], additional: true });
+    if (action === 'develop') for (const value of role.values.filter(value => value.option === 'branch-repo'))
+      entries.push({ kind: 'repository', word: value.word, additional: true });
+  }
+  if (group === 'repo' && repo.has(action) && role.operands[0]) entries.push({ kind: 'repository', word: role.operands[0] });
+  if (operation === 'repo sync') for (const value of role.values.filter(value => value.option === 'source'))
+    entries.push({ kind: 'repository', word: value.word, additional: true });
+  return entries;
+}
+
 /** Retain the exported token selected by the actual request host, not every token-shaped name. */
 function ghAuthenticationVerdict(invocation) {
   if (invocation.name !== 'gh') return false;
@@ -2889,6 +3127,8 @@ function ghAuthenticationVerdict(invocation) {
   else if (env.has('GH_HOST') && literalSourceWord(env.get('GH_HOST'))?.text !== '') {
     host = hostOf(env.get('GH_HOST')); hostUnknown = !host;
   }
+  const defaultHost = host;
+  const requestHosts = [];
   if (role.operation === 'api') {
     const endpoint = role.operands[0], literal = literalSourceWord(endpoint);
     if (literal?.text.includes('://')) { host = hostOf(literal); hostUnknown = !host; }
@@ -2913,17 +3153,52 @@ function ghAuthenticationVerdict(invocation) {
     else if (literal && literal.text.split('/').length === 3) {
       host = hostOf({ text: literal.text.split('/')[0], dynamic: false }); hostUnknown = !host;
     } else if (repo && !literal) hostUnknown = true;
+    const positional = ghRequestHostWords(role);
+    for (const entry of positional) {
+      const literal = literalSourceWord(entry.word);
+      if (!literal) { hostUnknown = true; continue; }
+      let selectedHost, selectsHost = false;
+      if (entry.kind === 'pr' || entry.kind === 'issue') {
+        try {
+          const url = new URL(literal.text);
+          const path = entry.kind === 'pr' ? /^\/[^/]+\/[^/]+\/pull\/\d+/ : /^\/[^/]+\/[^/]+\/(?:issues|pull)\/\d+/;
+          if (['http:', 'https:'].includes(url.protocol) && path.test(url.pathname)) {
+            selectedHost = hostOf(literal); selectsHost = true;
+          }
+        } catch { /* Numeric/branch selectors keep the repository fallback. */ }
+      } else {
+        // FromFullName uses the default host, not an unrelated persistent -R/GH_REPO value.
+        selectedHost = entry.kind === 'repository-relative' ? host : defaultHost;
+        selectsHost = true;
+        if (literal.text.includes('://')) selectedHost = hostOf(literal);
+        else if (literal.text.split('/').length === 3) selectedHost = hostOf({ text: literal.text.split('/')[0], dynamic: false });
+        else if (literal.text.split('/').length !== 2) {
+          // Single-name repository consumers may first look up the current default-host account.
+          if (literal.text.includes('/') || !literal.text) selectedHost = undefined;
+        }
+      }
+      if (selectsHost) {
+        if (entry.additional) requestHosts.push(selectedHost);
+        else { host = selectedHost; hostUnknown = !host; }
+      }
+    }
   }
-  const publicHost = host && (host === 'github.com' || host.endsWith('.github.com') ||
-    host === 'github.localhost' || host.endsWith('.github.localhost') || host.endsWith('.ghe.com'));
-  const families = host && !hostUnknown ? [publicHost ? names.slice(0, 2) : names.slice(2)] : [names.slice(0, 2), names.slice(2)];
+  requestHosts.unshift(host);
+  const familyKeys = new Set();
+  for (const selectedHost of requestHosts) {
+    const publicHost = selectedHost && (selectedHost === 'github.com' || selectedHost.endsWith('.github.com') ||
+      selectedHost === 'github.localhost' || selectedHost.endsWith('.github.localhost') || selectedHost.endsWith('.ghe.com'));
+    if (!selectedHost || hostUnknown) { familyKeys.add('public'); familyKeys.add('enterprise'); }
+    else familyKeys.add(publicHost ? 'public' : 'enterprise');
+  }
+  const families = [...familyKeys].map(key => key === 'public' ? names.slice(0, 2) : names.slice(2));
   let unknown = !!invocation.outboundEnvironmentUnknown;
   for (const family of families) for (const name of family) {
     if (!env.has(name)) continue;
     const word = env.get(name), literal = literalSourceWord(word);
     if (literal?.text === '') continue;
     if (literal) break; // First known nonempty value suppresses the lower-priority token.
-    if (!host || hostUnknown) { unknown = true; break; }
+    if (requestHosts.some(value => !value) || hostUnknown) { unknown = true; break; }
     return outboundPayloadVerdict(invocation, [word]);
   }
   return unknown ? 'UNKNOWN' : false;
@@ -3496,28 +3771,33 @@ function socketAuthenticationValue(word, offset) {
     ...(typeof word.outboundLiteralValue === 'string' ? { outboundLiteralValue: word.outboundLiteralValue.slice(offset) } : {}) };
 }
 
-function socketAuthenticationRole(invocation) {
+function socketAuthenticationRole(invocation, destinationRoles = false) {
   const ncat = invocation.name === 'ncat';
   if (!ncat && invocation.name !== 'telnet') return null;
   const required = new Set(ncat ? ['source-port', 'source', 'wait', 'idle-timeout', 'delay', 'max-conns',
     'proxy', 'proxy-type', 'proxy-auth', 'output', 'hex-dump', 'allow', 'allowfile', 'deny', 'denyfile',
     'proxy-dns', 'ssl-cert', 'ssl-key', 'ssl-trustfile', 'ssl-ciphers', 'ssl-servername', 'ssl-alpn',
-    'exec', 'sh-exec', 'lua-exec', 'nsock-engine'] : ['bind', 'escape', 'user', 'trace', 'realm', 'disable-auth']);
+    'exec', 'sh-exec', 'lua-exec', 'nsock-engine', 'g', 'G'] : ['bind', 'escape', 'user', 'trace', 'realm', 'disable-auth']);
   const flags = new Set(ncat ? ['listen', 'udp', 'sctp', 'unixsock', 'vsock', 'crlf', 'keep-open', 'nodns',
     'telnet', 'verbose', 'append-output', 'send-only', 'recv-only', 'no-shutdown', 'broker', 'chat',
-    'ssl', 'ssl-verify', 'test'] : ['ipv4', 'ipv6', 'binary', 'login', 'no-rc', 'debug', 'no-escape',
+    'ssl', 'ssl-verify', 'test', '4', '6'] : ['ipv4', 'ipv6', 'binary', 'login', 'no-rc', 'debug', 'no-escape',
     'no-login', 'binary-output', 'rlogin', 'encrypt']);
   const shorts = ncat ? { p: 'source-port', w: 'wait', s: 'source', i: 'idle-timeout', d: 'delay',
     m: 'max-conns', g: 'route', G: 'route-pointer', q: 'quit-delay', o: 'output', x: 'hex-dump',
     e: 'exec', c: 'sh-exec' } : { b: 'bind', e: 'escape', l: 'user', n: 'trace', k: 'realm', X: 'disable-auth' };
   const shortFlags = ncat ? '46UCulkn tvz'.replace(/ /g, '') : '468ac dEKLrx'.replace(/ /g, '');
-  const selected = new Map(), operands = [], selectedFlags = new Set();
+  const selected = new Map(), operands = [], selectedFlags = new Set(), earlyDnsWords = [], routeWords = [];
+  let socketFamily = 'default';
   let unknown = !!invocation.incomplete, terminal = false, hasAuth = false, listen = false, localSocket = false;
   const select = (name, value) => {
+    if (ncat && (name === 'g' || name === 'G')) name = name === 'g' ? 'route' : 'route-pointer';
     if (name === (ncat ? 'proxy-auth' : 'user')) hasAuth = true;
     if (!value) unknown = true;
     if (ncat && ['proxy', 'proxy-type', 'proxy-auth'].includes(name) && selected.has(name)) unknown = true;
     selected.set(name, value);
+    // Ncat -g resolves route hops while parsing argv, before a later help/nodns option.
+    if (destinationRoles && name === 'route' && !selectedFlags.has('nodns')) earlyDnsWords.push(value);
+    if (destinationRoles && name === 'route') routeWords.push(value);
   };
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k], literal = socketAuthenticationLiteralWord(word);
@@ -3526,7 +3806,13 @@ function socketAuthenticationRole(invocation) {
       !word.braceExpanded && !word.tildeExpanded && !word.ansiCUnknown &&
       (ncat ? ['--proxy-auth=', '--ssl-servername=', '--ssl-alpn='].some(prefix => word.text.startsWith(prefix)) :
         word.text.startsWith('--user=') || word.text.startsWith('-l') && word.text.length > 2);
-    if (!literal && !attachedAuth) { unknown = true; continue; }
+    if (!literal && !attachedAuth) {
+      if (destinationRoles && word.dynamicMaySplit === false && !word.globExpanded &&
+          !word.braceExpanded && !word.tildeExpanded && !word.ansiCUnknown && !word.text.startsWith('-')) {
+        operands.push(word); continue;
+      }
+      unknown = true; continue;
+    }
     const text = literal ? literal.text : word.text;
     if (text === '--') { operands.push(...invocation.args.slice(k + 1)); break; }
     if (text.startsWith('--')) {
@@ -3539,7 +3825,10 @@ function socketAuthenticationRole(invocation) {
       else {
         selectedFlags.add(name);
         if (['listen', 'broker', 'chat'].includes(name)) listen = true;
-        if (['unixsock', 'vsock'].includes(name)) localSocket = true;
+        if (ncat && ['unixsock', 'vsock', '4', '6'].includes(name)) {
+          socketFamily = name === '4' ? 'ipv4' : name === '6' ? 'ipv6' : name;
+          localSocket = ['unixsock', 'vsock'].includes(name);
+        }
       }
     } else if (text.startsWith('-') && text !== '-') {
       for (let p = 1; p < text.length; p++) {
@@ -3551,13 +3840,234 @@ function socketAuthenticationRole(invocation) {
         }
         if (!shortFlags.includes(key)) unknown = true;
         if (ncat && key === 'l') listen = true;
-        if (ncat && key === 'U') localSocket = true;
+        if (ncat && ['U', '4', '6'].includes(key)) {
+          socketFamily = key === 'U' ? 'unixsock' : key === '4' ? 'ipv4' : 'ipv6';
+          localSocket = key === 'U';
+        }
         if (ncat && key === 'u') selectedFlags.add('udp');
+        if (ncat && key === 'n') selectedFlags.add('nodns');
+        if (ncat && key === 'z') selectedFlags.add('zero');
+        if (ncat && key === 't') selectedFlags.add('telnet');
       }
       if (terminal) break;
     } else operands.push(word);
   }
-  return { ncat, selected, selectedFlags, operands, unknown, terminal, hasAuth, listen, localSocket };
+  return { ncat, selected, selectedFlags, operands, unknown, terminal, hasAuth, listen, localSocket, socketFamily, earlyDnsWords, routeWords };
+}
+
+/** Names used by resolution/proxy/connection are outbound roles independently of stdin or TLS. */
+function ncatDestinationVerdict(invocation) {
+  if (invocation.name !== 'ncat') return false;
+  const role = socketAuthenticationRole(invocation, true);
+  const early = outboundPayloadVerdict(invocation, role.earlyDnsWords);
+  if (early) return early;
+  if (role.terminal || role.localSocket) return false;
+  const proxyType = role.selected.has('proxy-type') ? socketAuthenticationLiteralWord(role.selected.get('proxy-type'))?.text : 'http';
+  if (!proxyType) return 'UNKNOWN';
+  if (!['http', 'socks4', '4', 'socks5', '5'].includes(proxyType) ||
+      role.selected.has('proxy-type') && !role.selected.has('proxy') && (!role.listen || proxyType !== 'http')) return false;
+  const proxyDns = role.selected.has('proxy-dns') ? socketAuthenticationLiteralWord(role.selected.get('proxy-dns'))?.text : 'remote';
+  if (!proxyDns) return 'UNKNOWN';
+  if (!['none', 'local', 'remote', 'both'].includes(proxyDns)) return false;
+  const candidates = [];
+  const numericOnly = role.selectedFlags.has('nodns');
+  // Only a fixed nonnumeric prefix before any expansion/scope delimiter proves no IP literal.
+  const cannotBeNumeric = word => !socketAuthenticationLiteralWord(word) && /^[^%\0]*[g-z][^%\0]*(?:\0|$)/i.test(word?.text || '');
+  if (role.selected.has('proxy')) {
+    // The proxy's own resolver honors nodns; proxy destination resolution has a separate selector.
+    const proxy = role.selected.get('proxy');
+    if (!numericOnly || !cannotBeNumeric(proxy)) candidates.push(proxy);
+  }
+  // These fixed invalid combinations stop after the proxy resolver and before source/target resolution.
+  const stopsBeforeTarget = role.listen && role.selected.has('proxy') || role.selectedFlags.has('zero') &&
+    (role.listen || role.selectedFlags.has('telnet') || ['exec', 'sh-exec', 'lua-exec'].some(name => role.selected.has(name)));
+  if (stopsBeforeTarget) return outboundPayloadVerdict(invocation, candidates);
+  // Numeric source-route addresses reach IPv4 packet options even when DNS is disabled.
+  if (!role.listen && role.socketFamily === 'ipv4')
+    candidates.push(...role.routeWords.filter(word => !numericOnly || !cannotBeNumeric(word)));
+  if (role.selected.has('source')) {
+    const source = role.selected.get('source');
+    if (!numericOnly || !role.listen && !cannotBeNumeric(source)) candidates.push(source);
+  }
+  const target = role.operands[0];
+  if (target) {
+    if (role.selected.has('proxy')) {
+      // With neither local nor remote resolution, a nonnumeric name is rejected before target DATA is sent.
+      if (proxyDns !== 'none' || !cannotBeNumeric(target)) candidates.push(target);
+    } else if (!(role.listen && role.selected.has('proxy-type')) &&
+        (!numericOnly || !role.listen && !cannotBeNumeric(target))) {
+      // Explicit listen bind names are resolved before binding; numeric-only local bind is not this sink.
+      candidates.push(target);
+    }
+  }
+  if (!candidates.length) return false;
+  const generated = candidates.some(word => !socketAuthenticationLiteralWord(word));
+  if (role.unknown || role.operands.length > 2 || invocation.incomplete) return generated ? 'UNKNOWN' : false;
+  return outboundPayloadVerdict(invocation, candidates.map(word => socketAuthenticationLiteralWord(word) || word));
+}
+
+/** Apple nc56 and GNU inetutils2.8 have distinct argv grammars; neither is Ncat. */
+function ncTelnetDestinationRole(invocation) {
+  const nc = invocation.name === 'nc';
+  if (!nc && invocation.name !== 'telnet') return null;
+  const required = nc ? { b: 'interface', i: 'interval', G: 'timeout', H: 'keepidle', I: 'keepinterval',
+    J: 'keepcount', K: 'class', L: 'readtimeout', N: 'writetimeout', p: 'source-port', s: 'source',
+    T: 'tos', w: 'wait', X: 'proxy-type', x: 'proxy' } :
+    { b: 'bind', e: 'escape', l: 'user', n: 'trace', k: 'realm', X: 'disable-auth' };
+  const flags = nc ? '46AacDCdEhFklnoOrtUuvz' : '468acdEKLrxfF';
+  const long = nc ? new Map([
+    ['apple-resvd-0', '4'], ['apple-resvd-1', '6'], ['apple-recv-anyif', 'A'], ['apple-awdl-unres', 'a'],
+    ['apple-boundif', 'b'], ['apple-no-cellular', 'C'], ['apple-resvd-2', 'c'], ['apple-resvd-3', 'D'],
+    ['apple-resvd-4', 'd'], ['apple-no-expensive', 'E'], ['apple-no-flowadv', 'F'], ['apple-tcp-timeout', 'G'],
+    ['apple-tcp-keepalive', 'H'], ['apple-resvd-5', 'h'], ['apple-resvd-6', 'i'], ['apple-tcp-keepintvl', 'I'],
+    ['apple-tcp-keepcnt', 'J'], ['apple-tclass', 'K'], ['apple-resvd-7', 'k'], ['apple-resvd-8', 'l'],
+    ['apple-tcp-adp-rtimo', 'L'], ['apple-intcoproc-allow', 'm'], ['apple-initcoproc-allow', 'm'],
+    ['apple-tcp-adp-wtimo', 'N'], ['apple-resvd-9', 'n'], ['apple-setsockopt-later', 'o'],
+    ['apple-no-connectx', 'O'], ['apple-resvd-10', 'p'], ['apple-delegate-pid', ':'], ['apple-delegate-uuid', ':'],
+    ['apple-resvd-11', 'r'], ['apple-resvd-12', 's'], ['apple-tos', 'T'], ['apple-tos-cmsg', '.'],
+    ['apple-resvd-14', 't'], ['apple-resvd-15', 'U'], ['apple-resvd-16', 'u'], ['apple-resvd-17', 'v'],
+    ['apple-resvd-18', 'w'], ['apple-resvd-19', 'X'], ['apple-resvd-20', 'x'], ['apple-resvd-21', 'z'],
+    ['apple-ext-bk-idle', '.'], ['apple-nowakefromsleep', ':'], ['apple-ecn', ':'], ['apple-kao', ':'],
+    ['apple-sockev', '.'], ['apple-notify-ack', '.'], ['apple-netsvctype', ':'], ['apple-no-reuseport', '.'],
+    ['apple-tcp-maxseg', ':']
+  ]) : new Map([['ipv4', '4'], ['ipv6', '6'], ['binary', '8'], ['bind', 'b'], ['login', 'a'],
+    ['no-rc', 'c'], ['debug', 'd'], ['escape', 'e'], ['no-escape', 'E'], ['no-login', 'K'],
+    ['user', 'l'], ['binary-output', 'L'], ['trace', 'n'], ['rlogin', 'r'], ['encrypt', 'x'],
+    ['disable-auth', 'X'], ['realm', 'k'], ['fwd-credentials', 'f'], ['help', '?'], ['usage', '?'], ['version', 'V']]);
+  const selected = new Map(), operands = [], selectedFlags = new Set();
+  const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+  let unknown = !!invocation.incomplete, terminal = false, terminalArgumentError = false, family = 'default', afterDash = false;
+  const take = (key, value) => { if (!value) unknown = true; selected.set(required[key] || 'platform-value', value); };
+  const flag = key => {
+    if (nc && key === 'h' || !nc && ['?', 'V'].includes(key)) { terminal = !unknown; return; }
+    if (!flags.includes(key) && key !== '.' && key !== 'm') { unknown = true; return; }
+    selectedFlags.add(key);
+    if (['4', '6', ...(nc ? ['U'] : [])].includes(key)) family = key === 'U' ? 'unix' : key === '4' ? 'ipv4' : 'ipv6';
+  };
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k], literal = socketAuthenticationLiteralWord(word);
+    if (afterDash || posix && operands.length) { operands.push(word); continue; }
+    // A later option is not proven active after an operand when inherited option ordering is unknown.
+    if (operands.length && invocation.outboundEnvironmentUnknown && literal?.text.startsWith('-')) unknown = true;
+    if (!literal) {
+      if (word.dynamicMaySplit !== false || word.globExpanded || word.braceExpanded || word.tildeExpanded || word.ansiCUnknown) unknown = true;
+      // A fixed required option prefix still has one scalar DATA operand.
+      const eq = word.text.indexOf('=');
+      if (word.text.startsWith('--') && eq > 2) {
+        const key = long.get(word.text.slice(2, eq));
+        if (key && (required[key] || key === ':')) { take(key, socketAuthenticationValue(word, eq + 1)); continue; }
+      } else if (word.text.startsWith('-') && required[word.text[1]] && word.text.length > 2) {
+        take(word.text[1], socketAuthenticationValue(word, 2)); continue;
+      }
+      if (word.text.startsWith('-')) unknown = true;
+      operands.push(word); continue;
+    }
+    const text = literal.text;
+    if (text === '--') { afterDash = true; continue; }
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), name = text.slice(2, eq < 0 ? undefined : eq);
+      const matches = long.has(name) ? [name] : [...long.keys()].filter(key => key.startsWith(name));
+      if (matches.length !== 1) { unknown = true; continue; }
+      const key = long.get(matches[0]);
+      if (required[key] || key === ':') take(key, eq < 0 ? invocation.args[++k] : socketAuthenticationValue(word, eq + 1));
+      else if (eq >= 0) {
+        unknown = true;
+        if (!nc && (!operands.length || !invocation.outboundEnvironmentUnknown)) terminalArgumentError = true;
+      }
+      else flag(key);
+    } else if (text.startsWith('-') && text !== '-') {
+      for (let p = 1; p < text.length; p++) {
+        const key = text[p];
+        if (required[key]) { take(key, p + 1 < text.length ? socketAuthenticationValue(word, p + 1) : invocation.args[++k]); break; }
+        flag(key);
+        if (terminal) break;
+      }
+    } else operands.push(word);
+    if (terminal) break;
+  }
+  return { nc, selected, selectedFlags, operands, unknown, terminal, terminalArgumentError, family };
+}
+
+/** Selected address generation is independent of socket stdin and scan/read-only labels. */
+function ncTelnetDestinationVerdict(invocation) {
+  const role = ncTelnetDestinationRole(invocation);
+  if (!role || role.terminal) return false;
+  const generated = invocation.args.some(word => !socketAuthenticationLiteralWord(word));
+  if (role.unknown) return generated ? 'UNKNOWN' : false;
+  const { selected, selectedFlags: flags, operands } = role;
+  const words = [];
+  if (role.nc) {
+    const listen = flags.has('l'), proxy = selected.get('proxy');
+    // These checks run before proxy/source/target resolution in Apple nc56.
+    if (listen && (selected.has('source') || selected.has('source-port') || flags.has('z')) ||
+        !listen && flags.has('k') || role.family === 'unix') return false;
+    if (proxy && (flags.has('u') || listen || role.family === 'ipv6' || selected.has('source'))) return false;
+    const type = selected.has('proxy-type') ? socketAuthenticationLiteralWord(selected.get('proxy-type'))?.text : '5';
+    if (!type) return generated ? 'UNKNOWN' : false;
+    if (!['4', '5', 'connect'].includes(type.toLowerCase())) return false;
+    const target = operands.length > 1 ? operands[0] : null;
+    if (!target) return false; // One listen operand is a port, not a host; client has no target.
+    // A possible source-route/compiled transform is not a proof that the complete original word is sent.
+    if (!socketAuthenticationLiteralWord(target) && /^[!@]/.test(target.text)) return 'UNKNOWN';
+    const cannotBeNumeric = word => /^[^%\0]*[g-z][^%\0]*(?:\0|$)/i.test(socketAuthenticationLiteralWord(word)?.text || word?.text || '');
+    if (proxy) {
+      if (flags.has('n') && cannotBeNumeric(proxy)) return false;
+      if (!socketAuthenticationLiteralWord(proxy) && proxy.text.includes(':') &&
+          proxy.text.slice(proxy.text.indexOf(':') + 1).includes('\0')) return 'UNKNOWN';
+      if (!flags.has('n') || !cannotBeNumeric(proxy)) words.push(proxy);
+      // SOCKS4 resolves the target; SOCKS5/HTTP transmit it even with nc -n.
+      words.push(target);
+    } else if (!flags.has('n') || !listen && !cannotBeNumeric(target)) words.push(target);
+    // Apple source bind uses separate AI_PASSIVE hints: target -n does not suppress its resolver.
+    if (selected.has('source')) words.push(selected.get('source'));
+  } else {
+    if (!operands.length || operands.length > 2) return false; // GNU main errors before tn for extra operands.
+    // tn treats these exact initial host operands as its own usage request.
+    const host = socketAuthenticationLiteralWord(operands[0]);
+    if (host && (host.text === 'help' || host.text === '?')) return false;
+    if (!host && operands[0].text.includes('/')) return 'UNKNOWN'; // Optional auth builds strip principal prefix.
+    words.push(operands[0]);
+    if (selected.has('bind')) words.push(selected.get('bind'));
+  }
+  return outboundPayloadVerdict(invocation, words.map(word => socketAuthenticationLiteralWord(word) || word));
+}
+
+/** GNU telnet2.8 reads cmdrc only after a successful selected-host connection. */
+function telnetStartupSourceVerdict(invocation) {
+  if (invocation.name !== 'telnet') return false;
+  const role = ncTelnetDestinationRole(invocation);
+  if (role.terminal || role.terminalArgumentError) return false;
+  if (role.unknown) return 'UNKNOWN';
+  // Required values named --no-rc are DATA, not a skiprc selection.
+  if (role.selectedFlags.has('c')) return false;
+  if (!role.operands.length || role.operands.length > 2) return false;
+  const host = socketAuthenticationLiteralWord(role.operands[0]);
+  if (host && (host.text === 'help' || host.text === '?')) return false;
+  // No real HOME/config file is read. Existence, matching body and connection remain unproved.
+  return 'UNKNOWN';
+}
+
+/** No-host GNU telnet2.8 immediately interprets stdin commands independently of cmdrc. */
+function telnetCommandSourceVerdict(invocation) {
+  if (invocation.name !== 'telnet') return false;
+  const role = ncTelnetDestinationRole(invocation);
+  if (role.terminal || role.terminalArgumentError) return false;
+  if (role.unknown) return 'UNKNOWN';
+  if (role.operands.length) return false;
+  if (!knownInvocationContext(invocation)) return 'UNKNOWN';
+  // A singular proven fd 0 EOF/error source replaces any pipeline before fgets.
+  if (!invocation.heredocBodies.length && invocation.redirs.length === 1) {
+    const redir = invocation.redirs[0];
+    if (redir.fdKnown && [null, '0'].includes(redir.fd) &&
+        (redir.op === '<' && literalSourceWord(redir.word)?.text === '/dev/null' ||
+         redir.op === '<&' && literalSourceWord(redir.word)?.text === '-')) return false;
+  }
+  const source = shellStdinSource(invocation);
+  if (source && /^[ \t\r\n]*$/.test(source.text)) return false;
+  const selection = {};
+  requestDataStdinVerdict(invocation, invocationSources.get(invocation) || [], false, selection);
+  if (selection.noOutput === true) return false;
+  return 'UNKNOWN';
 }
 
 /** The selected proxy/USER authentication bytes are outbound DATA even with /dev/null or receive-only stdin. */
@@ -3722,7 +4232,8 @@ function stdinPayloadVerdict(invocation, all, allFiles = false) {
 }
 
 /** A selected request-data fd 0 source; separate from the legacy network stdin backstop. */
-function requestDataStdinVerdict(invocation, all, allFiles = false) {
+function requestDataStdinVerdict(invocation, all, allFiles = false, selection = null) {
+  const noOutput = () => { if (selection) selection.noOutput = true; return false; };
   if (!invocation || !knownInvocationContext(invocation)) return 'UNKNOWN';
   const literal = word => literalSourceWord(word);
   const sourceVerdict = (word, owner) => {
@@ -3805,14 +4316,14 @@ function requestDataStdinVerdict(invocation, all, allFiles = false) {
       else fds.set(fd, 'unknown');
     }
   }
-  if (fds.get('1') === 'other') return false;
+  if (fds.get('1') === 'other') return noOutput();
   if (fds.get('1') !== 'pipe') return 'UNKNOWN';
-  if ([':', 'true', 'false'].includes(producer.name)) return false;
+  if ([':', 'true', 'false'].includes(producer.name)) return noOutput();
   if (producer.name === 'printf') {
     const args = producer.args || [];
     let k = 0;
     const first = literal(args[0])?.text;
-    if (first === '-v' || first?.startsWith('-v') && first.length > 2) return false;
+    if (first === '-v' || first?.startsWith('-v') && first.length > 2) return noOutput();
     if (first === '--') k++;
     const format = literal(args[k]);
     if (!format || format.text.startsWith('-') && first !== '--') return 'UNKNOWN';
@@ -4331,8 +4842,10 @@ function collectNetworkInvocations(inspection, depth = 0) {
   }
   const result = [];
   for (const invocation of inspection.invocations) {
-    if (invocation.nonExec || invocation.definitionName) continue;
+    if (invocation.definitionName) continue;
+    // Shell redirections are outer effects, independent of a selected executable child.
     if (nativeSocketRedirection(invocation)) deny('Bash の /dev/tcp・/dev/udp redirection または socket を選びうる動的 target は未対応の network channel です。read/write/FD と秘密 filename の有無だけでは送信条件を確認できません。' + UNKNOWN_OWNER_GATE);
+    if (invocation.nonExec) continue;
     // Known local functions select the separately parsed body, not the external client
     // or builtin sharing their name. Call redirections above still take effect.
     if (invocation.functionCallName) continue;
@@ -4646,10 +5159,14 @@ function parsedExfil(invocation) {
     if (!verdict && !(knownWord(invocation.args[0]) && ['-q', '--disable'].includes(invocation.args[0].text))) verdict = 'UNKNOWN';
   }
   if (invocation.name === 'wget') verdict = wgetReadsUpload(invocation.args) ||
-    (wgetSourceBoundary(invocation) ? 'UNKNOWN' : wgetInlinePayloadVerdict(invocation)) || proxyEnvironmentVerdict(invocation);
+    (wgetSourceBoundary(invocation) ? 'UNKNOWN' : wgetInlinePayloadVerdict(invocation)) || proxyEnvironmentVerdict(invocation) || wgetNetrcCredentialSourceVerdict(invocation);
   if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
   if (['ncat', 'telnet'].includes(invocation.name)) verdict = verdict || socketAuthenticationVerdict(invocation);
-  if (invocation.name === 'ncat') verdict = verdict || ncatTlsMetadataVerdict(invocation);
+  if (invocation.name === 'ncat') verdict = verdict || ncatTlsMetadataVerdict(invocation) || ncatDestinationVerdict(invocation);
+  if (['nc', 'telnet'].includes(invocation.name)) {
+    const destination = ncTelnetDestinationVerdict(invocation);
+    verdict = invocation.name === 'telnet' && destination === 'FORBIDDEN' ? destination : verdict || destination;
+  }
   // Bare-host SFTP enters command mode; its batch/stdin can contain put without a visible path.
   if (invocation.name === 'sftp') verdict = sftpSession(invocation.args) ? 'UNKNOWN' : false;
   if (['scp', 'rsync'].includes(invocation.name)) verdict = invocation.incomplete ? 'UNKNOWN' :
@@ -4786,6 +5303,11 @@ if (networkInputVerdict) {
     'stdin を消費する network client と、その入力の secret filename operand が同じ読取・pipeline 関係に当たり、既存の禁止形式です。ファイル内容や実送信の成立を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。' :
     'stdin を消費する network client の入力について source・argv・実行 identity・cwd/context を確認できません (egress guard, fail-closed)。owner に対象・操作・cwd・env/config/source と不明点を確認してください。', networkInputVerdict);
 }
+// Defer only the new opaque-source UNKNOWN fallbacks until independent payload/stdin verdicts.
+if (invocations.some(rsyncDaemonProgramSource)) deny('rsync direct daemon の RSYNC_CONNECT_PROG / RSYNC_SHELL が選ぶローカル command・interpreter source と実行条件を検査できません。空の CONNECT_PROG も native の source 選択を無効にしません。local / remote-shell / query の対応済み条件以外は owner に対象・操作・cwd/env/config/source を確認してください。' + UNKNOWN_OWNER_GATE);
+if (invocations.some(invocation => telnetStartupSourceVerdict(invocation) || telnetCommandSourceVerdict(invocation))) deny('telnet が選ぶ接続後の cmdrc または host 未指定時の stdin command source と実行条件を検査できません。既知の EOF / 実 query / 対応する設定無効化で同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
+// Preserve confirmed payload and stdin verdicts before the explicit uninspected engine source.
+if (invocations.some(curlSelectedEngineSource)) deny('curl の明示 engine が実 operation で選ぶ backend / engine source を検査できません。報告済みの別バイナリの backend や静的な engine 名は、この呼出しの source 証明ではありません。engine を使わない対応形式が同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
 // Parsing literal helper text can reveal a prohibited payload; it does not authenticate the
 // selected shell, callee body, startup/function/PATH context, or native activation conditions.
 // Preserve confirmed payload verdicts above before the remaining active-source fallback.
@@ -4903,6 +5425,12 @@ for (const g of inspectedGits) {
       verdict,
     );
   }
+}
+
+// Keep every existing independent refusal/category above this new source fallback.
+// No metadata absence or unproved backend/profile is used to clear configuration.
+if (invocations.some((invocation) => rsyncPoptConfigRole(invocation).active)) {
+  deny('GNU rsync/popt が到達する option selector は、既知の -a・help・version より先に default alias / exec source を選び得ます。実 backend・設定・選択された argv/program を検査できないため判断不能です。設定の読取や実実行・通信が成立した証明ではありません。必要な option の意味を保つ対応済み形式がなければ owner に対象・操作・source/config/profile・cwd/env と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

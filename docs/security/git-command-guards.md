@@ -20,6 +20,98 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R33:CONTRACT:BEGIN -->
+<a id="r33-current-contract"></a>
+
+## R33: callee・外側の効果・lifecycle・選択sourceの現契約（公開準備）
+
+本節は **2026-10-15T23:52:14.861+09:00 JST** の私有docs公開準備cut。公開基底`91dfa4281c7e1d8cf8faa7403ac82da03b2794b4`と、未公開の固定合成source common`487353ab…` / egress`fe3d75e5…` / secret-git`273f6be4…` / add-all`7bb176f3…`を区別する。旧egress`8917a60c…`の全7010成功は履歴として保持し、新fe3版の全7018成功は別の固定sourceで実取得した。R32以下のdated sectionは履歴を全文保持する。公開後の同一head受入はPR本文と監査台帳で更新し、本節cutを現在へ読み替えない。
+
+### 結果・適用入口・受入の単位
+
+ALLOWは対応条件内でこのguardが停止を要求しない結果、FORBIDDENは既存policyの確定禁止、UNKNOWNは選択されたsource/argv/config/contextを検査できない結果で、後二者はdeny wireと理由prefixで区別する。担当roleのALLOWは他guardのALLOWやowner承認を意味しない。既存FORBIDDENを新source fallbackのUNKNOWNへ落とさない。
+
+settingsは変更しない。egressは全Bash、secret-git/add-allは既存`if: "Bash(git *)"`条件である。quote結合commandをHookへ直接JSON DATA投入した結果と、実Claude settingsのdispatchは別。Hook判定、固定consumerのsource選択、実native権限/認証/DNS/transport、修復受入、全体Goalを別gateにする。
+
+### 対応条件・正常影響・owner出口
+
+case IDは[guard tests](../../.claude/hooks/tests/git-guards.test.cjs)の対応契約を参照する。表のA/F/Uは担当roleの結果であり、全backend・全argv組合せの保証ではない。
+
+| 守るrole・固定版/backend | 条件・結果／UNKNOWNの理由 | 正常対照・条件範囲 | 通常影響・同目的の代替／owner出口 |
+| --- | --- | --- | --- |
+| wrapperから実calleeへ渡るargv | callee前の対応option/値/一つのterminatorを消費し、callee後のhelp風語や消費DATAを再解釈しない。callee/source/context不明はU、既存child payload禁止はF。no-child/queryをwhole invocation無効果としない | `R33CM-ORIG-BUILTIN` U、`R33CM-ORIG-NOHUP` F。known printf、実query、quoted scalar、消費DATAを各parserで対照 | wrapperが担うlookup/signal/TTY/output/identity/privilegeが不要で同目的を保つ場合だけdirect形式を案内。必要条件なら正確な版/argv/cwd/env/contextと不明点をownerへ |
+| 外側のsocket redirection | definitionは除外し、child非実行判定より先に既存socket検査を行う。`exec`のno-childやqueryにも外側のfd効果は残る。独立file/upload/helperのF/Uは保持 | `R12X076`は公開91 U→途中候補A→修復U。同inputのlocal fd/devnull、通常child/queryと既存socket U/upload Fを対照。保護Git indexは既存SGが引き続きU | 任意のlocal file書込禁止を追加しない。必要なsocket/target/index操作を別形式で迂回せず、目的・fd・宛先・必要権限をownerへ |
+| Git2.54 merge/revert/cherry-pick/rebase/pullのobject/state/ref | active incoming object/replayと、continue/skip/abort/quit/autostashのstate/ref・子Git sourceをshared roleへ接続しU。no-edit/ff/no-commit/squash/dry-runは解除証明ではない。`merge HEAD`等に新incoming treeが無くても、未検査lifecycle/ref/autostashがU理由として残る | `R33CM-ORIG-MERGE`、`R33QUIT-REVERT`、`R33N-RB01`/`R33N-PL01`、旧`R11AD042`/`R22GT17`/`R12X066`を区別。show-current-patchは子source未検査ならU、真正stdout usage/printed DATAは別 | 通常merge/rebase/pull/cleanupも停止する。正常復元条件は未証明。同目的writer代替は無く、read-only queryやabortへの置換は代替にしない。refs/OIDs/tree/index/worktree/config/strategy/autostash/子sourceをownerへ |
+| Gitの真正late builtin usageと先行local read | writer前のusage終了だけをterminalとし、merge `-F`がparse中に読むlocal message DATAは`preUsageReadFiles`等へ残す。local読取だけは既存禁止sinkではない。firstarg `--help`のmanual source、消費値/`--`後DATA、未知先行argvとは別 | 元`R11AD065`はAを保持。prior reader metadataとwriter terminalを別assertion。独立helper/config/outer substitutionは継続判定 | 全helpや全先行consumerをinactiveとしない。必要source/contextが不明ならownerへ。既存の確定送信/宛先/message等のFをgeneric object Uで隠さない |
+| ordered env/config carrier | 各set/unset/clearの実word/start/occurrence/stageを保持し、選択順に値を解決する。同名first wordやstale scalarを後の値へ流用しない | `R33D-GH-priority` A、last secretはF、`R33ENV09` ownAと独立SG Uを分離。GH HOMEは実XDG優先のfixture条件も区別 | 未対応unquoted依存/sourceはUになり得る。必要なexport/優先順位/認証目的を保つ証明済み形式だけ案内し、actual順・source・configをownerへ |
+| GNU rsync3.4.1 daemon接続program/interpreter | selected `RSYNC_CONNECT_PROG` body、`RSYNC_SHELL` interpreterが未検査ならU。actual export/unset、direct daemonとrsh/local/実queryのroleを分ける | no-program/local/queryでこのsourceがinactiveでも、後述poptのoption sourceや他guardは別に残る。daemon資格file/環境とupload等の確定Fを新source Uより先に維持 | routine proxyも止まり得る。必須proxyやprotocolを削除する同目的でない代替は案内しない。target/protocol/export/program/body/interpreterをownerへ |
+| GNU rsync remote-shellのselected remote program | 最後に選ぶ`--rsync-path`値をremote downloadでも送信payloadへretain。証明済みsecret producerはF、未証明の生成値はU。local/direct daemon/実queryではこの値のedgeを選ばない | consumed option DATA、last scalar、operands後option、`--`を対照。既存upload/destination F、raw backstop、explicit RSH sourceを維持 | ordinary値のroleが対応してもpopt等によりwhole ownEG Uとなり得る。必要なprogramを消す/local copyへ変えることを代替にしない。peer/direction/cwd/env/program目的と不明点をownerへ |
+| GNU rsync3.4.1 bundled popt alias/exec source | default configを読み、到達したshort/long selectorではalias/execが既知`-a`/help/versionより先に選ばれ得る。actual external rsyncの到達selector、またはargv境界未証明を最後の局所U fallbackへ。active config存在だけでFにしない | option無しoperands・selectorより前に到達するliteral `--`はこのedgeだけinactive。選択されない/消費DATA・fixed nondash scalarを区別し、独立F/Uは解除しない。help/versionでもpoptはqueryより先に選択され得る | **通常のoption付きrsyncを広く止める制約**。旧6450の122 A→Uと、新prospective536の16 A→Uを明示採用。`-a`を外すことはarchiveの同目的代替ではない。必要なarchive/queryのsource/profile/argv条件をownerへ。実backend/build-prefix/system-popt認証とmetadata不在proofが無いので、推測した`/etc`/HOMEの不在でA解除しない |
+| curl8.7.1 explicit engine | URLを持つoperationでnon-list engineを選ぶと未検査backend/engine sourceでU。file URLも自動inactiveにしない。実engine-list query/global parse終了/URL無し/消費DATAを区別。fallbackは既存payload等のF判定より後 | exact/known-scalar `--engine list`はqueryとしてnetrc消費より先に終了する対照。初期のupload F→U分類退行を原記録に残し、後段fallbackでFを復元 | custom engineが必要な通常requestも止まる。engine無しで同目的を保つときだけその形式を案内。必要backend/engine/operationをownerへ。implicit provider/library/binary全体の認証へは広げない |
+| GNU Wget1.25.0 netrcと実取得 | active HTTP(S)/FTP(S)でdefault/explicit-on netrcと資格不足はU。`--no-config`はwgetrcのみ。真正off/完全global資格/取得に至らない入力を区別し、positive optional booleanはattached値・valid last occurrenceで選ぶ | off/global資格Aは他guard条件付き。元六empty/ignored HTML等のAを維持。ただし同じ呼出しに別CLI URLがあれば取得activeでU。protocol-specific資格だけで全redirect consumerを充足しない | 通常downloadも暗黙資格source不明で止まる。offはnetrc不要な同目的だけ。host/protocol/資格source/選択条件をownerへ。取得済consumerと未証明のserializer/認証通信を混同しない |
+| Ncat7.99SVN/Apple nc56/GNU telnet2.8 address、GH2.102/go-gh2.16.1 host/auth | stdin/TLSと別にselected target/bind/proxy/route metadataを追跡。GH known操作は実positional URL/repository hostから資格familyを選ぶ。確定secret sourceはF、不明selection/transformはU。nodnsは全送信解除でない | static/query/fixed-nonnumeric-prefix、URL風title/search DATA、選ばれない資格を対照。nc/Ncat grammar、port/service/IDNA条件を混ぜない | 同host/port/mode/proxy/family/認証目的を保つliteral/対応scalarだけが対応形。DNS/transport/auth成立は未測定。必要条件と未証明点をownerへ |
+| GNU telnet2.8 cmdrcとno-host interpreter | successful host modeの未検査cmdrcはU。真正`-c`/`--no-rc`はこのsourceだけ解除。no-hostはcommand stdin未検査でU、`-c`でも解除しない | 真query/確定early argv error、単一fd0 EOF/error、有限ASCII whitespace後EOF、既存explicit noOutputをinactive proofとする。不明/競合stdinをemptyと推測しない。既存stdinのFを新cmdrc/command-source Uより先に維持 | 通常接続/interactive command/cleanupが止まり得る。rc/必須inputを削除する同目的でない代替は案内しない。operation/target/cwd/env/SHELL/bodyをownerへ。実ユーザーrc/資格本文は読んでいない |
+
+### 対応wrapper全identityの原因matrix
+
+固定commonのregistryは次の**21 identity・15 parser family**。これは既存対応pathの有限inventoryで、全組合せやinstalled全backendの認証ではない。各familyでterminator、option arity、terminal到達順、dynamic child、消費DATA、child metadataを区別し、既存L1/L2の正常/危険対照へ接続する。
+
+| parser family | registryの全identity | 確認する境界と残る条件 |
+| --- | --- | --- |
+| script / prlimit / setpriv | `script`, `prlimit`, `setpriv` | recording・resource optional値・context flagを個別consumerで解釈。実query/no-child/native rejectionと未知境界を分ける。active script/context sourceはUになり得る |
+| inline chroot / command | `chroot`, `command` | root/lookup/queryと選択callee。query後DATAを実行calleeにしない。outer effectsは独立 |
+| launcherArgs | `setsid`, `taskset`, `ionice` | flags/required値・selected child。unknown mask/priorityとunknown childを一律同policyへ潰さない |
+| calleeTerminatorArgs | `builtin`, `nohup` | callee前のterminatorだけ消費。callee後`--`/query語はchild DATA |
+| shortValueWrapperArgs | `exec`, `caffeinate`, `doas` | bundle/attached+separate値、callee、known query/no-child。`exec` no-childでもredirectionは残る |
+| timeArgs | `time` | common `-p`/`--`と固定GNU1.9 `-f`/`-o`値。値をcalleeにせず、未知argvはU。Appleのharmless `--`観測を全GNU grammarの証明へしない |
+| coreutilsValueLauncher / timeout | `nice`, `stdbuf`, `timeout` | numeric/mode/duration値とchildの境界。消費値内のflag風語を独立queryにしない |
+| sudo / unshare | `sudo`, `unshare` | identity/required値とcontext/selected child。権限・namespace native成立は別 |
+| inline env / xargs | `env`, `xargs` | ordered export/unset/clear、delimiterと入力から決まるcallee。未知input/splitは対応範囲だけU |
+
+Gitも既存17family・32 actor labelのobject/ingestion/cleanupを同じsource責務でinventoryした。merge/revert/cherry-pick/rebase/pull、fetch/transport入口、ref/index/state/autostashの選択を区別し、別の全Git機能へ拡大しない。真正usageのwriter終了と先行local readを分け、未検査child/stateの正常復元を推測しない。
+
+### 原因ごとの閉鎖・互換性・履歴
+
+手順は①guard commit・tool版/backend・active設定とnative成立条件を固定、②同じinputの旧新比較で既存不足/危険ALLOW退行/正常overdeny退行/理由精度を分け退行を優先、③既存対象の共通原因を必要範囲で修復、である。成立確認した危険ALLOWを対象外というだけで先送りしない。任意program loaderの全面認証やmodule全面再編は行わない。
+
+`exec`外側socketのU→Aは実装が開けた危険ALLOW退行として旧期待/原FAILを保持して修復した。対して旧8FAIL中のrebase/Telnet通常A→Uはsource契約とowner出口を明示したpolicy変更、nohupのnew generic DENY→U prefixは実際Fに合わせる新prospective oracle訂正である。これらを同じ「退行」やfinding件数に合算しない。初期carrier overdeny、queryの誤前提、engine F→U、merge late-helpの先行reader説明撤回も原source/原FAILを保存する。
+
+CVS plain `-C`について、remote receiveのserializer条件から送信を推論した説明を撤回した。実際の挿入順はsend pass後で、plain-C専用gateは追加していない。早いexplicit filter-Cは既存U、ordered clear/local/plain ordinary対照は別。deprecated/unknown optionの有限互換性観測を全backend保証や新findingへしない。
+
+単独reverseは同一actual input/env/cwd/project/exe/hookpathとowned全Git/files/modesを保ち、新しい一判定だけを外す。旧8917版の52featureは199組/398観測/1194 Hook inputs、broken0。原期待不一致9組を残し、効果を**停止26・許可精度22・未証明4**へ分けた。未証明はnew poptに隠れるRP06の3featureと従来の独立停止が残るpullの1featureで、他guardを外して必要性を作らない。別のnew popt caller1feature/9組/18観測/54 inputsの停止必要性と合わせ、既測53unitは**停止27・許可精度22・未証明4**である。新fe3版でもこの53unitを208組/416観測/1248 Hook inputs、broken0で再取得した。原raw9不一致と27/22/4のtyped資格は完全に同じで、typed変化0。移設した2call spanだけをroot承認のderived planで追従し、profileと元期待は保持した。source/runner/definitions/owned全Git/files/modes、同pairのactual input/env/cwd/project/exe/hookpath、other3/byte undoも一致した。新fe3版ではさらに、前の早いUNKNOWNだけを単独で戻す**分類精度2feature・11組/22観測/66 inputs**を取得した。後段fallbackと他guardは有効のまま、FがUへ戻りdenyは維持することを確認した。分類精度2を停止数/許可精度へ混ぜず、profile数とfinding数も混ぜない。
+
+初回7010の未達は二つに分ける。`R6PO01`（command 80029 bytes）はAGがexit null / ETIMEDOUT、SG/EGはUNKNOWNでaggregate denyだった。元のtimeoutを正常なguard停止や成功へ数えない。同じNode24.22.0・20,000ms制限のまま単独3回を行い、AGは45.028/41.784/44.698msで終了した。旧6868と同じAG/common bytesの最小対照も40.993msで終了し、今回のタイムアウトは再現しなかった。元の原因は未特定であり、負荷/Chrome/ハードウェア/解析量へ帰属しない。`RP04S-fixed-prefix-scalar`（31 bytes）はglobal expect=allowのままownEG UNKNOWN・denyBy EG・UNKNOWN prefixが併存した新vectorの生成反映漏れで、確定したsource退行ではない。基底d56e/8917のU観測と誤oracleを保持し、rootの明示訂正receipt `0f6fd791…`で新caseのglobal expectだけdenyへ合わせた。旧6450の入力/期待とruntime sourceは変更していない。8917版は同じ20秒制限で7010/7010・broken0へ完走したが、初回2FAIL/broken1は別の失敗記録として保持する。長大command本文は掲載しない。
+
+その後の手読QAで、rsync daemon接続programの新Uが既存upload Fより先、telnet cmdrcの新Uが既存secret stdin Fより先に止める分類退行2経路を確認した。同fixtureの公開91→8917はF→U、対応するrole-inactive通常操作はA→Aだった。新fe3版はこの新source Uだけを既存payload/stdin F後へ移し、両Fを復元した。source関数・common/SG/AGは不変である。`R33PRIO-RSYNC-WITNESS`/`R33PRIO-TELNET-WITNESS`等の新入力で確認し、旧7010の入力/期待は変えていない。追加したno-host secret stdinの新F期待1件は誤前提だったため、公開91/新fe3ともUという同fixture観測に基づき新契約だけをUへ訂正した。これを3件目の退行へ数えず、初回focusedのraw FAILを保持する。
+
+### 固定sourceでの検証境界
+
+| gate / 記録単位 | 本cutの状態 |
+| --- | --- |
+| 固定sourceとNode | 新egress`fe3d75e5…`/common`487353ab…`、SG`273f6be4…`/AG`7bb176f3…`。旧7010成功は8917版。新測定は明示Node24.22.0。旧Node24.13や旧sourceの結果を読み替えない |
+| 公開解析＋parity | 新fe3固定sourceで解析337＋parity12＝**349/349**、fail0。canonical解析/parityは旧current349からbyte不変で、source/test/wrapper hashも前後一致 |
+| 旧8917版の全7010履歴 | 初回は2026-10-15 22:40:56.802〜22:54:45.121 JSTに**2FAIL・broken1**。新global oracle1件だけの明示訂正後、同runtime source・同20秒制限で2026-10-15 23:05:36.808〜23:18:49.830 JSTに**7010/7010、broken0、21030 actual inputs**。source4/runner/definitions/owned全状態は前後不変。初回失敗は保持し、fe3の全件成功へ持ち越さない |
+| 新fe3版の全7018 | **7018/7018、failed0、broken0、21054 actual inputs**。取得 2026-10-15 23:36:31.263 JST〜2026-10-15 23:49:45.395 JST。明示Node24.22.0、20,000ms制限、source4/runner/definitions/owned全状態は前後一致。初回8917版の失敗と成功は別履歴のまま保持 |
+| 旧7010 bankの入力と明示adoption | old6450のid/command/stdin/cwd/project/env・field有無/値/順序を保持。560 new normalized signaturesを加えた旧7010 recordsと27 aliasは、新finding数ではない。旧policy223＋追加旧ID9のassertion強化で旧definition object差232。強化event10のうち1は新caseであり旧9へ加えない。別にnew normal16とgeneric DENY metadata7を明示訂正。typed expectedOwnEGは1036 recordsで実assertionを有効化 |
+| 新7018 bankの固定 | old6450＋568 new normalized inputs＝7018。旧7010のdefinition/key順/input/oracleは完全保持し、新8uniqueだけを加えた。aliasは旧27＋互換1＝28、独立finding数へ換算しない。typed expectedOwnEGは1044 recordsで実assertionを有効化。旧6450の入力保持・既存の明示adoptionと新分類精度対照を混ぜない |
+| 旧新・正常影響 | poptの同fixture旧333は122 A→U、23 A→A、114 F→F、74 U→U。新prospective536は16 A→U・他不変、before536は元期待に一致。これらは新fe3全7018の完走やnative成立の代替ではない |
+| 初期raw FAILとfixture条件 | 初期6668 raw102、6868 raw8を保持。HOME二件はowned XDGの優先条件差を同fixture旧新で確認し、source危険退行とはしない。旧正常expectを無言で変更しない |
+| 新public head / 同head CI / fresh両review / 全thread | **PENDING**。公開91の旧資格は新sourceへ持ち越さない。全件local成功だけでprovider資格やGoalを満たさない |
+| 新sourceのactual project-settings入口 / native条件 | **PENDING/未確認**。L2はactual spawnSync stdin DATAで、Claude dispatchやkernel/runtime/native認証・通信の証明ではない。旧L3 PASS/NOTを持ち越さない |
+
+Node26移行はowner判断で2026年11月以降へ延期し、本PRで導入・engine/CI変更しない。必要な通常操作に同目的代替が無ければ、版/backend・操作・source/argv/config・必要権限と未検証点をownerへ提示する。停止条件を消す、credential/proxy/cleanupを省く、hookを無効化することを自動代替にしない。
+
+### 固定した公式source
+
+- [GNU Bash5.2](https://ftp.gnu.org/gnu/bash/bash-5.2.tar.gz)、[coreutils9.4 nohup](https://raw.githubusercontent.com/coreutils/coreutils/v9.4/src/nohup.c)、[GNU time1.9](https://ftp.gnu.org/gnu/time/time-1.9.tar.gz)：各wrapperのcallee/arity/query consumer。
+- [Apple caffeinate固定commit](https://raw.githubusercontent.com/apple-oss-distributions/PowerManagement/d415e45501842834a280930c3eed9186544a67f0/caffeinate/caffeinate.c)、[OpenBSD doas固定commit](https://raw.githubusercontent.com/openbsd/src/b196a8e95931e4ddf19f9a664a8498bf157fea77/usr.bin/doas/doas.c)。installed全版の同値性は未認証。
+- Git2.54：[merge](https://raw.githubusercontent.com/git/git/v2.54.0/builtin/merge.c)、[rebase](https://raw.githubusercontent.com/git/git/v2.54.0/builtin/rebase.c)、[pull](https://raw.githubusercontent.com/git/git/v2.54.0/builtin/pull.c)、[branch cleanup](https://raw.githubusercontent.com/git/git/v2.54.0/branch.c)、[sequencer](https://raw.githubusercontent.com/git/git/v2.54.0/sequencer.c)、[parse-options](https://raw.githubusercontent.com/git/git/v2.54.0/parse-options.c)。local message読取とobject/ref writerの到達順を分ける。
+- GNU rsync3.4.1：[main](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/main.c)、[socket](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/socket.c)、[options](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/options.c)、[popt selector/exec](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/popt/popt.c)、[popt config](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/popt/poptconfig.c)、[build profile](https://raw.githubusercontent.com/RsyncProject/rsync/v3.4.1/configure.ac)。GNU bundled profileとsystem-popt/alternate-prefix/Apple openrsyncを同一視しない。
+- curl8.7.1：[argument/query consumer](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/src/tool_getparam.c)、[operation](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/src/tool_operate.c)、[TLS selection](https://raw.githubusercontent.com/curl/curl/curl-8_7_1/lib/vtls/vtls.c)。source上のbackend条件はinstalled binaryの認証ではない。
+- [GNU Wget1.25.0 source](https://ftp.gnu.org/gnu/wget/wget-1.25.0.tar.gz)、[Ncat固定commit](https://github.com/nmap/nmap/blob/d5134b0181e378d09ebfad564ea4d1e1d8b25380/ncat/ncat_main.c)、[Apple nc56](https://raw.githubusercontent.com/apple-oss-distributions/netcat/netcat-56/netcat.c)、[GNU Inetutils](https://www.gnu.org/software/inetutils/)取得済2.8 source（archive SHA `57b3cf4f77555992881e5ba2a09a63b05aa2c56342a60ed4305b5f45938390b5`）。local telnet実装/IDNA/Libc/transportは未認証。
+- [GH CLI2.102 PR finder](https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/pr/shared/finder.go)、取得済issue/repository callerとgo-gh2.16.1 auth consumer。未取得callerやAPI Host header DATAを実req.Hostへ広げない。
+<!-- PR191:R33:CONTRACT:END -->
+
 <a id="r32-selected-source-auth-metadata"></a>
 
 ## R32: 実行source・認証入力・送信metadataの有限修復
