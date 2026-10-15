@@ -71,6 +71,15 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R35:CLAUDE-README-CONTRACT:BEGIN -->
+<a id="r35-claude-readme-contract"></a>
+**R35 guard契約（固定統合source・全件検証中）**: 同名のmoreutils/GNU `parallel`はbackendと暗黙設定/sourceを確定できないため、external invocationをUNKNOWNに止めます。ordinary job・help・no-job・EOF・`--plain`も現時点の例外にしません。同名local functionの実callと印字DATAは既存判定で区別し、別の確定したFORBIDDENは維持します。並列性やjob/argvを失う直列化・flag削除を同目的の自動代替とはせず、必要なbackend/version・設定・目的・対象・cwd/env/sourceをownerへ確認します。
+
+curl tool/libcurl8.7.1では選択されたinterface resolver値とIPFS/IPNS gatewayのCLI→非空env→file fallbackを扱います。確定したforced-hostの秘密由来DATAはFORBIDDEN、role/whole-URL成分/argv/backendや未検査fileはUNKNOWN。`if!`の固定scalar local-only、既知ordinary、実query、未選択/last/reset等の対照を保ちます。元レビュー3入力はownEG UNKNOWN、停止の確認とnativeの実行・送信成立は別です。必要なroute/gatewayを削除する変更を自動代替にしません。[版・正常対照・停止後の出口・限界](../docs/security/git-command-guards.md#r35-current-contract)を参照してください。
+
+文書cut **2026-10-16T03:00:31.624+09:00 JST**。L1は518/518（analysis506＋parity12）、統合単独reverseは30features/96pairs/576Hook入力、cross10は60入力で閉鎖。必要性未証明のcurl2featuresと、同じfallback featureの別ordinary必要性は証明済みでも元入力だけmaskedのparallel1profileを分けて残します。**全7459/7459 PASS・failed0/broken0**（2026-10-16 02:57:36.522 JST終了、22377 Hook入力・typed ownEG1485）。旧7272全定義・順序・input/oracle exact、カテゴリ差0、新unique187・alias0。Node24.22.0/ABI137、固定source/runner/definitionsと全owned Git/files/modes stable。旧7272の差分は別owned fixtureでの同定義比較であり、同一実tupleの因果対照とは呼びません。新head/CI/fresh reviews/thread/L3はPENDING。全Bash egressとconditional secret-git/add-allは変更しません。local Node24.22.0、Node26は2026年11月以降のowner判断、93依頼終了・大規模refactor後続・mergeしない方針を維持します。**以下R34以前は当時のsourceと日時に結合した履歴**です。
+<!-- PR191:R35:CLAUDE-README-CONTRACT:END -->
+
 <!-- PR191:R34:CLAUDE-README:BEGIN -->
 **R34の契約（公開前・ローカル受入済み、as-of 2026-10-16T01:32:55.539+09:00 JST）**: [guard受入ガイド](../docs/security/git-command-guards.md#r34-current-contract)に固定版/backend・正常対照・通常影響・owner出口をまとめます。watchの実child/source、NcatのLua/ACL、SSHのBindAddress、GNU2.8 Telnetのlogin/forwarding・USER・DISPLAY/PRINTER・TERMとargv0 DTOを扱います。確定した禁止payloadを先にFORBIDDENとし、新しい未検査source UNKNOWNで隠しません。UNKNOWNは危険と確定した記録と分けます。
 

@@ -20,6 +20,58 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R35:CONTRACT:BEGIN -->
+<a id="r35-current-contract"></a>
+
+## R35: backend・選択された resolver / gateway source の契約
+
+本節は **2026-10-16T03:00:31.624+09:00 JST** の固定source文書cut（rootの全件終端receipt取得後）。公開親は `a09c7c585f186321cfc7aaed05588e99e96efb16`。固定統合sourceは egress `827c4b928ec690f16650cef153c9e5850c2efc6608f69a6bbcbd2316fb75f1ce` / common `6a09eabf30a596495ed05921a2256d499e655c322cd9429890c738160591187d`、secret-git/add-allは親と同一。最終runtime descriptor `9a62a693…` に結合した文書案であり、新headの公開やCIの合格を主張しない。
+
+**全7459/7459件のL2検証PASS、failed0・broken0**。終了は **2026-10-16 02:57:36.522 JST**（UTC `2026-10-15T17:57:36.522Z`）、22377 actual Hook入力・typed ownEG期待1485件。local Node24.22.0 / ABI137で、固定runtime・runner・definitionsと全owned Git/files/modes不変を確認した。旧7272の全定義・順序・fields/input tuple/oracleを保持し、parallel74＋curl103＋cross10のunique187を追加、alias0・oracle緩和0。新head・requiredCI・fresh Codex/CodeRabbit・thread処理・必要L3は **PENDING**。このL2合格を実settings dispatchやnativeの成功へ昇格しない。
+
+ALLOW / FORBIDDEN / UNKNOWN と既存 deny wire を維持する。確認された禁止操作・送信値は FORBIDDEN、必要な backend / 設定 / source / argv が不足すれば UNKNOWN。後者を「実際の漏えいを確認した」と記録しない。新しい不明 source により、別に確定した既存 FORBIDDEN を UNKNOWN へ落とさない。
+
+### 対応範囲・正常対照・閉じる条件
+
+| 対象・固定一次資料 | 修復と判定 | 正常操作の対照・期待 | 通常作業への影響と出口 | 修復の受入 / native 成立の境界 |
+|---|---|---|---|---|
+| 外部 `parallel`。moreutils 0.70-1 の C / manual と GNU Parallel 20260422 の公式 manual。基底 a09 | 同じ basename が、moreutils の prefix＋job argv と GNU の stdin job / shell template / 暗黙設定を選び得る。選択 backend・設定・source を確定できない外部呼出しは局所 UNKNOWN。引用を戻した名前にも適用し、語の文字列一致だけでは止めない | 印字 DATA、実際の同名ローカル関数との区別を保持。外部 parallel の ordinary job・help・no-job も、両 backend の source 非選択を証明できなければ UNKNOWN。別の独立した禁止操作は FORBIDDEN のまま | 通常の並列処理も止まる。並列性・job・argv・cwd/env を失う直列実行や flag 削除を、同目的の自動代替としない。必要な executable / backend / 版・選択設定・入力・目的を owner へ確認する。`--plain` は将来の候補で、今回の未検証の例外にはしない | 元レビューと GNU stdin の二入力を own-egress が停止し、関数 / DATA と独立 F の対照を保つ。新 edge を一つだけ外す比較を取得する。GNU の全機能・実設置 binary・実 child / transport を認証したとはしない |
+| curl interface resolver。curl 8.7.1 `tool_getparam` / `setopt` / `bindlocal` の固定 source。基底 a09 | operation ごとの最後の interface を保持。固定 scalar `if!` は hostname fallback の無い local-interface role、`host!` は forced-host resolver role。後者の対応済みreaderとliteral secret filenameが確定すれば FORBIDDEN。bare interface の選択、未確定filename/producer/argv/contextは UNKNOWN。`ifhost!` は8.9.0で別途調べた互換境界であり、この8.7.1契約では UNKNOWN。後発のlong `=` selector grammarも認証しない | 既知 ordinary・実 query・非選択値・固定 local interface・実 Unix socket の対照を保持。引用された値と、語数を変え得る未引用値を区別する。外側の読取や redirection は別に評価する | 必要な interface / route を削除して別接続へ変えることを自動代替にしない。同じ目的・mode・route・argv・cwd/env を保つ対応済み形式が無ければ、不明点を owner へ | exact original own-egress 停止と last / inactive / scalar 対照、単独 edge の比較を取得する。停止の確認と、OS / resolver / DNS label / socket / 権限 / 実接続の成立を分ける |
+| curl IPFS / IPNS gateway。curl 8.7.1 `tool_ipfs` / URLAPI / proxy consumer の固定 source。基底 a09 | active IPFS/IPNS operation だけ CLI → 非空環境値 → IPFS_PATH / HOME の file source を選ぶ。生成された whole URL を、そのまま送信成分の証明にしない。実際に残る scheme / host / port / path と、捨てられる userinfo / fragment を分ける。未検査 file・成分・backend は UNKNOWN | HTTP(S) の既知 ordinary gateway、actual unset / empty fallback / last / next reset、非IPFS / query / early error を対照にする。gateway query はnative parse error、userinfo / fragment は捨てられる。IPFS/IPNS の1〜3 slash有効URLと4 slash / CID無しのearly errorを区別する。scheme省略の ftp/dict/ldap/imap/smtp/pop3 prefix は非HTTP handlerを選ぶため UNKNOWN。rewrite後のprotocol/hostが選ぶproxy contextも評価する | 必要な gateway / file / backend を削除して別経路へ変えることを自動代替にしない。対象・protocol・gateway の選択元・cwd/env / config・目的を owner へ。実 file の本文は検証目的で読まない | exact original own-egress 停止と、選択 / 非選択・proxy・normal 対照、単独 edge 比較を取得する。file 存在・実装 build・認証 / transport・実送信は別の未確認欄に残す |
+
+元レビュー3入力は、現統合sourceで own-egress **UNKNOWN / UNKNOWN / UNKNOWN** に停止する。停止は実通信の成立証拠ではない。比較元では、同じ owned fixture / serialized input / env / cwd / project / Hook executable path で初期 `df463a91`、旧 `03fdb5c`、公開親 `a09c7c5` の3本すべてが ALLOW だった。着手前からの不足という比較であり、実秘密の読取・実外部通信・被害発生の確認ではない。元入力を native 実行していない。
+
+### このcutで閉鎖した有限証拠
+
+| 層・固定統合sourceでの測定 | 現在の結果 | 持ち越さないもの |
+|---|---|---|
+| L1解析＋filename parity | **518/518 PASS**＝analysis506＋parity12、fail0。actual reporterはSPEC。初回TAP想定collectorのFAILと、raw成功出力をSPECとして再集計した訂正を保持する（receipt `c7b2d8e1…`） | component別の旧source成功数や、collectorの失敗を製品failへ読み替えない。L2全件やL3の証拠でもない |
+| 統合source・新edge単独reverse | **30 features / 96 pairs / 576 Hook入力、期待差0・broken0**。curl23/74/444（`ab5d7bf9…`）＋parallel7/22/132（`d225ca0c…`）。各pairで実input/env/cwd/project/executable/Hook pathを揃え、変更は新edgeの1spanだけ、他3sourceと全owned Git/files/modesは不変 | 機能数を脆弱性数へ数えない。複数guardをまとめて外した旧器具の結果を新edge単独の証明にしない |
+| reverseの資格 | ownEG sole-stop必要性13 features、allowance precision7、classification precision8、必要性UNPROVEDのcurl **2 features**。さらにparallelの**元入力1 profile**はlate fallbackを外しても既存network-context UNKNOWNが残りmasked | parallelの同じfallback featureは別ordinary witnessでownEG UNKNOWN→ALLOWを確認済み。そのfeatureの資格と、元入力1 profileのUNPROVEDを同じ件数へ合算しない。SG/AGが停止するためfallbackのaggregate ALLOWも主張しない |
+| 複合cross対照 | a09／現統合の同一owned条件で**10件・60 Hook入力、事前期待どおり・broken0・stable**。現ownEG ALLOW5／UNKNOWN3／FORBIDDEN2（`99129ba7…`） | 新しいcandidateや期待を後から作り替えて合格にしていない。native child / DNS / transport / 認証 / 被害は未測定 |
+| L2全件 | **7459/7459 PASS、failed0・broken0、22377 Hook入力、typed ownEG1485**。旧7272の全定義・順序・ID・command/stdin/cwd/project/env・oracleを保持、187 unique追加・alias0。旧7272カテゴリ差0、旧6450 input fields exact。固定source/runner/definitions・全owned Git/files/modes stable（root資格receipt `6c868f26…`） | 新headCI/fresh/thread/L3はPENDING。旧7272比較は別owned fixture/env/cwd serializationによる同定義比較であり、同一実tupleの因果対照とは呼ばない |
+
+固定sourceの全件資格receiptは `6c868f26f89a71e4522511838097d9626251014e77d22deb4707a2ca46ecc34e`。元3入力はUTF-8で一字も変えず、own-egressがUNKNOWN / UNKNOWN / UNKNOWN（`[判断不能] `）に停止した。raw full出力は18718402 bytes / SHA256 `a83834363c61c0fa3d72c63b237bf79e088053e02f7175613faa643ce6a7fd1c` と結合しており、本文へ巨大入力や全ログを転載しない。旧7272との差0は同定義の別owned fixture比較、先のexact原入力比較・cross10・reverseは各pair内の同一実tuple測定で、証拠の役割を分ける。
+
+逆検証の現root資格は `0d2b391852f489268698c1de15d38dd9cedaca082b33297fd43c6921113b4518`。curl2 featuresの必要性未証明と、別ordinaryでfeatureのownEG必要性を確認済みでも元入力だけmaskedのparallel1 profileを明示するためのmetadata訂正版であり、新実行・count/source変更は無い。strict receipt取得時の全件RUNNING表記はその時点の記録で、現在の全件結果は上の別終端receiptへ結合する。
+
+curlの必要性UNPROVEDはgateway whole-URL成分edgeとinterface scalar/local-only境界edgeで、単独edgeを外しても既存UNKNOWNが残った2 features。分類精度ではforced-host F→U、独立F優先 F→U、未引用の別値からのfalse Fを防ぐ U→F比較を別資格で残す。parallelはregistryのaggregate必要性1 feature、fallbackのownEG必要性1 feature、独立FORBIDDENを守る伝播5 featuresの分類精度である。
+
+`-q` は実際の先頭でcurlrcを止めるが、IPFS/IPNSの暗黙gatewayを無効化しない。空のCLI gatewayはparse error、空の環境値は次のfallbackへ進む。未検査のordinary gateway fileもUNKNOWNとなる。Unix socket / file URL / 実query / URL無し等でこのresolver routeがinactiveな場合でも、別の既存config/payload/stdin/source判定は残る。outer reader/redirectionを同時に未実行とみなさない。
+
+### 試作と採用判断を残す
+
+moreutils だけを分類した私有 v3 は、元の入力を止めたが、GNU の stdin job 二経路を止められなかった。旧 a09 も同じ入力を許可しており、公開した新しい退行とは数えない。独立 QA と公式資料を根拠に、この候補の受入を取り下げ、backend / source 不足の局所 UNKNOWN に置き換えた。旧 v3 の成功・失敗・逆検証を最終 source の証拠へ持ち越さない。広がった通常作業の停止と、新規 prospective 期待の変更は明示して残し、公開親7272入力の期待を都合よく書き換えない。
+
+curl の試作では、未確定 filename 由来の読取を確定 F と見なした新規期待、unquoted glob の query 対照、DTO の NUL 表現、IPFS の alternate slash、scheme guessing、scalar 境界と分類優先順位の不足を別に記録する。器具・新規期待の誤り、未完了の修復、実装で作った退行を同じ件数に合算しない。
+
+### 保証と gate
+
+L1解析、Hookへ渡すDATAのL2、実Claude project settingsのL3、nativeのbackend / 認証 / 通信 / 副作用は別gate。必要な全件・解析・単一edge逆検証は最終固定sourceで取得する。同一新headのrequiredCI、fresh Codex / CodeRabbitの正常完了とzero findings、全thread処理、必要な実入口検証は別途必要である。CodeRabbit の internal error / Review failed をsuccess statusだけでzeroへ数えない。
+
+設定は全Bash egressと既存conditional secret-git / add-allを維持する。ユーザー了承の範囲で局所UNKNOWNを拡張し、止まる通常作業とowner出口をREADME／本節へ明記した。local Node24.22.0を用い、Node26導入は2026年11月以降のowner判断のまま。93への依頼は終了、広い責務リファクタリングは後続、mergeしない。以下のR34以前は当時の取得時刻とsourceを保った履歴である。
+<!-- PR191:R35:CONTRACT:END -->
+
 <!-- PR191:R34:CONTRACT:BEGIN -->
 <a id="r34-current-contract"></a>
 

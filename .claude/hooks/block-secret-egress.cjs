@@ -205,6 +205,7 @@ const inheritedFunctionNames = [...new Set(Object.entries(process.env).flatMap((
 const insp = guard.inspect(cmd, {
   trackOutboundEnvironment: true,
   deferWatchSourceProblems: true,
+  deferParallelSourceProblems: true,
   initialOutboundEnvironmentNames: Object.keys(process.env),
   initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_EXTERNAL_DIFF', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
     .filter(name => process.env[name] !== undefined),
@@ -1431,6 +1432,171 @@ function curlSelectedEngineSource(invocation) {
   }
   finishOperation();
   return active;
+}
+
+/** Retain selected curl route words per OperationConfig (pinned tool 8.7.1 grammar). */
+function curlSelectedRouteOperations(invocation) {
+  if (invocation.name !== 'curl' || curlTerminalQuery(invocation.args, invocation.incomplete)) return [];
+  // A split/globbed consumed value may insert selectors or swallow later options.
+  const argvUnknown = invocation.args.some(word => word.dynamic && word.dynamicMaySplit !== false || word.ansiCUnknown || word.globExpanded || word.braceExpanded);
+  const make = () => ({ words: [], urls: [], interfaceWord: null, gatewayWord: null,
+    interfaceExpanded: false, gatewayExpanded: false, unixSocketWord: null, unixSocketExpanded: false, unknown: !!invocation.incomplete || argvUnknown });
+  let op = make(), afterDD = false;
+  const operations = [];
+  const finish = () => { if (op.urls.length) operations.push(op); op = make(); afterDD = false; };
+  const take = (name, value, expanding) => {
+    if (name === 'interface') { op.interfaceWord = value; op.interfaceExpanded = expanding; }
+    if (name === 'ipfs-gateway') { op.gatewayWord = value; op.gatewayExpanded = expanding; }
+    if (['unix-socket', 'abstract-unix-socket'].includes(name)) { op.unixSocketWord = value; op.unixSocketExpanded = expanding; }
+    if (name === 'url') op.urls.push({ word: value, index: op.words.length - 1 });
+  };
+  const flags = '012346afgGiIjklLMnNOpqRsSvVZ:#';
+  for (let k = 0; k < invocation.args.length; k++) {
+    const original = invocation.args[k], literal = literalSourceWord(original);
+    const text = literal?.text ?? original.text;
+    if (!afterDD && literal && text === '--') { op.words.push(original); afterDD = true; continue; }
+    if (afterDD || !text.startsWith('-') || text === '-') {
+      if (!literal) op.unknown = true;
+      op.words.push(original);
+      if (text !== '') op.urls.push({ word: original, index: op.words.length - 1 });
+      continue;
+    }
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), rawName = text.slice(2, eq < 0 ? undefined : eq);
+      const expanding = rawName.startsWith('expand-'), name = expanding ? rawName.slice(7) : rawName;
+      if (!literal) op.unknown = true;
+      if (eq >= 0) {
+        // Long equals begins after this pinned release. Retain only the bounded
+        // route selectors as an UNKNOWN compatibility boundary, not a native proof.
+        if (!['interface', 'ipfs-gateway'].includes(name)) return [];
+        const value = wgetValueWord(original, eq + 1);
+        op.words.push(original); op.unknown = true; take(name, value, expanding); continue;
+      }
+      if (name.startsWith('no-')) {
+        if (!CURL_BOOLEAN_LONG.has(name.slice(3))) return [];
+        op.words.push(original); continue;
+      }
+      if (!CURL_LONG_NAMES.includes(name)) return [];
+      if (!expanding && ['help', 'manual', 'version'].includes(name)) return [];
+      if (name === 'next') {
+        if (!op.urls.length) return [];
+        finish(); continue;
+      }
+      if (name === 'metalink') return [];
+      op.words.push(original);
+      if (CURL_VALUE_LONG.has(name)) {
+        const value = invocation.args[++k];
+        if (!value) return [];
+        const known = literalSourceWord(value);
+        if (!expanding && name === 'engine' && known?.text === 'list') return [];
+        if (['interface', 'ipfs-gateway', 'unix-socket', 'abstract-unix-socket'].includes(name) && known?.text === '') return [];
+        op.words.push(value); take(name, value, expanding);
+      }
+      continue;
+    }
+    op.words.push(original);
+    for (let p = 1; p < text.length; p++) {
+      const short = text[p];
+      if ('hMV'.includes(short)) return [];
+      if (short === ':') {
+        if (!op.urls.length) return [];
+        op.words.pop(); finish(); continue;
+      }
+      const name = CURL_VALUE_SHORT[short];
+      if (name) {
+        const value = p + 1 < text.length ? wgetValueWord(original, p + 1) : invocation.args[++k];
+        if (!value) return [];
+        if (p + 1 === text.length) op.words.push(value);
+        // No short interface/gateway selector exists. A consumed value is DATA.
+        if (name === 'url') op.urls.push({ word: value, index: op.words.length - 1 });
+        break;
+      }
+      if (!flags.includes(short)) return [];
+    }
+  }
+  finish();
+  return operations;
+}
+
+/** Only a proven local-only prefix suppresses the possible interface resolver. */
+function curlInterfaceResolverVerdict(invocation, operation) {
+  const word = operation.interfaceWord;
+  if (!word || !operation.urls.length) return false;
+  if (operation.urls.every(url => /^file:/i.test(literalSourceWord(url.word)?.text || ''))) return false;
+  // The pinned Unix socket transport never reaches AF_INET/AF_INET6 bindlocal.
+  if (!operation.unixSocketExpanded && literalSourceWord(operation.unixSocketWord)?.text) return false;
+  if (operation.unknown || operation.interfaceExpanded) return 'UNKNOWN';
+  const literal = literalSourceWord(word), text = literal?.text ?? word.text;
+  if (!literal && (word.dynamicMaySplit !== false || word.ansiCUnknown || word.globExpanded || word.braceExpanded || word.tildeExpanded)) return 'UNKNOWN';
+  // ifhost! belongs to 8.9+, not the 8.7 consumer scope certified here.
+  if (text.startsWith('ifhost!')) return 'UNKNOWN';
+  if (text.startsWith('if!')) return false;
+  if (literal) return false; // Ordinary/known hostname, IP or interface has no secret producer.
+  if (!text.startsWith('host!')) return 'UNKNOWN';
+  return outboundPayloadVerdict(invocation, [word]);
+}
+
+/** IPFS tool rewrite selects CLI > nonempty env > IPFS_PATH/HOME file, never curlrc. */
+function curlIpfsGatewayVerdict(invocation, operation) {
+  const ipfsUrls = operation.urls.filter(url => /^ip(?:fs|ns):/i.test(literalSourceWord(url.word)?.text || ''));
+  if (!ipfsUrls.length) return false;
+  // A missing CID host fails before selecting any gateway. Dynamic URL parsing is
+  // retained by the existing outbound URL guard, not guessed here.
+  // Pinned URLAPI accepts one to three slashes for a supported absolute scheme.
+  const active = ipfsUrls.filter(url => /^ip(?:fs|ns):\/{1,3}[^/?#]+/i.test(literalSourceWord(url.word).text));
+  if (!active.length) return false;
+  if (operation.unknown || operation.gatewayExpanded) return 'UNKNOWN';
+  const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  let gateway = operation.gatewayWord, explicit = Boolean(gateway);
+  if (!gateway) {
+    if (invocation.outboundEnvironmentUnknown) return 'UNKNOWN';
+    const supplied = environment.get('IPFS_GATEWAY');
+    if (environment.has('IPFS_GATEWAY') && literalSourceWord(supplied)?.text !== '') {
+      // Presence with opaque bytes may mean empty/fallback or a selected gateway.
+      if (!literalSourceWord(supplied)) return 'UNKNOWN';
+      gateway = supplied;
+    }
+    if (!gateway) {
+      const pathSource = environment.get('IPFS_PATH');
+      if (environment.has('IPFS_PATH') && literalSourceWord(pathSource)?.text !== '') return 'UNKNOWN';
+      const homeSource = environment.get('HOME');
+      if (environment.has('HOME') && literalSourceWord(homeSource)?.text !== '') return 'UNKNOWN';
+      return false; // Pinned getter has no nonempty gateway, IPFS_PATH or HOME: early error.
+    }
+  }
+  const known = literalSourceWord(gateway);
+  // An arbitrary generated whole URL may change components or place its output in
+  // discarded userinfo/fragment. Do not promote a whole-word producer to selected DATA.
+  if (!known) return 'UNKNOWN';
+  let value = known.text;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    if (!explicit) return false; // Env/file CURLU parse has no GUESS_SCHEME.
+    // The finite ordinary default-HTTP subset; special prefix guessing remains U.
+    if (!/^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(?::[0-9]+)?(?:\/[^?#\s]*)?$/.test(value)) return 'UNKNOWN';
+    // CURLU_GUESS_SCHEME uses these hostname prefixes for non-HTTP handlers.
+    if (/^(?:ftp|dict|ldap|imap|smtp|pop3)\./i.test(value)) return 'UNKNOWN';
+    value = 'http://' + value;
+  }
+  let parsed;
+  try { parsed = new URL(value); } catch { return 'UNKNOWN'; }
+  if (parsed.search || /[?]/.test(value.split('#')[0])) return false; // Native rejects any query.
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) return 'UNKNOWN';
+  // Source proves only these gateway components are copied. Userinfo and fragment
+  // are deliberately omitted. Underlying protocol/host drive proxy selection.
+  const gatewayBase = parsed.protocol + '//' + parsed.host + (parsed.pathname.endsWith('/') ? parsed.pathname : parsed.pathname + '/');
+  const replacements = new Map(active.map(url => [url.index, { ...url.word, text: gatewayBase + 'ipfs/DUMMY',
+    raw: gatewayBase + 'ipfs/DUMMY', dynamic: false, dynamicMaySplit: false,
+    literalValue: undefined, outboundLiteralValue: undefined }]));
+  const projected = { ...invocation, args: operation.words.map((word, index) => replacements.get(index) || word) };
+  return proxyEnvironmentVerdict(projected);
+}
+
+/** Evaluate only selected resolver/source edges; keep opaque fallbacks behind old F. */
+function curlSelectedRouteVerdict(invocation) {
+  const verdicts = curlSelectedRouteOperations(invocation).flatMap(operation => [
+    curlInterfaceResolverVerdict(invocation, operation), curlIpfsGatewayVerdict(invocation, operation),
+  ]);
+  return contextualVerdict(invocation, verdicts.find(verdict => verdict === 'FORBIDDEN') || verdicts.find(Boolean) || false);
 }
 
 /** Netrc toggles are independent; consume other options before interpreting a selector or reset. */
@@ -4943,6 +5109,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
   return {
     trackOutboundEnvironment: true,
     deferWatchSourceProblems: true,
+    deferParallelSourceProblems: true,
     initialOutboundEnvironmentSources: invocation.outboundEnvironmentSources || [],
     initialOutboundEnvironmentUnknown: !!invocation.outboundEnvironmentUnknown,
     initialHelperEnvNames: invocation.helperEnvNames,
@@ -4964,6 +5131,12 @@ function sourceInspectionOptions(invocation, extra = {}) {
     initialExportedFunctionUnknown: !!invocation.exportedFunctionUnknown,
     ...extra,
   };
+}
+
+/** Defer only the new opaque parallel source boundary; keep every independent confirmed refusal. */
+function parallelSourceVerdict(invocation) {
+  const role = invocation.parallelLauncherRole;
+  return role?.mode === 'unknown' && !role.priorLauncherUnknown && invocation.launcherUnknown ? 'UNKNOWN' : false;
 }
 
 /** Only watch-owned unresolved argv/source is deferred; ordinary parser problems remain immediate. */
@@ -5340,6 +5513,7 @@ function parsedExfil(invocation) {
   if (invocation.name === 'gh') verdict = ghOfficialVerdict(invocation) || ghAuthenticationVerdict(invocation);
   if (invocation.name === 'curl') {
     verdict = curlReadsUpload(invocation.args, invocation.incomplete, true, invocation) || proxyEnvironmentVerdict(invocation);
+    if (curlSelectedRouteVerdict(invocation) === 'FORBIDDEN') verdict = 'FORBIDDEN';
     // Only the actual first literal argv -q/--disable prevents curl's implicit curlrc load.
     if (!verdict && !(knownWord(invocation.args[0]) && ['-q', '--disable'].includes(invocation.args[0].text))) verdict = 'UNKNOWN';
   }
@@ -5508,6 +5682,9 @@ if (invocations.some(telnetCredentialSourceVerdict)) deny('telnet の有効な�
 // Defer only the new opaque-source UNKNOWN fallbacks until independent payload/stdin verdicts.
 if (invocations.some(rsyncDaemonProgramSource)) deny('rsync direct daemon の RSYNC_CONNECT_PROG / RSYNC_SHELL が選ぶローカル command・interpreter source と実行条件を検査できません。空の CONNECT_PROG も native の source 選択を無効にしません。local / remote-shell / query の対応済み条件以外は owner に対象・操作・cwd/env/config/source を確認してください。' + UNKNOWN_OWNER_GATE);
 if (invocations.some(invocation => telnetStartupSourceVerdict(invocation) || telnetCommandSourceVerdict(invocation))) deny('telnet が選ぶ接続後の cmdrc または host 未指定時の stdin command source と実行条件を検査できません。既知の EOF / 実 query / 対応する設定無効化で同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
+// New resolver / implicit-route UNKNOWN never hides an existing payload or stdin FORBIDDEN.
+const selectedCurlRouteVerdict = firstVerdict(invocations, curlSelectedRouteVerdict);
+if (selectedCurlRouteVerdict) deny('curl の選択された interface resolver DATA または IPFS/IPNS gateway の source・URL 成分・実 operation / backend を確定できません。実 query・known ordinary・未選択形式で同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE, selectedCurlRouteVerdict);
 // Preserve confirmed payload and stdin verdicts before the explicit uninspected engine source.
 if (invocations.some(curlSelectedEngineSource)) deny('curl の明示 engine が実 operation で選ぶ backend / engine source を検査できません。報告済みの別バイナリの backend や静的な engine 名は、この呼出しの source 証明ではありません。engine を使わない対応形式が同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
 // Parsing literal helper text can reveal a prohibited payload; it does not authenticate the
@@ -5643,6 +5820,10 @@ if (invocations.some((invocation) => rsyncPoptConfigRole(invocation).active)) {
 // New watch uncertainty cannot replace an existing confirmed refusal/category above.
 if (invocations.some(watchSourceVerdict)) {
   deny('watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+if (invocations.some(parallelSourceVerdict)) {
+  deny('parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

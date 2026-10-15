@@ -1522,7 +1522,17 @@ function calleeTerminatorArgs(rest, info) {
 // Only these parsers accept the existing finite quoted-scalar argv proof.
 const SCALAR_LAUNCHERS = new Set(['watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
 
+/** Legitimate moreutils/GNU backends select different argv, stdin, template and config sources. */
+function parallelArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.parallelLauncher = { mode: 'unknown', backend: 'unqualified-moreutils-or-GNU',
+    source: 'backend/config/stdin/template', priorLauncherUnknown: info.launcherUnknown };
+  info.launcherUnknown = true;
+  return rest.length;
+}
+
 const WRAPPERS = {
+  parallel: parallelArgs,
   watch: watchArgs,
   script: scriptArgs,
   prlimit: (rest, info) => prlimitArgs(rest, info),
@@ -1710,6 +1720,9 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
       const r = wrapper(SCALAR_LAUNCHERS.has(base) && launcherScalarState
         ? rest.map(word => literalScalarWord(word, launcherScalarState)) : rest, info);
       if (r < 0) { info.nonExec = true; info.name = base; return info; }
+      if (base === 'parallel') {
+        info.name = base; info.nameWord = w; info.args = rest; return info;
+      }
       if (base === 'watch' && info.watchLauncher?.mode === 'shell') {
         // Preserve the actual default system(command) source via the existing sh -c path.
         const literal = text => ({ text, raw: "'" + text.replace(/'/g, "'\\''") + "'",
@@ -2995,7 +3008,7 @@ function inspect(cmd, options = {}) {
           res.problems.push('@P で再評価する prompt の値を確かめられず、保存された source の実行を検査できない');
         }
       } else if (evaluation.kind === 'source') {
-        const inner = inspectMediatedSource(evaluation.text, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true });
+        const inner = inspectMediatedSource(evaluation.text, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true });
         if (inner.problems.length) res.problems.push(`Bash の current-environment command substitution を検査できない（${inner.problems[0]}）`);
       }
     };
@@ -3118,6 +3131,7 @@ function inspect(cmd, options = {}) {
       launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
       scriptLauncherRole: info.scriptLauncher || null,
       watchLauncherRole: info.watchLauncher || null,
+      parallelLauncherRole: info.parallelLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
       definitionName: c.definitionName,
@@ -3494,10 +3508,11 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+      const parallelUnknown = info.parallelLauncher?.mode === 'unknown' && !info.parallelLauncher.priorLauncherUnknown;
       const watchUnknown = info.watchLauncher?.mode === 'unknown' && !info.watchLauncher.priorLauncherUnknown;
-      // Only egress explicitly defers this new watch-owned source uncertainty; other problems stay immediate.
-      if (!(watchUnknown && options.deferWatchSourceProblems === true)) res.problems.push(watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
+      // Egress defers only these registered launcher-owned source uncertainties; other problems stay immediate.
+      if (!(parallelUnknown && options.deferParallelSourceProblems === true) && !(watchUnknown && options.deferWatchSourceProblems === true)) res.problems.push(parallelUnknown ? 'parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
     if (positionalUnknown || (positionalExec && info.name === 'git')) {
@@ -3560,7 +3575,7 @@ function inspect(cmd, options = {}) {
     if (trap) {
       if (trap.unknown) res.problems.push('trap の action の位置を読みきれず、実行する source を検査できない');
       for (const script of trap.scripts) {
-        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true });
+        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true });
         if (inner.problems.length) res.problems.push(`trap の action を検査できない（${inner.problems[0]}）`);
         const trace = sourceTraceEffects(inner);
         if (trace.prompt) state.identitySources.set('PS4', null);
@@ -3581,7 +3596,7 @@ function inspect(cmd, options = {}) {
     if (alias) {
       if (alias.unknown) res.problems.push('alias の定義の位置や値を読みきれず、実行する source を検査できない');
       for (const script of alias.scripts) {
-        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true });
+        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true });
         if (inner.problems.length) res.problems.push(`alias の値を検査できない（${inner.problems[0]}）`);
         if (sourceChangesValues(inner)) state.valuesTainted = true;
       }
