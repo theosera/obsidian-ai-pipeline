@@ -18,6 +18,17 @@ vault repo は **CI (`.github/workflows/llm-sec-weekly.yml` の週次取込) と
 運用哲学: **ユーザーへの停止・確認はセキュリティ境界の突破時のみ。ルーティン障害
 (push 競合 / dotfile 衝突 / 一時エラー) は機構が自動解決する。**
 
+<!-- PR191:R36:VAULT-CONTRACT:BEGIN -->
+<a id="r36-vault-template-contract"></a>
+## R36: template例外の範囲と本番shell helper
+
+Git/Vault filename判定で例外にするのは**final basenameの `.env.example` だけ**である。`secret_template_scan_path` はそのbasenameだけを例外処理し、残るancestorを既存SECRET_EREへ渡す。`secrets/.env.example`、`.env.local/.env.example` は保護を維持し、rootと通常directoryのtemplateは正常対照とする。全pathの保護familyを一括解除せず、内容の安全認証やupload許可にもしない。
+
+本番 `scripts/safe-vault-push-perm.sh` から抽出したhelper/filterとJSへ同じfilename集合を渡すparityは、固定R36統合sourceで **15/15** を取得した（解析586と同callで601/601）。これはowned DUMMYと抽出関数の試験で、本番Vault・wrapper全体・push成功・actual dispatchではない。NUL producer/status・完全record・LF停止・読取/printf/grep失敗時UNKNOWN／何もunstageしない契約は保持する。
+
+保護ancestor内のtemplateも止まる通常費用がある。必要な対象や公開条件を保てる対応形式がなければownerへ確認し、秘密を移す・改名することを自動代替にしない。現在の[全体契約と受入gate](../../../docs/security/git-command-guards.md#r36-current-contract)を参照する。文書cut 2026-10-16T05:34:54.883582+09:00。固定v4で全7824を新規実行してPASS、統合strictは59機能（Hook58＋shell1）/239pairs/1374actual Hook入力で閉鎖した。旧7827 FAILED4と3つの未資格cross、正常query退行修復はguideと監査receiptに保存する。新headCI/fresh/L3はこの公開前cutでPENDING。公開後の状態はPR本文と同headのreceiptを参照し、本節を実行権限追加やinstaller/Vault操作の承認として扱わない。
+<!-- PR191:R36:VAULT-CONTRACT:END -->
+
 ## 事故 → 機構 → エスカレーション境界
 
 | 事故 | 自動解決 (現場) | 停止して人間に委ねる条件 |
@@ -110,7 +121,9 @@ CLAUDE.md の「`git add -A` 禁止」は **obsidian-ai-pipeline 自身の commi
 ## Secret-pattern 同期 SLA (第 4 系統)
 
 `safe-vault-push-perm.sh` の `SECRET_ERE` は `.claude/hooks/lib/git-guard-common.cjs` の
-`SECRET_PATH_RE` (12 パターン + allowlist `.env.example`) の対応 filename predicate を転記する。
+`SECRET_PATH_RE` (12 パターン) と `isSecretPath` の対応 filename predicate を転記する。
+`secret_template_scan_path` でfinal basenameの `.env.example` だけを例外にし、残るancestorを
+`SECRET_ERE` で判定する。`secrets/.env.example` / `.env.local/.env.example` は保護を維持する。
 `.env` の境界は末尾・明示された `.*?`・ECMAScript `\s` であり、任意の nonword punctuation
 ではない。shell は `LC_ALL=C` に固定した ASCII term の大小文字照合と、Unicode 空白の
 完全な UTF-8 byte sequence の選択肢を使う。`.env?backup`、裸の `secrets`、case / subdir、

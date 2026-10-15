@@ -20,6 +20,67 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R36:CONTRACT:BEGIN -->
+<a id="r36-current-contract"></a>
+
+## R36: child 選択・設定 source・送信入力・template 例外の適用範囲
+
+この節は公開親 `f1e6c7ef8843528e741541d3d06c6d59e1bc91ad` に対する有限修復の契約である。固定統合 source の全件検証、新 head の CI・fresh review、必要な実入口の合格は、取得した receipt とともに別に記録する。以前の成功数を新しい source の成功として持ち越さない。R35 以下は当時の source と日時に結合した履歴である。
+
+| 守るもの・担当 | 対応条件と結果 | 判断できない条件・通常作業への影響 | 同じ目的を保つ出口・対照 |
+|---|---|---|---|
+| wrapper の実 child（common と egress） | util-linux 2.39.3（固定 commit `2da5c904e18fdcffd2b252d641e6f76374c7b406`）の `chrt`、`nsenter`、`taskset` で、実 option・消費値・query・child を区別する。確認できた child は既存の payload/source 判定へ渡す | active な未対応 namespace・root・cwd・env 等の context、未確定 argv、implicit shell は UNKNOWN。未確定 taskset mask が option と operand の境界を変え得る場合も UNKNOWN。旧正常対照 R6P38 は input を変えず ALLOW→UNKNOWN とする明示的な制限であり、旧期待を保存した別 ledger に理由を残す。selector の存在だけを child 不在の証拠にしない。後続 query より前に source を開く処理と、query が先に終了して使わない deferred context を分ける | 通常 child と真の query は対応条件で維持する。必要な selector を削除して目的を変える書換えは自動代替にしない。不足する backend・版・argv・context を owner へ渡す |
+| OpenSSL の選択された設定と送信入力（egress） | OpenSSL 3.5.0／LibreSSL 4.0.0 の設定読込を subcommand/query 判定より先の source として扱う。対応 `s_client` の stdin は既存 provenance に結び付け、確定した秘密 filename 由来 payload は FORBIDDEN | default／明示 config、engine/provider、未対応 active mode、stdin／argv／source が未証明なら UNKNOWN。通常の `version`、help、`dgst` も config が未確認なら停止し得る | 選択された `OPENSSL_CONF=/dev/null` が必要な config/provider を失わず同じ目的を保つ場合に限り、対応 query/local mode の対照に使う。設定依存の暗号処理では自動代替にしない。認証用 key/cert は未検査 source とし、raw upload と誤認せず stdin と分ける。明示 early_data の既知 file-backed upload は通常 filename も既存 upload policy に従い FORBIDDEN、path/argv 不明は UNKNOWN |
+| 保護対象 path の template 例外（共通 JS と Vault shell） | final basename の `.env.example` だけを `.env` filename 規則の例外にする。残る ancestor は従来の filename 規則で判定し、`secrets/.env.example` や `.env.local/.env.example` の保護を維持する | file 内容を安全と認証する規則ではない。NUL record の読取失敗・不完全 record・LF filename は従来どおり UNKNOWN、何も unstage しない | root と通常 directory の template は許可対照。秘密 directory が必要な対象を別場所へ写すことを自動代替にしない。対象 path と stage 操作を owner に確認する |
+| committed hook の維持（add-all） | `git am -n` と bundle 中の実 `n` を `--no-verify` として FORBIDDEN にする。`-C`／`-p` の必須 DATA、`-S` の optional attached DATA、実 `--` 以後の operand と区別する | 空になり得る attached 必須値が次の option を消費する境界は am 限定で UNKNOWN。通常 am の mail/state 等に関する別の egress UNKNOWN は解除しない | hook を維持して同じ am を行う。push/merge/rebase/revert の別の意味の `-n` は新しく禁止しない。未確定値は同じ対象・目的の確定 argv にできる場合だけ再検査する |
+
+`taskset` は PID 指定でも 0 と child が選ばれる分岐があり、`chrt` の PID selector とともに consumer の条件で判定する。`ionice` と `setsid` も同じ固定 util-linux source の有限隣接表で確認し、それぞれの selector/query の意味を保つ。名前が似た wrapper 全体や全 Git option の網羅を証明したとはしない。Mac 上で利用できない native launcher の権限・affinity・namespace 成立も、Hook DATA の停止から推定しない。
+
+OpenSSL は argc なしの bare help と global query alias も、通常 argv0・既知 empty config などの条件を満たす場合だけ対照にする。`help CMD` は official main が対象 mode へ委譲するため、その実 role で解析し、未対応 target は UNKNOWN。multicall argv0 が subcommand より先に処理されるため、非標準／未確定 argv0 を後続の version/help だけで許可しない。global query の後続 argv が application に使われなくても、外側 shell の substitution を無視する理由にはしない。
+
+OpenSSL の既知の active sibling は `s_server`、`s_time`、`ocsp`、`cmp` に限定して source 不足を明示する。各 mode の実通信や server side を認証するものではない。設定が必要な通常処理も止まり得る費用を明示し、query 名や consumed DATA の help という綴りを config/source 無効化の証拠にしない。無関係の reader から静的 stdin/EOF へ誤った provenance を作らない。
+
+template の例外は filename 規則の union 全体を解除しない。JS と production shell の実 helper/filter を同じ filename 集合で照合し、shell の producer/status/NUL/LF/restore 契約を保持する。shell reader の試験は owned DUMMY fixture と抽出した本番関数の試験であり、本番 Vault・全 wrapper・push の成功ではない。
+
+`git am -n` は Git の `pre-applypatch` と `applypatch-msg` を省くが、`post-applypatch` は省かない。自身の add-all 判定と、別の egress が既に UNKNOWN で停止する aggregate 結果を分ける。新 edge を単独で外して自身の停止が失われても、独立した guard が残って全体 deny のままなら、その mask をそのまま記録する。
+
+### 入口と受入の区別
+
+settings は全 Bash egress と `if: "Bash(git *)"` 付き secret-git/add-all のままである。現在の Claude Code 公式資料は `if` を subcommand 等を確認する best-effort 条件として説明し、判定不能時に Hook を起動する場合も示す。単純な raw prefix とはみなさず、引用を結合した Git の direct Hook 結果を実 dispatch の成功／省略のどちらにも読み替えない。固定 CLI の exact command と各 Hook の start/finish を実入口で別に取得する。API／safeguard による Hook 前の停止は NOT_EXERCISED である。
+
+受入は、元入力の再投入、正常対照、同一入力の旧版比較、新機能一つずつを外す逆検証、新全件試験、同 head の required CI・fresh 両 review と thread 処理、必要な実入口を分けて確認する。旧7459の順序・入力・元定義は保持する。未確定 mask が option を選び得るため旧 ALLOW を UNKNOWN に改める場合は、変更した oracle・公式 consumer・理由・通常制限を個別に記録し、「旧 oracle 全件不変」とは記載しない。実秘密の読取、DNS／TLS／認証／transport／被害の成立を主張しない。実通信を確認していない表示は、局所修復を受け入れた後も残す。merge は行わない。
+
+一次 source: [util-linux v2.39.3](https://github.com/util-linux/util-linux/tree/2da5c904e18fdcffd2b252d641e6f76374c7b406)、[OpenSSL 3.5.0](https://github.com/openssl/openssl/tree/openssl-3.5.0)、[LibreSSL 4.0.0](https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.0.0.tar.gz)、[Git am v2.54.0](https://git-scm.com/docs/git-am/2.54.0)、[Claude Code Hook 条件](https://code.claude.com/docs/en/hooks#how-if-patterns-match-bash-commands)。取得した版・consumer・hash・正常対照・終了条件は有限監査台帳へ結合し、live docs の説明を固定 CLI の実測と取り違えない。
+
+
+### 固定sourceの取得cutと受入gate
+
+文書cut: **2026-10-16T05:34:54.883582+09:00**。公開親は `f1e6c7ef8843528e741541d3d06c6d59e1bc91ad`。固定統合sourceは manifest SHA256 `98224bf12725424044bd1cb3d4ba0d18092241f48f700419c57de59e3c09d3bf`、egress `f37e6b157cfb…` / common `500f791f5360…` / secret-git `273f6be441ba…` / add-all `5b5cce55a0d5…` に結合する。この節は公開前のローカル受入cutであり、以下のPENDINGを公開後の現在状態へ読み替えない。
+
+| gate | この固定sourceで取得した結果 | 限界・次の閉鎖条件 |
+|---|---|---|
+| L1解析＋本番抽出filename parity | **601/601 PASS**＝analysis586＋parity15、fail0、SPEC reporter、Node24.22.0。receipt `7ce75db57321…` | L2全件・実dispatch・native backend成立とは別 |
+| 現sourceの単一edge逆検証 | **59機能＝Hook58＋shell1**。L2 **239pairs / 458 actual observations / 1374 actual Hook入力、failed0/broken0**。current資格summary `4fa351e6486…` / 詳細 `d32a8fca988…` | own-hook停止必要性33＝EG30/AG2/SG1、aggregate29、allowance precision13、classification precision10。curl **2 featuresはUNPROVED**、別にutil2＋元parallel1の**3 masked profiles**を保持。機能数を脆弱性数へ数えない |
+| reverseの数え方と状態 | amは10基準観測を3mutantで共有し、30pairsに対するactualは40観測/120Hook入力。新helpは15pairs中2件で正常ALLOWを失い、残13は同じ。shellは15-test readerを2batchで測り、current15pass／callsiteだけを外すと14pass＋意図した1fail、Hook0 | 各L2 pairの実input/env/cwd/project/executable/Hook path、single span、他source、byte/mode undoとowned状態を確認。shellの各test用一時fixture名は異なり、wrapper全体や本番Vaultではない。R23GA11 triple・cross9・診断・元witnessの別確認はstrictへ加算しない |
+| <!-- PR191:R36:FULL-GATE --> L2全件 | **新しく全7824/7824を実行してPASS**、failed0/broken0、23472 actual Hook入力。2026-10-16T05:28:47.371000+09:00終了。root資格 `cc099a8a813c…`、raw `ad4711135299…` | 旧7827のprojectionではない。旧7459の順序・input/non-oracle fieldsを保持＋新unique365、alias2は別assertion。元R6P38 ALLOWだけを理由付きledgerでUNKNOWNへ変更するため、旧oracle全件不変とは言わない。R23GA10の元ALLOWは保持。source/runner/definitions・whole-owned Git/files/modes stable |
+| <!-- PR191:R36:HEAD-CI-GATE --> 新公開head／required CI | **PENDING（この公開前cut時点）** | 同一新headの実CIと実Node版を別に取得し、親f1の成功を持ち越さない |
+| <!-- PR191:R36:REVIEW-GATE --> fresh両review・thread | **PENDING（この公開前cut時点）** | 正常full review完了・zero findings・thread処理を別確認。CodeRabbitのstatus successだけでinternal errorをzeroにしない |
+| <!-- PR191:R36:L3-GATE --> 必要な実project入口 | **PENDING（この公開前cut時点）** | dispatch/start/finish・判定・owned副作用を別確認。Hook前のAPI/safeguard停止はNOT_EXERCISED。prepare失敗をHook成功にしない |
+
+公開後の同一headの受入状態は [PR #191本文](https://github.com/theosera/obsidian-ai-pipeline/pull/191) と当該headに結合した監査receiptで更新する。この日時付きローカルcutを、その後のCI・レビューの状態更新だけで書き換えることは要しない。strict/解析/Hook DATAの合格から、実秘密・DNS/TLS/認証/transport/実外部通信/被害の成立を推定しない。local Node24.22.0を継続し、Node26は2026年11月以降のowner判断、93依頼終了、広い責務refactorは後続とする。Goalと最終ZIPは別条件で、mergeは行わない。
+
+### 原FAIL・退行・誤前提を後段に残す
+
+最初の旧固定source全7827は **4 FAIL・broken0・23481Hook入力** で終端し、raw `8681024400bf…` / root `589d481ba49a…` を受入に使わず保存した（2026-10-16 05:07:42.784 JST終了）。そのうち **R23GA10 `git am -h` は本修復で作った正常過剰拒否**である。旧ALLOWEDだったqueryのroleにflagsが無いところを参照し、捕捉されたTypeErrorがown-AG UNKNOWNになった。同じ原因はR23GA11のlong helpでもown-AGを余計に止めたが、既存own-EG UNKNOWNがaggregateを既に止めていたため全件FAILには現れなかった。AGの `flags?.includes` への**1文字の精度修復**で、元R23GA10 ALLOWを変更せず回復した。R23GA11もown-AG ALLOWへ回復し、既存own-EG UNKNOWNは保持した。aggregateの緑だけで各Hookの退行を見落とさず、option/query roleと独立guardのmaskを分ける教訓として残す。
+
+残る新規cross R36INT08/09/10は、元12定義/oracleと9matched/3unmatched rawを保持して採用cross9の外へ分けた。INT08/10で期待したown-SG FORBIDDENは既存readOnlyInvocation beforeCommitのUNKNOWNにmaskedだった。INT09も **own-SGのbeforeCommit／先行OpenSSLのUNKNOWN**により新ALLOW期待が不成立で、**own-EGはALLOW**だった。これらを成功値へ書き換えて合格にはせず、独立template31のown-SG F／通常A対照と区別する。旧7827からの受入subset化案は、正常退行が残った時点で未使用STOPとし、修復したv4の全7824を新規実行した。
+
+util-linuxの通常対照はliteral/有限scalarのpriority・mask・option値と通常child、真のqueryを含む。inline値は**同じ語**の既知literalValueのsubstringだけを引き継ぎ、元raw/start/dynamic/provenanceを保持する。未知値やgenerated childへproofを転用しない。私有v2のdeferred nsenter query過剰U3件、v4の既知taskset scalar mask過剰U1件、v5のinline option proof消失による過剰U11件は修復し、原FAILと同一tuple比較を保持した。最後の11件は公開f1 A→私有v5 U→私有v6 Aであり、公開された新しい退行としては数えない。
+
+OpenSSL試作で見つかったglobal query alias／argc0の過剰UNKNOWN、early-dataの分類精度修復も旧sourceの失敗として保存した。currentのOpenSSL逆検証ではobserver全体のinitial/end snapshotを実際に測定して一致を確認したが、旧v2/v3 observerにinitial full snapshotが無かった履歴へ遡及して成功を足さない。新規oracle誤前提、collector/metadata shape/静的出力打切り等の器具事故はruntime退行と分け、監査台帳に原記録を残す。
+
+<!-- PR191:R36:CONTRACT:END -->
+
 <!-- PR191:R35:CONTRACT:BEGIN -->
 <a id="r35-current-contract"></a>
 
@@ -1181,7 +1242,7 @@ P=a.txt; git add "$P"
 for P in a.txt; do git add "$P"; done
 ```
 
-変数 proof は、値を追跡できる単純 literal 代入と、正確に引用した `"$NAME"` / `"${NAME}"` の対応範囲に限る。単一の静的 loop は body の scope だけで扱う。条件分岐・未実行関数・source・eval・read・複数要素などで証明が崩れる入力を、一般 shell evaluator で補わない。`.env.example` は filename のテンプレート例外だが、それを upload する操作まで例外になるわけではない。
+変数 proof は、値を追跡できる単純 literal 代入と、正確に引用した `"$NAME"` / `"${NAME}"` の対応範囲に限る。単一の静的 loop は body の scope だけで扱う。条件分岐・未実行関数・source・eval・read・複数要素などで証明が崩れる入力を、一般 shell evaluator で補わない。filenameのテンプレート例外はfinal basenameの `.env.example` だけで、`secrets/` や `.env.local/` 等の保護対象ancestorの判定を維持する。templateをuploadする操作は既存policyのまま例外にしない。
 
 引用した glob も Git が展開するため、引用だけで literal とはしない。Git が扱う backslash escape は対応範囲で literal path に戻す。`git add --chmod "$MODE" a.txt` の MODE など、対応する option の消費値は追加対象と区別する。ただし複数 argv に変わり得る値や、空の attached value により次の語を消費し得る曖昧な形は UNKNOWN になる。
 

@@ -18,6 +18,19 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R36:README:BEGIN -->
+<a id="r36-README-contract"></a>
+**R36 guard契約（固定sourceのローカル受入済み・公開前cut）**: util-linux 2.39.3のchrt/nsenter/tasksetはoption値・実query・PID0/child・contextを分けます。既知の通常child／有限scalar値は維持し、未対応context・implicit shell・未確定境界はUNKNOWN。R6P38の未確定taskset mask＋通常catは、元入力と元ALLOWを保存した理由付き **ALLOW→UNKNOWN 1件**です。必要なselectorを削除して目的を変えることを自動代替にしません。
+
+OpenSSL 3.5.0／LibreSSL 4.0.0は選択configをquery/local modeより前に確認し、default configが未検査なら通常version/help/dgstもUNKNOWNになり得ます。既知empty configは必要provider/configを失わず同じ目的を保つ場合に限る対照です。通常argv0・実global queryとdelegated help、認証source、stdin、early-dataを分け、既知file-backed early-dataは通常名でも既存upload policyでFORBIDDENです。git amの実 `-n`／`-qn` はown add-allがFORBIDDEN、消費DATA／他commandの`-n`は同じ意味にせず、独立egressのUNKNOWNは残ります。
+
+filenameのtemplate例外は**final basenameの `.env.example` だけ**です。`secrets/.env.example` や `.env.local/.env.example` のancestor保護は残り、root／通常directoryのtemplateを正常対照にします。file内容やuploadの許可を認証する例外ではありません。判定はALLOW／FORBIDDEN／UNKNOWN、停止理由と不足条件を分け、同じ対象・操作・条件を保つ対応形式がなければownerへ確認します。
+
+[版・正常対照・owner出口・受入gate](docs/security/git-command-guards.md#r36-current-contract)。文書cut **2026-10-16T05:34:54.883582+09:00**、固定manifest `98224bf12725…` / AG `5b5cce55a0d5…`。L1は**601/601（解析586＋parity15）**、current単一edge逆検証は**59機能（Hook58＋shell1）/239pairs/1374actual Hook入力**で閉鎖。curl UNPROVED2featuresと、別の3 masked profilesは区別して残します。**全7824/7824を新規実行してPASS**、failed0/broken0・23472Hook入力（2026-10-16T05:28:47.371000+09:00終了）で、旧7827からのprojectionではありません。旧7827 FAILED4、元cross08/09/10の不一致、正常query R23GA10とmasked R23GA11の同原因TypeError／1文字修復を保存しました。
+
+旧7459入力/順序とR23GA10の元ALLOWを保持し、R6P38の理由付きA→U ledger1を分けます。旧R35以下はsource/日時付き履歴で、旧成功数を現在へ持ち越しません。**新headCI・fresh両review/thread・必要L3はこの公開前cutでPENDING**です。[PR #191本文](https://github.com/theosera/obsidian-ai-pipeline/pull/191)と同headの監査receiptで公開後の状態を更新し、この日時付きcutを将来状態へ読み替えません。全Bash egress／conditional secret-git・add-allを維持し、direct Hook DATAと実dispatchを区別します。実native/通信・Goal/ZIP完成・mergeを主張しません。
+<!-- PR191:R36:README:END -->
+
 <!-- PR191:R35:README-CONTRACT:BEGIN -->
 <a id="r35-readme-contract"></a>
 **R35 guard契約（固定統合source・全件検証中）**: 同名のmoreutils/GNU `parallel`はbackendと暗黙設定/sourceを確定できないため、external invocationをUNKNOWNに止めます。ordinary job・help・no-job・EOF・`--plain`も現時点の例外にしません。同名local functionの実callと印字DATAは既存判定で区別し、別の確定したFORBIDDENは維持します。並列性やjob/argvを失う直列化・flag削除を同目的の自動代替とはせず、必要なbackend/version・設定・目的・対象・cwd/env/sourceをownerへ確認します。

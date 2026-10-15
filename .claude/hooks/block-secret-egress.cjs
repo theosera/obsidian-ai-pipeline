@@ -206,7 +206,11 @@ const insp = guard.inspect(cmd, {
   trackOutboundEnvironment: true,
   deferWatchSourceProblems: true,
   deferParallelSourceProblems: true,
+  deferUtilLinuxSourceProblems: true,
   initialOutboundEnvironmentNames: Object.keys(process.env),
+  // Retain only the exact empty-config device proof; every other inherited config value stays opaque.
+  initialOutboundEnvironmentSources: ['OPENSSL_CONF'].filter(name => process.env[name] === '/dev/null').map(name =>
+    ({ name, word: { text: '/dev/null', raw: "'/dev/null'", quoted: true, dynamic: false, dynamicMaySplit: false } })),
   initialHelperEnvNames: ['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_EXTERNAL_DIFF', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS']
     .filter(name => process.env[name] !== undefined),
   initialGitIdentityEnvNames: ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_COMMITTER_DATE', 'EMAIL'].filter(name => process.env[name] !== undefined),
@@ -3371,6 +3375,135 @@ function ghAuthenticationVerdict(invocation) {
   return unknown ? 'UNKNOWN' : false;
 }
 
+/** R36 bounded OpenSSL/LibreSSL operation roles. Unknown option boundaries never select help by substring. */
+const OPENSSL_NETWORK_OPTIONS = {"s_client":{"help":0,"engine":1,"ssl_client_engine":1,"ssl_config":1,"ct":0,"noct":0,"ctlogfile":1,"host":1,"port":1,"connect":1,"bind":1,"proxy":1,"proxy_user":1,"proxy_pass":1,"unix":1,"4":0,"6":0,"maxfraglen":1,"max_send_frag":1,"split_send_frag":1,"max_pipelines":1,"read_buf":1,"fallback_scsv":0,"cert":1,"certform":1,"cert_chain":1,"build_chain":0,"key":1,"keyform":1,"pass":1,"verify":1,"nameopt":1,"CApath":1,"CAfile":1,"CAstore":1,"no-CAfile":0,"no-CApath":0,"no-CAstore":0,"requestCAfile":1,"tfo":0,"dane_tlsa_domain":1,"dane_tlsa_rrdata":1,"dane_ee_no_namechecks":0,"psk_identity":1,"psk":1,"psk_session":1,"name":1,"reconnect":0,"sess_out":1,"sess_in":1,"crlf":0,"quiet":0,"ign_eof":0,"no_ign_eof":0,"starttls":1,"xmpphost":1,"brief":0,"prexit":0,"no-interactive":0,"showcerts":0,"debug":0,"msg":0,"msgfile":1,"nbio_test":0,"state":0,"keymatexport":1,"keymatexportlen":1,"security_debug":0,"security_debug_verbose":0,"trace":0,"wdebug":0,"keylogfile":1,"nocommands":0,"adv":0,"servername":1,"noservername":0,"tlsextdebug":0,"ignore_unexpected_eof":0,"status":0,"serverinfo":1,"alpn":1,"async":0,"nbio":0,"ssl3":0,"tls1":0,"tls1_1":0,"tls1_2":0,"tls1_3":0,"dtls":0,"quic":0,"timeout":0,"mtu":1,"dtls1":0,"dtls1_2":0,"sctp":0,"sctp_label_bug":0,"nextprotoneg":1,"early_data":1,"enable_pha":0,"enable_server_rpk":0,"enable_client_rpk":0,"use_srtp":1,"srpuser":1,"srppass":1,"srp_lateuser":0,"srp_moregroups":0,"srp_strength":1,"ktls":0,"CRL":1,"crl_download":0,"CRLform":1,"verify_return_error":0,"verify_quiet":0,"chainCAfile":1,"chainCApath":1,"chainCAstore":1,"verifyCAfile":1,"verifyCApath":1,"verifyCAstore":1,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"s_server":{"help":0,"ssl_config":1,"trace":0,"engine":1,"port":1,"accept":1,"unix":1,"unlink":0,"4":0,"6":0,"tfo":0,"context":1,"CAfile":1,"CApath":1,"CAstore":1,"no-CAfile":0,"no-CApath":0,"no-CAstore":0,"nocert":0,"verify":1,"Verify":1,"nameopt":1,"cert":1,"cert2":1,"certform":1,"cert_chain":1,"build_chain":0,"serverinfo":1,"key":1,"key2":1,"keyform":1,"pass":1,"dcert":1,"dcertform":1,"dcert_chain":1,"dkey":1,"dkeyform":1,"dpass":1,"dhparam":1,"servername":1,"servername_fatal":0,"nbio_test":0,"crlf":0,"quiet":0,"no_resume_ephemeral":0,"www":0,"WWW":0,"ignore_unexpected_eof":0,"tlsextdebug":0,"HTTP":0,"id_prefix":1,"keymatexport":1,"keymatexportlen":1,"CRL":1,"CRLform":1,"crl_download":0,"chainCAfile":1,"chainCApath":1,"chainCAstore":1,"verifyCAfile":1,"verifyCApath":1,"verifyCAstore":1,"no_cache":0,"ext_cache":0,"verify_return_error":0,"verify_quiet":0,"ign_eof":0,"no_ign_eof":0,"cert_comp":0,"status":0,"status_verbose":0,"status_timeout":1,"status_url":1,"proxy":1,"no_proxy":1,"status_file":1,"security_debug":0,"security_debug_verbose":0,"brief":0,"rev":0,"debug":0,"msg":0,"msgfile":1,"state":0,"async":0,"max_pipelines":1,"naccept":1,"keylogfile":1,"nbio":0,"timeout":0,"mtu":1,"read_buf":1,"split_send_frag":1,"max_send_frag":1,"psk_identity":1,"psk_hint":1,"psk":1,"psk_session":1,"srpvfile":1,"srpuserseed":1,"max_early_data":1,"recv_max_early_data":1,"early_data":0,"num_tickets":1,"anti_replay":0,"no_anti_replay":0,"http_server_binmode":0,"no_ca_names":0,"stateless":0,"ssl3":0,"tls1":0,"tls1_1":0,"tls1_2":0,"tls1_3":0,"dtls":0,"listen":0,"dtls1":0,"dtls1_2":0,"sctp":0,"sctp_label_bug":0,"use_srtp":1,"no_dhe":0,"nextprotoneg":1,"alpn":1,"ktls":0,"sendfile":0,"zerocopy_sendfile":0,"enable_server_rpk":0,"enable_client_rpk":0,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"s_time":{"help":0,"connect":1,"new":0,"reuse":0,"bugs":0,"cipher":1,"ciphersuites":1,"ssl3":0,"tls1":0,"tls1_1":0,"tls1_2":0,"tls1_3":0,"verify":1,"time":1,"www":1,"nameopt":1,"cert":1,"key":1,"cafile":1,"CAfile":1,"CApath":1,"CAstore":1,"no-CAfile":0,"no-CApath":0,"no-CAstore":0,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"ocsp":{"help":0,"ignore_err":0,"CAfile":1,"CApath":1,"CAstore":1,"no-CAfile":0,"no-CApath":0,"no-CAstore":0,"timeout":1,"resp_no_certs":0,"multi":1,"no_certs":0,"badsig":0,"CA":1,"nmin":1,"nrequest":1,"reqin":1,"signer":1,"sign_other":1,"index":1,"ndays":1,"rsigner":1,"rkey":1,"passin":1,"rother":1,"rmd":1,"rsigopt":1,"header":1,"rcid":1,"url":1,"host":1,"port":1,"path":1,"proxy":1,"no_proxy":1,"out":1,"noverify":0,"nonce":0,"no_nonce":0,"no_signature_verify":0,"resp_key_id":0,"no_cert_verify":0,"text":0,"req_text":0,"resp_text":0,"no_chain":0,"no_cert_checks":0,"no_explicit":0,"trust_other":0,"no_intern":0,"respin":1,"VAfile":1,"verify_other":1,"cert":1,"serial":1,"validity_period":1,"signkey":1,"reqout":1,"respout":1,"issuer":1,"status_age":1,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"cmp":{"help":0,"config":1,"section":1,"verbosity":1,"cmd":1,"infotype":1,"profile":1,"geninfo":1,"template":1,"keyspec":1,"newkey":1,"newkeypass":1,"centralkeygen":0,"newkeyout":1,"subject":1,"days":1,"reqexts":1,"sans":1,"san_nodefault":0,"policies":1,"policy_oids":1,"policy_oids_critical":0,"popo":1,"csr":1,"out_trusted":1,"implicit_confirm":0,"disable_confirm":0,"certout":1,"chainout":1,"oldcert":1,"issuer":1,"serial":1,"revreason":1,"server":1,"proxy":1,"no_proxy":1,"recipient":1,"path":1,"keep_alive":1,"msg_timeout":1,"total_timeout":1,"trusted":1,"untrusted":1,"srvcert":1,"expect_sender":1,"ignore_keyusage":0,"unprotected_errors":0,"no_cache_extracerts":0,"srvcertout":1,"extracertsout":1,"cacertsout":1,"oldwithold":1,"newwithnew":1,"newwithold":1,"oldwithnew":1,"crlcert":1,"oldcrl":1,"crlout":1,"ref":1,"secret":1,"cert":1,"own_trusted":1,"key":1,"keypass":1,"digest":1,"mac":1,"extracerts":1,"unprotected_requests":0,"certform":1,"crlform":1,"keyform":1,"otherpass":1,"engine":1,"tls_used":0,"tls_cert":1,"tls_key":1,"tls_keypass":1,"tls_extra":1,"tls_trusted":1,"tls_host":1,"batch":0,"repeat":1,"reqin":1,"reqin_new_tid":0,"reqout":1,"reqout_only":1,"rspin":1,"rspout":1,"use_mock_srv":0,"port":1,"max_msgs":1,"srv_ref":1,"srv_secret":1,"srv_cert":1,"srv_key":1,"srv_keypass":1,"srv_trusted":1,"srv_untrusted":1,"ref_cert":1,"rsp_cert":1,"rsp_key":1,"rsp_keypass":1,"rsp_crl":1,"rsp_extracerts":1,"rsp_capubs":1,"rsp_newwithnew":1,"rsp_newwithold":1,"rsp_oldwithnew":1,"poll_count":1,"check_after":1,"grant_implicitconf":0,"pkistatus":1,"failure":1,"failurebits":1,"statusstring":1,"send_error":0,"send_unprotected":0,"send_unprot_err":0,"accept_unprotected":0,"accept_unprot_err":0,"accept_raverified":0,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"dgst":{"help":0,"list":0,"engine":1,"engine_impl":0,"passin":1,"c":0,"r":0,"out":1,"keyform":1,"hex":0,"binary":0,"xoflen":1,"d":0,"debug":0,"sign":1,"verify":1,"prverify":1,"sigopt":1,"signature":1,"hmac":1,"mac":1,"macopt":1,"fips-fingerprint":0,"provider-path":1,"provider":1,"provparam":1,"propquery":1}};
+function opensslStartupConfigUnproved(invocation) {
+  const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  // Both pinned backends consume config before subcommand/help dispatch. Absence selects a default file.
+  return invocation.outboundEnvironmentUnknown || literalSourceWord(environment.get('OPENSSL_CONF'))?.text !== '/dev/null';
+}
+/** CMP scans these single-dash selectors before ordinary option/help parsing. */
+function opensslCmpUpfrontConfigUnproved(invocation) {
+  if (literalSourceWord(invocation.args[0])?.text !== 'cmp') return false;
+  let selected = null, sawConfig = false;
+  for (let k = 1; k < invocation.args.length - 1; k++) {
+    const word = literalSourceWord(invocation.args[k]);
+    if (!word) return true;
+    if (word.text === '-config') { selected = literalSourceWord(invocation.args[++k]); sawConfig = true; }
+    else if (['-section', '-verbosity'].includes(word.text)) k++;
+  }
+  return sawConfig && (!selected || !['', '/dev/null'].includes(selected.text));
+}
+/** Local actions outside the bounded role map have uninspected execution/source selection. */
+function opensslUninspectedLocalAction(mode) {
+  return !['version', 'help', '-help', '--help', '-h', '-version', '--version', '--h', '-v', '--v'].includes(mode);
+}
+/** apps/openssl.c first selects an application by argv[0], before args[0] dispatch. */
+function opensslDispatchSourceUnproved(invocation) {
+  const selected = literalSourceWord(invocation.argv0Word);
+  return invocation.argv0Unknown || !selected || selected.text.split('/').pop() !== 'openssl';
+}
+/** `help command` delegates to that application's main with synthetic --help. */
+function opensslHelpSourceUnproved(invocation) {
+  const rest = [];
+  let options = true;
+  for (const argument of invocation.args.slice(1)) {
+    const word = literalSourceWord(argument);
+    if (!word) return true;
+    if (options && word.text === '--') { options = false; continue; }
+    if (options && word.text.startsWith('-')) {
+      if (['-help', '--help'].includes(word.text)) return false;
+      return true;
+    }
+    options = false;
+    rest.push(argument);
+  }
+  if (rest.length !== 1) return false; // List or usage exits without dispatching a target.
+  const target = literalSourceWord(rest[0]);
+  if (!target) return true;
+  if (['help', 'version'].includes(target.text)) return false;
+  if (!Object.hasOwn(OPENSSL_NETWORK_OPTIONS, target.text)) return true;
+  const delegated = opensslNetworkRole({ ...invocation, args: [rest[0], { text: '--help', raw: '--help', dynamic: false, dynamicMaySplit: false }] });
+  return !delegated || delegated.unknown || delegated.sourceUnknown;
+}
+function opensslNetworkRole(invocation) {
+  if (invocation.name !== 'openssl') return null;
+  if (opensslDispatchSourceUnproved(invocation)) return { active: false, unknown: true, sourceUnknown: true, stdin: false, metadata: [], files: [] };
+  const explicitConfigUnknown = opensslStartupConfigUnproved(invocation) || opensslCmpUpfrontConfigUnproved(invocation);
+  if (!invocation.args.length) return { active: false, unknown: false, sourceUnknown: explicitConfigUnknown || Boolean(invocation.incomplete), stdin: false, metadata: [], files: [] };
+  const modeWord = literalSourceWord(invocation.args[0]);
+  if (!modeWord) return { active: false, unknown: true, sourceUnknown: true, stdin: false, metadata: [], files: [] };
+  const mode = modeWord.text, options = OPENSSL_NETWORK_OPTIONS[mode];
+  if (mode === 'help') return { active: false, unknown: false, sourceUnknown: explicitConfigUnknown || opensslHelpSourceUnproved(invocation), stdin: false, metadata: [], files: [] };
+  if (!options) return { active: false, unknown: false, sourceUnknown: explicitConfigUnknown || opensslUninspectedLocalAction(mode), stdin: false, metadata: [], files: [] };
+  const role = { mode, local: mode === 'dgst', active: true, unknown: Boolean(invocation.incomplete), sourceUnknown: explicitConfigUnknown,
+    stdin: ['s_client', 's_server'].includes(mode), metadata: [], files: [], helper: false, futureSource: false, credential: false };
+  const metadata = new Set(['connect','host','port','bind','proxy','proxy_user','servername','alpn','nextprotoneg',
+    'psk_identity','name','xmpphost','dane_tlsa_domain','www','url','path','server','recipient','subject','ref','secret']);
+  const sourceOptions = new Set(['engine','ssl_client_engine','provider','provparam']);
+  const deferredSourceOptions = new Set(['provider-path','propquery']);
+  const credentialOptions = new Set(['cert','key','pass','proxy_pass','cert_chain','cert_chain_build','psk','psk_session',
+    'srppass','srpuser','CAfile','CApath','CAstore','verifyCAfile','verifyCApath','verifyCAstore','chainCAfile','chainCApath',
+    'chainCAstore','xkey','xcert','xchain','ssl_config','sign','verify','prverify','passin','keyform','engine_impl']);
+  let positional = false;
+  for (let k = 1; k < invocation.args.length; k++) {
+    const original = invocation.args[k], word = literalSourceWord(original);
+    if (!word) { role.unknown = true; continue; }
+    const text = word.text;
+    if (text === '--') { positional = true; continue; }
+    if (positional || !text.startsWith('-')) {
+      // OpenSSL stops option parsing at its first positional target; a later -help is DATA.
+      if (mode === 'dgst') positional = true;
+      else if (mode === 's_client' && !positional) { role.metadata.push(original); positional = true; }
+      else role.unknown = true;
+      continue;
+    }
+    const eq = text.indexOf('='), option = text.slice(text.startsWith('--') ? 2 : 1, eq < 0 ? undefined : eq);
+    if ((option === 'help' || option === 'h') && eq < 0) {
+      return { ...role, active: false, stdin: false, sourceUnknown: role.sourceUnknown || role.helper || role.unknown };
+    }
+    if (!Object.hasOwn(options, option)) {
+      if (mode === 'dgst' && ['sha1','sha224','sha256','sha384','sha512','md5','sha3-256','sha3-384','sha3-512','shake128','shake256'].includes(option) && eq < 0) continue;
+      role.unknown = true; continue;
+    }
+    let value = null;
+    if (options[option]) {
+      value = eq < 0 ? invocation.args[++k] : { ...original, text: text.slice(eq + 1), dynamic: false, dynamicMaySplit: false, literalValue: text.slice(eq + 1) };
+      if (!value || value.ansiCUnknown || value.dynamic && value.dynamicMaySplit !== false || value.globExpanded || value.braceExpanded || value.tildeExpanded) role.unknown = true;
+    } else if (eq >= 0) role.unknown = true;
+    if (sourceOptions.has(option)) role.helper = true;
+    if (deferredSourceOptions.has(option)) role.futureSource = true;
+    if (credentialOptions.has(option)) role.credential = true;
+    if (metadata.has(option) && value) role.metadata.push(value);
+    if (option === 'early_data' && value) role.files.push(value);
+    if (mode === 's_server' && ['www','WWW','HTTP','rev'].includes(option)) { role.stdin = false; role.helper = true; }
+  }
+  role.sourceUnknown = role.sourceUnknown || role.helper || role.futureSource || role.credential || !['s_client', 'dgst'].includes(mode);
+  return role;
+}
+
+/** Reuse the selected fd/pipeline provenance; unrelated file readers never become this client's input. */
+function opensslOutboundVerdict(invocation, all) {
+  const role = opensslNetworkRole(invocation);
+  if (!role) return false;
+  if (!role.active) return role.sourceUnknown ? 'UNKNOWN' : false;
+  if (role.unknown || !knownInvocationContext(invocation)) return 'UNKNOWN';
+  const metadata = outboundPayloadVerdict(invocation, role.metadata);
+  if (metadata === 'FORBIDDEN') return metadata;
+  let unknown = Boolean(metadata);
+  for (const file of role.files) {
+    const literal = literalSourceWord(file);
+    if (literal && literal.text !== '') return 'FORBIDDEN';
+    unknown = true;
+  }
+  if (role.stdin) {
+    const input = requestDataStdinVerdict(invocation, all);
+    if (input === 'FORBIDDEN') return input;
+    unknown = unknown || Boolean(input);
+  }
+  return unknown || role.sourceUnknown ? 'UNKNOWN' : false;
+}
+
 function networkInvocation(invocation) {
   return ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet'].includes(invocation.name) ||
     (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
@@ -5110,6 +5243,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
     trackOutboundEnvironment: true,
     deferWatchSourceProblems: true,
     deferParallelSourceProblems: true,
+  deferUtilLinuxSourceProblems: true,
     initialOutboundEnvironmentSources: invocation.outboundEnvironmentSources || [],
     initialOutboundEnvironmentUnknown: !!invocation.outboundEnvironmentUnknown,
     initialHelperEnvNames: invocation.helperEnvNames,
@@ -5136,6 +5270,12 @@ function sourceInspectionOptions(invocation, extra = {}) {
 /** Defer only the new opaque parallel source boundary; keep every independent confirmed refusal. */
 function parallelSourceVerdict(invocation) {
   const role = invocation.parallelLauncherRole;
+  return role?.mode === 'unknown' && !role.priorLauncherUnknown && invocation.launcherUnknown ? 'UNKNOWN' : false;
+}
+
+/** Defer only the new chrt/nsenter/taskset execution/context uncertainty, preserving independent refusals. */
+function utilLinuxSourceVerdict(invocation) {
+  const role = invocation.utilLinuxLauncherRole;
   return role?.mode === 'unknown' && !role.priorLauncherUnknown && invocation.launcherUnknown ? 'UNKNOWN' : false;
 }
 
@@ -5667,6 +5807,10 @@ if (networkInputVerdict) {
     'stdin を消費する network client と、その入力の secret filename operand が同じ読取・pipeline 関係に当たり、既存の禁止形式です。ファイル内容や実送信の成立を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。' :
     'stdin を消費する network client の入力について source・argv・実行 identity・cwd/context を確認できません (egress guard, fail-closed)。owner に対象・操作・cwd・env/config/source と不明点を確認してください。', networkInputVerdict);
 }
+// Confirmed OpenSSL stdin/selected DATA precedes its new opaque-source fallback.
+if (invocations.some(invocation => opensslOutboundVerdict(invocation, invocations) === 'FORBIDDEN')) {
+  deny('OpenSSL の選択された payload が、禁止された file-backed early-data upload、または secret filename source 由来の TLS stdin / protocol metadata に該当します。native TLS・認証・送信成立を確認したものではありません。', 'FORBIDDEN');
+}
 // New selected DATA checks retain independent existing payload/stdin FORBIDDEN priority.
 const selectedResolverAndEnvironmentVerdicts = selectedSshBindPayloads.map(({ invocation, remote }) => {
   const verdict = outboundPayloadVerdict(invocation, remote.bindAddressWords || []);
@@ -5824,6 +5968,15 @@ if (invocations.some(watchSourceVerdict)) {
 
 if (invocations.some(parallelSourceVerdict)) {
   deny('parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+if (invocations.some(utilLinuxSourceVerdict)) {
+  deny('chrt/nsenter/taskset の option・priority/PID・child、または namespace/root/cwd/env/credential/既定 shell の実行条件を確認できません。同じ scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// Opaque OpenSSL source never hides an earlier independent confirmed refusal.
+if (invocations.some(invocation => opensslOutboundVerdict(invocation, invocations) === 'UNKNOWN')) {
+  deny('OpenSSL の selected mode / execution source・stdin/argv・config/provider/credential source・backend を検査できません。実 query・known ordinary / EOF と同じ目的を保つ対応済み source 条件が無ければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

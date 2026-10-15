@@ -52,17 +52,19 @@ function assignment(name, optional = false) {
   return matches[0][0].trim();
 }
 const assignments = [assignment('SECRET_SPACE_UTF8_ERE', true), assignment('SECRET_ERE'), assignment('ALLOW_ERE')].join('\n');
-const filterMatch = source.match(/^    if printf '%s\\n' "\$\{staged_path\}" \| (.+) >\/dev\/null; then$/m) ||
+const filterMatch = source.match(/^    if printf '%s\\n' "\$\{(?:staged_path|secret_scan_path)\}" \| (.+) >\/dev\/null; then$/m) ||
   source.match(/^  offenders="\$\(git diff --cached --name-only \| (.+) \|\| true\)"$/m);
 assert.ok(filterMatch, 'extract only the production filename grep filter');
 const filter = filterMatch[1];
+const scanPathHelper = source.match(/^secret_template_scan_path\(\) \{[\s\S]*?^\}/m)?.[0] || '';
+if (source.includes('secret_scan_path')) assert.ok(scanPathHelper, 'production final-template helper is extracted');
 assert.match(filter, /^(?:LC_ALL=C )?grep -ivE "\$\{ALLOW_ERE\}" \| (?:LC_ALL=C )?grep -iE "\$\{SECRET_ERE\}"$/,
   'the extracted filter contains only the two production grep predicates');
 
 function readerSource() {
   const match = source.match(/^collect_staged_secret_paths\(\) \{[\s\S]*?^\}/m);
   assert.ok(match, 'production NUL reader exists');
-  return match[0];
+  return [scanPathHelper, match[0]].filter(Boolean).join('\n');
 }
 function fixture(t, names = []) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-path-parity-'));
@@ -96,8 +98,10 @@ function nulFields(text) { return text ? text.split('\0').slice(0, -1) : []; }
 
 function shellSecret(filename, locale = 'C', literalLFProbe = false) {
   assert.ok((literalLFProbe || !filename.includes('\n')) && !filename.includes('\0'), 'filename DATA or explicit LF predicate probe');
-  const result = spawnSync('/bin/bash', ['--noprofile', '--norc', '-c', `${assignments}\n${filter} || true`], {
-    input: `${filename}\n`, encoding: 'utf8', env: { ...fixtureEnv, LC_ALL: locale },
+  const selection = scanPathHelper ? 'secret_template_scan_path "$1"' : 'secret_scan_path="$1"';
+  const result = spawnSync('/bin/bash', ['--noprofile', '--norc', '-c',
+    `${assignments}\n${scanPathHelper}\n${selection}\nprintf '%s\\n' "\${secret_scan_path}" | ${filter} || true`, 'filename-data', filename], {
+    encoding: 'utf8', env: { ...fixtureEnv, LC_ALL: locale },
   });
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
@@ -359,5 +363,49 @@ test('normal nonmatch and exact template remain ordinary; secret match alone rea
     if (expected.length) assert.deepEqual(nulFields(fs.readFileSync(f.log, 'utf8')), ['restore', '--staged', '--', ...expected]);
     assert.deepEqual(gateFixtureState(f.dir, f.names), f.before, 'restore stub records argv; no actual unstage or other fixture write');
     assert.deepEqual(fs.readdirSync(path.join(f.dir, 'tmp')), []);
+  }
+});
+
+
+test('R36 final template exemption retains protected ancestor components', () => {
+  const cases = [
+    ['secrets/.env.example', true], ['notes/secrets/.env.example', true],
+    ['SECRETS/.ENV.EXAMPLE', true], ['.env.local/.env.example', true],
+    ['notes/.env?backup/.ENV.EXAMPLE', true], ['notes/.env*backup/.env.example', true],
+    ['.env.example/.env.example', true], ['notes/.env backup/.env.example', true],
+    ['.env.example', false], ['notes/.env.example', false], ['NOTES/.ENV.EXAMPLE', false],
+    ['secrets-public/.env.example', false], ['.envx/.env.example', false],
+  ];
+  for (const locale of callerLocales) parity(cases, locale);
+});
+
+test('R36 extracted reader and restore retain original ancestor-template filenames', t => {
+  const names = ['secrets/.env.example', 'notes/SECRETS/.ENV.EXAMPLE', '.env.local/.env.example',
+    '.env.example', 'notes/.env.example', 'secrets-public/.env.example'];
+  const expected = ['secrets/.env.example', 'notes/SECRETS/.ENV.EXAMPLE', '.env.local/.env.example'];
+  const { dir, git } = fixture(t, names);
+  const before = gateFixtureState(dir, names);
+  const result = runReader(dir);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(nulFields(result.stdout).sort(), expected.sort());
+  assert.deepEqual(gateFixtureState(dir, names), before, 'reader preserves Git objects/index/refs and files');
+  const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+  const log = path.join(dir, 'restore-argv');
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nif [ "$1" = restore ]; then printf "%s\\0" "$@" >> "$PARITY_LOG"; else exec ${shellQuote(gitExecutable)} "$@"; fi\n`, { mode: 0o755 });
+  const restored = runReader(dir, { bin, restore: true, env: { PARITY_LOG: log } });
+  assert.equal(restored.status, 0, restored.stderr);
+  const fields = nulFields(fs.readFileSync(log, 'utf8')), actual = [];
+  for (let i = 0; i < fields.length; i += 4) {
+    assert.deepEqual(fields.slice(i, i + 3), ['restore', '--staged', '--']);
+    actual.push(fields[i + 3]);
+  }
+  assert.deepEqual(actual.sort(), expected, 'restore receives original names, never transformed scan paths');
+  assert.equal(git('diff', '--cached', '--name-only', '-z').includes('secrets/.env.example'), true);
+});
+
+test('R36 LF reader boundary publishes no prior ancestor-template offender or restore', t => {
+  for (const filename of ['zzpublic\n/notes/.env.example', 'zzsecrets/\n.env.example']) {
+    const f = gateFaultFixture(t, ['secrets/.env.example', filename]);
+    assertGateFaultClosed(f, runReader(f.dir, { bin: f.bin, restore: true, env: { PARITY_LOG: f.log } }));
   }
 });

@@ -51,10 +51,18 @@ abort_rebase_if_in_progress() {
   fi
 }
 
+# Exempt only the final ASCII .env.example basename, retaining ancestor checks.
+secret_template_scan_path() {
+  secret_scan_path="${1}"
+  case "${secret_scan_path##*/}" in
+    .[eE][nN][vV].[eE][xX][aA][mM][pP][lL][eE]) secret_scan_path="${secret_scan_path%????????????}" ;;
+  esac
+}
+
 # Read only this repository's staged names. Git quoting is avoided with NUL
 # records; collect all offenders before the caller can unstage any filename.
 collect_staged_secret_paths() {
-  local LC_ALL=C list_file list_size staged_path consumed=0
+  local LC_ALL=C list_file list_size staged_path secret_scan_path consumed=0
   local -a found=() filter_statuses=()
   SECRET_OFFENDERS=()
   # ECMAScript \s beyond ASCII: exact UTF-8 sequences, not a byte bracket class.
@@ -75,7 +83,8 @@ collect_staged_secret_paths() {
     # LF would split grep's input and could misclassify a public filename.
     case "${staged_path}" in *$'\n'*|'') rm -f -- "${list_file}"; return 1 ;; esac
     consumed=$((consumed + ${#staged_path} + 1))
-    if printf '%s\n' "${staged_path}" | LC_ALL=C grep -ivE "${ALLOW_ERE}" | LC_ALL=C grep -iE "${SECRET_ERE}" >/dev/null; then
+    secret_template_scan_path "${staged_path}"
+    if printf '%s\n' "${secret_scan_path}" | LC_ALL=C grep -ivE "${ALLOW_ERE}" | LC_ALL=C grep -iE "${SECRET_ERE}" >/dev/null; then
       filter_statuses=( "${PIPESTATUS[@]}" )
     else
       filter_statuses=( "${PIPESTATUS[@]}" )

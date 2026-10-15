@@ -126,6 +126,11 @@ function hasNoVerifyOption(g) {
     }
     if (unknown && text.startsWith('\0') && unknownCanSkipHooks) return 'UNKNOWN';
   }
+  // am owns its short-option arity in the shared role parser (-C/-p values,
+  // optional attached -S). Reuse that role rather than scanning their DATA as flags.
+  if (g.sub === 'am' && g.operationRole?.flags?.includes('no-verify')) {
+    return g.operationRole.unknown ? 'UNKNOWN' : 'FORBIDDEN';
+  }
   return null;
 }
 
@@ -141,10 +146,10 @@ for (const g of insp.gits) {
   }
 }
 
-// `-n` が `--no-verify` の短縮形になるのは **`git commit` だけ**。
-// `git push -n` は `--dry-run`、`git merge -n` は diffstat 抑制で、どちらも hook を
-// バイパスしない (git の help で確認)。`grep -n` / `tail -n` / `git add -n` も同様に無関係。
-// ⇒ 短縮形の判定は `git commit` の引数だけに限定する (長い `--no-verify` は上で全 git 禁止)。
+// `git am -n` は上の共有 operation role で `--no-verify` として判定する。
+// この raw 候補の backstop は `git commit` の未確定な引数だけに限定する。
+// `git push -n` は dry-run、`git merge -n` は diffstat 抑制であり、
+// 他の subcommand の `-n` まで hook バイパスとして扱わない。
 for (const g of insp.gits) {
   if (g.sub !== 'commit') continue;
   const parsed = guard.parseCommitArgs(g.args);

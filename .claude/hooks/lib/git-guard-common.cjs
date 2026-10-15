@@ -1520,7 +1520,147 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
+const SCALAR_LAUNCHERS = new Set(['chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
+
+/** util-linux 2.39.3: priority/PID roles and namespace-free direct execvp. */
+function utilLinuxLauncherArgs(rest, info, name) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { launcher: name, backend: 'util-linux-2.39.3', mode: 'unknown',
+    childIndex: null, values: [], contextSelected: false, workdirOption: null,
+    priorLauncherUnknown: info.launcherUnknown };
+  info.utilLinuxLauncher = role;
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  // Slice only this already-proven word; preserve the original raw span and dynamic provenance.
+  const inlineValue = (word, start) => ({ ...word, text: textOf(word).slice(start),
+    literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(start) : undefined });
+  const signed32 = word => known(word) && /^[+-]?\d+$/.test(textOf(word)) &&
+    BigInt(textOf(word)) >= -2147483648n && BigInt(textOf(word)) <= 2147483647n;
+  const unsigned64 = word => known(word) && /^\+?\d+$/.test(textOf(word)) &&
+    BigInt(textOf(word)) <= 18446744073709551615n;
+  const specs = name === 'chrt' ? {
+    long: { 'all-tasks': 'a', batch: 'b', deadline: 'd', fifo: 'f', idle: 'i', pid: 'p', help: 'h',
+      max: 'm', other: 'o', rr: 'r', 'sched-runtime': 'T', 'sched-period': 'P',
+      'sched-deadline': 'D', 'reset-on-fork': 'R', verbose: 'v', version: 'V' },
+    required: 'TPD', optional: '', flags: 'abdfiphmorRvV',
+  } : name === 'taskset' ? {
+    long: { 'all-tasks': 'a', pid: 'p', 'cpu-list': 'c', help: 'h', version: 'V' },
+    required: '', optional: '', flags: 'apchV',
+  } : {
+    long: { all: 'a', help: 'h', version: 'V', target: 't', mount: 'm', uts: 'u', ipc: 'i', net: 'n',
+      pid: 'p', user: 'U', cgroup: 'C', time: 'T', setuid: 'S', setgid: 'G', root: 'r', wd: 'w',
+      wdns: 'W', env: 'e', 'no-fork': 'F', 'preserve-credentials': 'K', 'follow-context': 'Z' },
+    required: 'tSG', optional: 'muinpCUTrwW', flags: 'ahVeFZ',
+  };
+  let k = 0, pidSelected = false, selectedPID = null, tasksetCpuList = false;
+  const apply = (option, value) => {
+    if ('hV'.includes(option) || name === 'chrt' && option === 'm') {
+      if (!info.launcherUnknown) { role.mode = 'query'; return true; }
+    }
+    if (name === 'chrt' || name === 'taskset') {
+      if (name === 'taskset' && option === 'c') tasksetCpuList = true;
+      if (option === 'p') {
+        // Both read argv[argc-1], not an option value. PID 0 (also chrt -1) may exec.
+        pidSelected = true;
+        const last = rest.at(-1);
+        if (!signed32(last)) info.launcherUnknown = true;
+        else selectedPID = BigInt(textOf(last));
+      }
+      if (specs.required.includes(option)) {
+        role.values.push({ option, word: value });
+        if (!unsigned64(value)) info.launcherUnknown = true;
+      }
+    } else if (option === 't') {
+      role.values.push({ option, word: value });
+      if (!unsigned64(value)) info.launcherUnknown = true;
+    } else if ('SG'.includes(option)) {
+      role.values.push({ option, word: value });
+      // The actual credential change and follow-stat happen after getopt, before exec.
+      if (!known(value) || textOf(value) !== 'follow' && !unsigned64(value)) info.launcherUnknown = true;
+      role.contextSelected = true;
+    } else if (specs.optional.includes(option)) {
+      role.values.push({ option, word: value || null });
+      if (value && !known(value)) info.launcherUnknown = true;
+      if ('wW'.includes(option)) {
+        if (role.workdirOption && role.workdirOption !== option) info.launcherUnknown = true;
+        role.workdirOption = option;
+      }
+      // Namespace/root/wd FILE operands are opened during getopt; later help cannot clear them.
+      // wdns is only opened after getopt. Missing optional operands never consume the next word.
+      if (value && option !== 'W') info.launcherUnknown = true;
+      if (option !== 'W' || value) role.contextSelected = true;
+    } else if ('ae'.includes(option)) {
+      role.contextSelected = true; // no file/source is selected until getopt has finished
+    } else if (option === 'Z') {
+      info.launcherUnknown = true; // compile-time SELinux support is not qualified here
+    }
+    return false;
+  };
+  while (k < rest.length) {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) { info.launcherUnknown = true; break; }
+    if (text === '--') { k++; break; }
+    if (!text.startsWith('-') || text === '-') break;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), part = text.slice(2, eq < 0 ? undefined : eq);
+      const names = Object.keys(specs.long);
+      const matches = Object.hasOwn(specs.long, part) ? [part] : names.filter(n => n.startsWith(part));
+      if (!part || matches.length !== 1) { info.launcherUnknown = true; break; }
+      const option = specs.long[matches[0]];
+      let value;
+      if (specs.required.includes(option)) value = eq < 0 ? rest[++k] : inlineValue(word, eq + 1);
+      else if (specs.optional.includes(option)) value = eq < 0 ? null : inlineValue(word, eq + 1);
+      else if (eq >= 0) { info.launcherUnknown = true; break; }
+      if (apply(option, value)) return -1;
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        const option = text[j];
+        if (!specs.flags.includes(option) && !specs.required.includes(option) && !specs.optional.includes(option)) {
+          info.launcherUnknown = true; break;
+        }
+        let value;
+        if (specs.required.includes(option)) value = j + 1 < text.length
+          ? inlineValue(word, j + 1) : rest[++k];
+        else if (specs.optional.includes(option)) value = j + 1 < text.length
+          ? inlineValue(word, j + 1) : null;
+        if (apply(option, value)) return -1;
+        if (specs.required.includes(option) || specs.optional.includes(option)) break;
+      }
+    }
+    if (info.launcherUnknown) break;
+    k++;
+  }
+  if (info.launcherUnknown) return rest.length;
+  if (name === 'chrt') {
+    if (pidSelected && selectedPID < -1n) { info.launcherUnknown = true; return rest.length; }
+    if (pidSelected && selectedPID > 0n) { role.mode = 'process'; return -1; }
+    if (pidSelected && selectedPID === 0n && rest.length - k === 1) { role.mode = 'query'; return -1; }
+    if (k >= rest.length) { role.mode = 'no-child'; return -1; }
+    if (!signed32(rest[k]) || !rest[k + 1]) { info.launcherUnknown = true; return rest.length; }
+    role.priority = rest[k];
+    k++;
+  }
+  if (name === 'taskset') {
+    if (pidSelected && selectedPID !== 0n) { role.mode = 'process'; return -1; }
+    if (rest.length - k < 2) { role.mode = 'no-child'; return -1; }
+    const mask = rest[k];
+    const grammar = tasksetCpuList ? /^\d+(?:-\d+(?::\d+)?)?(?:,\d+(?:-\d+(?::\d+)?)?)*$/
+      : /^(?:0x)?[0-9a-fA-F]+(?:,[0-9a-fA-F]+)*$/;
+    if (!known(mask) || !grammar.test(textOf(mask))) {
+      info.launcherUnknown = true; return rest.length;
+    }
+    role.mask = mask; k++;
+  }
+  if (name === 'nsenter' && role.contextSelected) { info.launcherUnknown = true; return rest.length; }
+  // nsenter without PROGRAM selects exec_shell(); a generated executable is not identity proof.
+  if (k >= rest.length || rest[k].dynamic || !known(rest[k])) {
+    info.launcherUnknown = true; return rest.length;
+  }
+  role.mode = 'exec'; role.childIndex = k;
+  return k;
+}
 
 /** Legitimate moreutils/GNU backends select different argv, stdin, template and config sources. */
 function parallelArgs(rest, info) {
@@ -1532,6 +1672,8 @@ function parallelArgs(rest, info) {
 }
 
 const WRAPPERS = {
+  chrt: (rest, info) => utilLinuxLauncherArgs(rest, info, 'chrt'),
+  nsenter: (rest, info) => utilLinuxLauncherArgs(rest, info, 'nsenter'),
   parallel: parallelArgs,
   watch: watchArgs,
   script: scriptArgs,
@@ -1544,7 +1686,7 @@ const WRAPPERS = {
     return 0;
   },
   setsid: (rest, info) => launcherArgs(rest, info, 'setsid'),
-  taskset: (rest, info) => launcherArgs(rest, info, 'taskset'),
+  taskset: (rest, info) => utilLinuxLauncherArgs(rest, info, 'taskset'),
   ionice: (rest, info) => launcherArgs(rest, info, 'ionice'),
   command: (rest) => {
     let k = 0;
@@ -2418,7 +2560,11 @@ function gitTypedArguments(g, spec = {}) {
     } else {
       for (let p = 1; p < text.length; p++) {
         const option = spec.shortValues?.[text[p]];
-        if (option) { take(option, p + 1 < text.length ? commitInlineValue(word, word, text.slice(p + 1), p + 1) : g.args[++k]); break; }
+        if (option) {
+          // An unresolved empty attached required value can expose the next word as DATA.
+          if (spec.shortEmptyAttachmentUnknown && p + 1 < text.length && /^\0+$/.test(text.slice(p + 1))) result.unknown = true;
+          take(option, p + 1 < text.length ? commitInlineValue(word, word, text.slice(p + 1), p + 1) : g.args[++k]); break;
+        }
         if (spec.shortOptional?.[text[p]]) { take(spec.shortOptional[text[p]], p + 1 < text.length ? commitInlineValue(word, word, text.slice(p + 1), p + 1) : { text: '', dynamic: false, dynamicMaySplit: false }); break; }
         if ((spec.shortFlags || '').includes(text[p])) result.flags.push(spec.shortNames?.[text[p]] || text[p]);
         else result.unknown = true;
@@ -2511,9 +2657,9 @@ function gitOperationRole(g) {
     if (!parsed.unknown && ['parse', 'only-input'].includes(input)) role.mode = 'query';
   } else if (g.sub === 'am') {
     const parsed = gitTypedArguments(g, { values: ['patch-format', 'quoted-cr', 'empty', 'whitespace', 'directory', 'exclude', 'include', 'resolvemsg'],
-      optionalValues: ['show-current-patch', 'gpg-sign'], shortValues: { C: 'context', p: 'strip' }, shortOptional: { S: 'sign' },
+      optionalValues: ['show-current-patch', 'gpg-sign'], shortValues: { C: 'context', p: 'strip' }, shortOptional: { S: 'sign' }, shortEmptyAttachmentUnknown: true,
       flags: ['abort', 'quit', 'continue', 'resolved', 'skip', 'retry', 'allow-empty', 'reject', 'quiet', 'signoff', 'keep', 'keep-non-patch', 'keep-cr', 'no-keep-cr', 'utf8', 'no-utf8', 'verify', 'no-verify', '3way', 'no-3way', 'interactive', 'committer-date-is-author-date', 'ignore-date', 'ignore-space-change', 'ignore-whitespace', 'scissors', 'no-scissors', 'message-id', 'no-message-id', 'no-gpg-sign', 'rerere-autoupdate', 'no-rerere-autoupdate'],
-      shortFlags: 'skbu3iqmrn', shortNames: { q: 'quiet', r: 'resolved' } });
+      shortFlags: 'skbu3iqmrn', shortNames: { q: 'quiet', r: 'resolved', n: 'no-verify' } });
     Object.assign(role, parsed); role.kind = 'mail-object-input';
     role.messageFiles = parsed.operands; role.stdinInput = parsed.operands.length === 0;
     const modes = parsed.flags.filter(flag => ['abort', 'quit', 'show-current-patch', 'continue', 'resolved', 'skip', 'retry', 'allow-empty'].includes(flag));
@@ -3132,6 +3278,7 @@ function inspect(cmd, options = {}) {
       scriptLauncherRole: info.scriptLauncher || null,
       watchLauncherRole: info.watchLauncher || null,
       parallelLauncherRole: info.parallelLauncher || null,
+      utilLinuxLauncherRole: info.utilLinuxLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
       definitionName: c.definitionName,
@@ -3508,11 +3655,12 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.wrapperNames.some(name => ['parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+      const utilLinuxUnknown = info.utilLinuxLauncher?.mode === 'unknown' && !info.utilLinuxLauncher.priorLauncherUnknown;
       const parallelUnknown = info.parallelLauncher?.mode === 'unknown' && !info.parallelLauncher.priorLauncherUnknown;
       const watchUnknown = info.watchLauncher?.mode === 'unknown' && !info.watchLauncher.priorLauncherUnknown;
       // Egress defers only these registered launcher-owned source uncertainties; other problems stay immediate.
-      if (!(parallelUnknown && options.deferParallelSourceProblems === true) && !(watchUnknown && options.deferWatchSourceProblems === true)) res.problems.push(parallelUnknown ? 'parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
+      if (!(utilLinuxUnknown && options.deferUtilLinuxSourceProblems === true) && !(parallelUnknown && options.deferParallelSourceProblems === true) && !(watchUnknown && options.deferWatchSourceProblems === true)) res.problems.push(utilLinuxUnknown ? 'chrt/nsenter/taskset の option・priority/PID・child、または namespace/root/cwd/env/credential/既定 shell の実行条件を確認できません。同じ scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : parallelUnknown ? 'parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
     if (positionalUnknown || (positionalExec && info.name === 'git')) {
@@ -4247,8 +4395,8 @@ const SECRET_PATH_RE = [
 
 // .env.example だけは許可（テンプレート）。
 const secretTemplateAllowed = (p) => /(^|\/)\.env\.example$/i.test(p);
-/** Match the existing secret inventory, retaining the exact .env.example template exception. */
-const isSecretPath = (p) => !!p && !secretTemplateAllowed(p) && SECRET_PATH_RE.some((re) => re.test(p));
+/** Exempt only the final template basename; protected ancestor components still match. */
+const isSecretPath = (p) => !!p && SECRET_PATH_RE.some((re) => re.test(secretTemplateAllowed(p) ? p.slice(0, -'.env.example'.length) : p));
 
 const ADD_SHORT_FLAGS = new Set('nvip efuNA'.replace(/ /g, ''));
 const ADD_LONG = {
