@@ -207,6 +207,8 @@ const insp = guard.inspect(cmd, {
   deferWatchSourceProblems: true,
   deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
+  deferHyphenFunctionSourceProblems: true,
+  deferFunctionUnsetSourceProblems: true,
   initialOutboundEnvironmentNames: Object.keys(process.env),
   // Retain only the exact empty-config device proof; every other inherited config value stays opaque.
   initialOutboundEnvironmentSources: ['OPENSSL_CONF'].filter(name => process.env[name] === '/dev/null').map(name =>
@@ -294,6 +296,29 @@ function knownInvocationContext(invocation) {
 /** Preserve a helper's refusal while making uncertain command context explicit. */
 function contextualVerdict(invocation, verdict) {
   return verdict === 'FORBIDDEN' && !knownInvocationContext(invocation) ? 'UNKNOWN' : verdict;
+}
+
+/** Recognized external client identity is required even when no visible payload is selected. */
+function untrustedClientExecution(invocation, additionalClientName = null) {
+  const clients = ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet',
+    'gh', 'ssh', 'ssh-keyscan', 'openssl'];
+  if ((!clients.includes(invocation.name) && additionalClientName !== invocation.name) || knownInvocationContext(invocation)) return false;
+  const executable = invocation.nameWord?.text || '';
+  const trustedAbsolute = ['/usr/bin/' + invocation.name, '/bin/' + invocation.name].includes(executable);
+  // PATH lookup does not select an already explicit trusted absolute program.
+  // Every other context flag stays in force; no native binary/backend attestation is inferred.
+  if (trustedAbsolute && invocation.pathChangedBefore &&
+      knownInvocationContext({ ...invocation, pathChangedBefore: false })) return false;
+  return true;
+}
+
+/** A wrapper query still executes its selected program; argv0 is not the executable pathname. */
+function untrustedUtilLinuxQueryExecution(invocation) {
+  const role = invocation.utilLinuxLauncherRole;
+  if (role?.mode !== 'query') return false;
+  const executable = (invocation.wrapperProgramWords || []).filter(entry => entry.name === role.launcher).at(-1)?.word;
+  if (!executable) return true;
+  return untrustedClientExecution({ ...invocation, name: role.launcher, nameWord: executable }, role.launcher);
 }
 
 /** Stop at the same first matching invocation as the previous boolean some() checks. */
@@ -1275,7 +1300,7 @@ const CURL_FLAG_LONG = new Set([
   'anyauth', 'append', 'basic', 'ca-native', 'cert-status', 'compressed', 'compressed-ssh', 'create-dirs',
   'crlf', 'digest', 'disable', 'disable-eprt', 'disable-epsv', 'disallow-username-in-url', 'doh-cert-status', 'doh-insecure',
   'fail', 'fail-early', 'fail-with-body', 'false-start', 'form-escape', 'ftp-create-dirs', 'ftp-pasv', 'ftp-pret',
-  'ftp-skip-pasv-ip', 'ftp-ssl-ccc', 'ftp-ssl-control', 'get', 'globoff', 'haproxy-protocol', 'head', 'http0.9',
+  'ftp-skip-pasv-ip', 'ftp-ssl', 'ftp-ssl-ccc', 'ftp-ssl-control', 'ftp-ssl-reqd', 'get', 'globoff', 'haproxy-protocol', 'head', 'http0.9',
   'http1.0', 'http1.1', 'http2', 'http2-prior-knowledge', 'http3', 'http3-only', 'ignore-content-length', 'include',
   'insecure', 'ipv4', 'ipv6', 'junk-session-cookies', 'list-only', 'location', 'location-trusted', 'mail-rcpt-allowfails',
   'manual', 'metalink', 'negotiate', 'netrc', 'netrc-optional', 'next', 'no-alpn', 'no-buffer',
@@ -1439,7 +1464,7 @@ function curlSelectedEngineSource(invocation) {
 }
 
 /** Retain selected curl route words per OperationConfig (pinned tool 8.7.1 grammar). */
-function curlSelectedRouteOperations(invocation) {
+function curlSelectedRouteOperations(invocation, additionalFlags = []) {
   if (invocation.name !== 'curl' || curlTerminalQuery(invocation.args, invocation.incomplete)) return [];
   // A split/globbed consumed value may insert selectors or swallow later options.
   const argvUnknown = invocation.args.some(word => word.dynamic && word.dynamicMaySplit !== false || word.ansiCUnknown || word.globExpanded || word.braceExpanded);
@@ -1480,7 +1505,7 @@ function curlSelectedRouteOperations(invocation) {
         if (!CURL_BOOLEAN_LONG.has(name.slice(3))) return [];
         op.words.push(original); continue;
       }
-      if (!CURL_LONG_NAMES.includes(name)) return [];
+      if (!CURL_LONG_NAMES.includes(name) && !additionalFlags.includes(name)) return [];
       if (!expanding && ['help', 'manual', 'version'].includes(name)) return [];
       if (name === 'next') {
         if (!op.urls.length) return [];
@@ -1601,6 +1626,114 @@ function curlSelectedRouteVerdict(invocation) {
     curlInterfaceResolverVerdict(invocation, operation), curlIpfsGatewayVerdict(invocation, operation),
   ]);
   return contextualVerdict(invocation, verdicts.find(verdict => verdict === 'FORBIDDEN') || verdicts.find(Boolean) || false);
+}
+
+/** R37: retain explicit client-auth selections; backend credentials are not upload bodies. */
+function curlSelectedCredentialRoles(invocation) {
+  if (invocation.name !== 'curl') return [];
+  const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
+  const literal = word => literalSourceWord(word)?.text;
+  const proxyNames = new Set(['proxy', 'proxy1.0', 'socks4', 'socks4a', 'socks5', 'socks5-hostname']);
+  const credentialNames = new Set(['cert', 'key', 'proxy-cert', 'proxy-key', 'pubkey', 'cert-type', 'key-type', 'proxy-cert-type', 'proxy-key-type']);
+  const tlsProtocols = new Set(['https', 'ftps', 'imaps', 'pop3s', 'smtps', 'ldaps', 'gophers', 'smbs', 'wss', 'rtmps', 'rtmpts']);
+  const source = names => {
+    for (const name of names) if (environment.has(name) && literal(environment.get(name)) !== '') return environment.get(name);
+    return undefined;
+  };
+  const bypassHost = (list, host) => typeof list === 'string' && (list === '*' || Boolean(host) && list.split(',').some(item => {
+    const domain = item.trim().toLowerCase().replace(/^\./, '');
+    return /^[a-z0-9.-]+$/.test(domain) && (host === domain || host.endsWith('.' + domain));
+  }));
+  let cliParseErrorBeforeTransfers = false;
+  const operations = curlSelectedRouteOperations(invocation, ['ftp-ssl', 'ftp-ssl-reqd']).map(operation => {
+    const values = new Map();
+    let afterDD = false, follow = false, automatic = false, proxyAutomatic = false;
+    const tlsSwitches = new Map();
+    let proxyOption = null;
+    for (let k = 0; k < operation.words.length; k++) {
+      const word = operation.words[k], text = literal(word) ?? word.text;
+      if (!afterDD && text === '--') { afterDD = true; continue; }
+      if (afterDD || !text.startsWith('-') || text === '-') continue;
+      if (text.startsWith('--')) {
+        const expanded = text.startsWith('--expand-');
+        const name = text.slice(expanded ? 9 : 2);
+        if (['location', 'location-trusted', 'no-location', 'no-location-trusted'].includes(name)) follow = !name.startsWith('no-');
+        // Native optional/required/control booleans are independent; no-ssl
+        // cannot erase an earlier still-enabled ssl-reqd or control request.
+        const tlsBase = name.startsWith('no-') ? name.slice(3) : name;
+        const tlsName = ({ 'ftp-ssl': 'ssl', 'ftp-ssl-reqd': 'ssl-reqd' })[tlsBase] || tlsBase;
+        if (['ssl', 'ssl-reqd', 'ftp-ssl-control'].includes(tlsName)) tlsSwitches.set(tlsName, !name.startsWith('no-'));
+        if (name === 'ssl-auto-client-cert' || name === 'no-ssl-auto-client-cert') automatic = name === 'ssl-auto-client-cert';
+        if (name === 'proxy-ssl-auto-client-cert' || name === 'no-proxy-ssl-auto-client-cert') proxyAutomatic = name === 'proxy-ssl-auto-client-cert';
+        if (CURL_VALUE_LONG.has(name)) {
+          const value = operation.words[++k];
+          // curl8.7.1 DENY_BLANK rejects key/pubkey before any transfer.
+          if (!expanded && ['key', 'pubkey'].includes(name) && literal(value) === '') cliParseErrorBeforeTransfers = true;
+          if (credentialNames.has(name) || proxyNames.has(name) || ['noproxy', 'max-redirs', 'proto-redir'].includes(name)) values.set(name, { word: value, expanded });
+          if (proxyNames.has(name)) proxyOption = name;
+        }
+        continue;
+      }
+      for (let p = 1; p < text.length; p++) {
+        const short = text[p];
+        if (short === 'L') follow = true;
+        const name = CURL_VALUE_SHORT[short];
+        if (!name) continue;
+        const value = p + 1 < text.length ? wgetValueWord(word, p + 1) : operation.words[++k];
+        if (credentialNames.has(name) || proxyNames.has(name)) values.set(name, { word: value, expanded: false });
+        if (proxyNames.has(name)) proxyOption = name;
+        break;
+      }
+    }
+    const value = name => values.get(name)?.expanded ? undefined : literal(values.get(name)?.word);
+    const urls = operation.urls.map(url => {
+      const text = literal(url.word);
+      const protocol = typeof text === 'string' ? /^([a-z][a-z0-9+.-]*):/i.exec(text)?.[1]?.toLowerCase() : null;
+      let host = null;
+      try { host = new URL(text).hostname.toLowerCase(); } catch {}
+      return { protocol, host };
+    });
+    const allFile = urls.length > 0 && urls.every(url => url.protocol === 'file');
+    const redirect = follow && value('max-redirs') !== '0' && !allFile;
+    const unknownProtocol = urls.some(url => !url.protocol);
+    const potentialTLS = !allFile && (unknownProtocol || urls.some(url => tlsProtocols.has(url.protocol)) ||
+      [...tlsSwitches.values()].some(Boolean) && urls.some(url => ['ftp', 'imap', 'pop3', 'smtp'].includes(url.protocol)) || redirect);
+    const potentialSSH = !allFile && (unknownProtocol || urls.some(url => ['sftp', 'scp'].includes(url.protocol)) ||
+      redirect && values.has('proto-redir'));
+    const noProxy = values.has('noproxy') ? value('noproxy') : literal(source(['no_proxy', 'NO_PROXY']));
+    const bypassAll = noProxy === '*' || !redirect && urls.every(url => bypassHost(noProxy, url.host));
+    let potentialProxyTLS = false;
+    if (!allFile && !bypassAll) {
+      const proxyValue = proxyOption ? value(proxyOption) : undefined;
+      if (proxyOption) {
+        potentialProxyTLS = proxyOption === 'proxy' && proxyValue !== '' &&
+          (typeof proxyValue !== 'string' || /^https:\/\//i.test(proxyValue));
+      } else {
+        potentialProxyTLS = Boolean(invocation.outboundEnvironmentUnknown) || urls.some(url => {
+          const selected = source(url.protocol ? [url.protocol + '_proxy', ...(url.protocol === 'http' ? [] : [(url.protocol + '_proxy').toUpperCase()]), 'all_proxy', 'ALL_PROXY'] :
+            [...environment.keys()].filter(name => /_proxy$/i.test(name) && name !== 'HTTP_PROXY' && !/^no_proxy$/i.test(name)));
+          return selected !== undefined && (literal(selected) === undefined || /^https:\/\//i.test(literal(selected)));
+        });
+      }
+    }
+    // cert/proxy-cert empty clears to NULL; empty proxy-key names no file.
+    // Preserve independent key/auto sources rather than equating clear with all auth off.
+    const selected = name => values.has(name) && value(name) !== '';
+    const originSelected = potentialTLS && (selected('cert') || selected('key') || automatic) ||
+      potentialSSH && (selected('key') || selected('pubkey'));
+    const proxySelected = potentialProxyTLS && (selected('proxy-cert') || selected('proxy-key') || proxyAutomatic);
+    return { values, urls, automatic, proxyAutomatic, potentialTLS, potentialSSH, potentialProxyTLS,
+      originSelected: Boolean(originSelected), proxySelected: Boolean(proxySelected),
+      active: Boolean(originSelected || proxySelected), backendSourceProven: false,
+      verdict: originSelected || proxySelected ? 'UNKNOWN' : false };
+  });
+  return cliParseErrorBeforeTransfers ? operations.map(role => ({ ...role, active: false, verdict: false,
+    cliParseErrorBeforeTransfers: true })) : operations;
+}
+
+/** No backend/file proof is invented from a credential pathname or type token. */
+function curlSelectedCredentialVerdict(invocation) {
+  return curlSelectedCredentialRoles(invocation).some(role => role.active) ? 'UNKNOWN' : false;
 }
 
 /** Netrc toggles are independent; consume other options before interpreting a selector or reset. */
@@ -1997,7 +2130,7 @@ const WGET_VALUE_LONG = new Set([
   'execute', 'output-file', 'append-output', 'report-speed', 'input-file', 'base', 'config',
   'rejected-log', 'tries', 'retry-on-http-error', 'output-document', 'start-pos', 'progress',
   'timeout', 'dns-timeout', 'connect-timeout', 'read-timeout', 'wait', 'waitretry', 'quota',
-  'bind-address', 'limit-rate', 'restrict-file-names', 'prefer-family', 'user', 'password',
+  'bind-address', 'bind-dns-address', 'limit-rate', 'restrict-file-names', 'prefer-family', 'user', 'password',
   'use-askpass', 'local-encoding', 'remote-encoding', 'directory-prefix', 'cut-dirs',
   'http-user', 'http-password', 'default-page', 'header', 'compression', 'max-redirect',
   'proxy-user', 'proxy-password', 'referer', 'user-agent', 'load-cookies', 'save-cookies',
@@ -3502,6 +3635,105 @@ function opensslOutboundVerdict(invocation, all) {
     unknown = unknown || Boolean(input);
   }
   return unknown || role.sourceUnknown ? 'UNKNOWN' : false;
+}
+
+/** OpenSSH 9.6p1: only address fields reach getaddrinfo; -f sources are cumulative. */
+function sshKeyscanResolverRole(invocation) {
+  const role = { hosts: [], files: [], unknown: Boolean(invocation.incomplete), terminal: false };
+  let afterDD = false, operandSeen = false, emptyTypes = false, debug = 0;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k], literal = literalSourceWord(word), text = literal?.text ?? word.text;
+    if (!afterDD && literal && text === '--') { afterDD = true; continue; }
+    if (!afterDD && text.startsWith('-') && text !== '-') {
+      // libc getopt permutation differs: do not certify a later option as inactive DATA.
+      if (operandSeen) { role.unknown = true; role.hosts.push(word); continue; }
+      if (!literal && !quotedAttachedOptionValue(word, text, 'fOpTt')) { role.unknown = true; continue; }
+      if (text.startsWith('--')) {
+        role.terminal = Boolean(literal && ['--help', '--version'].includes(text));
+        role.unknown ||= !role.terminal; return role;
+      }
+      for (let p = 1; p < text.length; p++) {
+        const option = text[p];
+        if ('fOpTt'.includes(option)) {
+          const value = p + 1 < text.length ? wgetValueWord(word, p + 1) : invocation.args[++k];
+          if (!value) { role.terminal = true; return role; }
+          const v = literalSourceWord(value);
+          if (option === 'f') role.files.push(value);
+          else if (!v) role.unknown = true;
+          else if ((option === 'p' || option === 'T') && /^0+$/.test(v.text)) { role.terminal = true; return role; }
+          else if (option === 'p' && (!/^\d+$/.test(v.text) || +v.text < 1 || +v.text > 65535) ||
+              option === 'T' && (!/^\d+[smhdw]?$/.test(v.text) || !/[1-9]/.test(v.text) ||
+                Number.parseInt(v.text, 10) * ({ s: 1, m: 60, h: 3600, d: 86400, w: 604800 }[v.text.slice(-1)] || 1) > 2147483647) ||
+              option === 'O' && !/^hashalg=(?:md5|sha1|sha256|sha384|sha512)$/i.test(v.text) ||
+              option === 't' && v.text && !v.text.split(',').every(type => ['rsa', 'dsa', 'ecdsa', 'ed25519', 'xmss', 'ecdsa-sk', 'ed25519-sk'].includes(type))) {
+            // Unsupported scalar syntax/aliases are not proof of a pre-consumer exit.
+            role.unknown = true;
+          }
+          if (option === 't' && v) emptyTypes = v.text === '';
+          break;
+        }
+        if (!'cDHv46'.includes(option)) {
+          role.terminal = Boolean(literal && ['h', 'V'].includes(option));
+          role.unknown ||= !role.terminal; return role;
+        }
+        if (option === 'v' && ++debug > 3) { role.terminal = true; return role; }
+      }
+      continue;
+    }
+    operandSeen = true; role.hosts.push(word);
+  }
+  if ((!role.hosts.length && !role.files.length) || emptyTypes) role.terminal = true;
+  return role;
+}
+
+/** A fixed first field is resolver DATA; a generated output-only namelist is not. */
+function sshKeyscanAddressWord(word) {
+  const literal = literalSourceWord(word), text = literal?.text ?? word?.text;
+  if (typeof text !== 'string') return word;
+  const address = text.replace(/^[ \t\n]+/, '').split(/[ \t\n]/, 1)[0];
+  if (literal || word.dynamicMaySplit === false && !word.ansiCUnknown && !word.globExpanded &&
+      !word.braceExpanded && !word.tildeExpanded && address && !address.includes('\0')) {
+    return { ...word, text: address, dynamic: false, literalValue: undefined, outboundLiteralValue: undefined };
+  }
+  return word;
+}
+
+function sshKeyscanResolverVerdict(invocation, all) {
+  if (invocation.name !== 'ssh-keyscan') return false;
+  const role = sshKeyscanResolverRole(invocation);
+  if (role.terminal && !role.unknown) return false;
+  const verdicts = [outboundPayloadVerdict(invocation, role.hosts.map(sshKeyscanAddressWord))];
+  for (const file of role.files) {
+    const literal = literalSourceWord(file);
+    if (!literal) { verdicts.push('UNKNOWN'); continue; }
+    if (literal.text === '/dev/null') continue;
+    if (literal.text === '-') verdicts.push(requestDataStdinVerdict(invocation, all));
+    else verdicts.push(guard.isSecretPath(literal.text) ? 'FORBIDDEN' : 'UNKNOWN');
+  }
+  const verdict = verdicts.find(value => value === 'FORBIDDEN') || verdicts.find(Boolean);
+  return contextualVerdict(invocation, role.unknown ? 'UNKNOWN' : verdict);
+}
+
+/** GNU Wget 1.25.0: TCP bind-address resolves a host; c-ares bind-dns accepts only numeric IP. */
+function wgetBindResolverVerdict(invocation) {
+  if (invocation.name !== 'wget') return false;
+  const role = wgetPayloadRole(invocation);
+  if (role.terminal && !role.unknown) return false;
+  if (!role.unknown && wgetInvalidBodyOptions(role)) return false;
+  const bind = role.values.get('bind-address'), dnsBind = role.values.get('bind-dns-address');
+  if (!bind && !dnsBind) return false;
+  const input = role.values.get('input-file'), inputLiteral = literalSourceWord(input);
+  if (!role.urls.length && (!input || inputLiteral?.text === '/dev/null')) return false;
+  const knownNetwork = role.urls.some(word => /^(?:https?|ftps?):\/\//i.test(literalSourceWord(word)?.text || ''));
+  const possibleNetwork = knownNetwork || input && inputLiteral?.text !== '/dev/null' || role.urls.some(word => !literalSourceWord(word));
+  if (!possibleNetwork && !dnsBind) return false;
+  if (role.unknown) return 'UNKNOWN';
+  if (bind && possibleNetwork) {
+    const verdict = outboundPayloadVerdict(invocation, [bind]);
+    if (verdict) return contextualVerdict(invocation, knownNetwork ? verdict : 'UNKNOWN');
+  }
+  // Unknown IP syntax/build selection is source uncertainty, not a proven hostname transmission.
+  return dnsBind && !literalSourceWord(dnsBind) ? 'UNKNOWN' : false;
 }
 
 function networkInvocation(invocation) {
@@ -5244,6 +5476,8 @@ function sourceInspectionOptions(invocation, extra = {}) {
     deferWatchSourceProblems: true,
     deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
+  deferHyphenFunctionSourceProblems: true,
+  deferFunctionUnsetSourceProblems: true,
     initialOutboundEnvironmentSources: invocation.outboundEnvironmentSources || [],
     initialOutboundEnvironmentUnknown: !!invocation.outboundEnvironmentUnknown,
     initialHelperEnvNames: invocation.helperEnvNames,
@@ -5286,6 +5520,7 @@ function watchSourceVerdict(invocation) {
 }
 
 const inspectedGits = [];
+const utilLinuxQueryInvocations = [];
 const gitInvocationContexts = new Map();
 /** Classify only the evidence supported for this Git invocation, without changing its refusal. */
 function gitVerdict(g, verdict) {
@@ -5294,6 +5529,8 @@ function gitVerdict(g, verdict) {
     g.unknownContextBefore || g.cdLikeBefore || g.dynamicOpt) ? 'UNKNOWN' : verdict;
 }
 /** Parse interpreter strings as code, retaining ordinary literal arguments as data. */
+let hyphenFunctionSourceUnknown = false;
+let functionUnsetSourceUnknown = false;
 function collectNetworkInvocations(inspection, depth = 0) {
   if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   if (inspection.problems.length) deny(guard.problemMessage(inspection.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
@@ -5343,9 +5580,12 @@ function collectNetworkInvocations(inspection, depth = 0) {
     if (invocation.definitionName) continue;
     // Shell redirections are outer effects, independent of a selected executable child.
     if (nativeSocketRedirection(invocation)) deny('Bash の /dev/tcp・/dev/udp redirection または socket を選びうる動的 target は未対応の network channel です。read/write/FD と秘密 filename の有無だけでは送信条件を確認できません。' + UNKNOWN_OWNER_GATE);
+    if (invocation.utilLinuxLauncherRole?.mode === 'query') utilLinuxQueryInvocations.push(invocation);
     if (invocation.nonExec) continue;
     // Known local functions select the separately parsed body, not the external client
     // or builtin sharing their name. Call redirections above still take effect.
+    if (invocation.hyphenFunctionSourceUnknown) hyphenFunctionSourceUnknown = true;
+    if (invocation.functionUnsetSourceUnknown) functionUnsetSourceUnknown = true;
     if (invocation.functionCallName) continue;
     if (['.', 'source'].includes(invocation.name)) deny('dot / source が実行する filename の本文と副作用を検査できません。literal な filename も実行 source の内容を証明しません。' + UNKNOWN_OWNER_GATE);
     if (arrayReaderCallback(invocation)) deny('mapfile / readarray の -C callback または callback を選びうる argv は未対応の実行 source です。callback が literal でも内部や副作用を検査できません。同目的を保てる callback-free 形式を検討してください。' + UNKNOWN_OWNER_GATE);
@@ -5794,6 +6034,10 @@ const parsedWords = insp.invocations.concat(invocations).flatMap((invocation) =>
 if (parsedWords.some((word) => SECRET_LITERALS.some((pattern) => pattern.test(word.text)))) {
   deny('シェルの引用符・escape を戻した引数が既存の secret literal inventory に当たります。値の有効性や実際の漏洩を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。', 'FORBIDDEN');
 }
+const selectedResolverDataVerdicts = invocations.map(invocation =>
+  invocation.name === 'ssh-keyscan' ? sshKeyscanResolverVerdict(invocation, invocations) :
+  invocation.name === 'wget' ? wgetBindResolverVerdict(invocation) : false);
+if (selectedResolverDataVerdicts.includes('FORBIDDEN')) deny('ssh-keyscan の選択address/hostlist または Wget の選択bind-address resolver DATA の同じ生成元が、禁止されたsecret filename sourceに該当します。native DNS・接続・実送信は確認していません。', 'FORBIDDEN');
 const parsedExfilVerdict = firstVerdict(invocations, parsedExfil);
 if (parsedExfilVerdict || invocations.some(dynamicNetworkShape) || invocations.some(opaqueLauncherNetwork)) {
   const verdict = parsedExfilVerdict || 'UNKNOWN';
@@ -5823,12 +6067,18 @@ if (selectedResolverAndEnvironmentVerdict) deny(selectedResolverAndEnvironmentVe
   'SSH の選択された BindAddress resolver DATA または telnet の export された環境 / USER DATA の生成元が、禁止された secret filename operand に当たります。native resolver / protocol・認証・実送信は確認していません。' :
   'SSH の selected BindAddress resolver DATA または telnet の selected 環境 DATA・変換・生成元・argv/context を確定できません。同目的・同条件を保つ known ordinary / 実 query / 未選択形式が可能でなければ' + UNKNOWN_OWNER_GATE, selectedResolverAndEnvironmentVerdict);
 if (invocations.some(telnetCredentialSourceVerdict)) deny('telnet の有効な自動ログインが選ぶ USER / passwd identity または明示 credential forwarding が選ぶ compiled authentication / local credential source と実行条件を検査できません。no-rc・stdin EOF は認証を無効にしません。実 query・実 no-login・未使用の同目的形式を保てなければ' + UNKNOWN_OWNER_GATE);
+// Executable replacement is independent of visible upload/DNS/stdin payloads.
+// Keep earlier confirmed payload verdicts and separately parsed function bodies unchanged.
+if (invocations.some(untrustedClientExecution) || utilLinuxQueryInvocations.some(untrustedUtilLinuxQueryExecution)) deny('認識した network / resolver client の実行名・PATH lookup・明示 program path・先行 context を確定できません。GETやquery風の引数も、置換された実行 source の本文や副作用を証明しません。同じ program・版・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
+if (selectedResolverDataVerdicts.some(Boolean)) deny('ssh-keyscan の選択address/hostlist/stdin または Wget の選択bind-address/bind-dns-address の source・argv・活性条件・backendを確定できません。同目的・同条件のknown ordinary/実usage/未選択形式が可能でなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 // Defer only the new opaque-source UNKNOWN fallbacks until independent payload/stdin verdicts.
 if (invocations.some(rsyncDaemonProgramSource)) deny('rsync direct daemon の RSYNC_CONNECT_PROG / RSYNC_SHELL が選ぶローカル command・interpreter source と実行条件を検査できません。空の CONNECT_PROG も native の source 選択を無効にしません。local / remote-shell / query の対応済み条件以外は owner に対象・操作・cwd/env/config/source を確認してください。' + UNKNOWN_OWNER_GATE);
 if (invocations.some(invocation => telnetStartupSourceVerdict(invocation) || telnetCommandSourceVerdict(invocation))) deny('telnet が選ぶ接続後の cmdrc または host 未指定時の stdin command source と実行条件を検査できません。既知の EOF / 実 query / 対応する設定無効化で同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
 // New resolver / implicit-route UNKNOWN never hides an existing payload or stdin FORBIDDEN.
 const selectedCurlRouteVerdict = firstVerdict(invocations, curlSelectedRouteVerdict);
 if (selectedCurlRouteVerdict) deny('curl の選択された interface resolver DATA または IPFS/IPNS gateway の source・URL 成分・実 operation / backend を確定できません。実 query・known ordinary・未選択形式で同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE, selectedCurlRouteVerdict);
+// R37 selected credential fallback follows existing confirmed payload refusals.
+if (invocations.some(curlSelectedCredentialVerdict)) deny('curl の有効な client certificate / private key / SSH public key / 自動認証が選ぶ file・engine・store・backend と実行条件を検査できません。秘密鍵の raw upload と同一視せず、同目的・同条件を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
 // Preserve confirmed payload and stdin verdicts before the explicit uninspected engine source.
 if (invocations.some(curlSelectedEngineSource)) deny('curl の明示 engine が実 operation で選ぶ backend / engine source を検査できません。報告済みの別バイナリの backend や静的な engine 名は、この呼出しの source 証明ではありません。engine を使わない対応形式が同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
 // Parsing literal helper text can reveal a prohibited payload; it does not authenticate the
@@ -5971,12 +6221,22 @@ if (invocations.some(parallelSourceVerdict)) {
 }
 
 if (invocations.some(utilLinuxSourceVerdict)) {
-  deny('chrt/nsenter/taskset の option・priority/PID・child、または namespace/root/cwd/env/credential/既定 shell の実行条件を確認できません。同じ scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+  deny('util-linux launcher の option・lock/priority/PID・child、または personality/namespace/root/cwd/env/credential/PAM/既定 shell の実行条件を確認できません。同じ lock/scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 // Opaque OpenSSL source never hides an earlier independent confirmed refusal.
 if (invocations.some(invocation => opensslOutboundVerdict(invocation, invocations) === 'UNKNOWN')) {
   deny('OpenSSL の selected mode / execution source・stdin/argv・config/provider/credential source・backend を検査できません。実 query・known ordinary / EOF と同じ目的を保つ対応済み source 条件が無ければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// A selected opaque local function cannot hide an earlier independent confirmed refusal.
+if (hyphenFunctionSourceUnknown) {
+  deny('hyphen 関数が選ぶ body / lifecycle / 実行 source を検査できません。同じ対象・操作・shell/source・cwd/env を保つ対応形式がなければ owner に確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// A possibly removed function is opaque source, after independent confirmed refusals.
+if (functionUnsetSourceUnknown) {
+  deny('unset 後に選択される関数の body / lifecycle / 実行 source を検査できません。同じ対象・操作・shell/source・cwd/env を保つ対応形式がなければ owner に確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

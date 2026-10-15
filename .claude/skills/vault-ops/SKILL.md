@@ -18,6 +18,22 @@ vault repo は **CI (`.github/workflows/llm-sec-weekly.yml` の週次取込) と
 運用哲学: **ユーザーへの停止・確認はセキュリティ境界の突破時のみ。ルーティン障害
 (push 競合 / dotfile 衝突 / 一時エラー) は機構が自動解決する。**
 
+<!-- PR191:R37:VAULT:BEGIN -->
+<a id="r37-vault-contract"></a>
+## R37: Bash guardの選択sourceとVault運用の境界（固定sourceのローカル受入cut）
+
+[現在の有限契約](../../../docs/security/git-command-guards.md#r37-current-contract)は、command-scope Git設定、実program/PATH、launcher/query、function source、選択された認証・resolver DATAを扱う。対応済み条件はALLOW、確定した禁止はFORBIDDEN、必要情報不足はUNKNOWN（後二者はdeny）であり、L1の意味、L2の各hook自身の判定/理由、L3の実dispatch/副作用を分ける。固定sourceのL1/parity/追加契約673/673、直接入力8204/8204・broken0・実Hook24612回が合格。旧7824のinput/順序/全oracle変更0、追加380unique・alias16の追加assertを確認した。逆検証は同じ合成sourceの100 Hook機能・455比較pair・2670実Hook呼出しを資格化し、別shell1機能は15pair/30test観測（Hook0）として保持した。必要性UNPROVED3機能と元逆期待FAIL5profileを保持し、UNKNOWNの独立maskや追加precisionを成功へ書き換えていない。publichead/CI/fresh/必要L3は公開後の別取得として **PENDING**。
+
+ordinary設定/必要なshell・認証・hostlist・custom helperでもsourceが未検査なら停止し得る。同じrepo/対象/operation/lock/host/bind/版/backend/cwd/env/config/sourceを保つ対応形式かowner確認が出口である。設定や認証を外す、別場所へ写す、Hookを停止することを自動代替にしない。この文書更新はinstaller・realVault・wrapper実行の承認を追加せず、実行は既存の人間terminal/CIの契約に従う。
+
+R36のfinal-basename template例外、本番shellのproducer/status/NUL/LF/error時何もunstageしない契約を保持する。curl認証file/engine/storeのUNKNOWNはraw file uploadのFORBIDDENとは別であり、template filenameの例外を認証source/内容/送信の許可へ広げない。通常root templateの対照も、保護ancestor内のtemplate判定も維持する。ordinary function-unsetは、削除され得る既存認識済みmapをopaqueにし後続選択をUNKNOWNとする。variable-only/無関係/未使用/解析済みlocal unset等の対照を保つが、部品閉鎖から統合受入や任意lifecycleの成功を推定しない。hyphen functionの選択source UNKNOWNも別の通常制限として残す。
+
+**以下のR36/R26等はsource/日時を付けた旧cutである。歴史上の件数・parity・native sandbox成功を新sourceの実Vaultやpush成功へ持ち越さない。**
+
+
+固定ローカルcut（UTC）: 2026-10-15T22:34:05.996284+00:00。公開source inventoryは旧17＋追加本番契約test2＝19を別途同headへ結合する。旧7824との集計比較は別fixtureであり、同一実tupleの因果比較と混同しない。
+<!-- PR191:R37:VAULT:END -->
+
 <!-- PR191:R36:VAULT-CONTRACT:BEGIN -->
 <a id="r36-vault-template-contract"></a>
 ## R36: template例外の範囲と本番shell helper

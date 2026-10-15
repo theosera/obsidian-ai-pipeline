@@ -506,7 +506,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
   const functionKeywordHeader = (header) => header.length >= 2 &&
     atCmdPos(header.slice(0, -2)) && header.at(-2).text === 'function' &&
     !header.at(-2).quoted && !header.at(-2).dynamic &&
-    !header.at(-1).quoted && !header.at(-1).dynamic && /^[A-Za-z_][A-Za-z0-9_]*$/.test(header.at(-1).text);
+    !header.at(-1).quoted && !header.at(-1).dynamic && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(header.at(-1).text);
   const functionBodyStart = (k) => {
     for (;;) {
       k = skipLC(src, k);
@@ -698,7 +698,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
       const header = words.concat(cur ? [cur] : []);
       const fn = header[header.length - 1];
       if (/^\([ \t\n]*\)/.test(src.slice(i)) && fn && !fn.quoted && !fn.dynamic &&
-          /^[A-Za-z_][A-Za-z0-9_]*$/.test(fn.text) &&
+          /^[A-Za-z_][A-Za-z0-9_-]*$/.test(fn.text) &&
           (atCmdPos(header.slice(0, -1)) || functionKeywordHeader(header))) {
         const signature = /^\([ \t\n]*\)/.exec(src.slice(i))[0];
         const bodyStart = functionBodyStart(i + signature.length);
@@ -865,11 +865,11 @@ const assignName = (w) => w.raw.split('=')[0].replace(/\+$/, '').replace(/\[.*$/
 
 /** Retain only names for Bash's positive imported-function environment protocols. */
 function functionEnvironmentAssignment(word, name, value) {
-  const modern = /^BASH_FUNC_([A-Za-z_][A-Za-z0-9_]*)%%$/.exec(name);
+  const modern = /^BASH_FUNC_([A-Za-z_][A-Za-z0-9_-]*)%%$/.exec(name);
   const protocol = /^BASH_FUNC_.*%%$/.test(name);
   const header = /^\(\)[ \t\n]*\{/.test(value);
   if (!protocol && !header) return null;
-  const callee = modern ? modern[1] : !protocol && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : null;
+  const callee = modern ? modern[1] : !protocol && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) ? name : null;
   return { environment: name, callee: header ? callee : null,
     unknown: !header || !callee || !!word.dynamic || !!word.dynamicMaySplit };
 }
@@ -1520,7 +1520,7 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
+const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
 
 /** util-linux 2.39.3: priority/PID roles and namespace-free direct execvp. */
 function utilLinuxLauncherArgs(rest, info, name) {
@@ -1662,6 +1662,105 @@ function utilLinuxLauncherArgs(rest, info, name) {
   return k;
 }
 
+/** util-linux 2.39.3 flock: first operand is a lock; only the next word selects argv or shell. */
+function flockArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { launcher: 'flock', backend: 'util-linux-2.39.3', mode: 'unknown',
+    childIndex: null, lockWord: null, values: [], sourceWord: null,
+    priorLauncherUnknown: info.launcherUnknown };
+  info.utilLinuxLauncher = role;
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  const inlineValue = (word, start) => ({ ...word, text: textOf(word).slice(start),
+    literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(start) : undefined });
+  const long = { shared: 's', exclusive: 'x', unlock: 'u', nonblocking: 'n', nb: 'n',
+    timeout: 'w', wait: 'w', 'conflict-exit-code': 'E', close: 'o', 'no-fork': 'F',
+    verbose: 'v', help: 'h', version: 'V' };
+  let k = 0, close = false, noFork = false;
+  const apply = (option, value) => {
+    if ('hV'.includes(option) && !info.launcherUnknown) { role.mode = 'query'; return true; }
+    if (option === 'o') close = true;
+    if (option === 'F') noFork = true;
+    if ('wE'.includes(option)) {
+      role.values.push({ option, word: value });
+      if (!known(value) || !(option === 'w' ? /^\+?\d+(?:\.\d+)?$/.test(textOf(value))
+        : /^\+?\d+$/.test(textOf(value)) && BigInt(textOf(value)) <= 255n)) info.launcherUnknown = true;
+    }
+    return false;
+  };
+  while (k < rest.length) {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) { info.launcherUnknown = true; break; }
+    if (text === '--') { k++; break; }
+    if (!text.startsWith('-') || text === '-') break;
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), part = text.slice(2, eq < 0 ? undefined : eq);
+      const names = Object.keys(long), matches = Object.hasOwn(long, part) ? [part] : names.filter(n => n.startsWith(part));
+      if (!part || matches.length !== 1) { info.launcherUnknown = true; break; }
+      const option = long[matches[0]];
+      if (!'wE'.includes(option) && eq >= 0) { info.launcherUnknown = true; break; }
+      const value = 'wE'.includes(option) ? eq < 0 ? rest[++k] : inlineValue(word, eq + 1) : null;
+      if (apply(option, value)) return -1;
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        const option = text[j];
+        if (!'sexnuoFhwEV'.includes(option)) { info.launcherUnknown = true; break; }
+        const value = 'wE'.includes(option) ? j + 1 < text.length ? inlineValue(word, j + 1) : rest[++k] : null;
+        if (apply(option, value)) return -1;
+        if ('wE'.includes(option)) break;
+      }
+    }
+    if (info.launcherUnknown) break;
+    k++;
+  }
+  if (info.launcherUnknown) return rest.length;
+  // The pinned consumer exits before opening a lock or selecting a child for this conflict.
+  if (close && noFork) { role.mode = 'early-error'; return -1; }
+  if (k >= rest.length) { role.mode = 'no-child'; return -1; }
+  role.lockWord = rest[k];
+  if (!known(rest[k])) { info.launcherUnknown = true; return rest.length; }
+  if (k + 1 === rest.length) { role.mode = 'fd-only'; return -1; }
+  const child = rest[k + 1];
+  if (!known(child)) { info.launcherUnknown = true; return rest.length; }
+  if (['-c', '--command'].includes(textOf(child))) {
+    role.sourceWord = rest[k + 2] || null;
+    // SHELL/default-shell selection and startup context remain uninspected, even for an ordinary body.
+    info.launcherUnknown = true;
+    return rest.length;
+  }
+  // A stored scalar is not proof of executable identity, even if its current text is known.
+  if (child.dynamic) { info.launcherUnknown = true; return rest.length; }
+  const childIndex = k + 1;
+  role.mode = 'exec'; role.childIndex = childIndex;
+  return childIndex;
+}
+
+// Exact installed setarch symlink names from the pinned build table; no arbitrary basename inference.
+const SETARCH_ALIASES = ["uname26", "linux32", "linux64", "s390", "s390x", "i386", "x86_64", "ppc", "ppc64", "ppc32", "sparc", "sparc64", "sparc32", "sparc32bash", "mips", "mips64", "mips32", "ia64", "parisc", "parisc64", "parisc32"];
+
+/** Finite util-linux personality/login families: do not guess a privileged/default-shell child. */
+function opaqueUtilLinuxArgs(rest, info, name) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { launcher: name, backend: 'util-linux-2.39.3', mode: 'unknown',
+    source: 'personality/identity/environment/PAM/default-shell', priorLauncherUnknown: info.launcherUnknown };
+  info.utilLinuxLauncher = role;
+  const known = word => word && !word.dynamic && wrapperValueKnown(word) && !word.ansiCUnknown;
+  const argv0 = info.argv0Word;
+  const canonicalArgv0 = known(argv0) && path.posix.basename(argv0.text) === name && !info.argv0Selection?.login;
+  let queryWord = rest[0];
+  if (name === 'setarch' && known(queryWord) && !queryWord.text.startsWith('-')) queryWord = rest[1];
+  if (canonicalArgv0 && name !== 'sparc32bash' && !info.launcherUnknown && known(queryWord) &&
+      (['--help', '--version', '-h', '-V'].includes(queryWord.text) ||
+       name === 'setarch' && ['--list', '--show', '--show=current'].includes(queryWord.text))) {
+    role.mode = 'query'; return -1;
+  }
+  info.launcherUnknown = true;
+  return rest.length;
+}
+
 /** Legitimate moreutils/GNU backends select different argv, stdin, template and config sources. */
 function parallelArgs(rest, info) {
   info.launcherArgs.push(...rest);
@@ -1672,6 +1771,11 @@ function parallelArgs(rest, info) {
 }
 
 const WRAPPERS = {
+  ...Object.fromEntries(SETARCH_ALIASES.map(name => [name, (rest, info) => opaqueUtilLinuxArgs(rest, info, name)])),
+  flock: flockArgs,
+  setarch: (rest, info) => opaqueUtilLinuxArgs(rest, info, 'setarch'),
+  runuser: (rest, info) => opaqueUtilLinuxArgs(rest, info, 'runuser'),
+  su: (rest, info) => opaqueUtilLinuxArgs(rest, info, 'su'),
   chrt: (rest, info) => utilLinuxLauncherArgs(rest, info, 'chrt'),
   nsenter: (rest, info) => utilLinuxLauncherArgs(rest, info, 'nsenter'),
   parallel: parallelArgs,
@@ -1859,6 +1963,7 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
       if (base === 'exec' && !info.wrapped) info.persistsEnv = true;
       info.wrapped = true;
       info.wrapperNames.push(base);
+      (info.wrapperProgramWords ||= []).push({ name: base, word: w });
       const r = wrapper(SCALAR_LAUNCHERS.has(base) && launcherScalarState
         ? rest.map(word => literalScalarWord(word, launcherScalarState)) : rest, info);
       if (r < 0) { info.nonExec = true; info.name = base; return info; }
@@ -1994,6 +2099,33 @@ function declarationOptions(args) {
   }
   return options;
 }
+/** Unset may remove a function: retain role selection without claiming successful deletion. */
+function functionUnsetSelection(args) {
+  const known = word => word && !word.ansiCUnknown && !word.globExpanded && !word.braceExpanded && !word.tildeExpanded &&
+    (!word.dynamic || typeof word.literalValue === 'string' && word.dynamicMaySplit === false);
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  let k = 0, functions = false, variables = false, unknown = false;
+  while (k < args.length) {
+    const word = args[k], text = textOf(word);
+    if (!known(word)) { unknown = true; break; }
+    if (text === '--') { k++; break; }
+    if (!text.startsWith('-') || text === '-') break;
+    if (!/^-[fnv]+$/.test(text)) { unknown = true; break; }
+    functions ||= text.slice(1).includes('f');
+    variables ||= text.slice(1).includes('v');
+    k++;
+  }
+  // A selected -v cannot delete functions; contradictory/unknown option modes are not an ALLOW proof.
+  if (variables && !functions) return { variablesOnly: true, names: [], unknown: false };
+  if (functions && variables) unknown = true;
+  const names = [];
+  for (const word of args.slice(k)) {
+    if (!known(word)) unknown = true;
+    else names.push(textOf(word));
+  }
+  return { variablesOnly: false, names, unknown };
+}
+
 /** Separate positive function-export attributes from variable exports, listing and removal. */
 function functionExportSelection(name, args) {
   if (!['export', 'declare', 'typeset'].includes(name)) return null;
@@ -2013,7 +2145,7 @@ function functionExportSelection(name, args) {
   let unknown = false;
   for (const word of operands) {
     if (word.dynamic || word.dynamicMaySplit || word.globExpanded || word.braceExpanded || word.tildeExpanded ||
-        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(word.text)) unknown = true;
+        !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(word.text)) unknown = true;
     else names.push(word.text);
   }
   return { names, unknown };
@@ -3107,7 +3239,7 @@ function inspect(cmd, options = {}) {
   const seedFunctionNames = (names, add) => {
     if (!Array.isArray(names)) return;
     for (const name of names) {
-      if (typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) add(name);
+      if (typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) add(name);
       else stateFor(parsed.scope).exportedFunctionUnknown = true;
     }
   };
@@ -3273,6 +3405,7 @@ function inspect(cmd, options = {}) {
       wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
       executableExpansionUnknown: info.executableExpansionUnknown,
       wrapperNames: info.wrapperNames,
+      wrapperProgramWords: info.wrapperProgramWords || [],
       argv0Word: selectedChildArgv0Word(info, expansionState), argv0Unknown: info.argv0Unknown,
       launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
       scriptLauncherRole: info.scriptLauncher || null,
@@ -3336,10 +3469,12 @@ function inspect(cmd, options = {}) {
       state.functions.set(invocation.definitionName, { ...c, functionConditional: conditional });
       if (state.functionAutoExport === true) state.exportedFunctions.add(invocation.definitionName);
       else if (state.functionAutoExport === null) state.exportedFunctionUnknown = true;
-      // Keep the existing conservative Git/positional gates after a definition, without running it.
-      state.unknownContext = true;
-      state.positionalsTainted = true;
-      state.valuesTainted = true;
+      // Existing ordinary-name gates remain. A newly recognized opaque hyphen body is not executed here.
+      if (!invocation.definitionName.includes('-')) {
+        state.unknownContext = true;
+        state.positionalsTainted = true;
+        state.valuesTainted = true;
+      }
       if (invocation.definitionName === 'git') state.gitShadowed = true;
       return;
     }
@@ -3351,6 +3486,21 @@ function inspect(cmd, options = {}) {
       invocation.functionCallName = info.name;
       invocation.redirs = selectedFunction.redirs.concat(c.redirs);
       invocation.heredocBodies = selectedFunction.heredocBodies.concat(c.heredocBodies);
+      // Hyphen names select local source, but its body/lifecycle is not an ALLOW proof.
+      if (info.name.includes('-')) {
+        invocation.hyphenFunctionSourceUnknown = true;
+        if (options.deferHyphenFunctionSourceProblems !== true) {
+          res.problems.push('選択された hyphen 関数の body / lifecycle / 実行 source を検査できない');
+        }
+        return;
+      }
+      if (selectedFunction.functionUnsetSourceUnknown) {
+        invocation.functionUnsetSourceUnknown = true;
+        if (options.deferFunctionUnsetSourceProblems !== true) {
+          res.problems.push('unset 後に選択される関数の body / lifecycle / 実行 source を検査できない');
+        }
+        return;
+      }
       if (info.name === 'git') res.problems.push('git の関数定義で実行先が置き換わり、Git と同じ実行条件を保証できない');
       const body = selectedFunction.functionBody;
       if (!body || body.unknown || selectedFunction.functionConditional || state.searchChanged) {
@@ -3428,6 +3578,15 @@ function inspect(cmd, options = {}) {
       declOptions.some((option) => /^-[A-Za-z]*p[A-Za-z]*$/.test(option));
     if (builtin && c.scope.functionBody && info.name === 'local' && info.args.some(word => !word.dynamic && word.text === '-')) {
       state.localShellOptions = true; // Bash versions differ; an altered trace mode is not a restoration proof.
+    }
+    if ((builtin || reservedTime) && !info.nonExec && info.name === 'unset' && info.nameWord?.text === 'unset') {
+      const selection = functionUnsetSelection(invocation.args);
+      if (!selection.variablesOnly) {
+        const affected = selection.unknown ? [...state.functions.keys()] : selection.names;
+        for (const name of affected) if (state.functions.has(name)) {
+          state.functions.set(name, { ...sourcePlaceholder(name), functionUnsetSourceUnknown: true });
+        }
+      }
     }
     const exported = builtin && declaration ? functionExportSelection(info.name, info.args) : null;
     if (exported) {
@@ -3660,7 +3819,7 @@ function inspect(cmd, options = {}) {
       const parallelUnknown = info.parallelLauncher?.mode === 'unknown' && !info.parallelLauncher.priorLauncherUnknown;
       const watchUnknown = info.watchLauncher?.mode === 'unknown' && !info.watchLauncher.priorLauncherUnknown;
       // Egress defers only these registered launcher-owned source uncertainties; other problems stay immediate.
-      if (!(utilLinuxUnknown && options.deferUtilLinuxSourceProblems === true) && !(parallelUnknown && options.deferParallelSourceProblems === true) && !(watchUnknown && options.deferWatchSourceProblems === true)) res.problems.push(utilLinuxUnknown ? 'chrt/nsenter/taskset の option・priority/PID・child、または namespace/root/cwd/env/credential/既定 shell の実行条件を確認できません。同じ scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : parallelUnknown ? 'parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
+      if (!(utilLinuxUnknown && options.deferUtilLinuxSourceProblems === true) && !(parallelUnknown && options.deferParallelSourceProblems === true) && !(watchUnknown && options.deferWatchSourceProblems === true)) res.problems.push(utilLinuxUnknown ? 'util-linux launcher の option・lock/priority/PID・child、または personality/namespace/root/cwd/env/credential/PAM/既定 shell の実行条件を確認できません。同じ lock/scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : parallelUnknown ? 'parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
     if (positionalUnknown || (positionalExec && info.name === 'git')) {
@@ -3908,6 +4067,11 @@ function inspect(cmd, options = {}) {
     g.args = g.args.map(word => literalScalarWord(word, state));
     g.gitConfigurationSources = invocation.gitConfigurationSources;
     const environmentConfig = gitConfigurationEntries(g.gitConfigurationSources || []);
+    // R37: preserve command-scope uncertainty separately from config-file roots.
+    // Selected exports/prefixes/unsets come from the same existing source tracker;
+    // names alone (unexported locals, orphan pairs) are not active overrides.
+    g.gitCommandScopeConfigUnknown = gitConfigurationEntries((g.gitConfigurationSources || [])
+      .filter(source => /^(?:GIT_CONFIG_(?:COUNT|PARAMETERS|(?:KEY|VALUE)_\d+))$/.test(source.name))).unknown;
     const environmentSelections = environmentConfig.entries.map(entry => ({ mode: 'configuration-env', text: entry.key + '=GIT_CONFIG_VALUE_' + entry.index, word: entry.word }));
     g.configSelections.unshift(...environmentSelections);
     g.configEnvs.unshift(...environmentSelections.map(entry => entry.text));

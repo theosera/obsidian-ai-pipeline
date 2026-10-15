@@ -96,6 +96,26 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R37:PLAYBOOK:BEGIN -->
+<a id="r37-playbook-contract"></a>
+[現在の有限契約・通常影響・owner出口](docs/security/git-command-guards.md#r37-current-contract)。
+
+**R37 guard契約（固定sourceのローカル受入済み・公開前cut）**: 基点は公開 `7b3436bc49f8736c7b465de026a2510ae0e6b0cf`。引数の役割、実行されるprogram/source、resolver/authentication/payloadの役割、値の生成元を分ける有限修復です。対応条件を満たす経路はALLOW、確認したpolicy違反はFORBIDDEN、不足するsource/argv/contextはUNKNOWNとして、後二者は既存deny wireで停止します。
+
+Git command-scope設定のopaqueな選択、util-linux2.39.3のflock childと選択context、queryを含むprogram/PATH identity、選択された有限hyphen function sourceを扱います。query風argvでも、実programと `exec -a` のargv0を同一視しません。既知empty/COUNT0/unused設定、通常direct child、正しいquery、消費DATA、未使用functionは各判定の正常対照を保ちます。ordinary function-unsetでは、削除され得る既存の認識済みmapだけをopaqueにし、後続の選択callをUNKNOWNにします。variable-only、未対象/未使用、解析済みlocal unset、外部unsetや真のqueryの対照を保ち、全function lifecycleを認証しません。部品の閉鎖と統合sourceへの結合は別です。
+
+curl tool/libcurl8.7.1の明示cert/key/proxy credentialは、raw file uploadと区別し、activeなbackend/sourceが未証明ならUNKNOWNです。certificateの既知empty/last-empty clear、sourceを選ばないtype-only、未使用proxy/CA・peer検証用readを一律にcredential送信扱いしません。positive TLS別名でも既存engine-sourceの停止を維持します。SRPの有限生成値対照は既存UNKNOWNがmaskするため、そのmaskをactivation情報の完全性やnative安全性の証明へ昇格させません。
+
+OpenSSH9.6p1 keyscanの選択address/hostlist/stdinと、GNU Wget1.25.0のlast-selected bind resolverを区別します。普通の未検査hostlistや必要な認証・shell・contextでもUNKNOWNに止まる費用があります。同じ対象・host/bind・lock・operation・版/backend・cwd/env/config/sourceを保つ対応形式がなければownerへ確認します。必要なselector削除、別場所へのコピー、hook停止を承認済み代替とは扱いません。
+
+L1の意味/metadata、L2の各hook自身の三結果・理由・正常対照・単一edge逆検証、L3の実settings dispatchと副作用を別に確認します。固定sourceのL1/parity/追加契約673/673、直接入力8204/8204・broken0・実Hook24612回が合格。旧7824のinput/順序/全oracle変更0、追加380unique・alias16の追加assertを確認した。逆検証は同じ合成sourceの100 Hook機能・455比較pair・2670実Hook呼出しを資格化し、別shell1機能は15pair/30test観測（Hook0）として保持した。必要性UNPROVED3機能と元逆期待FAIL5profileを保持し、UNKNOWNの独立maskや追加precisionを成功へ書き換えていない。新公開head/requiredCI/fresh両review/thread/必要L3は、この公開前cutでは **PENDING**。直接Hook DATAや旧実入口を新sourceの実証へ持ち越さず、native DNS/TLS/認証/通信は未検証のままです。R37は基線7824のinput・順序・oracle変更0を受入条件とし、過去R6P38の理由付き変更履歴を消しません。
+
+**以下のR36以前は旧cutの履歴です。本文やリンクに「current／現在／現行」とあっても、各節に結合したsourceと取得日時の範囲を表し、R37の受入結果ではありません。**
+
+
+固定ローカルcut（UTC）: 2026-10-15T22:34:05.996284+00:00。公開source inventoryは旧17＋追加本番契約test2＝19を別途同headへ結合する。旧7824との集計比較は別fixtureであり、同一実tupleの因果比較と混同しない。
+<!-- PR191:R37:PLAYBOOK:END -->
+
 <!-- PR191:R36:PLAYBOOK:BEGIN -->
 <a id="r36-PLAYBOOK-contract"></a>
 **R36 guard契約（固定sourceのローカル受入済み・公開前cut）**: util-linux 2.39.3のchrt/nsenter/tasksetはoption値・実query・PID0/child・contextを分けます。既知の通常child／有限scalar値は維持し、未対応context・implicit shell・未確定境界はUNKNOWN。R6P38の未確定taskset mask＋通常catは、元入力と元ALLOWを保存した理由付き **ALLOW→UNKNOWN 1件**です。必要なselectorを削除して目的を変えることを自動代替にしません。

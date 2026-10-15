@@ -35,7 +35,18 @@ if (/(^|\s)--no-verify(\s|=|$)/.test(cmd)) {
   deny('入力に `--no-verify` の文字列候補があります。実際の option か DATA かをこの旧判定で確定できないため停止します。hook を無効にせず、対応済みの入力を確認してください。');
 }
 
-const insp = guard.inspect(cmd);
+// R37: inherited command-scope config needs the same ordered selection as
+// prefix/export/env -u. Keep nonempty serialized PARAMETERS and VALUE opaque;
+// only absence/empty, numeric count and syntactic keys are partial proofs.
+const inheritedCommandConfigNames = Object.keys(process.env)
+  .filter(name => /^GIT_CONFIG_(?:COUNT|PARAMETERS|(?:KEY|VALUE)_\d+)$/.test(name));
+const insp = guard.inspect(cmd, {
+  initialGitConfigEnvNames: inheritedCommandConfigNames,
+  initialGitConfigSources: inheritedCommandConfigNames.filter(name =>
+    process.env[name] === '' || name === 'GIT_CONFIG_COUNT' && /^\d+$/.test(process.env[name] || '') ||
+    /^GIT_CONFIG_KEY_\d+$/.test(name) && /^[A-Za-z][A-Za-z0-9.-]*$/.test(process.env[name] || ''))
+    .map(name => ({ name, word: { text: process.env[name], dynamic: false, dynamicMaySplit: false } })),
+});
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'git ガード'));
 
 /** Match no-verify and its guarded long-option prefixes, while leaving no-verbose intact. */
@@ -170,6 +181,10 @@ if (/core\.hooksPath\s*=/i.test(cmd) || /git\s+config\b[^;&|]*\bcore\.hooksPath\
 /** Read reconstructed config operands while preserving getters and consumed option values. */
 function changesHooksPath(g) {
   if (g.configs.concat(g.configEnvs).some((value) => value.split('=')[0].toLowerCase() === 'core.hookspath')) return 'FORBIDDEN';
+  // A reader exemption belongs only to this hook-bypass responsibility; other
+  // guards still inspect helpers/network. Proven hooksPath remains FORBIDDEN above.
+  if (!g.terminal && !guard.READ_ONLY_SUBS.has(g.sub) && !guard.readOnlyGitMode(g) &&
+      g.gitCommandScopeConfigUnknown) return 'UNKNOWN';
   if (g.sub !== 'config' || g.terminal) return null;
   const valueOptions = ['file', 'blob', 'type', 'default', 'value', 'url', 'comment'];
   const readOptions = ['get', 'get-all', 'get-regexp', 'get-urlmatch', 'get-color', 'get-colorbool', 'list'];
@@ -220,7 +235,7 @@ for (const g of insp.gits) {
   const category = changesHooksPath(g);
   if (category) deny(category === 'FORBIDDEN'
     ? '解析した git config が禁止された `core.hooksPath` の変更・削除を指定しています。対応済みの getter を使ってください。'
-    : 'git config が hook の設定を変えるか、編集内容や引数から確定できません。対象・操作・不明な条件を owner へ確認してください。', category);
+    : 'git の実行時設定か config の引数が hook の設定を変えるか確定できません。対応済みの明示設定を使うか、対象・操作・不明な条件を owner へ確認してください。', category);
 }
 
 // `git add` / `git stage` の blanket 形を禁止: -A / --all（`--al` 等の省略形含む）/ 単独の "." "./"

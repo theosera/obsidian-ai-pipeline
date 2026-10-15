@@ -1,5 +1,28 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R37:LAYERS:BEGIN -->
+<a id="r37-layers-contract"></a>
+## R37: 意味・判定・実入口・native条件を分ける（固定sourceのローカル受入cut）
+
+基点はpublic7b。今回の部品はcommand-scope Git設定、flock/有限util-linux、queryを含む実program identity、curlの認証/engine、hyphen functionとordinary-unset、keyscan/Wgetの選択resolverを扱う。範囲と通常費用は[現在の有限契約](git-command-guards.md#r37-current-contract)を参照する。FORBIDDENは確認したpolicy違反、UNKNOWNはsource/argv/context不足、ALLOWはこのguardの停止要求がないことを表し、対応外を保護済みと記録しない。
+
+| 層 | 記録する証拠 | 記録の限界 |
+|---|---|---|
+| L1意味/metadata | optionの値、選択programとargv0、設定・生成元・function map・resolver/authentication roleの意味 | parser成功やliteral値だけで実source/installedbackendの安全性を認証しない |
+| L2直接Hook DATA | ownEG/SG/AGそれぞれのALLOW/FORBIDDEN/UNKNOWNとprefix、正常対照、元入力比較、単一新edgeの逆検証、source/owned安定 | aggregate denyにmaskedな担当不足や、必要性UNPROVEDを残す。別sourceの成功や新期待の訂正を元PASSへ書き換えない |
+| L3実settings入口 | exact DUMMY/stub試行、PreToolUse start/finish/判定、normal marker、副作用と実入口の未行使 | Hook前API/safeguard停止はNOT_EXERCISED。direct Hookや旧CLIの観測を現在dispatchへcarryしない |
+| native成立条件（上記と別） | 実版/backend・PAM/engine/設定/権限、DNS/TLS/認証/transport等 | 今回の有限DATA試験から成功/実秘密露出/被害を主張しない。局所修復後も未検証表示を保持 |
+
+固定sourceのL1/parity/追加契約673/673、直接入力8204/8204・broken0・実Hook24612回が合格。旧7824のinput/順序/全oracle変更0、追加380unique・alias16の追加assertを確認した。逆検証は同じ合成sourceの100 Hook機能・455比較pair・2670実Hook呼出しを資格化し、別shell1機能は15pair/30test観測（Hook0）として保持した。必要性UNPROVED3機能と元逆期待FAIL5profileを保持し、UNKNOWNの独立maskや追加precisionを成功へ書き換えていない。publichead/requiredCI、fresh両review/thread、必要L3は公開後の別取得として **PENDING**。旧7824のinput/順序/oracle変更0を受入条件とし、過去R6P38の変更履歴や旧FAILを消さない。ordinary unsetは既存認識済みmapのpotential removalだけをtyped opaqueへし、後続選択をUNKNOWNとする有限部品で、variable-only/無関係/未使用等を正常対照にする。閉鎖済み部品も統合sourceへの再結合が必要で、任意function lifecycleを新たに認証しない。
+
+普通の未検査設定・hostlist/認証source・必要なwrapper/functionのcallでもUNKNOWNとなる費用がある。同じ対象/operation/版/backend/cwd/env/config/sourceを保つ対応形がなければownerへ不明点を示す。selector削除やHook停止を自動代替にしない。
+
+**以下はR36以前および2026-09時点の旧cutである。「現在/current」等も当時のsourceに結合し、旧層の空白・旧迂回・旧数値をR37で再確認した結果とはしない。原文と測定者/リポ/日時を保持する。**
+
+
+固定ローカルcut（UTC）: 2026-10-15T22:34:05.996284+00:00。公開source inventoryは旧17＋追加本番契約test2＝19を別途同headへ結合する。旧7824との集計比較は別fixtureであり、同一実tupleの因果比較と混同しない。
+<!-- PR191:R37:LAYERS:END -->
+
 <!-- PR191:R36:LAYERS:BEGIN -->
 <a id="r36-LAYERS-contract"></a>
 **R36 guard契約（固定sourceのローカル受入済み・公開前cut）**: util-linux 2.39.3のchrt/nsenter/tasksetはoption値・実query・PID0/child・contextを分けます。既知の通常child／有限scalar値は維持し、未対応context・implicit shell・未確定境界はUNKNOWN。R6P38の未確定taskset mask＋通常catは、元入力と元ALLOWを保存した理由付き **ALLOW→UNKNOWN 1件**です。必要なselectorを削除して目的を変えることを自動代替にしません。

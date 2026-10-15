@@ -20,6 +20,58 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R37:CONTRACT:BEGIN -->
+<a id="r37-current-contract"></a>
+## R37: 選択された実行source・設定・認証・resolverの有限契約（固定sourceのローカル受入cut）
+
+このR37節は公開基点 `7b3436bc49f8736c7b465de026a2510ae0e6b0cf` からの固定sourceを合成したローカル受入cutである。部品の閉鎖だけで受入せず、同じ合成sourceで再検証した。公開head/CI/fresh review/実入口は公開後の別取得gateとして下に残す。旧日時付き節の成功数や実dispatchを新sourceへ運ばない。
+
+### 範囲・三結果・通常費用・停止後の出口
+
+結果は上のALLOW/FORBIDDEN/UNKNOWN契約と同じである。ALLOWはこのguardから停止を要求しないこと、FORBIDDENは確認したpolicy違反、UNKNOWNは必要情報不足である。FORBIDDEN/UNKNOWNはいずれもdenyだが、理由prefixと各hook自身の結果を区別する。別guardが止めたaggregateの緑だけで担当guardの欠落や退行を閉じない。
+
+| 担当・固定版/選択条件 | 対応と停止 | 正常対照・通常作業への費用 | 同じ目的を保つ出口 |
+|---|---|---|---|
+| command-scope Git設定（共通metadata/add-all、Git2.54.0の設定選択） | 選択された非空のopaque PARAMETERSや未確定numbered設定を、対応するhook維持operationでUNKNOWNにする。確定core.hooksPath違反のFORBIDDENを先行させる。値の本文を証明できないだけで全Git configを一律禁止しない | known-empty、COUNT0、未使用KEY/VALUE、非export DATA、actual unset、実query/getter/未選択operationを新edgeの正常対照にする。serializedなordinary設定でも内容/選択が未検査なら停止し得る | 同じ有効設定とoperationを保つ対応形式があれば再検査する。設定を消して目的を変えることは自動代替にせず、設定source/優先順位/argvと不明点をownerへ示す |
+| flockと有限util-linux2.39.3 consumer（common/egress） | lock/option値の後のdirect childを既存判定へ渡す。lock後に選ばれるshell command、unknown argv、setarch/runuser/suのactiveなidentity/environment/contextはUNKNOWN。独立した確定FORBIDDENは維持 | ordinary direct child、既知有限scalar、真のhelp/version、pinned consumerでchild非選択の対照を維持。必要なshell/lock/PAM/personality操作も止まり得る。exact setarch install aliasesは同consumerのキーで、独立family数や全wrapper網羅を主張しない | lock/identity/contextを除去せず、同じ条件の対応argvまたはowner確認へ進む。installed binary/symlink、権限、lock取得、PAM、native成功は別確認 |
+| 認識clientとutil-linux queryの実program（egress/common） | GET/queryでも不確定なPATH lookup/custom program/先行contextならUNKNOWN。wrapperProgramWordsの実programとargv0を分け、nonExecのquery carrierもcollectorから捨てない | known default program、既存解析済みの通常名local functionと印字DATA、PATHだけが不明で実programが明示system absoluteの限定対照を維持。他のcwd/env/source不明までは解除しない。必要なcustom helperのhelpでも停止し得る | program/版/対象/operation/cwd/env/config/sourceを保つ対応形かowner確認。system absoluteという綴りは実binary/backendのattestationではない |
+| 明示curl認証source（egress、tool/libcurl8.7.1、backend条件付き） | cert/key/proxy-cert/proxy-key、選択pubkey/auto-client-certをactive operation/last/next/proxy条件で評価する。未検査のfile/engine/store/backendはUNKNOWN。既存の確定upload FORBIDDENを隠さない。private keyのローカル使用をraw key uploadと呼ばない | cert/proxy-certの既知empty/last-empty clear、認証source非選択のformat-only type、未使用proxy、真のquery、消費DATAを維持。key/pubkeyのblankはnativeの全transfer前parse errorであり、認証成功例ではない。proxy-key emptyはNULL clearと同一ではなく、他の選択cert/autoを解除しない。CA/capath/pinnedpubkeyのpeer検証readをcredential送信へ誤認しない | 必要な認証/proxy/TLSを外すことを自動代替にせず、同じsource/目的に必要なbackend・operation条件をownerへ示す。ordinary cert名でも未検査ならUNKNOWNとなる費用を明記する |
+| curlのpositiveTLS別名とengine（egress、同8.7.1） | ftp-ssl/ftp-ssl-reqdをnative flag registryへ登録し、後続の選択engine sourceが解析から消えないようにする。optional/required/control TLSは独立stateとして扱う | engine-looking消費DATA、engine list/実help、engine非選択のordinary操作を維持。negativeTLS toggleは独立engine選択を消す証明ではない | backend/engine sourceの不足はUNKNOWNとしてownerへ渡す。SRPのcanonical/alias生成値は有限対照で既存UNKNOWNに停止しており、追加修復不要というmask記録とactivation completeness未証明を分ける |
+| 選択hyphen function source（共通/egress） | 既存二形式のliteral/unquoted headerに限る有限ASCII名を保持する。実callのbody/lifecycleが未検査なら通常printfのbodyでもUNKNOWN。外部clientの確定実行と取り違えず、独立したFORBIDDENを先行させる | 未使用定義と印字DATAは別扱い。旧通常2入力のALLOW→試作FORBIDDEN→採用UNKNOWNは、ALLOW回復ではなく明示した通常制限。任意function文法・全lifecycle・POSIX/Dashの保証ではない | 同じ目的・lookup・source・shell条件を保つ対応形式を再検査するか、body/call/lifecycle/対象/版/backend/cwd/envをownerへ示す。単なる改名やbodyのcopyを自動代替にしない |
+| ordinary function-unset（共通/egress、GNU Bash5.3の取得内容に結合した有限map修復） | 実builtinのfunction mode/default fallbackや未確定targetが削除し得る、既存の認識済みmapだけをtyped opaqueにし、後続の選択callをUNKNOWNにする。古い無害な本文を選び続けるALLOWを止める。削除成功を推測せず、全shell/全lifecycleへ広げない | variable-only、no-target、無関係/未使用、解析済みlocal unset function、外部unset、実queryの対照を維持。普通のdefault unsetでも、同名variable/readonly/conditional等で実際に削除されない可能性を解けなければ選択callがUNKNOWNとなる費用がある。evalの既存UNKNOWN maskは別記 | target・variable/functionの目的・shell/backend・定義/import source・lookup・cwd/envを保つ対応形式かowner確認。unset削除、mode変更、古い本文の保持/copyを自動代替にしない |
+| OpenSSH9.6p1 keyscanのresolver入力（egress） | 選択addressのfirst whitespace field、累積hostlist、-f stdinを分ける。確定secret filename由来の選択address/hostlistはFORBIDDEN、source/argv不足はUNKNOWN。後続output-only namelistはresolver sinkではない | literal host/IP、known-empty source、真正のusage退出、消費DATA、捨てられた無関係readerを対照にする。ordinary未検査hostlistやbackend依存argvも停止し得る。output選択はresolution無効化の証明ではない | 同じscan host/対象/sourceを保つproofと、版/backend/argv/cwd/envをownerへ渡す。usage退出をnative成功や通信しない全保証へはしない |
+| GNUWget1.25.0 selected bind resolver（egress） | bind-addressの有効last hostname sourceをresolverへ結び付け、確定secret生成元はFORBIDDEN、不足はUNKNOWN。bind-dns-addressはHAVE_LIBCARES条件のnumeric-only consumerであり、同じhostname lookupではない | literal local bind、last ordinary選択、query/file/noURL/known-empty input、pre-retrieval invalid-bodyの対照を維持。dynamic/unproved numeric inputはUNKNOWN。既存body/payload判定は独立に残す | 必要なlocal bindと対象operationを保つknown source/版/backend/argv条件かowner確認。bind selectorを消すだけの提案はしない |
+
+hyphenの継承sourceやnongit nested shell sourceはegressの担当範囲も含む。defaultのSG/AGがsource seedを受けずALLOWでも、それを保護済みの証拠にしない。最終settings dispatchと各hookの担当結果をL3で別に結合する。
+
+初期設定の継承は、必要な名前・known-empty/COUNT/KEY等の有限選択metadataとopaque sourceを分ける。実private PARAMETERS/VALUE、認証情報やCLI HOMEを取り出して公開する手順ではない。任意program/暗黙設定/環境全体の安全性はこの表から導かない。
+
+### L1・L2・L3とnative成立の別gate
+
+| 層/条件 | 最終sourceで確認するもの | 状態 |
+|---|---|---|
+| <!-- PR191:R37:L1-GATE --> L1 | option arity/消費DATA、programとargv0、設定/値の選択、function lifecycleのtyped metadata、本番抽出helperの意味 | **673/673 PASS**（L1解析651＋parity15＋追加本番契約7、固定source前後一致） |
+| <!-- PR191:R37:STRICT-GATE --> L2単一edge逆検証 | 自身の停止/分類/正常ALLOWを、修復一つだけを外した同一実tupleで確認。independent mask/UNPROVEDを残し、他guardをまとめて解除しない | 逆検証は同じ合成sourceの100 Hook機能・455比較pair・2670実Hook呼出しを資格化し、別shell1機能は15pair/30test観測（Hook0）として保持した。必要性UNPROVED3機能と元逆期待FAIL5profileを保持し、UNKNOWNの独立maskや追加precisionを成功へ書き換えていない。部品結果のcarryではなく同一合成sourceで再測定。 |
+| <!-- PR191:R37:FULL-GATE --> L2全件 | 元witnessの一字不変再投入、ownEG/SG/AG・reason prefix・broken、旧7824の入力/順序/oracle、正常対照と全owned/source安定 | **8204/8204 PASS、broken0、実Hook24612回**。旧7824の定義・順序・全oracle完全維持、追加380unique・alias16全assert、全owned/source安定。 |
+| <!-- PR191:R37:HEAD-CI-GATE --> 公開source/requiredCI | 最終manifest/source4/固定public source inventoryを同headへjoinし、required jobの実結果/Node版を取得 | **PENDING** |
+| <!-- PR191:R37:REVIEW-GATE --> fresh両review/thread | 同headの正常full review完了・zero findings・未解決thread処理。status成功と内部errorを区別 | **PENDING** |
+| <!-- PR191:R37:L3-GATE --> 実project入口 | 元settingsのdispatch/start/finish・own-hook判定、normal markerと停止後のHEAD/refs/index/objects/files等の副作用 | **PENDING**。Hook前API/safeguard停止はNOT_EXERCISED、prepare失敗はHook成功でない |
+| nativeの動作成立 | 実backend/版/設定/engine/PAM/権限、resolver/DNS、TLS/認証/transport等の必要条件 | **未検証**。局所修復を受け入れても表示を消さない |
+
+`if: "Bash(git *)"` 付きsecret-git/add-allと全Bash egressの既存登録は維持する。ifをraw prefixだと推測せず、quoted Gitのdirect判定を実dispatchへ移し替えない。L3でstub markerを確認した場合も、native client/DNS/TLS/認証/通信の証明とは分ける。
+
+R37の受入条件は旧7824のinput・順序・oracle変更0である。R36以前のR6P38 ALLOW→UNKNOWNという理由付き履歴は保持し、今回の変更と合算しない。旧headに同じ入力を入れた不足、私有prototypeが作った危険ALLOW/正常過剰拒否、器具/schema/新規prospective誤りを区分し、原FAIL・未完了・maskを監査台帳に残す。公開後gateがPENDINGである限り、ローカル受入や旧全件成功からPRのGoal達成を主張しない。
+
+同目的の対応形式を案内できなければ対象/operation/版/backend/argv/cwd/env/config/sourceと不明点をownerへ示す。個別操作の了承はhook無効化や別経路実行の了承ではない。local Node24.22.0を継続し、Node26は11月以降のowner判断、93依頼は閉鎖、大規模な責務refactorは後続とする。mergeしない。監査台帳を含む最終ZIPは実Goal達成後の別deliverableであり、このローカル受入だけでは作成しない。
+
+固定一次source: [Git2.54.0](https://git-scm.com/docs/git-config/2.54.0)、[util-linux2.39.3](https://github.com/util-linux/util-linux/tree/2da5c904e18fdcffd2b252d641e6f76374c7b406)、[curl8.7.1 consumer](https://github.com/curl/curl/tree/curl-8_7_1)、[OpenSSH9.6p1 keyscan](https://github.com/openssh/openssh-portable/blob/V_9_6_P1/ssh-keyscan.c)、[Wget1.25.0 release](https://ftp.gnu.org/gnu/wget/wget-1.25.0.tar.gz)、[GNU Bash Builtins](https://www.gnu.org/software/bash/manual/html_node/Bourne-Shell-Builtins.html)。ordinary-unsetの根拠は今回取得したGNU Bash5.3/Edition5.3本文の固定hashに結合し、旧取得失敗とは別にする。hyphen構文の既存Bash3.2 DUMMY観測や、installed binary/異版/backendの未確認を全shellの保証へ広げない。
+
+**以下のR36以前は旧cutの履歴である。古い本文・anchor名の「current／現在／現行」は当時のsource/日時を指し、R37の現在結果や導線の優先順位ではない。歴史本文は書き換えず保持する。**
+
+
+固定ローカルcut（UTC）: 2026-10-15T22:34:05.996284+00:00。公開source inventoryは旧17＋追加本番契約test2＝19を別途同headへ結合する。旧7824との集計比較は別fixtureであり、同一実tupleの因果比較と混同しない。
+<!-- PR191:R37:CONTRACT:END -->
+
 <!-- PR191:R36:CONTRACT:BEGIN -->
 <a id="r36-current-contract"></a>
 
