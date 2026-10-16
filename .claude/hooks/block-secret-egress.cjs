@@ -206,6 +206,7 @@ const inheritedFunctionNames = [...new Set(Object.entries(process.env).flatMap((
 const insp = guard.inspect(cmd, {
   trackOutboundEnvironment: true,
   deferWatchSourceProblems: true,
+  deferDbusRunSessionSourceProblems: true,
   deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -2963,9 +2964,10 @@ function rsyncAuthenticationRoute(invocation) {
 /** SSH_ASKPASS is also a local executable source for active native SSH transport consumers. */
 function sshAuthenticationSource(invocation) {
   if (!(invocation.helperEnvNames || []).includes('SSH_ASKPASS') ||
-      !['ssh', 'scp', 'sftp', 'rsync'].includes(invocation.name)) return false;
-  if (!knownInvocationContext(invocation) || invocation.incomplete) return true;
-  if (invocation.name === 'ssh') return !sshAuthenticationQuery(invocation);
+      !sshClientInvocation(invocation) && !['scp', 'sftp', 'rsync'].includes(invocation.name)) return false;
+  if (!knownInvocationContext(invocation) || invocation.incomplete) return invocation.name !== 'slogin' || deferSloginUnknown(invocation, 'UNKNOWN');
+  if (sshClientInvocation(invocation)) return !sshAuthenticationQuery(invocation) &&
+    (invocation.name !== 'slogin' || deferSloginUnknown(invocation, 'UNKNOWN'));
   if (invocation.name === 'scp') return scpConnectionSource(invocation, true);
   if (invocation.name === 'rsync') return rsyncAuthenticationRoute(invocation);
   return !(invocation.args.length === 0 || invocation.args.length === 1 && knownWord(invocation.args[0]) &&
@@ -3799,7 +3801,7 @@ function wgetBindResolverVerdict(invocation) {
 }
 
 // R38_DIRECT_DNS_ROLE_START — ISC BIND 9.20.0 finite CLI roles, not native/backend attestation.
-const DIRECT_DNS_CLIENTS = new Set(['dig', 'host', 'nslookup', 'delv']);
+const DIRECT_DNS_CLIENTS = new Set(['dig', 'host', 'nslookup', 'delv', 'ping', 'ping6']);
 function directDnsRole(invocation) {
   const result = { selectedWords: [], unknownSource: false, unknownArgv: false, terminal: false };
   const words = invocation.args || [];
@@ -3820,6 +3822,50 @@ function directDnsRole(invocation) {
     return result;
   };
   if (words.length > 64) { result.unknownArgv = true; return result; }
+  if (invocation.name === 'ping' || invocation.name === 'ping6') {
+    // iputils 20240117 and Apple network_cmds-606.140.1 have different option
+    // grammars (-h/-t/-W in particular). Certify only the common finite roles.
+    // -n changes output lookup; it does not suppress resolution of the target.
+    if (!words.length || ['-V', '--help', '--version'].includes(literal(words[0])) ||
+        words.length === 1 && literal(words[0]) === '-h') {
+      result.terminal = true; return result;
+    }
+    let afterDD = false, operandSeen = false;
+    for (let k = 0; k < words.length; k++) {
+      const word = words[k], s = text(word), known = scalar(word);
+      if (!afterDD && known && s === '--') { afterDD = true; continue; }
+      if (!afterDD && s.startsWith('-') && s !== '-') {
+        // GNU permutation and BSD stopping do not establish the same roles.
+        if (operandSeen || !known) { unknown = true; continue; }
+        for (let j = 1; j < s.length; j++) {
+          const ch = s[j];
+          if (invocation.name === 'ping6' && ch === 'a') { unknown = true; break; }
+          if ('aCdDfnqrv'.includes(ch)) continue;
+          if (!'cilpsIS'.includes(ch) && !(invocation.name === 'ping' && 'tW'.includes(ch))) {
+            unknown = true; break;
+          }
+          const value = j + 1 < s.length ? valueWord(word, j + 1) : words[++k];
+          const v = value && literal(value);
+          // Pattern, source/interface and numeric inputs have different native
+          // consumers. An unresolved value is not proof of a harmless argument.
+          if (v === undefined || v === '' ||
+              ch === 'p' && !/^[0-9a-f]{1,32}$/i.test(v) ||
+              'clst'.includes(ch) && !/^\d+$/.test(v) ||
+              'iW'.includes(ch) && !/^\d+(?:\.\d+)?$/.test(v)) unknown = true;
+          break;
+        }
+        continue;
+      }
+      // A quoted substitution is one word but its first byte can still be '-'.
+      // Preserve its producer span; -- or a known non-option prefix fixes role.
+      if (!afterDD && !known && (!s || s.startsWith('\0') || s.startsWith('$') || s.startsWith('`') ||
+          word.dynamicMaySplit !== false)) unknown = true;
+      operandSeen = true;
+      queryWords.push(word);
+    }
+    if (!queryWords.length || queryWords.length > 1) unknown = true;
+    return finish();
+  }
   if (invocation.name === 'dig') {
     // Native preparse skips consumed values and finds -r before any .digrc line is parsed.
     let noRc = false;
@@ -3952,6 +3998,38 @@ function directDnsResolverVerdict(invocation) {
   if (role.unknownSource || role.unknownArgv) return 'UNKNOWN';
   if (untrustedClientExecution(invocation, invocation.name)) return 'UNKNOWN';
   return payload;
+}
+
+/** Selected Ncat PEM credentials are local authentication sources, never raw key uploads. */
+function ncatCredentialSourceVerdict(invocation) {
+  if (invocation.name !== 'ncat' || invocation.definitionName || invocation.functionCallName) return false;
+  const role = socketAuthenticationRole(invocation, true);
+  // These queries exit during getopt, before either certificate context is built.
+  if (role.terminal) return false;
+  const cert = role.selected.get('ssl-cert'), key = role.selected.get('ssl-key');
+  // Unknown argv can select or consume a credential option; it cannot prove a source inactive.
+  if (role.unknown || !role.argcKnown || invocation.args.length > 128) return 'UNKNOWN';
+  if (!cert && !key) return false;
+  // Both pinned client and listener reject an absent pair member before opening either file.
+  if (!cert || !key) return false;
+  const literal = word => socketAuthenticationLiteralWord(word)?.text;
+  const proxyType = role.selected.has('proxy-type') ? literal(role.selected.get('proxy-type')) : 'http';
+  const proxyDns = role.selected.has('proxy-dns') ? literal(role.selected.get('proxy-dns')) : 'remote';
+  if (!proxyType || !proxyDns) return 'UNKNOWN';
+  // Fixed parser/mode errors are before the credential consumer, not TLS-success exemptions.
+  if (role.localSocket || role.operands.length > 2 || !role.listen && !role.operands.length ||
+      !['http', 'socks4', '4', 'socks5', '5'].includes(proxyType) ||
+      !['none', 'local', 'remote', 'both'].includes(proxyDns) ||
+      role.selected.has('proxy-type') && !role.selected.has('proxy') && (!role.listen || proxyType !== 'http') ||
+      role.listen && (role.selected.has('proxy') || role.selected.has('source')) ||
+      role.selectedFlags.has('zero') && (role.listen || role.selectedFlags.has('telnet') || role.execCount > 0) ||
+      !role.listen && (role.aclSpecs.length || role.aclFiles.length ||
+        role.selectedFlags.has('chat') || role.selectedFlags.has('talk')) ||
+      role.listen && !role.selected.has('proxy-type') && role.selected.has('ssl-alpn')) return false;
+  // Empty certificate filenames and /dev/null fail the first certificate load. Empty KEY is
+  // different: the selected certificate is read first, so it cannot clear that source.
+  if (['', '/dev/null'].includes(literal(cert))) return false;
+  return 'UNKNOWN';
 }
 
 function networkInvocation(invocation) {
@@ -4142,9 +4220,31 @@ function ghFilePayload(invocation) {
     outboundPayloadVerdict(invocation, transmittedValueWords);
 }
 
+/** Recognise the parsed SSH callee, including the compatibility name, without rewriting its identity proof. */
+function sshClientInvocation(invocation) {
+  return ['ssh', 'slogin'].includes(invocation.name) && !invocation.nonExec &&
+    !invocation.definitionName && !invocation.functionCallName;
+}
+
+/** Defer only the new compatibility-name UNKNOWN, leaving every confirmed refusal active. */
+function deferSloginUnknown(invocation, verdict) {
+  if (invocation.name !== 'slogin' || verdict !== 'UNKNOWN') return verdict;
+  (deferSloginUnknown.pending ||= new WeakSet()).add(invocation);
+  return false;
+}
+
+/** The existing SSH source parser exits on opaque source; the alias records the same UNKNOWN for the final gate. */
+function sshOperationRefusal(invocation, reason, category = 'UNKNOWN') {
+  if (deferSloginUnknown(invocation, category)) deny(reason, category);
+  return { sources: [], stdin: false, remoteWords: [] };
+}
+
 /** Select SSH commands/config sources that run locally, retaining proven non-executing query and DATA options. */
 function sshCommandSources(invocation) {
-  return sshOperation(invocation).sources;
+  const sources = sshOperation(invocation).sources;
+  // A selected alias helper is opaque source. Do not enter its nested code before independent refusals.
+  if (invocation.name === 'slogin' && sources.length) { deferSloginUnknown(invocation, 'UNKNOWN'); return []; }
+  return sources;
 }
 
 /** The supported scalar ssh_config values may use its documented double quotes. */
@@ -4314,7 +4414,7 @@ function sshOperation(invocation) {
       sources: operation.unknown || !knownInvocationContext(invocation)
         ? result.sources.map(source => ({ ...source, dynamic: true, literalValue: undefined })) : result.sources };
   }
-  if (invocation.name !== 'ssh') return { sources: [], stdin: false, remoteWords: [] };
+  if (!sshClientInvocation(invocation)) return { sources: [], stdin: false, remoteWords: [] };
   const options = new Map();
   const sendEnvOptions = [];
   const forwards = [];
@@ -4428,11 +4528,11 @@ function sshOperation(invocation) {
   // -G reads default config before dumping; -V/-Q already exited during proven argv parsing.
   // A host-less invocation exits at usage before process_config_files.
   if ((host || argvUncertain || invocation.incomplete) && !selectedConfig) {
-    deny('SSH の暗黙 user / system config が有効な実行 source（Match exec / helper 等）を選び得ますが、egress ガードで内容・選択・副作用を検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+    return sshOperationRefusal(invocation, 'SSH の暗黙 user / system config が有効な実行 source（Match exec / helper 等）を選び得ますが、egress ガードで内容・選択・副作用を検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   }
   if (selectedConfig && (argvUncertain || !configFile || configFile.dynamic ||
       configFile.text.toLowerCase() !== 'none' && configFile.text !== '/dev/null')) {
-    deny('SSH の -F config が未知の実行 source（Match exec 等）を選び、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+    return sshOperationRefusal(invocation, 'SSH の -F config が未知の実行 source（Match exec 等）を選び、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   }
   if (query && !argvUncertain && !unknown) {
     // -G dumps after explicit hostname canonicalization/CNAME selection; -V/-Q
@@ -4442,7 +4542,7 @@ function sshOperation(invocation) {
     const cnameSource = options.get('canonicalizepermittedcnames');
     const cname = cnameSource && literalSourceWord(cnameSource);
     if (canonicalSource && !['no', 'yes', 'always'].includes(canonical) || cnameSource && !cname) {
-      deny('SSH -G より前に使う明示 hostname resolution 設定の有効条件・source を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+      return sshOperationRefusal(invocation, 'SSH -G より前に使う明示 hostname resolution 設定の有効条件・source を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     }
     const proxy = sshCanonicalProxySelection(options);
     const direct = proxy.direct;
@@ -4452,7 +4552,7 @@ function sshOperation(invocation) {
       const selectedData = [options.get('hostname') || destinationWord, ...(canonical === 'yes' && options.has('canonicaldomains') ? [options.get('canonicaldomains')] : []), ...(cnameActive ? [cnameSource] : [])];
       // Keep existing unknown-source refusal; unsupported literal grammar only downgrades
       // generated/unproved selected DATA, without banning ordinary static query values.
-      if (!proxy.staticUnknown || outboundPayloadVerdict(invocation, selectedData)) deny('SSH -G より前の明示 hostname resolution と proxy の実選択を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+      if (!proxy.staticUnknown || outboundPayloadVerdict(invocation, selectedData)) return sshOperationRefusal(invocation, 'SSH -G より前の明示 hostname resolution と proxy の実選択を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
     }
     const canonicalActive = canonical === 'always' || canonical === 'yes' && direct;
     if (canonicalActive || cnameActive && (direct || canonical === 'always')) {
@@ -4466,7 +4566,7 @@ function sshOperation(invocation) {
           const token = hostnameLiteral.text[++p];
           if (token === '%') continue;
           if (token === 'h') originalHostSelected = true;
-          else deny('SSH -G より前の HostName token の展開 source を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+          else return sshOperationRefusal(invocation, 'SSH -G より前の HostName token の展開 source を確定できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
         }
         if (originalHostSelected) words.push(hostArgumentWord);
       }
@@ -4476,18 +4576,18 @@ function sshOperation(invocation) {
         require('node:net').isIP(hostnameLiteral.text) !== 0;
       if (canonicalActive && !numericHostname && options.has('canonicaldomains')) words.push(options.get('canonicaldomains'));
       const verdict = outboundPayloadVerdict(invocation, words);
-      if (verdict) deny(verdict === 'FORBIDDEN' ?
+      if (verdict) return sshOperationRefusal(invocation, verdict === 'FORBIDDEN' ?
         'SSH -G の設定表示より前に有効な hostname resolution が選ぶ host / domain DATA は、禁止された secret filename operand 由来です。内容・DNS 名の成立・native lookup・実通信は確認していません。' :
         'SSH -G の設定表示より前に有効な hostname resolution の host / domain DATA・生成元・argv/context を確定できません。' + UNKNOWN_OWNER_GATE, verdict);
     }
     return { sources: [], stdin: false, remoteWords: [] };
   }
-  if (unknown) deny('SSH の -o option が動的で、ローカル実行 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+  if (unknown) return sshOperationRefusal(invocation, 'SSH の -o option が動的で、ローカル実行 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   for (const key of ['pkcs11provider', 'securitykeyprovider']) {
     const source = options.get(key);
     const value = sshOptionScalar(source);
     if (source && value !== 'none' && !(key === 'securitykeyprovider' && value === 'internal')) {
-      deny('SSH の明示 provider option が選ぶローカル library / environment source と副作用を検査できません。queryまたは意味を確認したnone/internal指定が同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
+      return sshOperationRefusal(invocation, 'SSH の明示 provider option が選ぶローカル library / environment source と副作用を検査できません。queryまたは意味を確認したnone/internal指定が同目的・同条件を保てなければ' + UNKNOWN_OWNER_GATE);
     }
   }
   const sources = [];
@@ -4498,7 +4598,7 @@ function sshOperation(invocation) {
     if (key === 'proxycommand' && options.has('proxyjump') &&
         [...options.keys()].indexOf('proxyjump') < [...options.keys()].indexOf(key)) {
       const jump = literalSourceWord(options.get('proxyjump'));
-      if (!jump) deny('SSH の ProxyJump / ProxyCommand の実選択が未知で、command source の無効を証明できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
+      if (!jump) return sshOperationRefusal(invocation, 'SSH の ProxyJump / ProxyCommand の実選択が未知で、command source の無効を証明できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
       if (sshJumpRawValue(options.get('proxyjump')).toLowerCase() !== 'none') continue;
     }
     // OpenSSH expands these bytes before execution; the shell parser cannot prove the resulting argv.
@@ -5167,7 +5267,7 @@ function netcatAliasVerdict(invocation) {
 
 /** Identify network clients that actually consume pipeline/stdin data, excluding explicit query/receive-only modes. */
 function networkReadsStdin(invocation) {
-  if (invocation.name === 'ssh') return sshReadsInput(invocation);
+  if (sshClientInvocation(invocation)) return sshReadsInput(invocation);
   const alias = netcatAliasRole(invocation);
   if (alias) return alias.stdin;
   if (!['nc', 'ncat', 'telnet'].includes(invocation.name)) return false;
@@ -5416,7 +5516,7 @@ function requestDataStdinVerdict(invocation, all, allFiles = false, selection = 
 
 /** Keep the existing network-client selection separate from the reusable stdin DATA role. */
 function unsafeNetworkInput(invocation, all) {
-  const verdict = networkReadsStdin(invocation) ? stdinPayloadVerdict(invocation, all) : false;
+  const verdict = deferSloginUnknown(invocation, networkReadsStdin(invocation) ? stdinPayloadVerdict(invocation, all) : false);
   if (verdict === 'UNKNOWN' && netcatAliasName(invocation.name)) { deferredNetcatUnknown.add(invocation); return false; }
   return verdict;
 }
@@ -5828,6 +5928,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
   return {
     trackOutboundEnvironment: true,
     deferWatchSourceProblems: true,
+    deferDbusRunSessionSourceProblems: true,
     deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -5865,6 +5966,12 @@ function parallelSourceVerdict(invocation) {
 function utilLinuxSourceVerdict(invocation) {
   const role = invocation.utilLinuxLauncherRole;
   return role?.mode === 'unknown' && !role.priorLauncherUnknown && invocation.launcherUnknown ? 'UNKNOWN' : false;
+}
+
+/** Only the new D-Bus daemon/config/argv boundary is deferred; independent refusals retain priority. */
+function dbusRunSessionSourceVerdict(invocation) {
+  return invocation.launcherUnknown && invocation.dbusRunSessionRoles?.some(role =>
+    role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
 }
 
 /** Only watch-owned unresolved argv/source is deferred; ordinary parser problems remain immediate. */
@@ -6292,39 +6399,39 @@ for (const invocation of invocations) {
   if (remote.metadataWords?.length) {
     const verdict = remote.argvUncertain || remote.metadataUnknown ? 'UNKNOWN' :
       outboundPayloadVerdict(invocation, remote.metadataWords);
-    if (verdict) deny(verdict === 'FORBIDDEN' ?
+    if (deferSloginUnknown(invocation, verdict)) deny(verdict === 'FORBIDDEN' ?
       'SSH の選択された login / destination metadata を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-N/-n や remote command の有無とは独立した送信 DATA です。内容・認証・実送信の成立は確認していません。' :
       'SSH の選択された login / destination metadata の source・部分選択・展開・argv/context を確定できません。-N/-n は metadata の検査を省略する条件ではありません。' + UNKNOWN_OWNER_GATE, verdict);
   }
   if (remote.jumpUnknown || remote.jumpWords?.length) {
     const verdict = remote.jumpUnknown ? 'UNKNOWN' : outboundPayloadVerdict(invocation, remote.jumpWords);
-    if (verdict) deny(verdict === 'FORBIDDEN' ?
+    if (deferSloginUnknown(invocation, verdict)) deny(verdict === 'FORBIDDEN' ?
       'SSH の有効な ProxyJump chain が送る login / host DATA を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-N/-n や stdin と独立した役割です。native format・認証・接続・実送信は確認していません。' :
       'SSH の選択された ProxyJump chain の source・hop 成分・展開・argv/context を確定できません。同目的の known ordinary chain を保てなければ' + UNKNOWN_OWNER_GATE, verdict);
   }
   if (remote.forwardingUnknown || remote.forwardingWords?.length) {
     const verdict = remote.forwardingUnknown ? 'UNKNOWN' : outboundPayloadVerdict(invocation, remote.forwardingWords);
-    if (verdict) deny(verdict === 'FORBIDDEN' ?
+    if (deferSloginUnknown(invocation, verdict)) deny(verdict === 'FORBIDDEN' ?
       'SSH の有効な forwarding request が送る remote listen / stdio destination 成分を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-N/-n と独立した送信 DATA です。内容・認証・native format・server の受入・実送信は確認していません。' :
       'SSH forwarding の選択された request 成分・生成元・argv/context・有効条件を確定できません。local target / bind と immediate remote request は別の役割です。同目的・同条件を保つ known ordinary / query / 実 ClearAllForwardings による無効化が可能でなければ' + UNKNOWN_OWNER_GATE, verdict);
   }
   if (remote.environmentUnknown || remote.environmentWords?.length) {
     const verdict = remote.argvUncertain || remote.environmentUnknown ? 'UNKNOWN' :
       outboundPayloadVerdict(invocation, remote.environmentWords);
-    if (verdict) deny(verdict === 'FORBIDDEN' ?
+    if (deferSloginUnknown(invocation, verdict)) deny(verdict === 'FORBIDDEN' ?
       'SSH の有効な session が送る SetEnv / SendEnv / TERM の値を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-n の stdin 抑止とは独立した DATA です。内容・認証・server の受入・実送信は確認していません。' :
       'SSH の有効な session が選ぶ環境 DATA の source・export 属性・pattern・展開・argv/context を確定できません。-N / SessionType=none・実 query は、この env request 経路を選びません。' + UNKNOWN_OWNER_GATE, verdict);
   }
   if (remote.remoteWords.length) {
     const verdict = remote.argvUncertain ? 'UNKNOWN' : outboundPayloadVerdict(invocation, remote.remoteWords);
-    if (verdict) deny(verdict === 'FORBIDDEN' ?
+    if (deferSloginUnknown(invocation, verdict)) deny(verdict === 'FORBIDDEN' ?
       'SSH remote command の引数を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。-n による stdin 抑止とは独立した送信データです。内容や実送信の成立を確認したものではありません。' :
       'SSH remote command の引数を生成する source・program・stdout・argv/context を確定できません。-n は remote command DATA の検査を省略する条件ではありません。' + UNKNOWN_OWNER_GATE, verdict);
   }
   if (remote.canonicalDomainUnknown || remote.canonicalDomainWords?.length) {
     const payload = outboundPayloadVerdict(invocation, remote.canonicalDomainWords);
     const verdict = payload && remote.canonicalDomainUnknown ? 'UNKNOWN' : payload;
-    if (verdict) deny(verdict === 'FORBIDDEN' ?
+    if (deferSloginUnknown(invocation, verdict)) deny(verdict === 'FORBIDDEN' ?
       'SSH の有効な hostname canonicalization が選ぶ CanonicalDomains DATA の同じ生成元読取が、禁止された secret filename operand に当たります。-N と独立した DNS source 役割です。内容・label format・native DNS・認証・実通信は確認していません。' :
       'SSH の active CanonicalDomains の生成元・hostname / mode / proxy / dot-limit の実選択・argv/context を確定できません。同じ接続目的・canonicalization 条件を保つ対応 known source が可能でなければ' + UNKNOWN_OWNER_GATE, verdict);
   }
@@ -6388,9 +6495,9 @@ for (const g of inspectedGits) {
     'Git push option / 宛先 ref の値を生成する同じ source 内の読取が、禁止された secret filename operand に当たります。repository・index の検査とは独立して server に送る DATA です。内容や実送信の成立を確認したものではありません。' :
     'Git push option / 宛先 ref の値を生成する source・program・stdout・argv/context を確定できません。repository・index の判定だけでは送信データを検査できません。' + UNKNOWN_OWNER_GATE, gitVerdict(g, verdict));
 }
-if (invocations.some((invocation) =>
-  ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh', 'ssh'].includes(invocation.name) &&
-  invocation.args.some((word) => word.ansiCUnknown))) {
+if (invocations.some((invocation) => deferSloginUnknown(invocation,
+  (['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh'].includes(invocation.name) || sshClientInvocation(invocation)) &&
+  invocation.args.some((word) => word.ansiCUnknown) ? 'UNKNOWN' : false))) {
   deny('ネットワーク client の ANSI-C 引数が解読できず、送信 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
 }
 for (const invocation of invocations) if (netcatAliasName(invocation.name) &&
@@ -6427,7 +6534,7 @@ if (invocations.some(invocation => opensslOutboundVerdict(invocation, invocation
 // New selected DATA checks retain independent existing payload/stdin FORBIDDEN priority.
 const selectedResolverAndEnvironmentVerdicts = selectedSshBindPayloads.map(({ invocation, remote }) => {
   const verdict = outboundPayloadVerdict(invocation, remote.bindAddressWords || []);
-  return contextualVerdict(invocation, remote.bindAddressUnknown ? verdict ? 'UNKNOWN' : false : verdict);
+  return deferSloginUnknown(invocation, contextualVerdict(invocation, remote.bindAddressUnknown ? verdict ? 'UNKNOWN' : false : verdict));
 }).concat(invocations.filter(invocation => invocation.name === 'telnet').map(invocation =>
   contextualVerdict(invocation, telnetEnvironmentPayloadVerdict(invocation))));
 const selectedResolverAndEnvironmentVerdict = selectedResolverAndEnvironmentVerdicts.find(verdict => verdict === 'FORBIDDEN') ||
@@ -6439,7 +6546,7 @@ if (invocations.some(telnetCredentialSourceVerdict)) deny('telnet の有効な�
 // Executable replacement is independent of visible upload/DNS/stdin payloads.
 // Keep earlier confirmed payload verdicts and separately parsed function bodies unchanged.
 if (invocations.some(invocation => {
-  const unknown = untrustedClientExecution(invocation);
+  const unknown = deferSloginUnknown(invocation, untrustedClientExecution(invocation, sshClientInvocation(invocation) ? invocation.name : null) ? 'UNKNOWN' : false);
   if (unknown && netcatAliasName(invocation.name)) { deferredNetcatUnknown.add(invocation); return false; }
   return unknown;
 }) || utilLinuxQueryInvocations.some(untrustedUtilLinuxQueryExecution)) deny('認識した network / resolver client の実行名・PATH lookup・明示 program path・先行 context を確定できません。GETやquery風の引数も、置換された実行 source の本文や副作用を証明しません。同じ program・版・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
@@ -6477,7 +6584,8 @@ const sshReadEvidence = invocations.flatMap((invocation) => {
     .map((word) => word.text.replace(/(^|\/)\.env\.example$/i, '$1'));
 }).join('\n');
 if (SECRET_FILE_RE.test(sshReadEvidence) &&
-    invocations.some((invocation) => invocation.name === 'ssh' && sshReadsInput(invocation))) {
+    invocations.some((invocation) => sshClientInvocation(invocation) &&
+      deferSloginUnknown(invocation, sshReadsInput(invocation) ? 'UNKNOWN' : false))) {
   deny('secret filename evidence と stdin を消費し得る SSH セッションが同一コマンドにありますが、送信への関係を確認できません (egress guard)。owner に対象・操作・cwd・source と不明点を確認してください。');
 }
 
@@ -6584,6 +6692,11 @@ if (invocations.some((invocation) => rsyncPoptConfigRole(invocation).active)) {
   deny('GNU rsync/popt が到達する option selector は、既知の -a・help・version より先に default alias / exec source を選び得ます。実 backend・設定・選択された argv/program を検査できないため判断不能です。設定の読取や実実行・通信が成立した証明ではありません。必要な option の意味を保つ対応済み形式がなければ owner に対象・操作・source/config/profile・cwd/env と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
+// The selected D-Bus daemon/config source must not hide an independent confirmed refusal.
+if (invocations.some(dbusRunSessionSourceVerdict)) {
+  deny('dbus-run-session の daemon/config の実行 source または PROGRAM/argv 境界を検査できません。同じ source・対象・cwd/env・操作を保てる対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
 // New watch uncertainty cannot replace an existing confirmed refusal/category above.
 if (invocations.some(watchSourceVerdict)) {
   deny('watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
@@ -6621,6 +6734,17 @@ if (invocations.some(wgetSelectedCredentialVerdict)) deny('Wget の有効な cli
 // Only the new Netcat alias/backend uncertainty is deferred after independent existing refusals.
 if (invocations.some(invocation => deferredNetcatUnknown.has(invocation))) {
   deny('Netcat の実行名・backend/版・option/値/operand 境界・選択DATA/stdin/source/context を確定できません。共通文法の通常値・実help、または同目的・同条件を保つ対応済みbackend形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// Selected Ncat authentication files never preempt an independent confirmed refusal.
+if (invocations.some(ncatCredentialSourceVerdict)) {
+  deny('Ncat の選択 certificate / private key file・TLS backend・mode / argv と認証 source を検査できません。秘密鍵の local 使用を raw key upload と同一視しません。同じ対象・認証・操作・cwd/env/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+
+// The new SSH compatibility-name uncertainty follows all independent existing refusals.
+if (invocations.some(invocation => deferSloginUnknown.pending?.has(invocation))) {
+  deny('slogin が選ぶ SSH config / helper / authentication / DATA / stdin / 実行 identity・argv/context を確定できません。同じ program・操作・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

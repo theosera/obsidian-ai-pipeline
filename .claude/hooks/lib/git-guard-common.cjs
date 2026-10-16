@@ -1520,7 +1520,7 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas']);
+const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session']);
 
 /** util-linux 2.39.3: priority/PID roles and namespace-free direct execvp. */
 function utilLinuxLauncherArgs(rest, info, name) {
@@ -1770,7 +1770,53 @@ function parallelArgs(rest, info) {
   return rest.length;
 }
 
+/** D-Bus 1.14.10: exact options precede PROGRAM; selected daemon/config is executable source. */
+function dbusRunSessionArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { backend: 'dbus-1.14.10', mode: 'unknown', childIndex: null,
+    daemonWord: null, configWord: null, priorLauncherUnknown: info.launcherUnknown };
+  (info.dbusRunSessions ||= []).push(role);
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  const unknown = () => { info.launcherUnknown = true; return rest.length; };
+  if (rest.length > 128) return unknown();
+  let k = 0;
+  while (k < rest.length) {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) return unknown();
+    if (text === '--') { k++; break; }
+    if (!text.startsWith('-')) break;
+    // These exit during argv parsing, before either the daemon or PROGRAM starts.
+    if (['--help', '-h', '-?', '--version'].includes(text)) { role.mode = 'query'; return -1; }
+    const eq = text.indexOf('='), option = eq < 0 ? text : text.slice(0, eq);
+    const field = option === '--dbus-daemon' ? 'daemonWord' : option === '--config-file' ? 'configWord' : null;
+    if (!field) return unknown();
+    if (role[field]) { role.mode = 'early-error'; return -1; }
+    const value = eq < 0 ? rest[++k] : { ...word, text: text.slice(eq + 1),
+      literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(eq + 1) : undefined };
+    if (!value) { role.mode = 'early-error'; return -1; }
+    // A consumed --help/-- is DATA. Unknown value content is not permission to guess argv width.
+    if (!wrapperValueKnown(value) || value.ansiCUnknown) return unknown();
+    role[field] = value;
+    k++;
+  }
+  if (k >= rest.length) { role.mode = 'early-error'; return -1; }
+  if (!known(rest[k]) || rest[k].dynamic || textOf(rest[k]) === '') return unknown();
+  role.childIndex = k;
+  if (role.daemonWord || role.configWord) info.launcherUnknown = true;
+  else role.mode = 'exec';
+  // The child inherits the new bus address, not a prior literal proof for these environment slots.
+  info.envOps.push({ set: 'DBUS_SESSION_BUS_ADDRESS', carrier: null });
+  for (const name of ['DBUS_SESSION_BUS_PID', 'DBUS_SESSION_BUS_WINDOWID', 'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE']) {
+    info.envOps.push({ unset: name });
+  }
+  return k;
+}
+
 const WRAPPERS = {
+  'dbus-run-session': dbusRunSessionArgs,
   ...Object.fromEntries(SETARCH_ALIASES.map(name => [name, (rest, info) => opaqueUtilLinuxArgs(rest, info, name)])),
   flock: flockArgs,
   setarch: (rest, info) => opaqueUtilLinuxArgs(rest, info, 'setarch'),
@@ -1966,7 +2012,11 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
       (info.wrapperProgramWords ||= []).push({ name: base, word: w });
       const r = wrapper(SCALAR_LAUNCHERS.has(base) && launcherScalarState
         ? rest.map(word => literalScalarWord(word, launcherScalarState)) : rest, info);
-      if (r < 0) { info.nonExec = true; info.name = base; return info; }
+      if (r < 0) {
+        // A queried child does not undo an outer D-Bus daemon/config execution source.
+        info.nonExec = !info.dbusRunSessions?.some(role => role.mode === 'unknown' && role.childIndex !== null);
+        info.name = base; return info;
+      }
       if (base === 'parallel') {
         info.name = base; info.nameWord = w; info.args = rest; return info;
       }
@@ -3286,7 +3336,7 @@ function inspect(cmd, options = {}) {
           res.problems.push('@P で再評価する prompt の値を確かめられず、保存された source の実行を検査できない');
         }
       } else if (evaluation.kind === 'source') {
-        const inner = inspectMediatedSource(evaluation.text, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true });
+        const inner = inspectMediatedSource(evaluation.text, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true, deferDbusRunSessionSourceProblems: options.deferDbusRunSessionSourceProblems === true });
         if (inner.problems.length) res.problems.push(`Bash の current-environment command substitution を検査できない（${inner.problems[0]}）`);
       }
     };
@@ -3411,6 +3461,7 @@ function inspect(cmd, options = {}) {
       scriptLauncherRole: info.scriptLauncher || null,
       watchLauncherRole: info.watchLauncher || null,
       parallelLauncherRole: info.parallelLauncher || null,
+      dbusRunSessionRoles: info.dbusRunSessions || [],
       utilLinuxLauncherRole: info.utilLinuxLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
@@ -3814,12 +3865,13 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
       const utilLinuxUnknown = info.utilLinuxLauncher?.mode === 'unknown' && !info.utilLinuxLauncher.priorLauncherUnknown;
       const parallelUnknown = info.parallelLauncher?.mode === 'unknown' && !info.parallelLauncher.priorLauncherUnknown;
       const watchUnknown = info.watchLauncher?.mode === 'unknown' && !info.watchLauncher.priorLauncherUnknown;
+      const dbusUnknown = info.dbusRunSessions?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
       // Egress defers only these registered launcher-owned source uncertainties; other problems stay immediate.
-      if (!(utilLinuxUnknown && options.deferUtilLinuxSourceProblems === true) && !(parallelUnknown && options.deferParallelSourceProblems === true) && !(watchUnknown && options.deferWatchSourceProblems === true)) res.problems.push(utilLinuxUnknown ? 'util-linux launcher の option・lock/priority/PID・child、または personality/namespace/root/cwd/env/credential/PAM/既定 shell の実行条件を確認できません。同じ lock/scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : parallelUnknown ? 'parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
+      if (!(utilLinuxUnknown && options.deferUtilLinuxSourceProblems === true) && !(parallelUnknown && options.deferParallelSourceProblems === true) && !(watchUnknown && options.deferWatchSourceProblems === true) && !(dbusUnknown && options.deferDbusRunSessionSourceProblems === true)) res.problems.push(dbusUnknown ? 'dbus-run-session の daemon/config の実行 source または PROGRAM/argv 境界を検査できません。同じ source・対象・cwd/env・操作を保てる対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : utilLinuxUnknown ? 'util-linux launcher の option・lock/priority/PID・child、または personality/namespace/root/cwd/env/credential/PAM/既定 shell の実行条件を確認できません。同じ lock/scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : parallelUnknown ? 'parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;
     }
     if (positionalUnknown || (positionalExec && info.name === 'git')) {
@@ -3882,7 +3934,7 @@ function inspect(cmd, options = {}) {
     if (trap) {
       if (trap.unknown) res.problems.push('trap の action の位置を読みきれず、実行する source を検査できない');
       for (const script of trap.scripts) {
-        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true });
+        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true, deferDbusRunSessionSourceProblems: options.deferDbusRunSessionSourceProblems === true });
         if (inner.problems.length) res.problems.push(`trap の action を検査できない（${inner.problems[0]}）`);
         const trace = sourceTraceEffects(inner);
         if (trace.prompt) state.identitySources.set('PS4', null);
@@ -3903,7 +3955,7 @@ function inspect(cmd, options = {}) {
     if (alias) {
       if (alias.unknown) res.problems.push('alias の定義の位置や値を読みきれず、実行する source を検査できない');
       for (const script of alias.scripts) {
-        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true });
+        const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true, deferDbusRunSessionSourceProblems: options.deferDbusRunSessionSourceProblems === true });
         if (inner.problems.length) res.problems.push(`alias の値を検査できない（${inner.problems[0]}）`);
         if (sourceChangesValues(inner)) state.valuesTainted = true;
       }

@@ -20,6 +20,33 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R39:CONTRACT:BEGIN -->
+
+<a id="r39-current-contract"></a>
+
+## R39: 実行対象・SSH互換名・認証source・ping宛先の有限契約
+
+基点は `2aa6edfa35d1d6774df054130b924866bc360a70`。この4件は基点のHookへ元レビュー入力をDATAとして与えたときの不足である。直前の`93eedd0c`と基点のruntime4ファイルは同一であり、直前のtest/台帳修正が新しく作ったruntimeの穴とは区別する。Hook通過、固定consumerのコード上の成立条件、実hostでの実行・認証・通信成功は別の証拠である。元入力の危険なコマンドをnative実行せず、追加L3も行わない。
+
+| 対象・固定consumer | 守るもの／止める条件 | 通常対照・影響・出口 |
+|---|---|---|
+| D-Bus 1.14.10 `dbus-run-session` | option値・`--`・PROGRAMを役割別に消費し、実childを既存ガードへ渡す。明示daemon/configや未解決argvはUNKNOWN。外側で選択されたsourceを、内側childのhelpで不活性にしない。 | 既定起動の既知ordinary child、真正query、source起動前の確定した引数エラー、PROGRAM後のoption DATAを区別。明示config/daemonが必要な通常作業もUNKNOWN。同じbus/config・child・cwd/env条件を保てなければownerへ確認する。既定daemonを含む任意binaryの内容を認証するものではない。 |
+| OpenSSHの`ssh`互換名`slogin`（Debian bookwormの同名manual、OpenSSH 9.6p1のSSH consumer） | parsed calleeが実際に互換名のときに既存SSHのstdin・remote DATA・metadata・auth/config/identity検査を適用。実name/nameWordを`ssh`へ書換えない。 | `-F none`を含む対応済みordinary操作、真正query、実stdin抑止、印字DATA・既知function overrideを区別。新aliasのactive command-valued helperは選択後にopaque UNKNOWNとし、本文内のFORBIDDENを全て解析したとは主張しない。canonical sshの既存解析は保持。同じhelper/設定/認証・対象を保てない場合はownerへ不足条件を渡す。全SSHの一律禁止やhelper無効化を自動の代替にしない。 |
+| Nmap `f06480daed9a9b2cdce61904222cc87788afdf84` のNcat TLS credential consumer | 選択されたcertificate/keyの組、last-value、暗黙のTLS有効化、client/listenerと起動前exitを区別。実際に読み得る未検査の認証file/backendはUNKNOWN。private keyのローカル使用をraw key uploadと同一視しない。 | 真正query、consumerへ到達しない確定条件、無関係reader・ordinary接続を区別。正常なcertificate/keyを使う通信も未検査sourceならUNKNOWN。認証・宛先・操作・cwd/env/sourceを保つ対応済み形式がなければownerへ確認する。独立した秘密stdin/payloadのFORBIDDENは維持する。 |
+| iputils 20240117／Apple network_cmds-606.140.1の`ping`・`ping6` | 選択hostnameの元の語と生成元をresolver判定へ渡す。秘密由来が確定した選択値はFORBIDDEN。未知の先頭byte・option/値/operand境界、backend差・未解決生成元はUNKNOWN。`-n`は宛先のforward lookupを免除しない。 | ordinary hostname/IP、共通のcount等のarity、`--`、真正の先頭query、印字DATA・無関係readerを残す。`-h`はAppleで値付きの別操作であり、一般的helpと扱わない。複数operand・operand後option・ping6の`-t/-W`等の版差はUNKNOWNになり得る。同じ対象・mode・source・backendを保てなければownerへ確認し、hostnameのIP置換を自動の同目的代替にしない。 |
+
+固定一次資料は[D-Bus manual](https://dbus.freedesktop.org/doc/dbus-run-session.1.html)と[1.14.10 release](https://dbus.freedesktop.org/releases/dbus/dbus-1.14.10.tar.xz)、[Debian slogin manual](https://manpages.debian.org/bookworm/openssh-client/slogin.1.en.html)、[OpenSSH 9.6p1 consumer](https://github.com/openssh/openssh-portable/blob/V_9_6_P1/ssh.c)、[Ncat main](https://github.com/nmap/nmap/blob/f06480daed9a9b2cdce61904222cc87788afdf84/ncat/ncat_main.c)・[connect](https://github.com/nmap/nmap/blob/f06480daed9a9b2cdce61904222cc87788afdf84/ncat/ncat_connect.c)・[listen](https://github.com/nmap/nmap/blob/f06480daed9a9b2cdce61904222cc87788afdf84/ncat/ncat_listen.c)、[iputils ping](https://github.com/iputils/iputils/blob/20240117/ping/ping.c)、[Apple ping](https://github.com/apple-oss-distributions/network_cmds/blob/network_cmds-606.140.1/ping.tproj/ping.c)・[ping6](https://github.com/apple-oss-distributions/network_cmds/blob/network_cmds-606.140.1/ping6.tproj/ping6.c)に限定する。上流9.6p1が`slogin`を作成することや、実hostに同alias/binaryが存在することは、このmanualの同義性から推定しない。各Hook試験は入力DATAであり、native DNS/TLS/認証・外部送信は未実証のまま残す。
+
+### 公開runnerの台帳binding退行
+
+直前の根拠ID整理で台帳JSONの内容が変わった一方、runner内の固定hashが旧値のまま残り、`require`が`R38_LEDGER_EXACT_JSON_BINDING`で終了した。これは今回の作業で生じた器具の退行であり、4件のruntime不足とは別である。固定hash2箇所を実際の台帳JSONへ合わせ、元8454件の入力・順序・oracleを変えずimportを回復する。required CIへ実runner importの成功と、使い捨てcopyの台帳改変がimport前半で拒否される正負対照を加える。import成功を全件試験成功へ数えない。
+
+全件試験では元8454件の定義を保持し、新しいroleの対照を別IDとして追加する。修復の逆検証は一つの新しい判定または接続だけを外し、無関係なFORBIDDENと正常ALLOWを維持する。固定sourceのL1/L2と、公開headのCI/fresh reviewは別に記録する。過去のL3 FAIL/NOT_EXERCISED・未資格は消さず、追加試行しない。
+
+全件の最初の比較では、起動元から継承された`TERM`により旧・新source双方のTelnet正常対照35件がUNKNOWNとなった（元8454件の旧・新判定差は0、追加132件は全て期待一致）。これは同じ条件の35件を合格へ読み替えず保存する。試験用の基底環境から`TERM`／`DISPLAY`／`PRINTER`を外し、各caseの明示`env`は変更せず後段で適用する。productionで継承sourceを検査する判定は変えない。端末環境による試験の揺れを除いた同一入力・同一fixture条件で、旧・新sourceを再比較する。
+
+<!-- PR191:R39:CONTRACT:END -->
+
 <!-- PR191:R38:CONTRACT:BEGIN -->
 
 <a id="r38-current-contract"></a>

@@ -18,6 +18,18 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R39:README:BEGIN -->
+
+### R39: D-Bus launcher・SSH別名・Ncat認証source・ping resolver
+
+基点は `2aa6edfa35d1d6774df054130b924866bc360a70`。新たな4指摘に対し、実行対象、選択された認証source、resolverへ渡る値を有限に扱う。[対応条件・通常作業への影響・ownerへの出口](docs/security/git-command-guards.md#r39-current-contract)を参照する。秘密由来の選択payloadはFORBIDDEN、未検査のsource・backend/argv・生成元はUNKNOWNで停止する。新しいUNKNOWNは、別に確定した既存FORBIDDENを先取りしない。
+
+公開runnerの台帳hash更新漏れも修復し、required CIにrunner importの正負対照と新roleの純粋解析試験を加える。ここでのimportは全件Hook検証ではなく、コマンド文字列を実行しない。Nodeの版指定は24のまま、26導入は変更しない。
+
+この節は修復契約を示す。固定sourceでの全件・逆検証、公開headのrequired CI、両fresh full reviewは、それぞれPR本文の取得時刻とheadへ結合する。以下のR38以前の数値を新sourceへ持ち越さない。追加L3は実施せず、既存のFAIL・未到達・未資格を残し、既知の限界として扱う。mergeはowner判断である。
+
+<!-- PR191:R39:README:END -->
+
 <!-- PR191:R38:README:BEGIN -->
 
 ### R38: 選択sourceの契約と検証状況
