@@ -1838,10 +1838,11 @@ const WRAPPERS = {
   setsid: (rest, info) => launcherArgs(rest, info, 'setsid'),
   taskset: (rest, info) => utilLinuxLauncherArgs(rest, info, 'taskset'),
   ionice: (rest, info) => launcherArgs(rest, info, 'ionice'),
-  command: (rest) => {
+  command: (rest, info) => {
     let k = 0;
     while (k < rest.length && /^-[pvV]+$/.test(rest[k].text)) {
       if (/[vV]/.test(rest[k].text)) return -1; // command -v は実行しない
+      if (rest[k].text.includes('p')) info.commandDefaultSearch = true;
       k++;
     }
     if (rest[k]?.text === '--' && !rest[k].dynamic) k++;
@@ -1961,7 +1962,7 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
   const info = {
     name: null, nameWord: null, args: [], assigns: [], assignRaws: [],
     cdLike: false, incomplete: false, nonExec: false, dynamicName: false, executableExpansionUnknown: false, splitString: false,
-    envOps: [], wrapped: false, wrapperNames: [], persistsEnv: false, envUnknown: false, splitWords: [],
+    envOps: [], wrapped: false, wrapperNames: [], commandDefaultSearch: false, persistsEnv: false, envUnknown: false, splitWords: [],
     launcherUnknown: false, launcherArgs: [], childArgv0: null, argv0Word: null, argv0Unknown: false,
   };
   let k = 0;
@@ -2121,6 +2122,9 @@ const GIT_TRANSPORT_SOURCE_ENV = new Set(['GIT_PROXY_COMMAND', 'GIT_SSH_COMMAND'
 const TRACKED_VALUE_ENV = new Set([...GIT_TRANSPORT_SOURCE_ENV, ...GIT_HTTP_METADATA_ENV, ...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, ...GIT_CONFIG_SOURCE_ENV, 'PS4']);
 const trackedValueEnvironment = name => TRACKED_VALUE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 const gitConfigurationEnvironment = name => GIT_CONFIG_SOURCE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
+/** Selected environment for a late pre-commit reader check; opt-in, never an outbound-value proof. */
+const gitPreCommitEnvironmentName = name => typeof name === 'string' && !/[=\0]/.test(name) &&
+  (/^GIT_/.test(name) || ['HOME', 'XDG_CONFIG_HOME', 'PAGER', 'PATH'].includes(name));
 /** A stored shell value enters a child environment only with a selected export attribute. */
 function identityEnvironmentSources(state) {
   return new Map([...state.identitySources].flatMap(([name, word]) => {
@@ -3182,8 +3186,9 @@ let inspectionSerial = 0;
 
 /** Inspect executable Git invocations, associating preceding scope changes with each invocation. */
 function inspect(cmd, options = {}) {
-  // Opt in only for egress: an explicit SendEnv can select any exported scalar.
+  // Egress tracks arbitrary SendEnv values; the late pre-commit pass tracks only its selected environment.
   const trackedEnv = name => trackedValueEnvironment(name) ||
+    options.trackGitPreCommitEnvironment === true && gitPreCommitEnvironmentName(name) ||
     options.trackOutboundEnvironment === true && typeof name === 'string' && name.length > 0 && !/[=\0]/.test(name);
   const outboundScalarWord = (word, state) => {
     const selected = literalScalarWord(word, state);
@@ -3240,7 +3245,8 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown, identitySources: new Map([['PS4', { text: '+ ', dynamic: false }]]), identityExports: new Map([['PS4', false]]), promptRefNames: new Set(), xtrace: false, promptvars: true, localShellOptions: false });
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown ||
+    options.trackGitPreCommitEnvironment === true && !!options.initialGitPreCommitEnvironmentUnknown, identitySources: new Map([['PS4', { text: '+ ', dynamic: false }]]), identityExports: new Map([['PS4', false]]), promptRefNames: new Set(), xtrace: false, promptvars: true, localShellOptions: false });
   const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports), promptRefNames: new Set(s.promptRefNames) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
@@ -3256,6 +3262,14 @@ function inspect(cmd, options = {}) {
     }
     const selected = childIdentityState(new Map((options.initialOutboundEnvironmentSources || [])
       .filter(source => trackedEnv(source.name)).map(source => [source.name, source.word])));
+    for (const [name, word] of selected.identitySources) initial.identitySources.set(name, word);
+    for (const [name, exported] of selected.identityExports) initial.identityExports.set(name, exported);
+  }
+  if (options.trackGitPreCommitEnvironment === true && Array.isArray(options.initialGitPreCommitEnvironmentSources)) {
+    const initial = stateFor(parsed.scope);
+    const selected = childIdentityState(new Map(options.initialGitPreCommitEnvironmentSources
+      .filter(source => gitPreCommitEnvironmentName(source.name)).map(source => [source.name, source.word])));
+    // Values seed only the late metadata pass: inherited HOME is not a command-scope target mutation.
     for (const [name, word] of selected.identitySources) initial.identitySources.set(name, word);
     for (const [name, exported] of selected.identityExports) initial.identityExports.set(name, exported);
   }
@@ -3456,6 +3470,7 @@ function inspect(cmd, options = {}) {
       wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
       executableExpansionUnknown: info.executableExpansionUnknown,
       wrapperNames: info.wrapperNames,
+      commandDefaultSearch: info.commandDefaultSearch === true,
       wrapperProgramWords: info.wrapperProgramWords || [],
       argv0Word: selectedChildArgv0Word(info, expansionState), argv0Unknown: info.argv0Unknown,
       launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
@@ -3477,6 +3492,9 @@ function inspect(cmd, options = {}) {
           { text: '', raw: "''", quoted: true, dynamic: false, dynamicMaySplit: false } : null :
           word?.defaultGhConfigRoot && word.text !== '' ? null : word })) : [],
       outboundEnvironmentUnknown: options.trackOutboundEnvironment === true && outboundEnvironmentUnknown,
+      gitPreCommitEnvironmentSources: options.trackGitPreCommitEnvironment === true
+        ? [...identitySources].filter(([name]) => gitPreCommitEnvironmentName(name)).map(([name, word]) => ({ name, word })) : [],
+      gitPreCommitEnvironmentUnknown: options.trackGitPreCommitEnvironment === true && outboundEnvironmentUnknown,
       gitIdentitySources: [...identitySources].filter(([name]) => GIT_IDENTITY_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitPagerEnvSources: [...identitySources].filter(([name]) => GIT_PAGER_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitTransportSources: [...identitySources].filter(([name]) => GIT_TRANSPORT_SOURCE_ENV.has(name)).map(([name, word]) => ({ name, word })),
@@ -4263,8 +4281,12 @@ function aliasProblem(g, baseDir) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(g.sub)) return `git の subcommand の形を読めない（${g.sub}）`;
   if (g.gitDir || g.workTree) return `--git-dir / --work-tree を付けた builtin でない subcommand（${g.sub}）は検査できない`;
   const dir = resolveDir(baseDir, g.cdirs);
+  // This is an internal config observation, not the proposed Git invocation.
+  // Explicit Trace2 zeroes also prevent fallback to system/global destinations.
+  const env = { ...process.env, GIT_TRACE2: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE2_PERF: '0' };
+  for (const name of Object.keys(env)) if (/^GIT_TRACE/.test(name)) env[name] = '0';
   try {
-    execFileSync('git', ['config', '--get', `alias.${g.sub}`], { cwd: dir, stdio: ['ignore', 'ignore', 'ignore'] });
+    execFileSync('git', ['--no-pager', 'config', '--get', `alias.${g.sub}`], { cwd: dir, env, stdio: ['ignore', 'ignore', 'ignore'] });
     return `git の alias（${g.sub}）は、中身を検査できない`;
   } catch (e) {
     if (e && e.status === 1) return null;
@@ -5065,6 +5087,8 @@ module.exports = {
   parseGitObjectRoute,
   gitObjectInputDecision,
   preCommitConfigKey,
+  gitPreCommitEnvironmentName,
+  trustedGitExecutable,
   messageFileSource,
   grepPagerEffect,
   gitTypedArguments,

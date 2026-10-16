@@ -20,6 +20,74 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R40:CONTRACT:BEGIN -->
+
+<a id="r40-current-contract"></a>
+
+## R40: commit 前の Git reader と検査用 Git の有限契約
+
+基点は公開 `d0d4f6f070078195f1e6e7df824a4a2b325ec667`。読取りというcommand名でも、commit前にpager・fsmonitor・diff driver／textconv等が動けば、PreToolUseが見たindexを後から変え得る。今回追加するのは、**同じcommandの最初のactive commitより前にあるGit reader**について、実効設定と選択sourceを確認するsecret-gitの局所UNKNOWNである。commit自身のcallback全部の認証でも、standalone readerの新しい一律禁止でもない。別の既存guardが単独readerを止める条件は解除しない。
+
+### 選択条件・通常作業への費用・停止後の出口
+
+| 境界 | 止める条件と正常対照 | 通常作業への費用・同目的の出口 |
+| --- | --- | --- |
+| 実効設定とcontext | 信頼済みGit実体、対象の`-C`／git-dir等、選択されたHOME/XDG・Git設定・pager・PATH等のenvを対応するroleで確認する。prefix/export/unset/`env -u`/`env -i`の順序を保ち、未exportのlocalを子envへ渡したと扱わない。未証明の設定root変更、非許可Git env、未知argv/context/実行先は新probe前にUNKNOWN。設定読取失敗・上限超過・不完全な形式もUNKNOWN。 | 通常のreaderでも別PATHや動的な設定rootが必要なら止まり得る。bare `command -p git`の既定検索先をhookのPATHと同一視しない。通常の`command`や`--`と区別し、絶対calleeも実際の信頼済みGit identityとの一致が必要。同じ実行先・対象・cwd/env/config/sourceを確かめられなければownerへ不足条件を渡す。別HOMEや別repositoryへ移すことを自動代替にしない。 |
+| pager | 実際にpageし得る操作、実global `-P`/`--no-pager`、per-command設定、選択env/configの順序を分ける。global `-p`で強制する場合はper-command pager選択をskipし、GIT_PAGER→core.pager→PAGER→defaultを確認する。未選定の既定pagerもsource不明ならUNKNOWN。正確な空文字/`cat`や対応済みdisableを区別し、option値に消費されたno-pager風DATAは解除でない。 | 普通のdiff/log/show等をcommitと連結するだけでも止まり得る。表示helperが不要で目的を保てる場合だけ実no-pagerを使う。必要なpagerを外して同等だとは決めつけない。 |
+| grep quiet・不正argv | 実`-q`/`--quiet`はdefault pagingだけを非選択にする。消費DATA、option解析終了、`--no-quiet`のresetを区別し、明示pager/強制`-p`/trace/index/textconvは独立に確認する。有限対応のcontext/-A/-B/-Cのliteral非数値と、first pattern後で実`--`前のliteral dash pathはmode UNKNOWN。 | quietなのに既定pagerが選ばれたという説明で拒否しない。消費値がDATAであることだけで正常な数値/pathとは認定せず、pager未到達の不正modeをpager費用へ混ぜない。正常なliteral数値や明示`--`後のpathは別対照とし、元入力の同等代替と決めつけない。 |
+| grep NODASH式 | 対応する式の括弧をbare path境界へ変えず、式の途中の実option・消費DATA・実`--`の役割を保つ。 | true-P正常対照をmode UNKNOWNへ誤分類した退行を修復した範囲であり、元compoundの既定pagerや独立helper条件を解除しない。任意の式parser全体の同値証明ではない。 |
+| fsmonitor・diff driver・textconv | index能力を除外できないreaderの有効fsmonitor、diffの外部program/driver、変換が有効なroleを別々に確認する。blameの変換、grepの明示textconv、cat-fileのmodeも実option・last toggle・消費DATAで分け、未対応modeや未検査helperはUNKNOWN。 | custom driver等を使う正常な読取りも止まり得る。revision/object/attribute readerも名前だけでindex非依存とはせず、能力を除外できない場合は有効fsmonitorによりUNKNOWNとなる。driverのattribute適用を全件解決していないため、変換可能なroleでは未検査のdriver設定だけでも費用が生じる。`-P`はfsmonitorや変換まで無効にしない。`--no-ext-diff`/`--no-textconv`等は、それを外しても同じ目的を保てる場合だけ選ぶ。必要なhelperに同等代替がなければownerへ。 |
+| query・非選択source・順序 | 対応するstdoutの真正queryと、manual viewer/未知mode、消費されたquery風DATAを分ける。真正queryはhelper非選択でも、実行先・設定source・診断出力先の確認を通る。commit後のreaderは新しいprior-reader gateの対象外。 | query風の語だけで免除せず、真正queryでもsource条件が不明なら止まり得る。単独の対応readerを新gateで一括停止しない。読取りとcommitを分ける場合も、reader自体の既存source制限を免除しない。 |
+| 診断出力先 | 実行予定readerのtrace環境変数と、repository setupより前に選ばれるsystem/globalのTrace2設定を区別する。activeな診断sinkや非許可Git envは新probeへ転送せずUNKNOWN。local/worktree/commandのTrace2設定をearly sourceと同じに扱わない。 | queryやno-pagerでも診断出力の副作用は別に残る。同じ作業・sourceを保てる場合だけ対応した診断無効化を選ぶ。必要な診断出力を消して同目的と決めつけない。 |
+
+queryの非消費証明もmodeと固定consumerに限定する。非強制のbuiltin versionはRUN_SETUP/per-command pagerを選ばないが、実行先・env・Trace2等の確認は残る。Git 2.54.0で正確に`commit -h`へ到達する有限形は、setup/source/target/helper consumerに属さない有効literal keyだけを省略し得る。include/includeIf、remote URLの間接source選択、未知core等まで免除しない。他builtinや別版の未知namespaceへ一般化せず、grepのstdout usageも前段file callbackがない対応prefixだけを扱う。後置helpだけで`-f`等の先行読取を取り消さない。
+
+early configと通常probeは条件付きincludeの文脈が異なるため、scope/last valueだけで同値とはしない。system/global conditional宣言のTrace2不確実性は、元envの三target全てが明示非空0/大小文字falseのときだけその分を除ける。空文字やprobe用抑止では代用しない。pager側のconditional選択は別境界として残し、実no-pagerや選択されたinactive GIT_PAGER等の対応条件で分ける。
+
+新UNKNOWNは従来の解析・literal filename・staged/pathspec等の確定FORBIDDENより後に判定し、既存の禁止を新source不足で覆わない。二回目の解析はreader用の選択envを追跡するためだけに使い、最初の解析のcallee・引数・実行順が変わっていないことを確認する。ALLOWは対応条件内でこのgateが停止しない結果で、helperや任意shellの安全認証ではない。
+
+停止後は、対象・操作・表示/変換要件・cwd/env/config/sourceを保てる場合だけ、対応optionや読取りとcommitの分割を選ぶ。分割後の独立commitはstaged状態を新しく検査する。意味を保つ対応形式がなければownerへ条件と不明点を提示する。個別操作の了承をhook無効化の了承へ読み替えない。
+
+### secret-git 自身の staged/path 読取は別責務
+
+guard自身のindex/path照合は、提案された先行readerとは別の検査呼出しである。信頼済みGit実体を使い、検査にはno-pager・fsmonitor無効化、diffにはno-ext-diff/no-textconvを指定する。このfsmonitor boolean無効化を使えるGit 2.36以上という版条件を確認できなければ検査失敗として止める。旧Gitへ同じ文字列を無条件で渡して無害とはしない。
+
+検査自身のtrace出力も別に抑止する。新moduleの最初のversion照会・三つのstaged/path読取・実効config probeではTrace2三targetを明示0にしてsystem/global設定へのfallbackを止め、active traceや非許可Git envを確認できない場合はprobe前に停止する。共通部品のalias config観測も別の一呼出しとしてno-pagerとtrace抑止を適用する。SG三読取、新probe/version、共通alias観測を同じ呼出しや同じ試験として合算しない。これらの内部抑止を、実行予定readerのsourceが非選択だった証明へ流用しない。
+
+一方、先行readerの実効設定の観測には検査用fsmonitor上書きを混ぜない。選択helperを消してからhelperなしと観測することを避けるためである。対象contextでhelper・診断に関係するkeyだけを上限付きで読み、scope NUL／key LF value NULの形式とlast valueを確認する。設定値/helper本文/環境値を拒否理由や公開結果へdumpせず、呼出元には固定のsource種別と不足理由だけを返す。固定consumerのsource照合はGit 2.54.0であり、config/includeや任意helperの全副作用、設定読取から実行までの競合、native全挙動・全版をこの有限gateだけで保証しない。
+
+実装は[reader部品](../../.claude/hooks/lib/git-precommit-readers.cjs)、[secret-git](../../.claude/hooks/block-secret-git.cjs)、[共通env/context解析](../../.claude/hooks/lib/git-guard-common.cjs)に分ける。[reader role試験](../../.claude/hooks/tests/git-precommit-reader-roles.test.cjs)はrole/context/config framing/query/helper選択と自前読取hardening、[選択env試験](../../.claude/hooks/tests/git-precommit-environment.test.cjs)はexport/prefix/unset等を扱う。[内部Git診断試験](../../.claude/hooks/tests/git-inspection-diagnostics.test.cjs)はowned DUMMYで抑止前のactivation controlと抑止後の出力不存在を確認する。この1件はGit/Node subprocessを使うためpure解析試験ではない。提案された攻撃commandやClaude入口を実行した証拠でもない。
+
+### 受入と履歴
+
+2026-10-17 00:47:48 JSTの固定sourceに対し、Node 24.22.0の契約試験は00:48:36.216880までに776/776成功、別production shell parityは00:48:49.694677までに15/15成功した。776には選択env14件・reader role23件・binding追加1件・上記内部Git診断1件を含む。全776をpure解析L1とは呼ばず、parity15や部品単一edgeの成功を全件比較へ加算しない。
+
+元8586定義・期待を維持した新69追加、計8655の初回全比較は2026-10-17 00:59:00.455 JSTに完走した。baseline期待不一致0に対しcandidate期待不一致48、旧signature差51、新69全一致・broken0、source/fixture安定である。51差はすべてownSG ALLOW→UNKNOWN、EG/AG分類差0。48件はaggregate ALLOW→DENY、残3件は別Hookで既にDENYのままで、51を新しい脆弱性数や48を合意済みcostと扱わない。危険側ALLOW拡大0でも、元期待に適合した結果ではない。
+
+後続の995d source full8687は2026-10-17 01:34:04.188 JSTに完走し、baseline旧8586不一致0／candidate旧8586不一致46／new101不一致0／broken0。49signature差は全てownSG ALLOW→UNKNOWN、EG/AG分類差0、旧SG FORBIDDEN127件を維持した。未適用46台帳は静的整合18/18でもquiet過剰拒否1と不正argv2件へのdefault pager理由不一致があり、適用前に棄却した。原48/46FAILと元入力・oracleを保持し、契約費用と修復すべき過剰拒否を混ぜない。
+
+3b0112 sourceの限定修復ではR11SG40の元ALLOWがfocusedで復帰し、R11SG29/31は原ALLOW期待を残したままmode UNKNOWNへ説明を訂正した。部品pure33/33とsyntax3/3、12入力×2stage×3Hook=72callsはそのsourceの限定結果で、元2不一致を成功へ再採点しない。固定source全体のNode契約は2026-10-17 01:42:51.105333 JSTまでに786/786、別production shell parityは01:43:01.559529までに15/15成功。内部Git診断のowned DUMMY activation/suppressionを含むため、全786をpure解析とは呼ばない。
+
+同じ3b0112 sourceの単一edge逆検証は12profiles／36pairs／216Hook／failed0。各witnessのownSG UNKNOWN→ALLOWとaggregate DENY→ALLOW、通常ALLOWと独立FORBIDDENの維持、source5安定を確認した局所証拠である。旧9profiles／27pairs／162Hook／19unique inputsのcutは履歴として別に保持し、合算しない。
+
+その後3b0112 sourceの全8695は2026-10-17 01:50:45.859 JSTに完走し、原8586期待に対して45不一致／baseline0不一致／new109不一致0／broken0だった。理由wireの再取得ではNODASH式の正常対照を新dashpath modeへ誤分類する1FAILを見つけ、C7で1行修復した。同じtrue-P入力はd0 ALLOW→3b UNKNOWN→C7 ALLOW、9Hook・broken0。元R11SG48 compoundは既定pager UNKNOWNであり、別正常対照のALLOWと混ぜない。原45FAIL・理由wire1FAIL、旧pureの前提訂正と棄却されたregex-LF仮説も履歴として保持する。
+
+現在の固定readerは29936B、SHA c7fb90994ab81cf937820a4101ce409b9594a4b8719f4908a24cd052fa9b776b。停止時のNode 24.22.0契約787/787（01:51:44.435809 JST完了）、別production shell parity15/15（01:51:54.564548完了）を保持する。内部Git診断のowned DUMMY activation/suppressionを含むため、全787をpure解析と呼ばない。C7逆検証12profiles/36pairs/216Hook・failed0と、45入力135Hookの理由一致（41default pager／2変更HOME/config source／2不正mode）も同sourceの局所証拠である。理由一致は原ALLOW期待の合格や45台帳の適用ではない。
+
+元8586原期待＋new110、計8696の旧runはowner停止で2832/8696、complete:false／interrupted:true／exit1だった。実行済み16992Hookは旧2832入力のbaseline/candidateで、新110は未実行。partial44不一致／broken0を最終件数にせず、未完rawを保存する。再開時にROOTが27source/testの停止時一致を確認し、同じ固定C7を新runで全件再比較した。旧中断分を新runへ加算せず、既存unit/parity/逆/理由証拠は同hashの範囲で再利用する。
+
+再開後、45件の理由付きversioned期待を公開loaderへ明示適用した。元8586の原定義・原期待は全記録を保持し、変更は宣言した期待値fieldだけ、command/stdin/cwd/project/env等の非oracle入力は不変。現在評価の全8696定義JSON SHAは8a29fc91004f79d3c36caca6ef5659068bf0f0d204e939a3038afac27f3adfcaであり、元8586 bankや未適用時の全定義SHAと混同しない。loaderのtemplate/挿入位置は独立static11/11で確認した。改変検知を含むbinding再資格後のNode契約は2026-10-17 05:46:32.682433 JSTまでに789/789成功、別parityは05:46:43.948107までに15/15成功。停止時787は履歴として残し、全789をpure解析とは呼ばない。
+
+再開後の新runは2026-10-17 05:44:14.127〜05:56:56.436 JSTに8696件を完走した。原8586のbaseline期待不一致0に対しcandidateは元期待45不一致、new110不一致0／broken0、実Hook51846、source/fixture安定だった。旧signature差48はすべてownSG ALLOW→UNKNOWNで、EG/AGカテゴリ差0、旧SG FORBIDDEN127件の欠落0。原45FAILとexit1を保持する。
+
+05:57:00.566 JSTの独立再集計は、この同じHook記録へ宣言した45件の期待を明示適用して**8696/8696適合・failed0**を確認した。理由は既定pager未検査41・変更HOME/config source未検査2・不正grep argv2で、元入力・非oracle項目は全保持、runtime5は固定sourceと一致する。これは追加の8696実行ではなく、raw結果を書き換えない期待の再評価である。中断runやunit/逆検証を今回の件数に加算しない。
+
+**新しい公開headのCI・fresh両reviewと指摘処理はPENDING**であり、このlocal全件受入と分ける。部品修復・期待再評価をnative exploit成立や任意shell/設定の安全認証へ昇格しない。R39の8586/8586、L1 737/737等は旧source/cutの履歴で、R40数値や合格へ転記しない。追加L3やZIPをgateへ足さず、原FAIL/NOT_EXERCISED/未資格を残す。
+
+current参照はこのR40 anchorへ結び付ける。明示したR35〜R39の歴史anchorや本文を一括置換しない。以下のR39以前は取得当時の契約・結果である。
+
+<!-- PR191:R40:CONTRACT:END -->
+
 <!-- PR191:R39:CONTRACT:BEGIN -->
 
 <a id="r39-current-contract"></a>

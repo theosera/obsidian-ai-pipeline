@@ -96,6 +96,26 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R40:PLAYBOOK:BEGIN -->
+
+### R40: commit前のreaderはcommand名だけで副作用なしと扱わない
+
+同じcommandの最初のactive commitより前にあるGit readerは、実効config・pager・fsmonitor・diff driver/textconv・診断出力先によって副作用が生じ得る。secret-gitは選択source・実行先・cwd/envを確認できなければ、既存の確定FORBIDDENを優先した後でUNKNOWNとして停止する。真正stdout queryでもsource確認は必要で、bare `command -p git`の検索先や未知Git envを通常PATHと同じと推測しない。今回の新gateはstandalone readerへ広げず、既存guardも解除しない。[現行R40契約・通常費用・同目的の出口](docs/security/git-command-guards.md#r40-current-contract)を参照する。
+
+guard自身のGit検査のhelper・診断抑止と、実行予定readerの設定観測は別責務である。必要なpagerや変換を外して同じ目的と決めつけず、意味と対象・cwd/env/config/sourceを保つ対応形式、readerとcommitの分割後の再検査、またはowner確認を選ぶ。Hook無効化を代替にしない。
+
+grepの実quietは既定pagerだけを非選択にし、明示pager・強制`-p`・trace・index等は残す。消費DATAや`--no-quiet`を実quietと混同せず、不正なcontext数値／未区切りdash pathはmode UNKNOWNとして説明する。真正query/versionも前段のsourceと到達consumerの条件付きで、任意のhelp後置や全設定namespaceを安全認定しない。
+
+R40の元期待を維持した初回full8655は、旧8586側の48期待不一致／旧signature差51、new69全一致・broken0で完走した。差はすべてownSG ALLOW→UNKNOWN、EG/AG分類差・危険側ALLOW拡大は0だったが、そのcutでは過剰UNKNOWN候補を切り分け中として全件受入PENDINGを記録した。初回Node契約776/776と別shell parity15/15の成功、単一edgeの局所結果で48不一致を合格へ再採点しない。旧R39以前の数値・FAIL/NE・本文は当時cutの履歴として保持する。
+
+後続995d full8687の46不一致／49signature差も原票に残し、未適用46台帳はquiet過剰拒否・不正argvの理由誤りにより棄却した。3b0112 sourceのunit786/786・parity15/15と、全8695完走45不一致は別cutとして保存する。NODASH式の正常対照をbare dashpathと誤認した退行はC7で局所修復し、同入力のd0 ALLOW→3b UNKNOWN→C7 ALLOWを記録した。元入力の既定pager UNKNOWNを一括解除しない。
+
+現在のC7固定sourceはNode契約787/787・別parity15/15・逆12profiles/36pairs/216Hook・理由45入力135Hookの停止時履歴証拠を持つ。再開後の最新Node契約は789/789・別parity15/15成功、45件のversioned期待適用とbinding/改変検知の再資格も成功した。元8586の原定義・原期待の全記録と非期待値入力は保持し、全789をpure解析とは呼ばない。
+
+旧8586＋new110＝8696の旧runは2832件でowner中断し、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに完走し、元期待のcandidate45不一致／exit1を保持した。new110不一致0・broken0、宣言した45件を同じ51846Hook記録へ適用した05:57:00.566の明示再評価は8696/8696適合・failed0だった。追加の全件実行ではなく、元非oracle入力・runtime/source/fixtureは不変、旧SG FORBIDDEN127件も維持した。**新しい公開headのCI・fresh両reviewと指摘処理はPENDING**で、local受入を公開側の完了へ持ち越さない。
+
+<!-- PR191:R40:PLAYBOOK:END -->
+
 <!-- PR191:R38:PLAYBOOK:BEGIN -->
 
 ### R38: sourceを保った停止・owner確認

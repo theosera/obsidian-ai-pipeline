@@ -17027,7 +17027,9 @@ if (revertGit('diff-tree', '--no-commit-id', '--name-status', '-r', revertDelete
     git(dirs[spec.key], 'add', '--', spec.name);
   }
 
-  return { root, env, dirs, cherryBaseOID, cherrySecretOID, revertDeleteOID, revertBaseOID, revertEmptyAdditionOID };
+  const r40 = require('./r40-precommit-fixtures.cjs').setupFixtures({ root, env, mk, git });
+  Object.assign(dirs, r40.dirs);
+  return { root, env, dirs, fixtureEnvironmentSets: r40.environmentSets, cherryBaseOID, cherrySecretOID, revertDeleteOID, revertBaseOID, revertEmptyAdditionOID };
 }
 
 /** Remove only the disposable fixture root created by setupRepos. */
@@ -17041,6 +17043,12 @@ function runCase(hooksDir, c, repos, stopAtFirstDeny = false) {
   const command = fill(c.cmd);
   const cwd = repos.dirs[c.cwd || 'clean'];
   const project = repos.dirs[c.project || 'clean'];
+  const selectedFixture = c.fixtureEnvironment;
+  if (selectedFixture !== undefined && (typeof selectedFixture !== 'string' ||
+      !Object.hasOwn(repos.fixtureEnvironmentSets || {}, selectedFixture))) {
+    throw new Error('Unknown owned fixture environment');
+  }
+  const fixtureEnvironment = selectedFixture === undefined ? {} : repos.fixtureEnvironmentSets[selectedFixture];
   // case に stdin があれば、hook 入力としてそのまま渡す（v3.5.4・JSON がオブジェクトでない入力の試験）。
   const input = c.stdin !== undefined ? c.stdin : JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd });
   const denied = [];
@@ -17048,7 +17056,7 @@ function runCase(hooksDir, c, repos, stopAtFirstDeny = false) {
   const reasonPrefixes = {};
   for (const h of HOOKS) {
     const r = spawnSync(process.execPath, [path.join(hooksDir, h)], {
-      input, cwd: project, env: { ...repos.env, ...(c.env || {}), CLAUDE_PROJECT_DIR: project }, encoding: 'utf8', timeout: 20000,
+      input, cwd: project, env: { ...repos.env, ...fixtureEnvironment, ...(c.env || {}), CLAUDE_PROJECT_DIR: project }, encoding: 'utf8', timeout: 20000,
     });
     if (r.error || r.status !== 0) { broken.push(`${h}: exit ${r.status}${r.error ? ` ${r.error.code}` : ''}`); continue; }
     if (!r.stdout) continue;
@@ -29392,6 +29400,58 @@ applyDeclaredAdjustmentsAndBank(CASES,ledger,bank,{"ledgerJSONSHA256":"0c0583184
     }
     ids.add(c.id);
   }
+  CASES.push(...additions);
+}
+
+// R40 pins the original R39 definitions, declares bounded oracle changes, then adds controls.
+{
+  const hash = value => require('node:crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  if (CASES.length !== 8586 || hash(CASES) !== 'ca889710ee94567674bc411cb3f7d87c8206eb304e1c5eef699188113b95247a') {
+    throw new Error('R40_BASE_8586_EXACT_DEFINITION_BINDING');
+  }
+  const additions = require('./r40-precommit-cases.json');
+  if (!Array.isArray(additions) || additions.length !== 110 ||
+      hash(additions) !== '9067b015f3df1ef2b3dd2c9812367ff212b70258f36610516c508edf8d4a3fc7') {
+    throw new Error('R40_PRECOMMIT_BANK_BINDING');
+  }
+  const ids = new Set(CASES.map(c => c.id));
+  for (const c of additions) {
+    if (!c || typeof c.id !== 'string' || typeof c.cmd !== 'string' || ids.has(c.id)) {
+      throw new Error('R40_PRECOMMIT_UNIQUE_ID');
+    }
+    ids.add(c.id);
+  }
+  const ledger = require('./r40-precommit-oracle-adjustments.json');
+  if (hash(ledger) !== '3adde8738f4720e5b07a8819d4cdb6d48af9cf4fef48cccf4351e13539da0324' ||
+      ledger.schema !== 'R40_VERSIONED_PRECOMMIT_ORACLE_ADJUSTMENTS_V1' ||
+      ledger.baselineCount !== 8586 || ledger.baselineDefinitionsJSONSHA256 !== hash(CASES) ||
+      ledger.adjustments.length !== 45) throw new Error('R40_PRECOMMIT_LEDGER_BINDING');
+  const oracleKeys = new Set(['expect', 'expectedOwnSG', 'denyBy', 'expectReasonPrefixes']);
+  const byID = new Map(CASES.map((c, i) => [c.id, i]));
+  const changedIDs = new Set();
+  const replacements = [];
+  for (const a of ledger.adjustments) {
+    const index = byID.get(a.id), before = CASES[index];
+    if (!before || changedIDs.has(a.id) || JSON.stringify(before) !== JSON.stringify(a.beforeDefinition) ||
+        hash(before) !== a.beforeDefinitionJSONSHA256 || before.expect !== 'allow' ||
+        Object.keys(a.setFields).length !== 4 || Object.keys(a.setFields).some(k => !oracleKeys.has(k))) {
+      throw new Error('R40_PRECOMMIT_EXACT_BEFORE_OR_ORACLE_FIELDS');
+    }
+    changedIDs.add(a.id);
+    const after = { ...before, ...a.setFields };
+    const data = c => Object.fromEntries(Object.entries(c).filter(([key]) => !oracleKeys.has(key)));
+    if (JSON.stringify(data(before)) !== JSON.stringify(data(after)) ||
+        after.expect !== 'deny' || after.expectedOwnSG !== 'UNKNOWN' || after.denyBy !== 'block-secret-git.cjs' ||
+        after.expectReasonPrefixes?.['block-secret-git.cjs'] !== '[判断不能] ' ||
+        JSON.stringify(after) !== JSON.stringify(a.afterDefinition) || hash(after) !== a.afterDefinitionJSONSHA256) {
+      throw new Error('R40_PRECOMMIT_EXACT_AFTER_OR_IMMUTABLE_INPUT');
+    }
+    replacements.push([index, after]);
+  }
+  // Preserve the exact original 8586 definitions as a separately named export.
+  // Every ledger check and new-bank binding passes before any oracle is replaced.
+  module.exports.R40_ORIGINAL_8586_CASES = JSON.parse(JSON.stringify(CASES));
+  for (const [index, after] of replacements) CASES[index] = after;
   CASES.push(...additions);
 }
 

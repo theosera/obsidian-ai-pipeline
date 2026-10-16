@@ -9,22 +9,23 @@
  *
  * 入力: stdin に PreToolUse の JSON ({ tool_input: { command }, cwd })。
  * 出力: ブロック時は hookSpecificOutput.permissionDecision="deny" を返す。許可時は無出力。
- * 副作用: `git commit` のときだけ `git diff --cached --name-only -z` と `git ls-files` を、
- * builtin でない subcommand のときだけ `git config --get alias.<name>` を読む（読取のみ）。
+ * 副作用: commit の index/path 読取は helper を無効にした検査用 Git で行う。
+ * commit 前の reader は限定した helper config を別の読取で確認する。
+ * builtin でない subcommand のときだけ共通部品が alias 設定を読む。
  * コマンドの読み取り（シェルの語・git の global option と subcommand）は
  * lib/git-guard-common.cjs にあり、git ガード 3 本で共有する。
  */
-const { execFileSync } = require('node:child_process');
-
 let guard;
+let preCommitReaders;
 try {
   guard = require('./lib/git-guard-common.cjs');
+  preCommitReaders = require('./lib/git-precommit-readers.cjs');
 } catch {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: '[判断不能] git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。secret ガードを通せないため実行をブロックします。',
+      permissionDecisionReason: '[判断不能] git ガードの部品 (lib/git-guard-common.cjs / lib/git-precommit-readers.cjs) を読み込めませんでした (fail-closed)。secret ガードを通せないため実行をブロックします。',
     },
   }));
   process.exit(0);
@@ -451,7 +452,7 @@ for (const g of commits) {
   const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
   let staged = '';
   try {
-    staged = execFileSync('git', ['diff', '--cached', '--name-only', '-z'], {
+    staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', '-z'], {
       cwd: inspectCwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -484,7 +485,7 @@ for (const g of commits) {
     }
     let listed = '';
     try {
-      listed = execFileSync('git', ['ls-files', '-z', '--', ...ca.pathspecs], {
+      listed = preCommitReaders.readInspectionGit(['ls-files', '-z', '--', ...ca.pathspecs], {
         cwd: inspectCwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -584,7 +585,7 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
     : cDir ? path.resolve(legacyBaseDir, stripToken(cDir)) : legacyBaseDir;
   let staged = '';
   try {
-    staged = execFileSync('git', ['diff', '--cached', '--name-only', '-z'], {
+    staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', '-z'], {
       cwd: inspectCwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -607,6 +608,32 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
     );
   }
 }
+}
+
+// New reader uncertainty must not pre-empt any legacy literal/staged FORBIDDEN.
+// Seed inherited values only in this second, otherwise-ALLOW inspection: the
+// original inspection and its source/config decisions retain their old inputs.
+if (commits.length && gits.some(g => g.invocationOrder < commits[0].invocationOrder)) {
+  const late = guard.inspect(cmd, {
+    trackGitPreCommitEnvironment: true,
+    initialGitPreCommitEnvironmentSources: preCommitReaders.environmentSources(process.env),
+  });
+  const shape = inspection => JSON.stringify({
+    invocations: inspection.invocations.map(i => [i.order, i.name, i.nameWord, i.args, i.wrapperNames]),
+    gits: inspection.gits.map(g => [g.invocationOrder, g.sub, g.args, g.cdirs, g.configs, g.configEnvs]),
+  });
+  if (late.problems.length || shape(late) !== shape(insp)) {
+    deny('commit 前の Git 読取の source / 実行順を同じ条件で確認できません (fail-closed)。', 'UNKNOWN');
+  }
+  for (const g of late.gits.filter(g => g.invocationOrder < commits[0].invocationOrder)) {
+    const invocation = late.invocations.find(i => i.order === g.invocationOrder);
+    const decision = invocation && preCommitReaders.assessReader(g, invocation, baseDir);
+    if (!invocation || decision) {
+      deny((decision?.reason || 'commit 前の Git 読取に対応する実行情報がありません。') + '\n' +
+        '同じ操作・対象・cwd・env/config/source を保てる場合だけ、先行操作と commit を分け、後の commit で再検査してください。' +
+        'それ以外は同じ条件と不明点を owner に確認してください。個別操作の承認は hook 無効化の許可ではありません。', 'UNKNOWN');
+    }
+  }
 }
 
 process.exit(0);

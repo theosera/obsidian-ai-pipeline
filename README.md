@@ -18,6 +18,32 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R40:README:BEGIN -->
+
+### R40: commit 前の Git reader と、guard 自身の検査を分ける
+
+同じcommand内でcommitより先に実行するGitの読取りも、実効設定がpager・fsmonitor・diff driver／textconvを起動し得る。secret-gitはその選択と実行先・cwd・env/configを限定して確認し、不足があれば既存の確定FORBIDDENの後でUNKNOWNとして停止する。既定pagerが分からない通常のdiff/log等も、commitと連結すると停止し得る。[対応条件・通常費用・同目的の出口](docs/security/git-command-guards.md#r40-current-contract)を参照する。
+
+真正stdout queryでも実行先・設定source・診断出力先の確認は必要である。bare `command -p git`の既定検索先、未証明の設定root変更、非許可Git環境変数、activeなtrace出力先は確認不足として止まり得る。revision/object/attribute readerも名前だけでindex非依存とは認定せず、fsmonitor能力を除外できない場合の通常費用を残す。guard自身のGit検査ではpagerと診断出力を抑止し、実行予定readerのsource判定とは分ける。
+
+grepの実`-q`／`--quiet`は既定pagerだけを非選択にする。明示pager・強制`-p`・trace・index等は独立して確認し、値に消費されたquietや`--no-quiet`と区別する。不正なcontext数値や未区切りdash pathはmode UNKNOWNであり、pagerが実行されたという理由にしない。query/versionも実際の到達consumerに限定し、後ろにhelpがあるだけで前段のfile callback等を免除しない。
+
+必要なhelperを削除しても同じ操作とは決めつけない。同じ対象・操作・cwd/env/config/sourceを保てる場合だけ、対応する実disable optionや、読取りとcommitを分けて後のcommitで再検査する形を選ぶ。今回の新gateはstandalone readerへ広げず、既存の各guardの判定も解除しない。
+
+初回R40 sourceのNode契約試験は776/776、別のproduction shell parityは15/15成功した（2026-10-17 00:48:49 JSTまでのlocal結果）。776内の1件はowned DUMMYで内部Git診断のactivation controlと抑止を確認するため、全件をpure解析とは呼ばない。このcutでは全件・通常対照・逆検証・公開head CI／fresh reviewの受入を**PENDING**とした。R39の8586全件・L1 737等は旧sourceの履歴で、R40合格へ持ち越さない。以下のR39以前の数値・current表記も当時cutの記録として保持する。Node24の方針、原FAIL／NE、mergeをowner判断とする扱いは維持する。
+
+後続の元期待を維持した初回full8655は2026-10-17 00:59:00.455 JSTに完走したが、旧8586側の48期待不一致／旧signature差51を保持する。new69全一致・broken0、差はすべてownSG ALLOW→UNKNOWNでEG/AG分類差・危険側ALLOW拡大は0。この初回cutでは既定pager等の費用と正常query/消費DATAの過剰UNKNOWN候補を切り分け中として、全件受入PENDINGを記録した。
+
+その後の995d source full8687も46期待不一致／49signature差を原票に保持し、理由監査でquiet過剰拒否と不正argv2件へのpager理由誤りを含む未適用46台帳を棄却した。3b0112 sourceのNode契約786/786・別parity15/15成功と、その後の全8695完走45期待不一致は別cutとして保存する。局所成功で旧48／46／45FAILを再採点しない。
+
+現在の固定readerはc7fb9099 source。grep NODASH式の括弧をbare path境界と誤認した退行を局所修復し、同じtrue-P正常対照の公開d0 ALLOW→中間3b UNKNOWN→C7 ALLOWを記録した。元compoundの既定pager UNKNOWNとは分ける。Node契約787/787・別parity15/15・単一edge12profiles/36pairs/216Hook・理由45入力135Hookは停止時の履歴証拠で、全件pure解析や全件受入とは呼ばない。
+
+再開後の最新Node契約789/789・別parity15/15は成功した。理由付き45件のversioned期待を適用し、元8586の原定義・原期待の全記録と非期待値入力を保持した。適用binding・改変検知の再資格も成功し、旧不一致を原票で消さず現在の評価だけを明示更新した。
+
+計8696（旧8586＋new110）の旧runはowner停止で2832件中断し、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに全8696件完走した。元期待ではbaseline不一致0／candidate45不一致を原票・exit1のまま保持し、new110不一致0・broken0だった。05:57:00.566の再集計では、宣言した45件の期待を同じ51846Hook記録へ明示適用して8696/8696適合・failed0を確認した。これは追加の全件実行ではなく、元入力・非oracle項目・runtime/source/fixtureは不変。旧SG FORBIDDEN127件も維持した。**新しい公開headのCI・fresh両reviewと指摘処理はPENDING**で、このlocal受入と分ける。
+
+<!-- PR191:R40:README:END -->
+
 <!-- PR191:R39:README:BEGIN -->
 
 ### R39: D-Bus launcher・SSH別名・Ncat認証source・ping resolver

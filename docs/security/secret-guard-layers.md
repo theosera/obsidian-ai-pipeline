@@ -1,5 +1,29 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R40:LAYERS:BEGIN -->
+
+## R40: 先行readerのsource判定と、guard自身の検査を分ける
+
+同一commandのcommit前にあるGit readerは、実効設定が選ぶpager・fsmonitor・diff driver/textconvの副作用を検査できなければ、secret-gitが既存の確定FORBIDDENの後でUNKNOWNにする。新gateはstandalone readerへ広げず、egress/add-all等の既存の独立判定も解除しない。[現在の条件・通常費用・同目的の出口](git-command-guards.md#r40-current-contract)に契約をまとめる。既定pagerが分からない普通のdiff/logもcommitと連結すると止まり得る。
+
+guard自身のstaged/path読取は、信頼済みGit・対応版を確かめてhelperを抑止する検査である。提案された先行readerの実効設定観測とは別に扱い、helper設定を消してから安全と判定しない。設定値やhelper本文を公開する検査ではない。必要なhelperを外しても同じ意味とは決めつけず、同条件を保てる分割と後commitの再検査、またはowner確認を選ぶ。
+
+真正queryでも実行先・設定source・診断出力の確認は必要で、bare `command -p git`の既定検索先や未知Git envを推測で通さない。新probe/version・SG自前読取・共通alias観測の診断抑止は、それぞれの内部検査に限定する。revision/object/attribute readerのindex能力も名前だけで否定せず、有効fsmonitor等で通常UNKNOWNになる費用を残す。
+
+grepの実quietは既定pagerだけを非選択にし、消費DATA/`--no-quiet`を分け、明示pager・強制`-p`・trace・index等を維持する。不正context数値と未区切りdash pathはmode UNKNOWNであり、未到達pagerを拒否理由にしない。query/versionも固定consumerのsource・前段callback条件付きで、conditional sourceや未知設定を一律免除しない。
+
+初回R40 sourceのNode契約試験776/776と別production shell parity15/15はlocal成功（2026-10-17 00:48:49 JSTまで）。776にはowned DUMMYで内部Git診断のactivation controlと抑止を検査する1件が含まれ、全件pure解析とは呼ばない。当時の全8655比較・通常cost・逆検証・新head CI/fresh review受入をPENDINGとし、原8586定義・期待と新69追加を分け、当該unit cutで進行中だったfullを合格へ先取りしなかった。R39の8586/737等と、以下のR38以前の数値/current表記は当時source/cutの履歴で、現在の合格へ持ち越さない。原FAIL/未到達も保持する。native/helper全般・任意設定・実入口を認証した意味にはしない。
+
+後続の初回fullは2026-10-17 00:59:00.455 JSTに8655件完走し、元期待に対するcandidate48不一致／旧signature差51を確認した。new69全一致・broken0、差はownSG ALLOW→UNKNOWNのみでEG/AG分類差・危険側ALLOW拡大0だったが、このcutではqueryや消費DATAの過剰UNKNOWN候補も調査中だった。原oracleを変更せず、当時の全件受入PENDINGと48不一致を残す。単一edgeの停止因果を証明しても、この通常費用の受入や必要な別gateの成功は代用しない。
+
+995d source full8687の原46不一致／49signature差も保持し、意味上の3問題があった未適用46台帳は棄却した。3b0112 sourceのunit786/parity15と全8695完走45不一致は別cutである。理由wireで見つけたNODASH正常対照の誤分類はC7で修復し、同入力のd0 ALLOW→3b UNKNOWN→C7 ALLOWを保持した。元compoundの既定pager UNKNOWNは別に残す。
+
+現在のC7 sourceはNode契約787/787・別parity15/15、逆12profiles/36pairs/216Hook、45理由135Hook・不一致0の停止時履歴証拠を持つ。再開後、元8586の原定義・原期待の全記録と非oracle入力を保持して45件の理由付き期待を明示適用し、binding/改変検知の再資格とNode契約789/789・別parity15/15が成功した。全789をpure解析とは呼ばない。
+
+旧8586＋new110＝8696の旧runは2832件中断で、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに完走し、元期待のcandidate45不一致／exit1を保持、new110不一致0・broken0だった。宣言45件の期待を同じ51846Hook記録へ適用した05:57:00.566の明示再評価で8696/8696適合・failed0を確認した。追加の全件実行ではなく、元非oracle入力・runtime/source/fixtureは不変、旧SG FORBIDDEN127件も維持した。**新しい公開headのCI・fresh両reviewと指摘処理はPENDING**。原48/46/45FAILを削除せず、local受入を公開側の完了へ読み替えない。
+
+<!-- PR191:R40:LAYERS:END -->
+
 <!-- PR191:R38:LAYERS:BEGIN -->
 
 ## R38: 私有契約・公開観測・native条件の別gate
@@ -94,7 +118,7 @@ Bash から起動された孫プロセスは、この層を一切通らない。
 
 ## 3. 2026-09-04 の Bash 層分析と、当時の両版に共通する単一障害点
 
-> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r35-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
+> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r40-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
 
 py 版 (`~/.claude/hooks/block-secret-egress.py` / 実体は pipeline-youtube-SDK) の集合サイズ:
 
