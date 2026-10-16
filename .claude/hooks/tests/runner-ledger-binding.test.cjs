@@ -34,7 +34,7 @@ test('modified R40 oracle ledger fails before any Hook or fixture execution', ()
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr191-r40-oracle-binding-'));
   try {
     for (const name of ['git-guards.test.cjs', 'r38-guard-oracle-adjustments.json', 'r39-review-cases.json',
-      'r40-precommit-cases.json', 'r40-precommit-oracle-adjustments.json']) {
+      'r40-precommit-cases.json', 'r40-precommit-oracle-adjustments.json', 'r41-signature-source-oracle-adjustments.json']) {
       fs.copyFileSync(path.join(__dirname, name), path.join(root, name));
     }
     assert.equal(load(path.join(root, 'git-guards.test.cjs')).status, 0);
@@ -57,7 +57,7 @@ test('modified R40 input bank fails before any Hook or fixture execution', () =>
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr191-r40-bank-binding-'));
   try {
     for (const name of ['git-guards.test.cjs', 'r38-guard-oracle-adjustments.json', 'r39-review-cases.json',
-      'r40-precommit-cases.json', 'r40-precommit-oracle-adjustments.json']) {
+      'r40-precommit-cases.json', 'r40-precommit-oracle-adjustments.json', 'r41-signature-source-oracle-adjustments.json']) {
       if (fs.existsSync(path.join(__dirname, name))) fs.copyFileSync(path.join(__dirname, name), path.join(root, name));
     }
     const pristine = load(path.join(root, 'git-guards.test.cjs'));
@@ -111,6 +111,44 @@ test('fixture base excludes ambient terminal DATA while explicit cases retain th
     const summary = JSON.parse(result.stdout);
     assert.deepEqual(summary.present, []);
     assert.ok(summary.explicitCases > 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('R41 versions one UNKNOWN oracle while retaining every original input and the original failure bank', () => {
+  const { CASES, R41_ORIGINAL_8696_CASES: original } = require(runner);
+  const hash = value => require('node:crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  assert.equal(original.length, 8696);
+  assert.equal(hash(original), '8a29fc91004f79d3c36caca6ef5659068bf0f0d204e939a3038afac27f3adfca');
+  const keys = new Set(['expect', 'expectedOwnSG', 'denyBy', 'expectReasonPrefixes']);
+  const input = c => Object.fromEntries(Object.entries(c).filter(([key]) => !keys.has(key)));
+  assert.deepEqual(CASES.map(input), original.map(input));
+  assert.deepEqual(CASES.filter((c, i) => JSON.stringify(c) !== JSON.stringify(original[i])).map(c => c.id), ['R7SG40-R40-TRUE-NOPAGER-CONTROL']);
+  const changed = CASES.find(c => c.id === 'R7SG40-R40-TRUE-NOPAGER-CONTROL');
+  assert.equal(changed.expectedOwnSG, 'UNKNOWN');
+});
+
+
+test('modified R41 signature contract fails before any Hook or fixture execution', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr191-r41-oracle-binding-'));
+  try {
+    for (const name of ['git-guards.test.cjs', 'r38-guard-oracle-adjustments.json', 'r39-review-cases.json',
+      'r40-precommit-cases.json', 'r40-precommit-oracle-adjustments.json', 'r41-signature-source-oracle-adjustments.json']) {
+      fs.copyFileSync(path.join(__dirname, name), path.join(root, name));
+    }
+    assert.equal(load(path.join(root, 'git-guards.test.cjs')).status, 0);
+    const file = path.join(root, 'r41-signature-source-oracle-adjustments.json');
+    const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+    ledger.adjustments[0].setFields.expect = 'allow';
+    fs.chmodSync(file, 0o600);
+    fs.writeFileSync(file, JSON.stringify(ledger));
+    const result = load(path.join(root, 'git-guards.test.cjs'));
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /R41_SIGNATURE_LEDGER_BINDING/);
+    assert.equal(result.stdout, '');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

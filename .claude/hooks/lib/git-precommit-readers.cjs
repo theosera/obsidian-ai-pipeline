@@ -8,8 +8,10 @@ const path = require('node:path');
 const { spawnSync, execFileSync } = require('node:child_process');
 const guard = require('./git-guard-common.cjs');
 
-const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager)|pager\\..*|diff\\.(external|.*\\.(command|textconv))|trace2\\.(normal|event|perf)target|includeif\\..*\\.path)$';
-const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager)|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|trace2\.(?:normal|event|perf)target|includeif\..+\.path)$/i;
+const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath)|pager\\..*|diff\\.(external|.*\\.(command|textconv))|trace2\\.(normal|event|perf)target|hook\\..*\\.(event|enabled)|log\\.showsignature|format\\.pretty|pretty\\..*|includeif\\..*\\.path)$';
+const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath)|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|trace2\.(?:normal|event|perf)target|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|includeif\..+\.path)$/i;
+const SIGNATURE_READERS = new Set(['log', 'show', 'whatchanged', 'rev-list']);
+const R41_CONFIG_KEY = /^(?:core\.hookspath|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+)$/i;
 const DEFAULT_PAGED = new Set(['diff', 'log', 'show', 'branch', 'shortlog', 'blame', 'grep', 'whatchanged', 'reflog']);
 // Revision/object readers can consult attributes, paths or an index as well.
 // A read-only subcommand label is not evidence that fsmonitor cannot be reached.
@@ -25,6 +27,8 @@ const unknown = reason => ({ category: 'UNKNOWN', reason });
 const ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME', 'GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM']);
 const SAFE_GIT_ENV = /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG(?:_GLOBAL|_SYSTEM|_NOSYSTEM|_COUNT|_PARAMETERS|_KEY_\d+|_VALUE_\d+)?|AUTHOR_(?:NAME|EMAIL|DATE)|COMMITTER_(?:NAME|EMAIL|DATE)|PAGER|EXTERNAL_DIFF|DIFF_OPTS|OPTIONAL_LOCKS|TERMINAL_PROMPT|ATTR_(?:NOSYSTEM|SOURCE)|NO_REPLACE_OBJECTS|REPLACE_REF_BASE|SHALLOW_FILE|(?:LITERAL|GLOB|NOGLOB|ICASE)_PATHSPECS)$/;
 
+const INSPECTION_IRRELEVANT_GIT_ENV = /^GIT_(?:EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|SSH_VARIANT|ASKPASS|MERGE_AUTOEDIT)$/;
+
 /** Do not let an inspection itself write a trace file or contact a trace socket. */
 function safeInspectionEnvironment(environment) {
   const result = { ...environment };
@@ -32,6 +36,8 @@ function safeInspectionEnvironment(environment) {
     if (/^GIT_TRACE/.test(name)) {
       if (value !== '' && value !== '0' && !(/^GIT_TRACE2(?:_EVENT|_PERF)?$/.test(name) && /^false$/i.test(value))) return null;
       delete result[name];
+    } else if (INSPECTION_IRRELEVANT_GIT_ENV.test(name)) {
+      delete result[name]; // inspection-only: selected actual-command values remain untouched
     } else if (/^GIT_/.test(name) && !SAFE_GIT_ENV.test(name)) return null;
   }
   // Unsetting is insufficient: Trace2 can otherwise fall back to system config.
@@ -60,6 +66,7 @@ function attachedDataRole(g, depth) {
       ? /^(--(?:open-files-in-pager|color|context|before-context|after-context|threads|max-depth|max-count|parent-basename))=/
       : /^(--(?:format|pretty))=/).exec(text);
     if (!short && !long) continue;
+    if (long && SIGNATURE_READERS.has(g.sub)) continue; // selected format value is handled in option order below
     if (depth >= 4) return { unknown: true };
     const option = short ? short[0] : long[0];
     const value = text.slice(option.length);
@@ -70,8 +77,11 @@ function attachedDataRole(g, depth) {
     if (long || value.replaceAll('\0', '')) return nonempty;
     const empty = operationRole(replace(option), depth + 1);
     const merged = {};
-    for (const key of Object.keys(nonempty)) merged[key] = key === 'query'
-      ? nonempty[key] && empty[key] : nonempty[key] || empty[key];
+    for (const key of Object.keys(nonempty)) {
+      if (key === 'prettyFormat') merged[key] = nonempty[key] === empty[key] ? nonempty[key] : null;
+      else if (key === 'signature') merged[key] = nonempty[key] === empty[key] ? nonempty[key] : nonempty[key] === true || empty[key] === true ? true : null;
+      else merged[key] = key === 'query' ? nonempty[key] && empty[key] : nonempty[key] || empty[key];
+    }
     return merged;
   }
   return null;
@@ -84,6 +94,7 @@ function environmentSources(env) {
   }));
 }
 
+const ownHookConfigByCwd = new Map();
 let trustedExecutable;
 let inspectionVersionQualified = false;
 let inspectionBanner = '';
@@ -106,13 +117,14 @@ function trustedGit() {
 
 /** These overrides harden the hook's own inspection, not the proposed command. */
 function inspectionArgs(args) {
-  return ['--no-pager', '-c', 'core.fsmonitor=false', ...args.slice(0, 1),
+  return ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args.slice(0, 1),
     ...(args[0] === 'diff' ? ['--no-ext-diff', '--no-textconv'] : []), ...args.slice(1)];
 }
 function readInspectionGit(args, options) {
   const executable = trustedGit();
   if (!executable) throw new Error('trusted inspection Git unavailable');
   const env = safeInspectionEnvironment(process.env);
+  if (env) env.GIT_OPTIONAL_LOCKS = '0';
   if (!env) throw new Error('unproved inspection Git environment');
   if (!inspectionVersionQualified) {
     const banner = execFileSync(executable, ['--version'], {
@@ -121,6 +133,22 @@ function readInspectionGit(args, options) {
     if (!supportsInspectionHardening(banner)) throw new Error('Git fsmonitor boolean hardening needs Git >= 2.36');
     inspectionVersionQualified = true;
     inspectionBanner = banner.trim();
+  }
+  // Configured hook events are separate from traditional core.hooksPath hooks.
+  let configured;
+  const ownCwd = options?.cwd || process.cwd();
+  if (!ownHookConfigByCwd.has(ownCwd)) {
+  try {
+    configured = execFileSync(executable, ['--no-pager', 'config', '--show-scope', '--null', '--get-regexp', '^hook\\..*\\.(event|enabled)$'], {
+      cwd: options?.cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 65536,
+    });
+  } catch (error) {
+    if (error.status !== 1 || error.stdout?.length) throw new Error('inspection hook source unavailable');
+    configured = '';
+  }
+  const ownConfig = configured ? parseConfigOutput(configured) : new Map();
+  if (!ownConfig || configuredPostIndex(ownConfig)) throw new Error('inspection post-index-change source uninspected');
+  ownHookConfigByCwd.set(ownCwd, true);
   }
   return execFileSync(executable, inspectionArgs(args), { ...options, env });
 }
@@ -176,7 +204,8 @@ function grepUsagePrefixFileFree(g) {
 function operationRole(g, attachmentDepth = 0) {
   const role = { index: INDEX_READERS.has(g.sub), external: g.sub === 'diff',
     textconv: ['diff', 'log', 'show', 'blame'].includes(g.sub), defaultPaged: DEFAULT_PAGED.has(g.sub),
-    pagerDisabled: g.pagerDisabled === true, pagerForced: g.pagerForced === true, query: false, unknown: false };
+    pagerDisabled: g.pagerDisabled === true, pagerForced: g.pagerForced === true, query: false, unknown: false,
+    signature: null, prettyFormat: undefined };
   if (g.terminal && g.helpKind === 'stdout') return { ...role, index: false, external: false, textconv: false, query: !role.pagerForced };
   if (g.terminal || g.incomplete || g.dynamicOpt) return { ...role, unknown: true };
   if (g.sub === 'version') return { ...role, query: !role.pagerForced };
@@ -269,18 +298,25 @@ function operationRole(g, attachmentDepth = 0) {
     '--stat', '--numstat', '--shortstat', '--name-only', '--name-status', '--raw', '--patch', '--no-patch', '--quiet',
     '--exit-code', '--binary', '--full-index', '--check', '--relative', '--no-relative', '--color', '--no-color', '--word-diff',
     '--abbrev', '--no-renames', '--renames', '--minimal', '--patience', '--histogram', '--indent-heuristic', '--no-indent-heuristic',
-    '--oneline', '--all', '--no-decorate', '--decorate', '--reverse', '--first-parent', '--no-walk', '--follow']);
+    '--show-signature', '--no-show-signature', '--oneline', '--all', '--no-decorate', '--decorate', '--reverse', '--first-parent', '--no-walk', '--follow']);
   let end = false;
   for (let k = 0; k < g.args.length; k++) {
     const w = g.args[k];
     if (end) { if (!w || w.dynamicMaySplit !== false && w.dynamic) role.unknown = true; continue; }
     const t = literal(w);
-    if (t === null) { role.unknown = true; continue; }
+    if (t === null) {
+      if (SIGNATURE_READERS.has(g.sub) && singleDataWord(w) && /^--(?:format|pretty)=/.test(w.text || '')) role.prettyFormat = null;
+      else role.unknown = true;
+      continue;
+    }
     if (t === '--') { end = true; continue; }
     if (!t.startsWith('-') || t === '-') continue;
     const eq = t.indexOf('='); const name = eq < 0 ? t : t.slice(0, eq);
     if (name === '--output') { role.unknown = true; } // an output-file effect is not a pure reader
     if (values.has(name)) {
+      if (SIGNATURE_READERS.has(g.sub) && ['--format', '--pretty'].includes(name)) {
+        role.prettyFormat = eq < 0 ? 'medium' : t.slice(eq + 1);
+      }
       if (eq < 0 && !optionalAttached.has(name)) {
         if (!g.args[k + 1] || g.args[k + 1].dynamicMaySplit === true) role.unknown = true;
         k++;
@@ -295,6 +331,9 @@ function operationRole(g, attachmentDepth = 0) {
     if (!flags.has(name) || eq >= 0 && !['--stat', '--color', '--word-diff', '--abbrev', '--relative', '--decorate'].includes(name)) {
       role.unknown = true; continue;
     }
+    if (name === '--show-signature') role.signature = true;
+    if (name === '--no-show-signature') role.signature = false;
+    if (name === '--oneline') role.prettyFormat = 'oneline';
     if (name === '--ext-diff') role.external = true;
     if (name === '--no-ext-diff') role.external = false;
     if (name === '--textconv') role.textconv = true;
@@ -313,6 +352,7 @@ function targetGlobals(g, invocation, fixedCommitUsageConsumer = false) {
     g.args.length === 1 && literal(g.args[0]) === '-h';
   const inline = value => {
     if (value === null || value.includes('\0')) return null;
+    if (R41_CONFIG_KEY.test(value.split('=', 1)[0])) return ['-c', value];
     if (!guard.preCommitConfigKey({ configs: [value], configEnvs: [] })) return [];
     if (!exactCommitUsage) return null;
     const key = value.split('=', 1)[0].toLowerCase();
@@ -336,7 +376,7 @@ function targetGlobals(g, invocation, fixedCommitUsageConsumer = false) {
       const v = eq >= 0 ? t.slice(eq + 1) : literal(globals[++i]);
       if (name === '--config-env') {
         // Non-Git referenced variables are not in this environment snapshot.
-        if (v === null || guard.preCommitConfigKey({ configs: [], configEnvs: [v] })) return null;
+        if (v === null || R41_CONFIG_KEY.test(v.split('=', 1)[0]) || guard.preCommitConfigKey({ configs: [], configEnvs: [v] })) return null;
       } else {
         const selected = inline(v); if (!selected) return null; result.push(...selected);
       }
@@ -401,6 +441,8 @@ function parseConfigOutput(output) {
   const text = bytes.toString('utf8');
   if (!Buffer.from(text, 'utf8').equals(bytes) || text && !text.endsWith('\0')) return null;
   const entries = new Map();
+  const postIndexNames = new Set();
+  const postIndexEnabled = new Map();
   const fields = text ? text.slice(0, -1).split('\0') : [];
   if (fields.length % 2) return null;
   const trace2 = new Map();
@@ -413,7 +455,11 @@ function parseConfigOutput(output) {
     const key = record.slice(0, lf).toLowerCase();
     if (!CONFIG_KEY.test(key)) return null;
     const value = record.slice(lf + 1);
-    entries.set(key, value); // last effective helper value; values may contain LF
+    entries.set(key, value);
+    const hookEvent = /^hook\.(.+)\.event$/i.exec(record.slice(0, lf));
+    const hookEnabled = /^hook\.(.+)\.enabled$/i.exec(record.slice(0, lf));
+    if (hookEvent && value === 'post-index-change') postIndexNames.add(hookEvent[1]);
+    if (hookEnabled) postIndexEnabled.set(hookEnabled[1], value); // last effective helper value; values may contain LF
     if (/^includeif\./.test(key)) {
       pagerConditional = true;
       if (['system', 'global'].includes(scope)) earlyConditional = true;
@@ -421,6 +467,8 @@ function parseConfigOutput(output) {
     // Trace2 starts before repository setup and consumes system/global only.
     if (/^trace2\./.test(key) && ['system', 'global'].includes(scope)) trace2.set(key, value);
   }
+  Object.defineProperty(entries, 'postIndexNames', { value: postIndexNames });
+  Object.defineProperty(entries, 'postIndexEnabled', { value: postIndexEnabled });
   Object.defineProperty(entries, 'trace2EarlySources', { value: trace2 });
   Object.defineProperty(entries, 'earlyConditionalSource', { value: earlyConditional });
   Object.defineProperty(entries, 'pagerConditionalSource', { value: pagerConditional });
@@ -436,6 +484,43 @@ function probeConfig(context, spawn = spawnSync) {
   return parseConfigOutput(r.stdout);
 }
 
+
+/** Select configured events without losing earlier values of a multi-valued key. */
+function configuredPostIndex(config) {
+  const names = config.postIndexNames || new Set([...config].filter(([key, value]) => /^hook\..+\.event$/.test(key) && value === 'post-index-change').map(([key]) => key.slice(5, -6)));
+  return [...names].some(name => !FALSE.test((config.postIndexEnabled ? config.postIndexEnabled.get(name) : config.get('hook.' + name + '.enabled')) || 'true'));
+}
+/** Resolve Git's selected traditional path; never read or execute the hook body. */
+function indexHookSource(context, spawn = spawnSync, access = fs.accessSync) {
+  if (process.platform === 'win32') return null; // executable suffix selection is not certified here
+  const r = spawn(context.executable, [...context.globals, '--no-pager', 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/post-index-change'], {
+    cwd: context.cwd, env: context.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 4096,
+  });
+  if (r.error || r.signal || r.status !== 0) return null;
+  const text = Buffer.isBuffer(r.stdout) ? r.stdout.toString('utf8') : r.stdout;
+  if (typeof text !== 'string' || !text.endsWith('\n') || /[\r\n\0]/.test(text.slice(0, -1)) || !path.isAbsolute(text.slice(0, -1))) return null;
+  try { access(text.slice(0, -1), fs.constants.X_OK); return true; }
+  catch (error) { return ['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code) ? false : null; }
+}
+function signatureFormatActive(format, config) {
+  const builtins = new Set(['oneline', 'short', 'medium', 'full', 'fuller', 'reference', 'email', 'mboxrd', 'raw']);
+  for (let depth = 0; depth < 8; depth++) {
+    if (typeof format !== 'string') return true;
+    if (builtins.has(format) || format === '') return false;
+    if (format.startsWith('format:') || format.startsWith('tformat:') || format.includes('%')) {
+      for (let i = 0; i < format.length; i++) {
+        if (format[i] !== '%') continue;
+        if (format[i + 1] === '%') { i++; continue; }
+        let j = i + 1; if ('+- '.includes(format[j] || '\0')) j++;
+        if (format[j] === 'G') return true;
+      }
+      return false;
+    }
+    return true; // named aliases are an uninspected selected source (case/abbreviation included)
+  }
+  return true;
+}
+
 /** Select active helper roles, not raw helper command strings. */
 function selectedHelper(role, g, environment, config) {
   const traceNames = ['GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF'];
@@ -446,6 +531,11 @@ function selectedHelper(role, g, environment, config) {
     const name = { 'trace2.normaltarget': 'GIT_TRACE2', 'trace2.eventtarget': 'GIT_TRACE2_EVENT', 'trace2.perftarget': 'GIT_TRACE2_PERF' }[key];
     const selected = name && environment.has(name) && environment.get(name) !== '' ? environment.get(name) : value;
     if (selected !== '' && selected !== '0' && !/^false$/i.test(selected)) return 'trace2';
+  }
+  if (SIGNATURE_READERS.has(g.sub) && !role.query) {
+    if (role.signature === true || role.signature === null && TRUE.test(config.get('log.showsignature') || 'false')) return 'signature-verifier';
+    const format = role.prettyFormat === undefined ? config.get('format.pretty') : role.prettyFormat;
+    if (format !== undefined && signatureFormatActive(format, config)) return 'signature-format';
   }
   const monitor = config.get('core.fsmonitor');
   if (role.index && monitor !== undefined && !FALSE.test(monitor) && monitor !== '') return 'fsmonitor';
@@ -476,10 +566,15 @@ function assessReader(g, invocation, baseDir, deps = {}) {
   if (!context) return unknown('commit 前の Git 読取の実行先・cwd・env/config source を同じ条件で確認できません。');
   const config = (deps.probe || probeConfig)(context);
   if (!(config instanceof Map)) return unknown('commit 前の Git 読取の helper 設定を限定して確認できません。');
+  if (role.index && !role.query) {
+    if (configuredPostIndex(config)) return unknown('commit 前の Git 読取で configured post-index-change の source / 副作用を確認できません。');
+    const hook = (deps.indexHook || indexHookSource)(context);
+    if (hook !== false) return unknown('commit 前の Git 読取で post-index-change の source / 副作用を確認できません。');
+  }
   const selected = selectedHelper(role, g, context.selected, config);
   return selected ? unknown(`commit 前の Git 読取で ${selected} の source / 副作用を確認できません。`) : null;
 }
 
 module.exports = { environmentSources, operationRole, targetGlobals, readerContext, parseConfigOutput,
   probeConfig, selectedHelper, assessReader, inspectionArgs, readInspectionGit, supportsInspectionHardening,
-  safeInspectionEnvironment };
+  safeInspectionEnvironment, indexHookSource, configuredPostIndex, signatureFormatActive };

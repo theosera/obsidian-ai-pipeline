@@ -1520,7 +1520,7 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session']);
+const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run']);
 
 /** util-linux 2.39.3: priority/PID roles and namespace-free direct execvp. */
 function utilLinuxLauncherArgs(rest, info, name) {
@@ -1815,7 +1815,68 @@ function dbusRunSessionArgs(rest, info) {
   return k;
 }
 
+/** systemd v258: getopt '+' stops at COMMAND; no manager/child context is inferred. */
+function systemdRunArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { backend: 'systemd-v258', mode: 'unknown', childIndex: null,
+    executionMode: 'service', source: 'manager-or-launcher/context/identity/environment/expansion',
+    priorLauncherUnknown: info.launcherUnknown };
+  (info.systemdRunLaunchers ||= []).push(role);
+  const unknown = () => { info.launcherUnknown = true; return rest.length; };
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  const flags = new Set(['user', 'system', 'scope', 'slice-inherit', 'remain-after-exit', 'send-sighup',
+    'wait', 'tty', 'pty', 'pty-late', 'pipe', 'quiet', 'verbose', 'on-timezone-change', 'on-clock-change',
+    'no-block', 'no-ask-password', 'collect', 'same-dir', 'shell', 'ignore-failure', 'no-pager']);
+  const values = new Set(['capsule', 'unit', 'description', 'slice', 'expand-environment', 'host', 'machine',
+    'service-type', 'uid', 'gid', 'nice', 'setenv', 'property', 'on-active', 'on-boot', 'on-startup',
+    'on-unit-active', 'on-unit-inactive', 'on-calendar', 'timer-property', 'path-property', 'socket-property',
+    'working-directory', 'job-mode', 'background', 'json']);
+  if (rest.length > 128) return unknown();
+  let k = 0;
+  while (k < rest.length) {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) return unknown();
+    if (text === '--') { k++; break; }
+    if (!text.startsWith('-') || text === '-') break;
+    // A selected run0 argv0 has a different grammar, so it is not a query proof here.
+    const canonicalArgv0 = known(info.argv0Word) && path.posix.basename(textOf(info.argv0Word)) === 'systemd-run';
+    if (['--help', '--version', '-h'].includes(text) && canonicalArgv0 && !info.launcherUnknown) {
+      role.mode = 'query'; return -1;
+    }
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
+      if (flags.has(option) && eq < 0) {
+        if (option === 'scope') role.executionMode = 'scope';
+      } else if (values.has(option)) {
+        const value = eq < 0 ? rest[++k] : { ...word, text: text.slice(eq + 1),
+          literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(eq + 1) : undefined };
+        // Required values consume one slot, even when it looks like --help or --.
+        if (!value || !wrapperValueKnown(value) || value.ansiCUnknown) return unknown();
+      } else return unknown();
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        const option = text[j];
+        if ('CHMEpu'.includes(option)) {
+          const value = j + 1 < text.length ? { ...word, text: text.slice(j + 1) } : rest[++k];
+          if (!value || !wrapperValueKnown(value) || value.ansiCUnknown) return unknown();
+          break;
+        }
+        if (!'rtTPqvGdS'.includes(option)) return unknown();
+      }
+    }
+    k++;
+  }
+  if (k < rest.length) role.childIndex = k;
+  // Services use manager context; scopes inherit caller context but also have selected
+  // unit properties and a distinct expansion consumer. Neither is a proven direct child.
+  return unknown();
+}
+
 const WRAPPERS = {
+  'systemd-run': systemdRunArgs,
   'dbus-run-session': dbusRunSessionArgs,
   ...Object.fromEntries(SETARCH_ALIASES.map(name => [name, (rest, info) => opaqueUtilLinuxArgs(rest, info, name)])),
   flock: flockArgs,
@@ -3478,6 +3539,7 @@ function inspect(cmd, options = {}) {
       watchLauncherRole: info.watchLauncher || null,
       parallelLauncherRole: info.parallelLauncher || null,
       dbusRunSessionRoles: info.dbusRunSessions || [],
+      systemdRunLauncherRoles: info.systemdRunLaunchers || [],
       utilLinuxLauncherRole: info.utilLinuxLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
@@ -3884,11 +3946,14 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
       const utilLinuxUnknown = info.utilLinuxLauncher?.mode === 'unknown' && !info.utilLinuxLauncher.priorLauncherUnknown;
       const parallelUnknown = info.parallelLauncher?.mode === 'unknown' && !info.parallelLauncher.priorLauncherUnknown;
       const watchUnknown = info.watchLauncher?.mode === 'unknown' && !info.watchLauncher.priorLauncherUnknown;
       const dbusUnknown = info.dbusRunSessions?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
+      const systemdUnknown = info.systemdRunLaunchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
+      if (systemdUnknown && options.deferSystemdRunSourceProblems !== true) res.problems.push('systemd-run の COMMAND 境界または manager/launcher の実行 context・identity・cwd/env・source・展開条件を確認できません。同じ unit/scope・対象・操作を保つ対応形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
+      if (systemdUnknown) return;
       // Egress defers only these registered launcher-owned source uncertainties; other problems stay immediate.
       if (!(utilLinuxUnknown && options.deferUtilLinuxSourceProblems === true) && !(parallelUnknown && options.deferParallelSourceProblems === true) && !(watchUnknown && options.deferWatchSourceProblems === true) && !(dbusUnknown && options.deferDbusRunSessionSourceProblems === true)) res.problems.push(dbusUnknown ? 'dbus-run-session の daemon/config の実行 source または PROGRAM/argv 境界を検査できません。同じ source・対象・cwd/env・操作を保てる対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : utilLinuxUnknown ? 'util-linux launcher の option・lock/priority/PID・child、または personality/namespace/root/cwd/env/credential/PAM/既定 shell の実行条件を確認できません。同じ lock/scheduling/context・対象・操作・argv を保つ対応形式がなければ owner に cwd/env/backend/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : parallelUnknown ? 'parallel の実 backend（moreutils/GNU）・暗黙設定・stdin job・再評価 template の選択を確認できません。query や EOF だけでは両 backend の不活性を証明できません。同じ対象・操作・並列性・job/argv・cwd/env/source を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : watchUnknown ? 'watch の option/値/child 境界または既定 shell source を確認できません。実 --exec で argv の意味を保てる場合だけ対応済み形式を使い、保てなければ owner に対象・操作・mode・cwd/env/source と不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' : info.wrapperNames.includes('prlimit') ? 'prlimit の選択resource値・PID/process作用またはchild/argv境界を確認できません。同じ対象・limit・child・PID・cwd/env条件を保つ対応形式が無ければ、ownerへ不足する条件を確認してください。個別操作の了承はhook無効化の了承ではありません。' : 'launcher の option や引数の個数を読みきれず、git の実行先を確かめられない');
       return;

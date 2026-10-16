@@ -29455,4 +29455,29 @@ applyDeclaredAdjustmentsAndBank(CASES,ledger,bank,{"ledgerJSONSHA256":"0c0583184
   CASES.push(...additions);
 }
 
+// R41 preserves the original 8696 input bank and versions one signature-source contract.
+{
+  const hash = value => require('node:crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const ledger = require('./r41-signature-source-oracle-adjustments.json');
+  if (CASES.length !== 8696 || hash(CASES) !== '8a29fc91004f79d3c36caca6ef5659068bf0f0d204e939a3038afac27f3adfca' ||
+      hash(ledger) !== '05da6c39c2d3c3289ec08ed34fc7fb4dca48585c7d657a72c3772b72084aafb9' || ledger.schema !== 'R41_VERSIONED_SIGNATURE_SOURCE_ORACLE_V1' ||
+      ledger.adjustments.length !== 1) throw new Error('R41_SIGNATURE_LEDGER_BINDING');
+  const adjustment = ledger.adjustments[0];
+  const index = CASES.findIndex(c => c.id === adjustment.id);
+  const before = CASES[index], after = { ...before, ...adjustment.setFields };
+  const keys = new Set(['expect', 'expectedOwnSG', 'denyBy', 'expectReasonPrefixes']);
+  const input = c => Object.fromEntries(Object.entries(c).filter(([key]) => !keys.has(key)));
+  if (!before || hash(before) !== adjustment.beforeDefinitionJSONSHA256 ||
+      JSON.stringify(before) !== JSON.stringify(adjustment.beforeDefinition) || before.expect !== 'allow' ||
+      Object.keys(adjustment.setFields).length !== 4 || Object.keys(adjustment.setFields).some(k => !keys.has(k)) ||
+      JSON.stringify(input(before)) !== JSON.stringify(input(after)) || after.expect !== 'deny' ||
+      after.expectedOwnSG !== 'UNKNOWN' || after.denyBy !== 'block-secret-git.cjs' ||
+      after.expectReasonPrefixes?.['block-secret-git.cjs'] !== '[判断不能] ' ||
+      hash(after) !== adjustment.afterDefinitionJSONSHA256 || JSON.stringify(after) !== JSON.stringify(adjustment.afterDefinition)) {
+    throw new Error('R41_SIGNATURE_EXACT_INPUT_AND_ORACLE');
+  }
+  module.exports.R41_ORIGINAL_8696_CASES = JSON.parse(JSON.stringify(CASES));
+  CASES[index] = after;
+}
+
 if (require.main === module) main();

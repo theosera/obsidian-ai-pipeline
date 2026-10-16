@@ -20,6 +20,40 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R41:CONTRACT:BEGIN -->
+
+<a id="r41-current-contract"></a>
+
+## R41: index更新callback・署名verifier・systemd-runの追加境界
+
+基点は公開 `2f8e3c62b285073b0714a6fd39325d6fa72938af`。fresh Codex review5553871277（2026-10-17 06:25:41 JST）から、`post-index-change`、pretty signature placeholder、`systemd-run`の3件を受領した。06:29:17.947676 JSTの保存primaryは全197thread終端取得・未解決3（Codex P1、CR0）。指摘本文が報告するnative再現を、こちらのHook DATA試験や全版の成立証明へ読み替えない。
+
+**この節はR41の修復範囲と確認条件であり、最終受入はPENDING**。R40の公開headでの8696／Node789／別parity15／CI成功はその固定sourceの履歴として下に保持し、新sourceの全件・公開CI・fresh両reviewと指摘処理へ持ち越さない。
+
+| 追加範囲 | 確認するconsumerとUNKNOWNの境界 | 通常作業への影響・正常対照 | 同目的の出口 |
+| --- | --- | --- | --- |
+| commit前readerのindex更新 | index refresh/writeに伴う`post-index-change`の選択source・presenceを、pager/fsmonitor等と別に確認する。reader名だけでcallbackなしと推測しない。 | indexを更新し得る普通のreaderも、実効hook条件が未検査なら止まり得る。非選択／対応query・独立FORBIDDEN等を別対照にし、全Git readerの禁止へ広げない。 | 分割して意味を保てる場合はreader後のcommitでstaged状態を新しく検査する。必要なhookの削除・無効化を同等操作と決めつけない。 |
+| history表示の署名verifier | signature placeholderや署名表示optionが選ぶverifierと設定sourceを確認する。formatを一律に不活性DATAとは認定せず、未検査active verifierはUNKNOWNにする範囲を詰める。 | 署名表示を要求する通常のlog/show等にも費用がある。非署名format、literalなformat DATA、非選択条件を別に試験する。選択historyに署名があるか、backendが実際に起動したかはHook DATAだけでは証明しない。 | 署名検証が不要で表示の意味を保てる場合だけ非署名の対応形式を選ぶ。検証が目的なら勝手に外さず、分割後のcommit再検査またはowner確認へ。 |
+| `systemd-run` launcher | option/value/child境界と、system/user manager・service/scope・cwd/env/source等の実行contextを分ける。子が見つかってもcontext既知とはしない。未知のoptionや暗黙sourceを推測ALLOWにしない。 | 同じargvを直接起動する場合とmanager経由は同等とは限らない。真正terminal query、消費されたquery風DATA、子command、独立した確定FORBIDDENを分けて確認する。 | service/scopeや環境を外して同じ目的とは扱わない。同じ対象・操作・contextを保つ対応形式がなければownerへ不足条件を示す。 |
+
+reader側の固定consumerはGit 2.54.0である。index能力のある先行readerでは、同じcwd・Git global option・選択envでGitにtraditional `hooks/post-index-change`のpathを解決させ、本文を読まず実行可能性だけを観測する。存在または確認不能ならUNKNOWN、不存在／nonexecならこのconsumerの確認を継続する。stdout queryや非index操作での非選択は、他のsource検査の免除ではない。configured `hook.*.event`は多値をlast値へ潰さず保持し、有効な`post-index-change` eventがあればtraditional pathと別にUNKNOWNとする。guard自身の読取りにも`core.hooksPath=/dev/null`と`GIT_OPTIONAL_LOCKS=0`を使い、configured post-index callbackは別に事前停止する。任意hook本文の無害判定やcallbackのnative実行試験ではない。
+
+署名verifierの選択は`log`／`show`／`whatchanged`／`rev-list`のpretty `%G`、`--show-signature`／`log.showSignature`／`format.pretty`等で分ける。`%%`のescape、literalな無署名format、値に消費されたDATA、実`--`境界を区別する。`--no-show-signature`でもpretty `%G`自体のconsumerは残る。dynamic formatや未検査named format aliasもUNKNOWNとなる通常費用があり、選択historyが無署名だと推測して通さない。検証を目的とする作業から署名表示を勝手に外さない。
+
+未確定pretty formatの正常対照1件は、原ALLOW期待に対しR41全件でownSG UNKNOWNとなった原FAILを保持し、独立台帳で期待変更を宣言する。`-P`はpagerだけを非選択にするため、未確定formatの署名consumerまで除外した証明にはしない。これは実`%G`やverifierが実行された証明ではなく、情報不足の局所UNKNOWNという通常費用である。literalな無署名formatは別の正常対照として保持する。元8696の原定義・原期待は別exportで保存し、inputの非oracle項目は変えない。台帳適用後の全件受入は終端票待ちである。
+
+`systemd-run`の固定consumerは[systemd v258の実装](https://github.com/systemd/systemd/blob/v258/src/run/run.c)と[同tagのmanual](https://github.com/systemd/systemd/blob/v258/man/systemd-run.xml)で区別する。serviceはmanager親・detached環境、scopeはcaller側の子実行／環境継承だが、scopeにも独自の環境展開が残る。現bounded対応はmanager・identity・target・cwd/env・展開の同値を認証していないため、active実行を局所UNKNOWNとする。実COMMAND前のoption解析中に到達するexact `--help`／`-h`／`--version`と、値slotや子argv内の同じ語は分ける。query／printf DATA／function overrideの対照を保ち、全shell禁止や実systemd backendの検証済みという意味にしない。
+
+FORBIDDENは確認できた操作・対象のpolicy違反、UNKNOWNはconsumer/source/contextの必要情報不足として、既存wire enum／理由prefixを使う。新しいsource不確実性で独立した確定FORBIDDENを隠さないこと、通常ALLOW対照を不要に失わないことも受入条件にする。既存standalone readerの制限を一括解除・拡張するものではない。
+
+### 確認と限界
+
+元reviewのcommandとinput/cwd/project/env、旧case/oracleを保持し、追加境界のownHook分類・正常対照・独立FORBIDDEN・単一edge除去時の差を有限に確認する。新option/backend/contextを未確認のまま対応済みと記録せず、実Git hook／verifier／systemd manager・transportのnative実行をHook DATAの成功から推定しない。
+
+部品targeted／全件比較／公開head CI／fresh両review通常完了と指摘処理／thread0／公開本文readbackは別のgateである。最終件数・公開完了はROOTの終端票待ち。追加L3やZIPを受入条件へ足さず、原FAIL／NOT_EXERCISEDを保持し、mergeは行わない。以下のR40以前は当時cutの契約・数値・current表示である。
+
+<!-- PR191:R41:CONTRACT:END -->
+
 <!-- PR191:R40:CONTRACT:BEGIN -->
 
 <a id="r40-current-contract"></a>
@@ -82,7 +116,7 @@ guard自身のindex/path照合は、提案された先行readerとは別の検�
 
 05:57:00.566 JSTの独立再集計は、この同じHook記録へ宣言した45件の期待を明示適用して**8696/8696適合・failed0**を確認した。理由は既定pager未検査41・変更HOME/config source未検査2・不正grep argv2で、元入力・非oracle項目は全保持、runtime5は固定sourceと一致する。これは追加の8696実行ではなく、raw結果を書き換えない期待の再評価である。中断runやunit/逆検証を今回の件数に加算しない。
 
-**新しい公開headのCI・fresh両reviewと指摘処理はPENDING**であり、このlocal全件受入と分ける。部品修復・期待再評価をnative exploit成立や任意shell/設定の安全認証へ昇格しない。R39の8586/8586、L1 737/737等は旧source/cutの履歴で、R40数値や合格へ転記しない。追加L3やZIPをgateへ足さず、原FAIL/NOT_EXERCISED/未資格を残す。
+**05:57 JSTの公開前cutでは、新head CI・fresh両reviewと指摘処理をPENDINGとした**。その後の公開2f8e3c62のCI run38966630535は成功し、両fresh fullは正常完了したが、新6件は未処理（06:43:48 JST取得）。未公開R41の新head CI・全件受入は別にPENDINGである。部品修復・期待再評価をnative exploit成立や任意shell/設定の安全認証へ昇格しない。R39の8586/8586、L1 737/737等は旧source/cutの履歴で、R40数値や合格へ転記しない。追加L3やZIPをgateへ足さず、原FAIL/NOT_EXERCISED/未資格を残す。
 
 current参照はこのR40 anchorへ結び付ける。明示したR35〜R39の歴史anchorや本文を一括置換しない。以下のR39以前は取得当時の契約・結果である。
 

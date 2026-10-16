@@ -207,6 +207,7 @@ const insp = guard.inspect(cmd, {
   trackOutboundEnvironment: true,
   deferWatchSourceProblems: true,
   deferDbusRunSessionSourceProblems: true,
+  deferSystemdRunSourceProblems: true,
   deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -5842,6 +5843,8 @@ function dynamicNetworkShape(invocation) {
 /** Reject possible network children when launcher options leave the executable boundary uncertain. */
 function opaqueLauncherNetwork(invocation) {
   if (!invocation.launcherUnknown) return false;
+  // A newly selected systemd context is refused at the late source gate; keep independent verdict priority.
+  if (invocation.systemdRunLauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
   const words = invocation.launcherArgs || [];
   const existing = curlReadsUpload(words, invocation.incomplete) || wgetReadsUpload(words) || words.some((word) =>
     ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh'].includes(word.text.split('/').pop()) ||
@@ -5941,6 +5944,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
     trackOutboundEnvironment: true,
     deferWatchSourceProblems: true,
     deferDbusRunSessionSourceProblems: true,
+  deferSystemdRunSourceProblems: true,
     deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -5983,6 +5987,13 @@ function utilLinuxSourceVerdict(invocation) {
 /** Only the new D-Bus daemon/config/argv boundary is deferred; independent refusals retain priority. */
 function dbusRunSessionSourceVerdict(invocation) {
   return invocation.launcherUnknown && invocation.dbusRunSessionRoles?.some(role =>
+    role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
+}
+
+/** Defer only the selected systemd-run context; earlier confirmed refusals retain priority. */
+function systemdRunSourceVerdict(invocation) {
+  if (invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
+  return invocation.launcherUnknown && invocation.systemdRunLauncherRoles?.some(role =>
     role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
 }
 
@@ -6708,6 +6719,11 @@ if (invocations.some((invocation) => rsyncPoptConfigRole(invocation).active)) {
 // The selected D-Bus daemon/config source must not hide an independent confirmed refusal.
 if (invocations.some(dbusRunSessionSourceVerdict)) {
   deny('dbus-run-session の daemon/config の実行 source または PROGRAM/argv 境界を検査できません。同じ source・対象・cwd/env・操作を保てる対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// Scope and service use different execution contexts; neither is certified by child spelling alone.
+if (invocations.some(systemdRunSourceVerdict)) {
+  deny('systemd-run の service/scope mode・実行先・identity・cwd/env/source を同じ条件で確認できません。同じ対象・操作・実行条件を保つ対応済み形式がなければ owner に不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 // New watch uncertainty cannot replace an existing confirmed refusal/category above.

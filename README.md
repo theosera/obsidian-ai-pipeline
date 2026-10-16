@@ -18,6 +18,16 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R41:README:BEGIN -->
+
+### R41: index更新callback・署名表示のverifier・systemd-run
+
+公開head `2f8e3c62` のfresh Codex reviewで、commit前readerの`post-index-change`、pretty formatが選ぶ署名verifier、`systemd-run`の子commandという3経路を追加で指摘された。R41はこれらのconsumer／実行contextを限定して確認する修復であり、R40の固定headでの全8696・789契約・CI成功を新sourceへ持ち越さない。[対象・通常費用・正常対照・同目的の出口](docs/security/git-command-guards.md#r41-current-contract)を参照する。
+
+**R41の部品修復・統合全件・新公開head CI・fresh reviewは受入PENDING**。2026-10-17 06:29:17 JSTの保存primaryは全197threadの未解決3（Codex P1）、CR未解決0だった。指摘本文のnative検証報告と、このリポジトリのHook DATA測定を分け、元FAIL／NEやR40以下の履歴を保持する。
+
+<!-- PR191:R41:README:END -->
+
 <!-- PR191:R40:README:BEGIN -->
 
 ### R40: commit 前の Git reader と、guard 自身の検査を分ける
@@ -40,7 +50,7 @@ grepの実`-q`／`--quiet`は既定pagerだけを非選択にする。明示page
 
 再開後の最新Node契約789/789・別parity15/15は成功した。理由付き45件のversioned期待を適用し、元8586の原定義・原期待の全記録と非期待値入力を保持した。適用binding・改変検知の再資格も成功し、旧不一致を原票で消さず現在の評価だけを明示更新した。
 
-計8696（旧8586＋new110）の旧runはowner停止で2832件中断し、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに全8696件完走した。元期待ではbaseline不一致0／candidate45不一致を原票・exit1のまま保持し、new110不一致0・broken0だった。05:57:00.566の再集計では、宣言した45件の期待を同じ51846Hook記録へ明示適用して8696/8696適合・failed0を確認した。これは追加の全件実行ではなく、元入力・非oracle項目・runtime/source/fixtureは不変。旧SG FORBIDDEN127件も維持した。**新しい公開headのCI・fresh両reviewと指摘処理はPENDING**で、このlocal受入と分ける。
+計8696（旧8586＋new110）の旧runはowner停止で2832件中断し、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに全8696件完走した。元期待ではbaseline不一致0／candidate45不一致を原票・exit1のまま保持し、new110不一致0・broken0だった。05:57:00.566の再集計では、宣言した45件の期待を同じ51846Hook記録へ明示適用して8696/8696適合・failed0を確認した。これは追加の全件実行ではなく、元入力・非oracle項目・runtime/source/fixtureは不変。旧SG FORBIDDEN127件も維持した。**05:57 JSTの公開前cutでは、新head CI・fresh両reviewと指摘処理をPENDINGとした**。後続の公開head2f8e3c62ではCI run38966630535が成功し、両fresh fullも正常完了したが、新6件の指摘は未処理（06:43:48 JST取得）。未公開R41の新head CI・全件受入は別にPENDINGである。
 
 <!-- PR191:R40:README:END -->
 

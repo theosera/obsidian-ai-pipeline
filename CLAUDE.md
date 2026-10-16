@@ -96,6 +96,16 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R41:PLAYBOOK:BEGIN -->
+
+### R41: readerの追加consumerとlauncherのcontextを確認する
+
+commit前readerではindex更新後の`post-index-change` callbackと、pretty format／署名表示が選ぶverifierも確認対象になる。`systemd-run`はservice（manager親）とscope（systemd-run親・caller環境継承）を分け、子commandのcwd/env/sourceや展開条件を、単なる先頭名や通常の直接実行と同一視しない。未検査sourceのUNKNOWNと、確認済みpolicy違反のFORBIDDENを分け、通常のquery／印字DATA／非署名format／独立FORBIDDENの対照も保つ。[R41の範囲・通常費用・出口](docs/security/git-command-guards.md#r41-current-contract)へ集約する。
+
+必要なhookや署名検証、service/scopeを外して同じ目的とは扱わない。意味を保てる分割ならreader後のcommitを新しいPreToolUseで再検査し、保てなければownerへ不足条件を確認する。R41は修復・受入PENDINGであり、R40の全8696／Node789／CIを新sourceの成功へ流用しない。以下のR40以前は当時の契約と測定の履歴である。
+
+<!-- PR191:R41:PLAYBOOK:END -->
+
 <!-- PR191:R40:PLAYBOOK:BEGIN -->
 
 ### R40: commit前のreaderはcommand名だけで副作用なしと扱わない
@@ -112,7 +122,7 @@ R40の元期待を維持した初回full8655は、旧8586側の48期待不一致
 
 現在のC7固定sourceはNode契約787/787・別parity15/15・逆12profiles/36pairs/216Hook・理由45入力135Hookの停止時履歴証拠を持つ。再開後の最新Node契約は789/789・別parity15/15成功、45件のversioned期待適用とbinding/改変検知の再資格も成功した。元8586の原定義・原期待の全記録と非期待値入力は保持し、全789をpure解析とは呼ばない。
 
-旧8586＋new110＝8696の旧runは2832件でowner中断し、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに完走し、元期待のcandidate45不一致／exit1を保持した。new110不一致0・broken0、宣言した45件を同じ51846Hook記録へ適用した05:57:00.566の明示再評価は8696/8696適合・failed0だった。追加の全件実行ではなく、元非oracle入力・runtime/source/fixtureは不変、旧SG FORBIDDEN127件も維持した。**新しい公開headのCI・fresh両reviewと指摘処理はPENDING**で、local受入を公開側の完了へ持ち越さない。
+旧8586＋new110＝8696の旧runは2832件でowner中断し、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに完走し、元期待のcandidate45不一致／exit1を保持した。new110不一致0・broken0、宣言した45件を同じ51846Hook記録へ適用した05:57:00.566の明示再評価は8696/8696適合・failed0だった。追加の全件実行ではなく、元非oracle入力・runtime/source/fixtureは不変、旧SG FORBIDDEN127件も維持した。**05:57 JSTの公開前cutでは、新head CI・fresh両reviewと指摘処理をPENDINGとした**。公開2f8e3c62のCI run38966630535は成功し、両fresh fullも正常完了したが、新6件は未処理（06:43:48 JST取得）。未公開R41の新head CI・全件受入は別にPENDINGで、local成功を公開側の完了へ持ち越さない。
 
 <!-- PR191:R40:PLAYBOOK:END -->
 

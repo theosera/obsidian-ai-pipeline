@@ -18,7 +18,7 @@ function fixture(sub, args = [], globals = [], env = {}) {
 function assess(f, entries = [], extra = {}) {
   return readers.assessReader(f.g, f.invocation, '/DUMMY/owned/repo', {
     environment: baseline, executable: '/DUMMY/trusted/git', isTrusted: () => true,
-    probe: () => new Map(entries), ...extra,
+    probe: () => new Map(entries), indexHook: () => false, ...extra,
   });
 }
 const category = result => result?.category || 'ALLOW';
@@ -132,7 +132,8 @@ test('possibly empty attached values join both option arities instead of hiding 
   const logPattern = { ...scalar, text: '-G\0' };
   const logFormat = { ...scalar, text: '--format=\0' };
   assert.equal(assess(fixture('log', [logPattern, '-1'], ['--no-pager'])), null);
-  assert.equal(assess(fixture('log', [logFormat, '-1'], ['--no-pager'])), null);
+  // Unknown format DATA may select signature verification, unlike an unknown grep pattern.
+  assert.equal(category(assess(fixture('log', [logFormat, '-1'], ['--no-pager']))), 'UNKNOWN');
   const cfg = [['diff.dummy.textconv', '/DUMMY/helper']];
   assert.equal(category(assess(fixture('log', [logPattern, '--no-textconv'], ['--no-pager']), cfg)), 'UNKNOWN');
   assert.equal(category(assess(fixture('grep', ['--textconv', { ...scalar, text: '-e\0' }, '--no-textconv'], ['--no-pager']), cfg)), 'UNKNOWN');
@@ -301,9 +302,9 @@ test('private helper values do not enter reasons; repeated keys keep last effect
 });
 test('inspection hardening is separate from the config observation', () => {
   assert.deepEqual(readers.inspectionArgs(['diff', '--cached', '--name-only', '-z']),
-    ['--no-pager', '-c', 'core.fsmonitor=false', 'diff', '--no-ext-diff', '--no-textconv', '--cached', '--name-only', '-z']);
+    ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'diff', '--no-ext-diff', '--no-textconv', '--cached', '--name-only', '-z']);
   assert.deepEqual(readers.inspectionArgs(['ls-files', '-z', '--', 'a.txt']),
-    ['--no-pager', '-c', 'core.fsmonitor=false', 'ls-files', '-z', '--', 'a.txt']);
+    ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'ls-files', '-z', '--', 'a.txt']);
 });
 test('inspection does not use the boolean fsmonitor override on older or unknown Git', () => {
   for (const banner of ['git version 2.35.1\n', 'unknown', 'git version $DUMMY']) assert.equal(readers.supportsInspectionHardening(banner), false);

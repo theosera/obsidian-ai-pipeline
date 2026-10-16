@@ -1,5 +1,15 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R41:LAYERS:BEGIN -->
+
+## R41: 追加reader consumerとmanager launcherの境界（受入PENDING）
+
+commit前readerの`post-index-change` callbackと署名表示verifierは、pager/fsmonitor/textconvとは別の選択consumerとして確認する。`systemd-run`はserviceのmanager親とscopeのsystemd-run親・caller環境継承を分け、child抽出だけでcwd/env/sourceや展開条件が既知とはしない。[R41の影響表・正常対照・同目的の出口](git-command-guards.md#r41-current-contract)へ条件を集約する。
+
+必要なhook／署名検証／service/scopeを省いて同等操作と扱わず、未検査sourceのUNKNOWNと確定policy違反のFORBIDDENを分ける。query・印字DATA・非選択consumerの普通の作業と、独立FORBIDDENの対照も必要である。R41の部品・統合全件・公開CI/fresh reviewは受入PENDING。R40固定headの成功と、以下の全履歴・原FAIL/NEを新R41の資格へ持ち越さない。
+
+<!-- PR191:R41:LAYERS:END -->
+
 <!-- PR191:R40:LAYERS:BEGIN -->
 
 ## R40: 先行readerのsource判定と、guard自身の検査を分ける
@@ -20,7 +30,7 @@ grepの実quietは既定pagerだけを非選択にし、消費DATA/`--no-quiet`�
 
 現在のC7 sourceはNode契約787/787・別parity15/15、逆12profiles/36pairs/216Hook、45理由135Hook・不一致0の停止時履歴証拠を持つ。再開後、元8586の原定義・原期待の全記録と非oracle入力を保持して45件の理由付き期待を明示適用し、binding/改変検知の再資格とNode契約789/789・別parity15/15が成功した。全789をpure解析とは呼ばない。
 
-旧8586＋new110＝8696の旧runは2832件中断で、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに完走し、元期待のcandidate45不一致／exit1を保持、new110不一致0・broken0だった。宣言45件の期待を同じ51846Hook記録へ適用した05:57:00.566の明示再評価で8696/8696適合・failed0を確認した。追加の全件実行ではなく、元非oracle入力・runtime/source/fixtureは不変、旧SG FORBIDDEN127件も維持した。**新しい公開headのCI・fresh両reviewと指摘処理はPENDING**。原48/46/45FAILを削除せず、local受入を公開側の完了へ読み替えない。
+旧8586＋new110＝8696の旧runは2832件中断で、新runへ加算しない。再開後の新runは2026-10-17 05:56:56.436 JSTに完走し、元期待のcandidate45不一致／exit1を保持、new110不一致0・broken0だった。宣言45件の期待を同じ51846Hook記録へ適用した05:57:00.566の明示再評価で8696/8696適合・failed0を確認した。追加の全件実行ではなく、元非oracle入力・runtime/source/fixtureは不変、旧SG FORBIDDEN127件も維持した。**05:57 JSTの公開前cutでは、新head CI・fresh両reviewと指摘処理をPENDINGとした**。公開2f8e3c62のCI run38966630535は成功し、両fresh fullも正常完了したが、新6件は未処理（06:43:48 JST取得）。未公開R41の新head CI・全件受入は別にPENDING。原48/46/45FAILを削除せず、local受入を公開側の完了へ読み替えない。
 
 <!-- PR191:R40:LAYERS:END -->
 
