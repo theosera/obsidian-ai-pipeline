@@ -18,6 +18,20 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R38:README:BEGIN -->
+
+### R38: 選択sourceの契約と検証状況
+
+この節は私有最終sourceのローカル受入cut（2026-10-16T10:57:01.166111+09:00 JST）。新公開head・同head CI・fresh両review・実入口は未取得のまま分ける。後続の公開結果はPR本文と監査台帳へ記録し、このcutの履歴へ遡及させない。
+
+R38はDNS clientの選択値、Netcat別名とbackend、Wget client認証source、先行cd後のGit pathspecを有限に扱う。ALLOWは対応条件内で当該Hookが拒否しない結果、FORBIDDENは確認したpolicy違反、UNKNOWNは選択source・argv・contextが未検査の結果で、後二者は停止する。 通常のquery・接続・認証・Git操作でも未検査sourceによりUNKNOWNとなる範囲と、同目的・同条件を保つownerへの出口を[guard guide](docs/security/git-command-guards.md#r38-current-contract)にまとめる。
+
+ローカル受入は固定runtime sourceで直接入力8454/8454・broken0（25362 Hook呼出し）、role解析699/699と別のproduction shell parity15/15、通常root test602/602・typecheck・lint・package.json重複検査が成功。新公開head/requiredCI・両fresh review・必要な実入口L3は **PENDING**。部品の成功や旧headのCIを新sourceへ持ち越さない。Node 24.22を明示した検証と、過去Node 24.13/CI 24.21の記録を区別する。Node 26への移行はowner判断で11月以降とし、この変更でengine/CIを変更しない。
+
+以下のR37以前の本文・数値・「current／現在」は、それぞれのsourceと取得日時に結合した履歴である。旧本文と順序を保持し、R38の新sourceでの測定結果へ読み替えない。
+
+<!-- PR191:R38:README:END -->
+
 <!-- PR191:R37:README:BEGIN -->
 <a id="r37-readme-contract"></a>
 [現在の有限契約・通常影響・owner出口](docs/security/git-command-guards.md#r37-current-contract)。

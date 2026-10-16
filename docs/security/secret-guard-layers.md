@@ -1,5 +1,19 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R38:LAYERS:BEGIN -->
+
+## R38: 私有契約・公開観測・native条件の別gate
+
+この節は私有最終sourceのローカル受入cut（2026-10-16T10:57:01.166111+09:00 JST）。新公開head・同head CI・fresh両review・実入口は未取得のまま分ける。後続の公開結果はPR本文と監査台帳へ記録し、このcutの履歴へ遡及させない。
+
+R38はDNS clientの選択値、Netcat別名とbackend、Wget client認証source、先行cd後のGit pathspecを有限に扱う。ALLOWは対応条件内で当該Hookが拒否しない結果、FORBIDDENは確認したpolicy違反、UNKNOWNは選択source・argv・contextが未検査の結果で、後二者は停止する。 対応する四責務と通常費用は[guideのR38契約](git-command-guards.md#r38-current-contract)に集約する。raw uploadとclient認証source、DNS選択値と無関係なreaderを分ける。未知sourceを単にscope外としてALLOWにせず、根拠が足りなければ有限にUNKNOWNで停止する。
+
+R38の部品／私有合成を、公開修復受入・実settings入口・nativeの接続/認証/通信成立・PR全体Goalの証明にしない。ローカル受入は固定runtime sourceで直接入力8454/8454・broken0（25362 Hook呼出し）、role解析699/699と別のproduction shell parity15/15、通常root test602/602・typecheck・lint・package.json重複検査が成功。新公開head/requiredCI・両fresh review・必要な実入口L3は **PENDING**。旧cutの未完了や原FAILも消さない。
+
+以下のR37以前の本文・数値・「current／現在」は、それぞれのsourceと取得日時に結合した履歴である。旧本文と順序を保持し、R38の新sourceでの測定結果へ読み替えない。
+
+<!-- PR191:R38:LAYERS:END -->
+
 <!-- PR191:R37:LAYERS:BEGIN -->
 <a id="r37-layers-contract"></a>
 ## R37: 意味・判定・実入口・native条件を分ける（固定sourceのローカル受入cut）

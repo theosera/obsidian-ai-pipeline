@@ -39,6 +39,7 @@ try {
 const { deny } = guard;
 const path = require('node:path');
 const fs = require('node:fs');
+const deferredNetcatUnknown = new WeakSet();
 const UNKNOWN_OWNER_GATE = ' owner に対象・操作・cwd・env/config/source と不明点を確認してください。個別操作の承認は hook 無効化の許可ではありません。';
 
 // (A) リテラル秘密。`$GITHUB_TOKEN` 等の env 参照は値ではないので **当たらない**
@@ -302,7 +303,8 @@ function contextualVerdict(invocation, verdict) {
 function untrustedClientExecution(invocation, additionalClientName = null) {
   const clients = ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet',
     'gh', 'ssh', 'ssh-keyscan', 'openssl'];
-  if ((!clients.includes(invocation.name) && additionalClientName !== invocation.name) || knownInvocationContext(invocation)) return false;
+  const additionalClient = typeof additionalClientName === 'string' && additionalClientName.length > 0 && additionalClientName === invocation.name;
+  if ((!clients.includes(invocation.name) && !netcatAliasName(invocation.name) && !additionalClient) || knownInvocationContext(invocation)) return false;
   const executable = invocation.nameWord?.text || '';
   const trustedAbsolute = ['/usr/bin/' + invocation.name, '/bin/' + invocation.name].includes(executable);
   // PATH lookup does not select an already explicit trusted absolute program.
@@ -2256,6 +2258,9 @@ function wgetPayloadRole(invocation) {
   let terminal = false;
   let noProxy = false;
   let forceHtml = false;
+  let linkedRetrieval = false;
+  let unknownOptionArity = false;
+  let hsts = true;
   let netrc = true;
   let afterDD = false;
   const takeValue = (option, value) => {
@@ -2278,7 +2283,9 @@ function wgetPayloadRole(invocation) {
   const flag = (option) => {
     if (['help', 'version'].includes(option)) terminal = true;
     if (option === 'no-proxy') noProxy = true;
+    if (option === 'no-hsts') hsts = false;
     if (option === 'force-html' || option === 'no-force-html') forceHtml = option === 'force-html';
+    if (['recursive', 'mirror', 'page-requisites'].includes(option)) linkedRetrieval = true;
   };
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k];
@@ -2319,13 +2326,17 @@ function wgetPayloadRole(invocation) {
         if (short === 'h') flag('help');
         if (short === 'V') flag('version');
         if (short === 'F') flag('force-html');
+        if (short === 'r' || short === 'm' || short === 'p') flag('recursive');
       }
       continue;
     }
     if (!proven && (word.dynamicMaySplit !== false || word.ansiCUnknown || word.globExpanded || word.braceExpanded)) unknown = true;
+    // One argv word can still be an unresolved value-taking option.
+    // Preserve this role uncertainty without changing old payload verdicts.
+    if (!afterDD && !proven && (text.startsWith(guard.DYN) || text.startsWith('-'))) unknownOptionArity = true;
     urls.push(word);
   }
-  return { values, headers, unknownHeaders, urls, unknown, terminal, noProxy, forceHtml, htmlTagValues, netrc };
+  return { values, headers, unknownHeaders, urls, unknown, terminal, noProxy, forceHtml, linkedRetrieval, unknownOptionArity, hsts, htmlTagValues, netrc };
 }
 
 /** These existing parsed option combinations exit before Wget starts URL retrieval. */
@@ -2356,6 +2367,57 @@ function wgetNetrcCredentialSourceVerdict(invocation) {
   if (supplied('user') && supplied('password')) return false;
   // No credential contents or existence are inspected: active implicit matching is unproved.
   return 'UNKNOWN';
+}
+
+/** GNU Wget 1.25.0 selects cert/key files only when a retrieval can reach TLS.
+ * Authentication material/backend inspection is not a raw-file-upload proof.
+ */
+function wgetSelectedCredentialRole(invocation) {
+  if (invocation.name !== 'wget') return { active: false };
+  const role = wgetPayloadRole(invocation);
+  const literal = word => literalSourceWord(word)?.text;
+  const selectors = ['certificate', 'private-key'].filter(name => role.values.has(name));
+  // cmd_file retains an empty string (not NULL). Empty-only names select no
+  // existing file; they do not erase an independent nonempty cert/key source.
+  const selected = selectors.filter(name => literal(role.values.get(name)) !== '');
+  const argvKnown = !role.unknown && !role.unknownOptionArity;
+  const result = { selectors, selected, values: role.values, linkedRetrieval: role.linkedRetrieval, hsts: role.hsts, argvKnown,
+    backendSourceProven: false, active: false, potentialTLS: false, verdict: false };
+  if (!selectors.length) return result;
+  // An unproved option can consume later clear/help/type/body tokens as DATA.
+  // No apparent inactive-source proof is valid until all argv roles are known.
+  if (!argvKnown) return { ...result, active: true, potentialTLS: true, verdict: 'UNKNOWN', unprovedArgvSelection: true };
+  if (!selected.length || role.terminal) return result;
+  // A proven invalid final enum is rejected by cmd_cert_type before retrieval.
+  // This does not pretend to model every earlier repeated parse error.
+  if (['certificate-type', 'private-key-type'].some(name => role.values.has(name) &&
+      literal(role.values.get(name)) !== undefined && !/^(?:pem|der|asn1)$/i.test(literal(role.values.get(name))))) {
+    return { ...result, invalidFinalTypeBeforeRetrieval: true };
+  }
+  if (wgetInvalidBodyOptions(role)) return result;
+  const input = role.values.has('input-file') ? wgetInputListState(invocation, role) : { inactive: true, body: '' };
+  if (!role.urls.length && input.inactive && !role.unknown) return result;
+  const links = wgetLiteralInputLinks(role, input);
+  const urls = role.urls.map(word => literal(word));
+  if (links !== null) urls.push(...links);
+  const noRedirect = literal(role.values.get('max-redirect')) === '0';
+  const potentialTLS = role.unknown || links === null || role.linkedRetrieval || urls.some(text => {
+    if (typeof text !== 'string') return true;
+    const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(text)?.[1]?.toLowerCase();
+    if (scheme === 'https' || scheme === 'ftps') return true;
+    // The default persistent HSTS store can upgrade HTTP before redirects.
+    if (scheme === 'http') return role.hsts || !noRedirect;
+    // Plain FTP cannot choose this TLS source directly; an unproved proxy
+    // route or followed link remains distinct from a proven direct FTP call.
+    if (scheme === 'ftp') return !role.noProxy;
+    return scheme === undefined;
+  });
+  return { ...result, potentialTLS: Boolean(potentialTLS), active: Boolean(potentialTLS),
+    verdict: potentialTLS ? 'UNKNOWN' : false };
+}
+
+function wgetSelectedCredentialVerdict(invocation) {
+  return wgetSelectedCredentialRole(invocation).verdict || false;
 }
 
 /** Wget's selected URL-list source composes with CLI URLs; it is not an upload body. */
@@ -3736,6 +3798,162 @@ function wgetBindResolverVerdict(invocation) {
   return dnsBind && !literalSourceWord(dnsBind) ? 'UNKNOWN' : false;
 }
 
+// R38_DIRECT_DNS_ROLE_START — ISC BIND 9.20.0 finite CLI roles, not native/backend attestation.
+const DIRECT_DNS_CLIENTS = new Set(['dig', 'host', 'nslookup', 'delv']);
+function directDnsRole(invocation) {
+  const result = { selectedWords: [], unknownSource: false, unknownArgv: false, terminal: false };
+  const words = invocation.args || [];
+  const literal = word => literalSourceWord(word)?.text;
+  const valueWord = (word, offset) => {
+    const known = literalSourceWord(word);
+    return known ? { ...known, text: known.text.slice(offset) } :
+      { ...word, text: (word.text || '').slice(offset), literalValue: undefined, outboundLiteralValue: undefined };
+  };
+  const text = word => literal(word) ?? word?.text ?? '';
+  const scalar = word => literal(word) !== undefined;
+  const queryWords = [], eagerWords = [];
+  let fileSource = false, unknown = false;
+  const finish = () => {
+    result.selectedWords = eagerWords.concat(result.terminal ? [] : queryWords);
+    result.unknownSource ||= !result.terminal && fileSource;
+    result.unknownArgv ||= unknown;
+    return result;
+  };
+  if (words.length > 64) { result.unknownArgv = true; return result; }
+  if (invocation.name === 'dig') {
+    // Native preparse skips consumed values and finds -r before any .digrc line is parsed.
+    let noRc = false;
+    for (let k = 0; k < words.length; k++) {
+      const s = literal(words[k]);
+      if (s === undefined) { if (text(words[k]).startsWith('-')) unknown = true; continue; }
+      if (!s.startsWith('-')) continue;
+      for (let j = 1; j < s.length; j++) {
+        const ch = s[j];
+        if ('46dhmruv'.includes(ch)) { if (ch === 'r') noRc = true; continue; }
+        if ('bcfkpqtxy'.includes(ch)) { if (j === s.length - 1) k++; break; }
+        unknown = true; break;
+      }
+    }
+    result.unknownSource = !noRc;
+    const rr = /^(?:A|AAAA|ANY|MX|NS|TXT|PTR|SOA|CNAME|SRV|CAA|DNSKEY|DS|IN|CH|HS|TYPE\d+|CLASS\d+)$/i;
+    for (let k = 0; k < words.length; k++) {
+      const word = words[k], s = text(word), known = scalar(word);
+      if (known && s.startsWith('%')) break;
+      if (s.startsWith('@')) { eagerWords.push(valueWord(word, 1)); continue; }
+      if (s.startsWith('+')) {
+        if (!known || !/^\+(?:short|noshort|tcp|notcp|noall|answer|comments|nocomments|stats|nostats)$/.test(s)) unknown = true;
+        continue;
+      }
+      if (s.startsWith('-')) {
+        if (!known) { unknown = true; break; }
+        let consumed = false;
+        for (let j = 1; j < s.length; j++) {
+          const ch = s[j];
+          if ('46dhmruv'.includes(ch)) {
+            if (ch === 'h' || ch === 'v') { result.terminal = true; return finish(); }
+            continue;
+          }
+          if (!'bcfkpqtxy'.includes(ch)) { unknown = true; break; }
+          const value = j + 1 < s.length ? valueWord(word, j + 1) : words[++k];
+          if (!value) { unknown = true; break; }
+          if (ch === 'q' || ch === 'x') queryWords.push(value);
+          else if (ch === 'f') { if (literal(value) !== '/dev/null') fileSource = true; }
+          else if (ch === 'k' || ch === 'y') fileSource = true;
+          else if (!scalar(value)) unknown = true;
+          consumed = true; break;
+        }
+        if (unknown && !consumed) break;
+        continue;
+      }
+      if (!known || !rr.test(s)) queryWords.push(word);
+    }
+    return finish();
+  }
+  if (invocation.name === 'host') {
+    if (!words.length || words.length === 1 && ['-V', '-h'].includes(literal(words[0]))) {
+      result.terminal = true; return result;
+    }
+    for (let k = 0; k < words.length; k++) {
+      const word = words[k], s = text(word);
+      if (s.startsWith('-')) {
+        if (!scalar(word)) { unknown = true; break; }
+        for (let j = 1; j < s.length; j++) {
+          const ch = s[j];
+          if ('46aAdilnrsvwCDTU'.includes(ch)) continue;
+          if (ch === 'V') { result.terminal = true; return finish(); }
+          if (!'cmptNRW'.includes(ch)) { unknown = true; break; }
+          const value = j + 1 < s.length ? valueWord(word, j + 1) : words[++k];
+          if (!value || !scalar(value)) unknown = true;
+          break;
+        }
+        continue;
+      }
+      queryWords.push(word);
+      // BIND host uses the first hostname and optional immediate nameserver; later argv is not payload.
+      if (k + 1 < words.length) eagerWords.push(words[k + 1]);
+      if (k + 2 < words.length) unknown = true;
+      break;
+    }
+    if (!queryWords.length && !result.terminal) unknown = true;
+    return finish();
+  }
+  if (invocation.name === 'nslookup') {
+    if (words.length === 1 && literal(words[0]) === '-version') { result.terminal = true; return result; }
+    let interactive = !words.length;
+    for (let k = 0; k < words.length; k++) {
+      const word = words[k], s = text(word);
+      if (s === '-' && scalar(word)) { interactive = true; continue; }
+      if (s.startsWith('-')) {
+        if (!scalar(word) || !/^-(?:(?:type|querytype|class)=[A-Za-z0-9]+|(?:timeout|retry|port)=\d+|debug|nodebug|recurse|norecurse)$/.test(s)) unknown = true;
+        continue;
+      }
+      if (!interactive && !queryWords.length) queryWords.push(word);
+      else { eagerWords.push(word); if (k + 1 < words.length) unknown = true; break; }
+    }
+    if (interactive || !queryWords.length) {
+      const redirs = invocation.redirs || [];
+      const emptyInput = !invocation.pipelineParticipant && !(invocation.heredocBodies || []).length &&
+        redirs.length === 1 && redirs[0].op === '<' && redirs[0].fdKnown &&
+        [null, '0'].includes(redirs[0].fd) && literal(redirs[0].word) === '/dev/null';
+      if (!emptyInput) fileSource = true;
+    }
+    return finish();
+  }
+  if (invocation.name === 'delv') {
+    if (['-h', '-v'].includes(literal(words[0]))) { result.terminal = true; return result; }
+    for (let k = 0; k < words.length; k++) {
+      const word = words[k], s = text(word);
+      if (scalar(word) && ['-h', '-v'].includes(s)) { result.terminal = true; return finish(); }
+      if (s.startsWith('@')) { queryWords.push(valueWord(word, 1)); continue; }
+      if (s.startsWith('+')) { if (!scalar(word) || !/^\+(?:short|noshort)$/.test(s)) unknown = true; continue; }
+      if (s.startsWith('-')) {
+        if (!scalar(word)) { unknown = true; break; }
+        if (['-4', '-6', '-i'].includes(s)) continue;
+        if (!/^-[abctpqx]/.test(s)) { unknown = true; break; }
+        const flag = s[1], value = s.length > 2 ? valueWord(word, 2) : words[++k];
+        if (!value) { unknown = true; break; }
+        if (flag === 'q' || flag === 'x') queryWords.push(value);
+        else if (flag === 'a') fileSource = true;
+        else if (!scalar(value)) unknown = true;
+        continue;
+      }
+      queryWords.push(word);
+      if (queryWords.length > 3) unknown = true;
+    }
+    return finish();
+  }
+  result.unknownArgv = true; return result;
+}
+// R38_DIRECT_DNS_ROLE_END
+function directDnsResolverVerdict(invocation) {
+  if (!DIRECT_DNS_CLIENTS.has(invocation.name) || invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
+  const role = directDnsRole(invocation);
+  const payload = outboundPayloadVerdict(invocation, role.selectedWords);
+  if (role.unknownSource || role.unknownArgv) return 'UNKNOWN';
+  if (untrustedClientExecution(invocation, invocation.name)) return 'UNKNOWN';
+  return payload;
+}
+
 function networkInvocation(invocation) {
   return ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet'].includes(invocation.name) ||
     (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
@@ -4817,9 +5035,141 @@ function ncatTlsMetadataVerdict(invocation) {
   return outboundPayloadVerdict(invocation, words.map(word => socketAuthenticationLiteralWord(word) || word));
 }
 
+/** One executable-family edge; preserve the actual name/path for execution-context checks.
+ * Debian nc.openbsd 1.219 and nc.traditional 1.10 have separate argv contracts.
+ * The alternatives name netcat can select Ncat too: -d is NOT a shared receive-only flag.
+ */
+function netcatAliasName(name) {
+  return ['nc.openbsd', 'nc.traditional', 'netcat'].includes(name);
+}
+
+function netcatAliasRole(invocation) {
+  if (invocation.name !== 'nc' && !netcatAliasName(invocation.name)) return null;
+  const backend = ['nc', 'netcat'].includes(invocation.name) ? 'common' :
+    invocation.name === 'nc.openbsd' ? 'openbsd' : 'traditional';
+  const role = { backend, selected: new Map(), flags: new Set(), operands: [],
+    unknown: !!invocation.incomplete, terminal: false, stdin: false, earlyDnsWords: [] };
+  if (invocation.args.length > 128) { role.unknown = true; return role; }
+  // The subset has matching arity in Debian 1.219 and upstream OpenBSD 7.6.
+  // -C/-Z differ by version; -q/-b are not shared. Do not guess their meaning.
+  const required = backend === 'common' ? 'ipswx' : backend === 'openbsd' ? 'IiMmOPpsTVWwXx' : 'cegGiopqswT';
+  const flags = backend === 'common' ? '46hlntUuvz' : backend === 'openbsd' ? '46DdFhklNnrStUuvz' : 'hlnbrtuvCz';
+  const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+  let afterDash = false;
+  for (let k = 0; k < invocation.args.length; k++) {
+    const word = invocation.args[k], literal = socketAuthenticationLiteralWord(word);
+    if (afterDash || posix && role.operands.length) { role.operands.push(word); continue; }
+    if (role.operands.length && invocation.outboundEnvironmentUnknown && literal?.text.startsWith('-')) role.unknown = true;
+    if (!literal) {
+      // A quoted scalar is one word, but can still be a permuted option. NUL is
+      // the parser's unresolved expansion sentinel; only a fixed non-option
+      // first byte proves that this word cannot select an option/callee.
+      const nonOptionPrefix = word.dynamicMaySplit === false && !word.ansiCUnknown &&
+        !word.globExpanded && !word.braceExpanded && !word.tildeExpanded &&
+        word.text.length > 0 && word.text[0] !== '\0' && word.text[0] !== '-';
+      if (!nonOptionPrefix) role.unknown = true;
+      role.operands.push(word); continue;
+    }
+    const text = literal.text;
+    if (text === '--') { afterDash = true; continue; }
+    if (text.startsWith('--')) { role.unknown = true; break; }
+    if (!text.startsWith('-') || text === '-') { role.operands.push(word); continue; }
+    for (let p = 1; p < text.length; p++) {
+      const key = text[p];
+      if (required.includes(key)) {
+        const value = p + 1 < text.length ? socketAuthenticationValue(word, p + 1) : invocation.args[++k];
+        if (!value || role.selected.has(key)) role.unknown = true;
+        role.selected.set(key, value);
+        // Traditional 1.10 resolves these while getopt is still running; a
+        // later -h/-n cannot undo an earlier source-route/source DNS request.
+        if (backend === 'traditional' && ['s', 'g'].includes(key) && !role.flags.has('n')) role.earlyDnsWords.push(value);
+        break;
+      }
+      if (!flags.includes(key)) { role.unknown = true; break; }
+      if (key === 'h') { role.terminal = !role.unknown; break; }
+      role.flags.add(key);
+    }
+    if (role.terminal || role.unknown) break;
+  }
+  if (role.terminal) return role;
+  const listening = role.flags.has('l'), unix = role.flags.has('U');
+  if (role.operands.length > (backend === 'common' ? 2 : 64) || unix && role.operands.length > 1) role.unknown = true;
+  if (!listening && role.operands.length < (unix ? 1 : 2) ||
+      listening && !role.operands.length && !role.selected.has('p')) role.unknown = true;
+  role.metadataUnknown = backend === 'common' && (role.selected.has('x') ||
+    role.flags.has('U') && (role.flags.has('4') || role.flags.has('6')));
+  role.stdin = !role.unknown && !role.flags.has('z') &&
+    !(backend === 'openbsd' && (role.flags.has('d') || role.flags.has('F')));
+  return role;
+}
+
+/** A finite common scan uses only proven ordinary DATA in either proxy or
+ * local hex-output roles. This removes only new backend uncertainty; all
+ * existing payload, identity, source and local-file policies remain active.
+ */
+function knownCommonNetcatScanData(invocation, role) {
+  if (role.backend !== 'common' || role.unknown || role.flags.size !== 1 ||
+      !role.flags.has('z') || role.selected.size !== 1 || !role.selected.has('x') ||
+      role.operands.length !== 2) return false;
+  const words = [role.selected.get('x'), ...role.operands];
+  const known = words.map(socketAuthenticationLiteralWord);
+  return known.every(word => word && word.text.length > 0) &&
+    !outboundPayloadVerdict(invocation, words);
+}
+
+/** Do not let new backend uncertainty hide an independently proven stdin refusal.
+ * -x retains a value in the bounded Apple/OpenBSD/Ncat grammars, but that value
+ * is proxy DATA in the first two and a local hex-output filename in Ncat.
+ */
+function netcatBackendBoundaryVerdict(invocation, role) {
+  if (!role || role.terminal) return false;
+  if (role.unknown) return 'UNKNOWN';
+  if (!role.metadataUnknown) return false;
+  if (knownCommonNetcatScanData(invocation, role)) return false;
+  const input = role.stdin ? stdinPayloadVerdict(invocation, invocationSources.get(invocation) || []) : false;
+  return input === 'FORBIDDEN' ? 'FORBIDDEN' : 'UNKNOWN';
+}
+
+/** Aliases do not inherit Apple nc option meanings or Ncat TLS/authentication modes. */
+function netcatAliasVerdict(invocation) {
+  const role = netcatAliasRole(invocation);
+  if (!role) return false;
+  if (role.backend === 'traditional' && role.earlyDnsWords.length) {
+    const early = outboundPayloadVerdict(invocation, role.earlyDnsWords);
+    if (early) return contextualVerdict(invocation, early);
+  }
+  if (role.terminal) return false;
+  const boundary = netcatBackendBoundaryVerdict(invocation, role);
+  if (boundary) return boundary;
+  const { selected, flags, operands } = role;
+  if (role.backend === 'openbsd' && flags.has('S')) return 'UNKNOWN'; // Selected TCP-MD5 credential source is uninspected.
+  if (role.backend === 'traditional' && (selected.has('e') || selected.has('c'))) {
+    return contextualVerdict(invocation, socketAuthenticationLiteralWord(selected.get('e') || selected.get('c')) ? 'FORBIDDEN' : 'UNKNOWN');
+  }
+  const words = [];
+  const proxy = role.backend === 'openbsd' && selected.get('x');
+  if (!flags.has('U')) {
+    // DNS can consume destination/source/proxy/route bytes even in -d/-z modes.
+    if (!flags.has('n') || proxy) {
+      if (!flags.has('l') || operands.length > 1) words.push(operands[0]);
+      for (const key of role.backend === 'openbsd' ? ['s', 'x'] : ['s', 'g']) if (selected.has(key)) words.push(selected.get(key));
+    } else if (operands.some(word => !socketAuthenticationLiteralWord(word)) || selected.has('s') && !socketAuthenticationLiteralWord(selected.get('s'))) return 'UNKNOWN';
+  }
+  if (!flags.has('U')) words.push(...operands.slice(1)); // Port/list DATA stays selected after -- or POSIX option-stop.
+  if (proxy && selected.has('P')) words.push(selected.get('P'));
+  const verdict = outboundPayloadVerdict(invocation, words.filter(Boolean));
+  if (verdict) return contextualVerdict(invocation, verdict);
+  // Proxy authentication/lookup and a different TLS-era OpenBSD option set are not attested here.
+  if (!proxy) return false;
+  const input = role.stdin ? stdinPayloadVerdict(invocation, invocationSources.get(invocation) || []) : false;
+  return input === 'FORBIDDEN' ? 'FORBIDDEN' : 'UNKNOWN';
+}
+
 /** Identify network clients that actually consume pipeline/stdin data, excluding explicit query/receive-only modes. */
 function networkReadsStdin(invocation) {
   if (invocation.name === 'ssh') return sshReadsInput(invocation);
+  const alias = netcatAliasRole(invocation);
+  if (alias) return alias.stdin;
   if (!['nc', 'ncat', 'telnet'].includes(invocation.name)) return false;
   const values = invocation.name === 'ncat' ? 'pwsidmgGqox' : 'piwsqmxXPTG';
   const longValues = new Set(['source-port', 'source', 'wait', 'idle-timeout', 'delay', 'max-conns', 'proxy', 'proxy-type', 'proxy-auth']);
@@ -5066,7 +5416,9 @@ function requestDataStdinVerdict(invocation, all, allFiles = false, selection = 
 
 /** Keep the existing network-client selection separate from the reusable stdin DATA role. */
 function unsafeNetworkInput(invocation, all) {
-  return networkReadsStdin(invocation) ? stdinPayloadVerdict(invocation, all) : false;
+  const verdict = networkReadsStdin(invocation) ? stdinPayloadVerdict(invocation, all) : false;
+  if (verdict === 'UNKNOWN' && netcatAliasName(invocation.name)) { deferredNetcatUnknown.add(invocation); return false; }
+  return verdict;
 }
 
 const invocationSources = new WeakMap();
@@ -5379,9 +5731,11 @@ function dynamicNetworkShape(invocation) {
 function opaqueLauncherNetwork(invocation) {
   if (!invocation.launcherUnknown) return false;
   const words = invocation.launcherArgs || [];
-  return curlReadsUpload(words, invocation.incomplete) || wgetReadsUpload(words) || words.some((word) =>
+  const existing = curlReadsUpload(words, invocation.incomplete) || wgetReadsUpload(words) || words.some((word) =>
     ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh'].includes(word.text.split('/').pop()) ||
     /^(?:https?|ftp|sftp|ssh|git):\/\//i.test(word.text) || destinationArg(word.text));
+  if (!existing && words.some(word => netcatAliasName(word.text.split('/').pop()))) deferredNetcatUnknown.add(invocation);
+  return existing;
 }
 
 /** Detect SFTP command/batch sessions without treating consumed SSH option values as hostnames. */
@@ -5900,6 +6254,10 @@ function parsedExfil(invocation) {
   if (invocation.name === 'wget') verdict = wgetReadsUpload(invocation.args) ||
     (wgetSourceBoundary(invocation) ? 'UNKNOWN' : wgetInlinePayloadVerdict(invocation)) || proxyEnvironmentVerdict(invocation) || wgetNetrcCredentialSourceVerdict(invocation);
   if (['nc', 'ncat'].includes(invocation.name)) verdict = reverseShell(invocation);
+  if (netcatAliasName(invocation.name)) {
+    verdict = netcatAliasVerdict(invocation);
+    if (verdict === 'UNKNOWN') { deferredNetcatUnknown.add(invocation); verdict = false; }
+  }
   if (['ncat', 'telnet'].includes(invocation.name)) verdict = verdict || socketAuthenticationVerdict(invocation);
   // Preserve a confirmed explicit USER/default-export payload before the new implicit-source fallback.
   if (invocation.name === 'telnet' && telnetEnvironmentPayloadVerdict(invocation) === 'FORBIDDEN') verdict = 'FORBIDDEN';
@@ -5913,6 +6271,13 @@ function parsedExfil(invocation) {
   if (invocation.name === 'sftp') verdict = sftpSession(invocation.args) ? 'UNKNOWN' : false;
   if (['scp', 'rsync'].includes(invocation.name)) verdict = invocation.incomplete ? 'UNKNOWN' :
     rsyncDaemonCredentialVerdict(invocation) || rsyncFileListPayload(invocation) || remoteCopyDestination(invocation);
+  // nc may itself be an alternatives name. A backend-dependent flag cannot prove
+  // stdin suppression or its following argv boundary; keep common forms working.
+  if (invocation.name === 'nc') {
+    const boundary = netcatBackendBoundaryVerdict(invocation, netcatAliasRole(invocation));
+    if (boundary === 'UNKNOWN') { deferredNetcatUnknown.add(invocation); verdict = false; }
+    else verdict = boundary || verdict;
+  }
   return contextualVerdict(invocation, verdict);
 }
 
@@ -6028,12 +6393,16 @@ if (invocations.some((invocation) =>
   invocation.args.some((word) => word.ansiCUnknown))) {
   deny('ネットワーク client の ANSI-C 引数が解読できず、送信 source を確かめられません (fail-closed)。' + UNKNOWN_OWNER_GATE);
 }
+for (const invocation of invocations) if (netcatAliasName(invocation.name) &&
+    invocation.args.some(word => word.ansiCUnknown)) deferredNetcatUnknown.add(invocation);
 // Reapply the same literal inventory after shell quote/escape concatenation; never expand variables.
 const parsedWords = insp.invocations.concat(invocations).flatMap((invocation) =>
   invocation.words.concat(invocation.redirs.map((redir) => redir.word)));
 if (parsedWords.some((word) => SECRET_LITERALS.some((pattern) => pattern.test(word.text)))) {
   deny('シェルの引用符・escape を戻した引数が既存の secret literal inventory に当たります。値の有効性や実際の漏洩を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。', 'FORBIDDEN');
 }
+const directDnsResolverVerdicts = invocations.map(directDnsResolverVerdict);
+if (directDnsResolverVerdicts.includes('FORBIDDEN')) deny('DNS query / selected resolver DATA の生成元が、禁止された secret filename operand に当たります。native DNS・label format・実送信は確認していません。', 'FORBIDDEN');
 const selectedResolverDataVerdicts = invocations.map(invocation =>
   invocation.name === 'ssh-keyscan' ? sshKeyscanResolverVerdict(invocation, invocations) :
   invocation.name === 'wget' ? wgetBindResolverVerdict(invocation) : false);
@@ -6069,7 +6438,11 @@ if (selectedResolverAndEnvironmentVerdict) deny(selectedResolverAndEnvironmentVe
 if (invocations.some(telnetCredentialSourceVerdict)) deny('telnet の有効な自動ログインが選ぶ USER / passwd identity または明示 credential forwarding が選ぶ compiled authentication / local credential source と実行条件を検査できません。no-rc・stdin EOF は認証を無効にしません。実 query・実 no-login・未使用の同目的形式を保てなければ' + UNKNOWN_OWNER_GATE);
 // Executable replacement is independent of visible upload/DNS/stdin payloads.
 // Keep earlier confirmed payload verdicts and separately parsed function bodies unchanged.
-if (invocations.some(untrustedClientExecution) || utilLinuxQueryInvocations.some(untrustedUtilLinuxQueryExecution)) deny('認識した network / resolver client の実行名・PATH lookup・明示 program path・先行 context を確定できません。GETやquery風の引数も、置換された実行 source の本文や副作用を証明しません。同じ program・版・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
+if (invocations.some(invocation => {
+  const unknown = untrustedClientExecution(invocation);
+  if (unknown && netcatAliasName(invocation.name)) { deferredNetcatUnknown.add(invocation); return false; }
+  return unknown;
+}) || utilLinuxQueryInvocations.some(untrustedUtilLinuxQueryExecution)) deny('認識した network / resolver client の実行名・PATH lookup・明示 program path・先行 context を確定できません。GETやquery風の引数も、置換された実行 source の本文や副作用を証明しません。同じ program・版・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
 if (selectedResolverDataVerdicts.some(Boolean)) deny('ssh-keyscan の選択address/hostlist/stdin または Wget の選択bind-address/bind-dns-address の source・argv・活性条件・backendを確定できません。同目的・同条件のknown ordinary/実usage/未選択形式が可能でなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 // Defer only the new opaque-source UNKNOWN fallbacks until independent payload/stdin verdicts.
 if (invocations.some(rsyncDaemonProgramSource)) deny('rsync direct daemon の RSYNC_CONNECT_PROG / RSYNC_SHELL が選ぶローカル command・interpreter source と実行条件を検査できません。空の CONNECT_PROG も native の source 選択を無効にしません。local / remote-shell / query の対応済み条件以外は owner に対象・操作・cwd/env/config/source を確認してください。' + UNKNOWN_OWNER_GATE);
@@ -6237,6 +6610,17 @@ if (hyphenFunctionSourceUnknown) {
 // A possibly removed function is opaque source, after independent confirmed refusals.
 if (functionUnsetSourceUnknown) {
   deny('unset 後に選択される関数の body / lifecycle / 実行 source を検査できません。同じ対象・操作・shell/source・cwd/env を保つ対応形式がなければ owner に確認してください。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// R38 opaque DNS source fallback follows every existing refusal, including Git pathspec/object checks.
+if (directDnsResolverVerdicts.some(Boolean)) deny('DNS client の選択 name / resolver・batch/auth/startup source・argv/context を検査できません。対応済みの同目的・同条件が保てなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+
+// New opaque Wget credentials cannot hide any existing confirmed refusal.
+if (invocations.some(wgetSelectedCredentialVerdict)) deny('Wget の有効な client certificate / private key が選ぶ file・format・TLS backend と実行条件を検査できません。認証で使う素材を秘密鍵の raw upload と同一視しません。同じ対象・認証・操作・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
+
+// Only the new Netcat alias/backend uncertainty is deferred after independent existing refusals.
+if (invocations.some(invocation => deferredNetcatUnknown.has(invocation))) {
+  deny('Netcat の実行名・backend/版・option/値/operand 境界・選択DATA/stdin/source/context を確定できません。共通文法の通常値・実help、または同目的・同条件を保つ対応済みbackend形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

@@ -71,6 +71,20 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R38:CLAUDE-README:BEGIN -->
+
+### R38: 既存dispatch上の有限契約
+
+この節は私有最終sourceのローカル受入cut（2026-10-16T10:57:01.166111+09:00 JST）。新公開head・同head CI・fresh両review・実入口は未取得のまま分ける。後続の公開結果はPR本文と監査台帳へ記録し、このcutの履歴へ遡及させない。
+
+R38はEGのDNS/Netcat/Wget sourceとAGの先行cd後pathspecを対象にする。[三結果・通常費用・owner出口・試験](../docs/security/git-command-guards.md#r38-current-contract)を参照。既存settingsは不変で、Bash全体のEGと条件付きSG/AGのdispatchを区別する。引用で結合したGit名のownAG単体結果も実settings dispatchの保証ではない。
+
+ローカル受入は固定runtime sourceで直接入力8454/8454・broken0（25362 Hook呼出し）、role解析699/699と別のproduction shell parity15/15、通常root test602/602・typecheck・lint・package.json重複検査が成功。新公開head/requiredCI・両fresh review・必要な実入口L3は **PENDING**。旧公開2796のCI成功は別cutの観測である。
+
+以下のR37以前の本文・数値・「current／現在」は、それぞれのsourceと取得日時に結合した履歴である。旧本文と順序を保持し、R38の新sourceでの測定結果へ読み替えない。
+
+<!-- PR191:R38:CLAUDE-README:END -->
+
 <!-- PR191:R37:CLAUDE-README:BEGIN -->
 <a id="r37-claude-readme-contract"></a>
 [現在の有限契約・通常影響・owner出口](../docs/security/git-command-guards.md#r37-current-contract)。

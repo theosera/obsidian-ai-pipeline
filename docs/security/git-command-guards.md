@@ -20,6 +20,58 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R38:CONTRACT:BEGIN -->
+
+<a id="r38-current-contract"></a>
+
+## R38: DNS・Netcat・client認証source・先行cd後pathspecの有限契約
+
+この節は私有最終sourceのローカル受入cut（2026-10-16T10:57:01.166111+09:00 JST）。新公開head・同head CI・fresh両review・実入口は未取得のまま分ける。後続の公開結果はPR本文と監査台帳へ記録し、このcutの履歴へ遡及させない。
+
+基点は公開 `2796fdd0c3a5b0cf807f80fc70ad53c14ade488d`。私有最終runtime sourceのローカル受入が完了した段階であり、新公開head/CI/reviews/実入口の受入を分ける。R38はDNS clientの選択値、Netcat別名とbackend、Wget client認証source、先行cd後のGit pathspecを有限に扱う。ALLOWは対応条件内で当該Hookが拒否しない結果、FORBIDDENは確認したpolicy違反、UNKNOWNは選択source・argv・contextが未検査の結果で、後二者は停止する。 無関係readerの存在だけで送信とせず、選択された値・stdin・設定・認証sourceとそのconsumer条件を調べる。未検査sourceを根拠なく不活性としない。
+
+### 四責務・固定consumer・通常費用・同目的の出口
+
+| 担当／固定根拠 | 選択条件と三結果の範囲 | 通常操作の費用・停止後の出口 |
+| --- | --- | --- |
+| EG: direct DNS — ISC BIND 9.20.0のdig／host／nslookup／delv | active query/server値の生成元を既存payload判定へ接続。秘密producerが確定すればFORBIDDEN。暗黙`.digrc`、batch/auth key、対話source、未知argvはUNKNOWN。digの`-r`は設定前preparse、消費された`-q -r`のDATAは解除条件でない。先に解決するserverと、後の真正query exitを分ける。auth key読取をraw uploadとはしない。 | ordinaryなqueryやdefault helpでも暗黙設定が未検査ならUNKNOWN。対応済みの真正query／known ordinary値／印字DATA／無関係readerを残す。同じ目的・target・source条件を保つ対応形式が無ければownerへ版・cwd/env/configと不明点を提示する。drill/kdig/resolvectl/getentはこの修復で保護済みとはしていない。 |
+| EG: Netcat aliases — Debian netcat-openbsd 1.219-1／OpenBSD 7.6／traditional 1.10-47、Nmap f06480d／Apple 845f93c固定consumerの版差 | `nc.openbsd`／`nc.traditional`を別roleで扱い、実行名を`nc`へ書換えない。`nc`／`netcat`のalternativesに一backendのoption意味を流用しない。確定した秘密stdinはFORBIDDEN、backend/option arity・callee・selected DATAが不明ならUNKNOWN。独立に確定した秘密stdinやlate Git等のFORBIDDENは新UNKNOWNより優先する。旧Apple文法だけの仮定に由来する11件とcanonical `nc -e`のgeneric-deny2件のF→U契約再分類は別であり、その13件を一律F維持とはしない。 | 共通のordinary接続・真正help・対応済みreceive-onlyを残す。正常helperで非選択としたのはこのegress新UNKNOWN edgeであり、Ncatのhexlog等のlocal副作用が消える保証でも、元proxy操作との同等性の保証でもない。backend依存のstdin抑止やproxy等はUNKNOWNとなる費用がある。実binary/backendは名前だけでは認証されない。目的・対象・stdin・backend/版を保てる形式がなければownerへ確認する。 |
+| EG: Wget client認証 — GNU Wget 1.25.0のOpenSSL/GnuTLS consumer | 明示certificate/private-keyのlast値と各独立fallbackを扱う。TLS retrievalに達し得る未検査file/format/backendはUNKNOWN。empty-only/type-onlyや真正query／無retrievalは条件付きで不活性。未知scalarもoption名になり得るので、argv role未証明のhelp/type/body-error/last-emptyを不活性証明に使わない。HTTPはredirect0だけではHSTSを除けず、linked retrievalも別に残る。 | 通常のclient認証fileもUNKNOWNとなる。認証素材を使用することと秘密鍵raw bytesのpeer送信を同一視しない。認証selector削除を同等代替とはせず、同じ認証・対象・操作・cwd/env/config/sourceを保てる対応形式が無ければownerへ条件を渡す。 |
+| AG: post-cd pathspec — 公開2796の共通Git argv/context解析に結合 | shellの動的PWD展開とGitの静的絶対`-C`を分ける。先行cdと絶対`-C`の組合せでも、動的PWDに加えglob／pathspec magic／optionに見える語／pathspec-file等でrootとの関係を確定できないunsafePathspecはUNKNOWNを最後に返す。独立した旧blanket FORBIDDENの優先を保つ。literal file／静的nested-C／真正help／印字DATAは既存結果を保つ。native Git版・実index変更をこの小componentで認証したとはしない。 | scalarがshellで固定に見えても共通DTOにliteral proofが無ければownAG UNKNOWNになる。aggregateは旧から他Hookが停止する場合もあり、新たな危険成立と混同しない。literalな同一対象を列挙できなければ操作・cwd・sourceと不明点をownerへ確認する。 |
+
+<!-- PR191:R38:NC20-DISPOSITION:RECORDED --> NC旧20件のうちknown-port1の元ALLOWを回復し維持した。残19件は通常A→U8／分類F→U11という局所UNKNOWNの契約改訂で、元generic-denyを満たす別2件にはownEG/prefixを追加した。[版付き期待台帳](../../.claude/hooks/tests/r38-guard-oracle-adjustments.json)は19改訂＋2分類assertを明示し、全beforeDefinition・元入力・非oracle欄・順序を保持する。正常8件の元ALLOWも維持した。新8454全件で原期待との19差分と改訂後0差分を同じactual結果から確認し、旧8204実行の28不一致を成功へ書き換えていない。
+
+<!-- PR191:R38:NC-PORT-REASON:RECORDED --> known-port1の限定許可は、共通nc/netcatでsole z/sole selected x・既知の単一scalar/literal・固定2operands・既存payload違反なしに限る。Nmap commit `f06480daed9a9b2cdce61904222cc87788afdf84` の[ncat_main.c](https://github.com/nmap/nmap/blob/f06480daed9a9b2cdce61904222cc87788afdf84/ncat/ncat_main.c)・[ncat_connect.c](https://github.com/nmap/nmap/blob/f06480daed9a9b2cdce61904222cc87788afdf84/ncat/ncat_connect.c)・[options initializer](https://github.com/nmap/nmap/blob/f06480daed9a9b2cdce61904222cc87788afdf84/ncat/ncat_core.c)、Apple commit `845f93c35a748cf75630eb7d352798accb1ae2f8` の[netcat.c](https://github.com/apple-oss-distributions/netcat/blob/845f93c35a748cf75630eb7d352798accb1ae2f8/netcat.c)・[socks.c](https://github.com/apple-oss-distributions/netcat/blob/845f93c35a748cf75630eb7d352798accb1ae2f8/socks.c)をGit blobまで照合した。解除するのは新egress UNKNOWN edgeだけで、独立stdin/GitのFORBIDDEN、local hexlog副作用、proxy操作との同等性、実binary/backendの認証は別である。
+
+固定根拠は取得済みの[ISC BIND 9.20.0 source](https://raw.githubusercontent.com/isc-projects/bind9/v9.20.0/bin/dig/dig.c)、[GNU Wget 1.25.0 release](https://ftp.gnu.org/gnu/wget/wget-1.25.0.tar.gz)、[Debian nc.openbsd manual](https://manpages.debian.org/bookworm/netcat-openbsd/nc.openbsd.1.en.html)、[OpenBSD 7.6 nc manual](https://man.openbsd.org/OpenBSD-7.6/nc.1)、[traditional 1.10-47 consumer](https://sources.debian.org/src/netcat/1.10-47/netcat.c/)に限定する。取得済みsource/manualの照合と、実hostのbinary/backend・locale・設定・認証・DNS/接続/transport成立は別である。
+
+### 試験と受入を分ける
+
+| gate | 確認するもの | この記録cutのR38状態 |
+| --- | --- | --- |
+| <!-- PR191:R38:L1-RESULT:RECORDED --> L1 | productionに結合したrole・選択値・argv境界、正常query/DATA、秘密filenameとshell断片 | **PASS scoped** — Node role解析699/699、別のproduction shell parity15/15。identity内18assertはNode test-file1件に含み追加18件としない。旧parity v3のSPEC出力後observer FAIL/child exit未保存は保持し、新v4で明示TAP・status先保存・exit0を取得。全wrapper/Vault/実dispatchの試験ではない。 |
+| <!-- PR191:R38:STRICT-RESULT:RECORDED --> L2単一edge | own停止・分類・正常ALLOWを一つのphysical spanだけ外し、同一actual tupleで比較 | **PASS with limits** — 新7edge/31pairs/186 Hook/broken0、source exact undoとowned安定。別の同一v3 identity検証216callsの正常8pairsを再利用し、新186へ加算しない。AG exactはownAG U→Aだが他Hookの停止が残りaggregate必要性は未証明。Wget argvKnownの2 L1は既存source boundaryにmaskされ、Hook単独必要性の証明ではない。旧R37 whole100は再実行していない。 |
+| <!-- PR191:R38:FULL-RESULT:RECORDED --> L2全件 | 原入力・各Hook自身/aggregate/理由/broken・原8204定義と21版付き改訂・全owned/source安定 | **PASS scoped** — 8454/8454、failed0/broken0、25362 actual Hook calls。旧8204入力・非oracle欄・順序は不変で、原期待8185一致/19差分と版付き期待8454一致を同じactualから別々に照合。新250中2入力は旧入力と重複し、8454を全unique commandとは呼ばない。normal8＋known-port1は元ALLOWのまま。全sourceとowned Git HEAD/refs/index/objects/files/modes安定。入力commandのnative実行・外部通信・Claude CLI実行は0。owned DUMMY Gitのsetup/readは別である。 |
+| <!-- PR191:R38:NEW-HEAD-CI:RECORDED_PENDING --> 新公開head／CI | 最終inventory・runtime/testsを同headへ結合してrequired check取得 | **PENDING**。本cutは私有最終sourceのローカル受入で、新公開head/CIは未取得。旧2796 successを持ち越さない。 |
+| <!-- PR191:R38:REVIEWS:RECORDED_PENDING --> 両fresh review／threads | 同headの正常full完了・正式指摘・全thread・outside-diff/失敗/不明の分離 | **PENDING**。10:33:12 JSTの旧公開2796ではCodex3/CodeRabbit1が未解決。修復候補の成功は返信投稿/解決/新review zeroを意味しない。 |
+| <!-- PR191:R38:L3:RECORDED_PENDING --> 実project入口 | settings dispatch・実Hook start/finish・own判定・markerと保護state副作用 | **PENDING**。新sourceの実入口は未取得。旧sourceのfirst trial overall FAILと27 NOT_ATTEMPTEDを保持し、直接Hook DATAやAPI前停止を入口成功へ数えない。 |
+
+公開状態の別観測: **2026-10-16 09:45:59.915725 JST（00:45:59.915725 UTC）**には公開2796・186 threads中182 resolved／4 open（CR1/Codex3）と同headのrequired名対応check successを観測した。branch rulesをこの取得で再照合したものではなく、root test件数はnullである。この日時以後の状態や新head結果を推定しない。
+
+実入口の既存記録では、公開2796に結合した新器具generation2の最初の1試行は3Hook ALLOWだったが、extra unexpected Git markerにより全体は **FAIL_UNQUALIFIED_ENTRY**、残27は **NOT_ATTEMPTED**。当該失敗の正確なGit argv/callerは未記録で不明、provider request件数／費用も不明である。この「最初」は当該器具generationの範囲であり、PR全履歴には別sourceの実入口記録がある。旧記録を消さず、R38の新実入口成功へも読み替えない。
+
+Node 24.22を明示する検証と旧24.13／CI24.21の測定は区別する。Node 26はowner判断で11月以降の別作業とし、engine／CIを変更しない。settingsは不変で、Bash全体のEGと条件付きSG/AGを区別する。quoted Git aliasのownAG単独結果は実dispatch保証ではない。93への依頼は終了し、mergeは行わない。
+
+修復の有限受入、nativeでの認証／通信成立、PR全体Goalは別条件である。旧入力・原oracle・raw FAIL、私有prototypeの危険ALLOW／正常overdeny／分類退行、器具と新prospectiveの誤りを別監査台帳へ残す。ローカル受入が成功しても、新公開head/CI/fresh両review/実入口が未取得のこのcutではGoal完了・ZIP作成を主張しない。
+
+<!-- PR191:R38:FIXED-LOCAL-SOURCE:BEGIN -->
+このローカル受入のruntime SHA256は、EG `370b66e27bdbb3f84655f95fa6c20830d0d37fc40ea5518071f0c904ba8c6227`、common `a13d591bf498973cc6305aec6ccce86ea6f8abfa3020928f13dd7633592a7fcf`、SG `273f6be441ba85cb295303b929a8427e2a88e5f883800f9cd1d0f51f875c9664`、AG `c8873c1391f6eaccc9496d919647bd0b2c8c2e2d7900ac7038d79e23b813a565`。settingsは不変。root test初回はtsxのローカルIPC作成がsandboxでEPERMとなりtest本体未到達だったため、原FAILを保持し、必要権限の別実行で602/602・exit0を取得した。
+<!-- PR191:R38:FIXED-LOCAL-SOURCE:END -->
+
+以下のR37以前の本文・数値・「current／現在」は、それぞれのsourceと取得日時に結合した履歴である。旧本文と順序を保持し、R38の新sourceでの測定結果へ読み替えない。
+
+<!-- PR191:R38:CONTRACT:END -->
+
 <!-- PR191:R37:CONTRACT:BEGIN -->
 <a id="r37-current-contract"></a>
 ## R37: 選択された実行source・設定・認証・resolverの有限契約（固定sourceのローカル受入cut）

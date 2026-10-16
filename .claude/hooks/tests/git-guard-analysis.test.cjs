@@ -3569,3 +3569,84 @@ test('R37FU dedicated defer retains selected-source metadata',()=>{
 });
 
 test('R37FU tilde-generated function target is opaque while variable-only stays ordinary',()=>{const a=inspect('f(){ printf ordinary; }; HOME=f; unset -f ~; f');assert.equal(r37fuLast(a).functionUnsetSourceUnknown,true);const v=inspect('f(){ printf ordinary; }; HOME=f; unset -v ~; f');assert.ok(!v.invocations.some(i=>i.functionUnsetSourceUnknown));});
+
+
+// R38 finite DNS role projection: extracts the production EG-only pure role block and its two literal helpers.
+// It does not execute the guard, grant permissions, inspect native DNS, or depend on a private namespace.
+function r38DnsRoleFor(source) {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const code = fs.readFileSync(path.join(__dirname, '../block-secret-egress.cjs'), 'utf8');
+  const literals = code.slice(code.indexOf('function knownWord(word)'), code.indexOf('/** Bash\'s first help/version'));
+  const start = code.indexOf('// R38_DIRECT_DNS_ROLE_START'), end = code.indexOf('// R38_DIRECT_DNS_ROLE_END');
+  assert.ok(start >= 0 && end > start && literals.includes('function literalSourceWord'));
+  const sandbox = { module: { exports: {} } };
+  vm.runInNewContext(literals + code.slice(start, end) + '\nmodule.exports={directDnsRole,DIRECT_DNS_CLIENTS};', sandbox);
+  const analysis = inspect(source);
+  assert.deepEqual(analysis.problems, []);
+  const invocation = analysis.invocations.find(value => sandbox.module.exports.DIRECT_DNS_CLIENTS.has(value.name) && !value.definitionName && !value.functionCallName);
+  return invocation ? JSON.parse(JSON.stringify(sandbox.module.exports.directDnsRole(invocation))) : null;
+}
+test('R38 DNS dig unconsumed -r suppresses only the startup file role', () => {
+  assert.equal(r38DnsRoleFor('dig -r ordinary.invalid').unknownSource, false);
+  assert.equal(r38DnsRoleFor('dig ordinary.invalid').unknownSource, true);
+  assert.equal(r38DnsRoleFor('dig -q -r ordinary.invalid').unknownSource, true);
+});
+test('R38 DNS dig early config is not waived by later help', () => {
+  assert.equal(r38DnsRoleFor('dig -h').unknownSource, true);
+  assert.equal(r38DnsRoleFor('dig -rh').unknownSource, false);
+  assert.equal(r38DnsRoleFor('dig -rh').terminal, true);
+});
+test('R38 DNS eager nameserver survives help while a later nameserver does not', () => {
+  assert.equal(r38DnsRoleFor('dig -r @ordinary.invalid -h').selectedWords[0].text, 'ordinary.invalid');
+  assert.equal(r38DnsRoleFor('dig -r -h @ordinary.invalid').selectedWords.length, 0);
+});
+test('R38 DNS queued name and batch/key consumers are cancelled by true help', () => {
+  assert.equal(r38DnsRoleFor('dig -r -q ordinary.invalid -h').selectedWords.length, 0);
+  assert.equal(r38DnsRoleFor('dig -r -k .env -h').unknownSource, false);
+});
+test('R38 DNS consumed help remains query DATA', () => {
+  const role = r38DnsRoleFor('dig -r -q -h');
+  assert.equal(role.terminal, false);
+  assert.equal(role.selectedWords[0].text, '-h');
+});
+test('R38 DNS batch and TSIG source are not raw payload words', () => {
+  for (const option of ['-f', '-k', '-y']) {
+    const role = r38DnsRoleFor('dig -r ' + option + ' .env ordinary.invalid');
+    assert.equal(role.unknownSource, true);
+    assert.ok(role.selectedWords.every(word => word.text !== '.env'));
+  }
+});
+test('R38 DNS empty batch source and scalar option values are separate', () => {
+  assert.equal(r38DnsRoleFor('dig -r -f /dev/null').unknownSource, false);
+  assert.deepEqual(r38DnsRoleFor('dig -r -p 53 ordinary.invalid').selectedWords.map(word => word.text), ['ordinary.invalid']);
+});
+test('R38 DNS host retains name and immediate server and consumes type DATA', () => {
+  assert.deepEqual(r38DnsRoleFor('host -t A ordinary.invalid 192.0.2.1').selectedWords.map(word => word.text), ['192.0.2.1', 'ordinary.invalid']);
+  assert.equal(r38DnsRoleFor('host -V').terminal, true);
+});
+test('R38 DNS nslookup interactive source is not a usage query', () => {
+  assert.equal(r38DnsRoleFor('nslookup').unknownSource, true);
+  assert.equal(r38DnsRoleFor('nslookup < /dev/null').unknownSource, false);
+  assert.equal(r38DnsRoleFor('nslookup -version').terminal, true);
+  assert.equal(r38DnsRoleFor('nslookup -h').unknownArgv, true);
+});
+test('R38 DNS delv compiled default and explicit anchor file differ', () => {
+  assert.equal(r38DnsRoleFor('delv ordinary.invalid').unknownSource, false);
+  assert.equal(r38DnsRoleFor('delv -a .env ordinary.invalid').unknownSource, true);
+  assert.equal(r38DnsRoleFor('delv -h').terminal, true);
+});
+test('R38 DNS selected dynamic word keeps original producer span', () => {
+  const role = r38DnsRoleFor('dig -r -q "$(s\'\'ed -n p .e\'\'nv)"');
+  assert.ok(role.selectedWords[0].raw.includes('s\'\'ed'));
+  assert.equal(typeof role.selectedWords[0].start, 'number');
+  assert.equal(role.selectedWords[0].dynamicMaySplit, false);
+});
+test('R38 DNS unsupported options remain unknown and printed DATA is not a client', () => {
+  assert.equal(r38DnsRoleFor('dig -r --unsupported ordinary.invalid').unknownArgv, true);
+  assert.equal(r38DnsRoleFor('printf "%s" "dig ordinary.invalid"'), null);
+});
+
+test('R38 DNS delv terminal cancels earlier stored anchor and server fields', () => {
+  assert.equal(r38DnsRoleFor('delv -a .env -h').unknownSource, false);
+  assert.equal(r38DnsRoleFor('delv @ordinary.invalid -v').selectedWords.length, 0);
+});

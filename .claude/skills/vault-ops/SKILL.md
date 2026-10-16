@@ -18,6 +18,20 @@ vault repo は **CI (`.github/workflows/llm-sec-weekly.yml` の週次取込) と
 運用哲学: **ユーザーへの停止・確認はセキュリティ境界の突破時のみ。ルーティン障害
 (push 競合 / dotfile 衝突 / 一時エラー) は機構が自動解決する。**
 
+<!-- PR191:R38:VAULT:BEGIN -->
+
+## R38: Vault運用でも同じsource条件を保持する
+
+この節は私有最終sourceのローカル受入cut（2026-10-16T10:57:01.166111+09:00 JST）。新公開head・同head CI・fresh両review・実入口は未取得のまま分ける。後続の公開結果はPR本文と監査台帳へ記録し、このcutの履歴へ遡及させない。
+
+DNS/Netcat/Wgetの選択sourceと、先行cd後のGit pathspecに関する[有限契約・通常費用・owner出口](../../../docs/security/git-command-guards.md#r38-current-contract)を参照する。既存の導入・permissions/settings・Vault書込手順は変更しない。literalな同一対象を安全に列挙できない動的pathspecはUNKNOWNとなり、cwd/env/sourceを保つ根拠が無ければownerへ確認する。
+
+本節の追加はこの文書の保守であり、installer・Vault書込・実通信の実行指示ではない。ローカル受入は固定runtime sourceで直接入力8454/8454・broken0（25362 Hook呼出し）、role解析699/699と別のproduction shell parity15/15、通常root test602/602・typecheck・lint・package.json重複検査が成功。新公開head/requiredCI・両fresh review・必要な実入口L3は **PENDING**。
+
+以下のR37以前の本文・数値・「current／現在」は、それぞれのsourceと取得日時に結合した履歴である。旧本文と順序を保持し、R38の新sourceでの測定結果へ読み替えない。
+
+<!-- PR191:R38:VAULT:END -->
+
 <!-- PR191:R37:VAULT:BEGIN -->
 <a id="r37-vault-contract"></a>
 ## R37: Bash guardの選択sourceとVault運用の境界（固定sourceのローカル受入cut）

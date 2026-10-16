@@ -242,11 +242,15 @@ for (const g of insp.gits) {
 // ".." "*" ":/" ":(top)" "$PWD" / リポジトリ root の絶対パス（複合短縮フラグ -Av 等も A を含めば対象）。
 // root は CLAUDE_PROJECT_DIR に加えて、コマンドが走る場所（入力の cwd と `-C`）も見る。
 const projectDir = (process.env.CLAUDE_PROJECT_DIR || process.cwd()).replace(/\/+$/, '');
+let postCdPathspecUnknown = false;
 for (const g of insp.gits) {
   if (g.sub !== 'add' && g.sub !== 'stage') continue;
   const parsed = guard.parseAddArgs(g.args);
   // A static absolute -C resets cwd; it does not restore unknown source/environment context.
   const independentCwd = g.cdirs.some((dir) => path.isAbsolute(dir));
+  // Shell expansion precedes Git -C; defer this new uncertainty behind existing confirmed refusals.
+  if (!g.terminal && !parsed.terminal && !parsed.actualBlanket &&
+      g.cdLikeBefore && independentCwd && parsed.unsafePathspec) postCdPathspecUnknown = true;
   if (!g.terminal && !parsed.terminal && !parsed.actualBlanket &&
       (parsed.pathspecs.length > 0 || parsed.unsafePathspec) &&
       (g.unknownContextBefore || (g.cdLikeBefore && !independentCwd))) {
@@ -339,5 +343,7 @@ if (m) {
   }
 }
 }
+
+if (postCdPathspecUnknown) deny('git add / stage の動的 pathspec は先行 cd の shell cwd で展開され、Git の静的な絶対 -C だけでは root との関係を確定できません。同じ対象の literal なファイル名を列挙できなければ、対象・操作・cwd と不明点を owner へ確認してください。', 'UNKNOWN');
 
 process.exit(0);

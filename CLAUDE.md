@@ -96,6 +96,20 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R38:PLAYBOOK:BEGIN -->
+
+### R38: sourceを保った停止・owner確認
+
+この節は私有最終sourceのローカル受入cut（2026-10-16T10:57:01.166111+09:00 JST）。新公開head・同head CI・fresh両review・実入口は未取得のまま分ける。後続の公開結果はPR本文と監査台帳へ記録し、このcutの履歴へ遡及させない。
+
+R38はDNS clientの選択値、Netcat別名とbackend、Wget client認証source、先行cd後のGit pathspecを有限に扱う。ALLOWは対応条件内で当該Hookが拒否しない結果、FORBIDDENは確認したpolicy違反、UNKNOWNは選択source・argv・contextが未検査の結果で、後二者は停止する。 DNS/Netcat/Wget/Gitの対応範囲・通常費用・試験は[guard guide](docs/security/git-command-guards.md#r38-current-contract)を参照する。UNKNOWNでは対象・操作・backend/版・cwd/env/config/sourceと不明点を示す。同目的を保つ対応形式が無ければownerへ確認し、認証削除・別宛先・Hook無効化を同等の代替としない。
+
+ローカル受入は固定runtime sourceで直接入力8454/8454・broken0（25362 Hook呼出し）、role解析699/699と別のproduction shell parity15/15、通常root test602/602・typecheck・lint・package.json重複検査が成功。新公開head/requiredCI・両fresh review・必要な実入口L3は **PENDING**。settingsのdispatchを変更せず、単独Hook DATAの結果を実dispatch保証にしない。
+
+以下のR37以前の本文・数値・「current／現在」は、それぞれのsourceと取得日時に結合した履歴である。旧本文と順序を保持し、R38の新sourceでの測定結果へ読み替えない。
+
+<!-- PR191:R38:PLAYBOOK:END -->
+
 <!-- PR191:R37:PLAYBOOK:BEGIN -->
 <a id="r37-playbook-contract"></a>
 [現在の有限契約・通常影響・owner出口](docs/security/git-command-guards.md#r37-current-contract)。
