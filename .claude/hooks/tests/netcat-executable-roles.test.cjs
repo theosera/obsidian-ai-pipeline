@@ -1,8 +1,9 @@
 'use strict';
 /** Pure L1 roles from production source; command strings are DATA and never executed. */
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const guard=require('../lib/git-guard-common.cjs');
-const production=fs.readFileSync(path.resolve(__dirname,'../block-secret-egress.cjs'),'utf8');
+const hooks=path.resolve(process.argv[2]||path.join(__dirname,'..'));
+const guard=require(path.join(hooks,'lib/git-guard-common.cjs'));
+const production=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
 function productionFunction(name){
  const start='function '+name+'(',a=production.indexOf(start),z=production.indexOf('\n}\n',a);
  assert.ok(a>=0&&z>a);assert.equal(production.indexOf(start,a+start.length),-1);

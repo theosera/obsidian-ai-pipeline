@@ -992,8 +992,7 @@
       "normalCostJA": "generic DENY自体は変更せず停止を維持する。新しいALLOW停止件数には加算せず、元から拒否されたこの入力に分類assertを追加する。",
       "samePurposeExitJA": "同じcallee／対象／argv／backend・版／cwd/env/source条件を保てる対応形式の根拠が無ければownerへ条件と不明点を提示する。-eを落とした別操作へ無断で変更しない。",
       "basisRecordIDs": [
-        "ROOT_RETAINED8204_QUALIFIED_V1",
-        "ROOT_COPIED_CONSUMER_REASON_R4EG20_R4EG22"
+        "ROOT_RETAINED8204_QUALIFIED_V1"
       ],
       "originalGenericDenyOracleMatched": true,
       "originalDefinitionAndRawPreserved": true,
@@ -1040,8 +1039,7 @@
       "normalCostJA": "generic DENY自体は変更せず停止を維持する。新しいALLOW停止件数には加算せず、元から拒否されたこの入力に分類assertを追加する。",
       "samePurposeExitJA": "同じcallee／対象／argv／backend・版／cwd/env/source条件を保てる対応形式の根拠が無ければownerへ条件と不明点を提示する。-eを落とした別操作へ無断で変更しない。",
       "basisRecordIDs": [
-        "ROOT_RETAINED8204_QUALIFIED_V1",
-        "ROOT_COPIED_CONSUMER_REASON_R4EG20_R4EG22"
+        "ROOT_RETAINED8204_QUALIFIED_V1"
       ],
       "originalGenericDenyOracleMatched": true,
       "originalDefinitionAndRawPreserved": true,
