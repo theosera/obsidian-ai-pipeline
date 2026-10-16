@@ -4,6 +4,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const hooks=process.argv[2]||path.resolve(__dirname,'..');
 const {inspect}=require(path.join(hooks,'lib/git-guard-common.cjs'));
 const source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
+/** Extract a uniquely anchored production source section for isolated selector tests. */
 function slice(start,end){const a=source.indexOf(start),z=source.indexOf(end,a);assert.ok(a>=0&&z>a);assert.equal(source.indexOf(start,a+start.length),-1);return source.slice(a,z);}
 // Execute production pure selectors, never the Hook's top-level entrypoint.
 // No transform/classifier is copied into this test.
@@ -12,6 +13,7 @@ const code=slice('function knownWord(word)',"/** Bash's first help/version")+
  slice('function wgetValueWord(word, offset)','/** Wget scalar options')+
  slice('// curl の値を取る option','/** Netrc toggles are independent;');
 const api=vm.runInNewContext(code+'\n;({roles:curlSelectedCredentialRoles,verdict:curlSelectedCredentialVerdict})',{URL},{timeout:1000});
+/** Parse command text as data and return its production curl credential roles. */
 function roles(cmd){const data=inspect(cmd,{trackOutboundEnvironment:true});assert.deepEqual(data.problems,[]);const invocation=data.invocations.find(x=>x.name==='curl');assert.ok(invocation);return api.roles(invocation);}
 test('R37 production-selected client credentials retain backend and operation limits',()=>{
  for(const cmd of ["c''url -q --ftp-ssl --cert .e''nv ftp://target.invalid/DUMMY", "c''url -q --ftp-ssl-reqd --cert .e''nv ftp://target.invalid/DUMMY", "c''url -q --ssl-reqd --no-ssl --cert .e''nv ftp://target.invalid/DUMMY"]) assert.equal(roles(cmd).some(r=>r.active),true,cmd);

@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
 const guard = require(path.join(hooks, 'lib/git-guard-common.cjs'));
 const source = fs.readFileSync(path.join(hooks, 'block-secret-egress.cjs'), 'utf8');
+/** Extract one uniquely named production function for evaluation in the test sandbox. */
 function productionFunction(name) {
   const prefix = 'function ' + name + '(';
   const start = source.indexOf(prefix), end = source.indexOf('\n}\n', start);
@@ -18,6 +19,7 @@ function productionFunction(name) {
 const sandbox = {};
 vm.createContext(sandbox);
 vm.runInContext(['knownWord', 'literalSourceWord', 'directDnsRole'].map(productionFunction).join('\n') + '\nthis.role=directDnsRole;', sandbox, { timeout: 1000 });
+/** Parse command text as data and return the selected ping invocation and its production resolver role. */
 function inspect(command) {
   const data = guard.inspect(command, { trackOutboundEnvironment: true });
   assert.deepEqual(data.problems, []);

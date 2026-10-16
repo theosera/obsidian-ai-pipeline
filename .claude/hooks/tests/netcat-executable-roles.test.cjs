@@ -4,6 +4,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const hooks=path.resolve(process.argv[2]||path.join(__dirname,'..'));
 const guard=require(path.join(hooks,'lib/git-guard-common.cjs'));
 const production=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
+/** Extract one uniquely named production function for evaluation in the test sandbox. */
 function productionFunction(name){
  const start='function '+name+'(',a=production.indexOf(start),z=production.indexOf('\n}\n',a);
  assert.ok(a>=0&&z>a);assert.equal(production.indexOf(start,a+start.length),-1);
@@ -12,6 +13,7 @@ function productionFunction(name){
 const sandbox={guard};vm.createContext(sandbox);
 vm.runInContext('const invocationSources = new WeakMap(); this.seedSource = (invocation, source) => invocationSources.set(invocation, source);', sandbox);
 vm.runInContext(['knownWord','literalSourceWord','socketAuthenticationLiteralWord','socketAuthenticationValue','netcatAliasName','netcatAliasRole','knownInvocationContext','contextualVerdict','simpleSedScript','pipelineInput','outboundPayloadVerdict','knownCommonNetcatScanData'].map(productionFunction).join('\n')+'\nthis.role=netcatAliasRole; this.scan=knownCommonNetcatScanData;',sandbox,{timeout:1000});
+/** Parse command text as data and return the external Netcat invocation and its production backend role. */
 function inspectRole(command){
  const data=guard.inspect(command);assert.deepEqual(data.problems,[]);
  const invocation=data.invocations.find(x=>['nc','netcat','nc.openbsd','nc.traditional'].includes(x.name)&&!x.definitionName&&!x.functionCallName);
@@ -46,6 +48,7 @@ test('R38 NC traditional source DNS is ordered before later help or nodns',()=>{
 });
 
 // R38 precision: separate additional IDs; original eleven role tests above retain their bodies and expectations.
+/** Evaluate the production scan-data check with the parsed invocation and its producer provenance. */
 function inspectScan(command) {
  const data=guard.inspect(command,{trackOutboundEnvironment:true});assert.deepEqual(data.problems,[]);
  const invocation=data.invocations.find(x=>['nc','netcat','nc.openbsd','nc.traditional'].includes(x.name)&&!x.definitionName&&!x.functionCallName);

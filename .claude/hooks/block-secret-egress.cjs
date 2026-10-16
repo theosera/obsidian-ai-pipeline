@@ -651,6 +651,7 @@ function quotedAttachedOptionValue(word, text, shortValues, longValues = []) {
   return false;
 }
 
+/** Detect mapfile/readarray callbacks or uncertain argv that could select executable callback source. */
 function arrayReaderCallback(invocation) {
   if (!['mapfile', 'readarray'].includes(invocation.name)) return false;
   let unknown = Boolean(invocation.incomplete);
@@ -714,6 +715,7 @@ function rsyncPoptConfigRole(invocation) {
   return { active: false, mode: 'no-selector', word: null };
 }
 
+/** Detect a selected rsync remote-shell helper when the copy is remote or its route is uncertain. */
 function rsyncRemoteHelper(invocation) {
   if (invocation.name !== 'rsync') return false;
   const values = RSYNC_VALUE_LONG;
@@ -2417,6 +2419,7 @@ function wgetSelectedCredentialRole(invocation) {
     verdict: potentialTLS ? 'UNKNOWN' : false };
 }
 
+/** Return the selected Wget credential source verdict, or false when no refusal applies. */
 function wgetSelectedCredentialVerdict(invocation) {
   return wgetSelectedCredentialRole(invocation).verdict || false;
 }
@@ -2868,6 +2871,7 @@ function scpOperation(invocation) {
     programActive: direct || remote && connectionProgram !== undefined };
 }
 
+/** Report whether SCP selects a connection program, or an SSH route when checking selected environment helpers. */
 function scpConnectionSource(invocation, selectedEnv = false) {
   if (invocation.name !== 'scp') return false;
   const operation = scpOperation(invocation);
@@ -3574,6 +3578,7 @@ function ghAuthenticationVerdict(invocation) {
 
 /** R36 bounded OpenSSL/LibreSSL operation roles. Unknown option boundaries never select help by substring. */
 const OPENSSL_NETWORK_OPTIONS = {"s_client":{"help":0,"engine":1,"ssl_client_engine":1,"ssl_config":1,"ct":0,"noct":0,"ctlogfile":1,"host":1,"port":1,"connect":1,"bind":1,"proxy":1,"proxy_user":1,"proxy_pass":1,"unix":1,"4":0,"6":0,"maxfraglen":1,"max_send_frag":1,"split_send_frag":1,"max_pipelines":1,"read_buf":1,"fallback_scsv":0,"cert":1,"certform":1,"cert_chain":1,"build_chain":0,"key":1,"keyform":1,"pass":1,"verify":1,"nameopt":1,"CApath":1,"CAfile":1,"CAstore":1,"no-CAfile":0,"no-CApath":0,"no-CAstore":0,"requestCAfile":1,"tfo":0,"dane_tlsa_domain":1,"dane_tlsa_rrdata":1,"dane_ee_no_namechecks":0,"psk_identity":1,"psk":1,"psk_session":1,"name":1,"reconnect":0,"sess_out":1,"sess_in":1,"crlf":0,"quiet":0,"ign_eof":0,"no_ign_eof":0,"starttls":1,"xmpphost":1,"brief":0,"prexit":0,"no-interactive":0,"showcerts":0,"debug":0,"msg":0,"msgfile":1,"nbio_test":0,"state":0,"keymatexport":1,"keymatexportlen":1,"security_debug":0,"security_debug_verbose":0,"trace":0,"wdebug":0,"keylogfile":1,"nocommands":0,"adv":0,"servername":1,"noservername":0,"tlsextdebug":0,"ignore_unexpected_eof":0,"status":0,"serverinfo":1,"alpn":1,"async":0,"nbio":0,"ssl3":0,"tls1":0,"tls1_1":0,"tls1_2":0,"tls1_3":0,"dtls":0,"quic":0,"timeout":0,"mtu":1,"dtls1":0,"dtls1_2":0,"sctp":0,"sctp_label_bug":0,"nextprotoneg":1,"early_data":1,"enable_pha":0,"enable_server_rpk":0,"enable_client_rpk":0,"use_srtp":1,"srpuser":1,"srppass":1,"srp_lateuser":0,"srp_moregroups":0,"srp_strength":1,"ktls":0,"CRL":1,"crl_download":0,"CRLform":1,"verify_return_error":0,"verify_quiet":0,"chainCAfile":1,"chainCApath":1,"chainCAstore":1,"verifyCAfile":1,"verifyCApath":1,"verifyCAstore":1,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"s_server":{"help":0,"ssl_config":1,"trace":0,"engine":1,"port":1,"accept":1,"unix":1,"unlink":0,"4":0,"6":0,"tfo":0,"context":1,"CAfile":1,"CApath":1,"CAstore":1,"no-CAfile":0,"no-CApath":0,"no-CAstore":0,"nocert":0,"verify":1,"Verify":1,"nameopt":1,"cert":1,"cert2":1,"certform":1,"cert_chain":1,"build_chain":0,"serverinfo":1,"key":1,"key2":1,"keyform":1,"pass":1,"dcert":1,"dcertform":1,"dcert_chain":1,"dkey":1,"dkeyform":1,"dpass":1,"dhparam":1,"servername":1,"servername_fatal":0,"nbio_test":0,"crlf":0,"quiet":0,"no_resume_ephemeral":0,"www":0,"WWW":0,"ignore_unexpected_eof":0,"tlsextdebug":0,"HTTP":0,"id_prefix":1,"keymatexport":1,"keymatexportlen":1,"CRL":1,"CRLform":1,"crl_download":0,"chainCAfile":1,"chainCApath":1,"chainCAstore":1,"verifyCAfile":1,"verifyCApath":1,"verifyCAstore":1,"no_cache":0,"ext_cache":0,"verify_return_error":0,"verify_quiet":0,"ign_eof":0,"no_ign_eof":0,"cert_comp":0,"status":0,"status_verbose":0,"status_timeout":1,"status_url":1,"proxy":1,"no_proxy":1,"status_file":1,"security_debug":0,"security_debug_verbose":0,"brief":0,"rev":0,"debug":0,"msg":0,"msgfile":1,"state":0,"async":0,"max_pipelines":1,"naccept":1,"keylogfile":1,"nbio":0,"timeout":0,"mtu":1,"read_buf":1,"split_send_frag":1,"max_send_frag":1,"psk_identity":1,"psk_hint":1,"psk":1,"psk_session":1,"srpvfile":1,"srpuserseed":1,"max_early_data":1,"recv_max_early_data":1,"early_data":0,"num_tickets":1,"anti_replay":0,"no_anti_replay":0,"http_server_binmode":0,"no_ca_names":0,"stateless":0,"ssl3":0,"tls1":0,"tls1_1":0,"tls1_2":0,"tls1_3":0,"dtls":0,"listen":0,"dtls1":0,"dtls1_2":0,"sctp":0,"sctp_label_bug":0,"use_srtp":1,"no_dhe":0,"nextprotoneg":1,"alpn":1,"ktls":0,"sendfile":0,"zerocopy_sendfile":0,"enable_server_rpk":0,"enable_client_rpk":0,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"s_time":{"help":0,"connect":1,"new":0,"reuse":0,"bugs":0,"cipher":1,"ciphersuites":1,"ssl3":0,"tls1":0,"tls1_1":0,"tls1_2":0,"tls1_3":0,"verify":1,"time":1,"www":1,"nameopt":1,"cert":1,"key":1,"cafile":1,"CAfile":1,"CApath":1,"CAstore":1,"no-CAfile":0,"no-CApath":0,"no-CAstore":0,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"ocsp":{"help":0,"ignore_err":0,"CAfile":1,"CApath":1,"CAstore":1,"no-CAfile":0,"no-CApath":0,"no-CAstore":0,"timeout":1,"resp_no_certs":0,"multi":1,"no_certs":0,"badsig":0,"CA":1,"nmin":1,"nrequest":1,"reqin":1,"signer":1,"sign_other":1,"index":1,"ndays":1,"rsigner":1,"rkey":1,"passin":1,"rother":1,"rmd":1,"rsigopt":1,"header":1,"rcid":1,"url":1,"host":1,"port":1,"path":1,"proxy":1,"no_proxy":1,"out":1,"noverify":0,"nonce":0,"no_nonce":0,"no_signature_verify":0,"resp_key_id":0,"no_cert_verify":0,"text":0,"req_text":0,"resp_text":0,"no_chain":0,"no_cert_checks":0,"no_explicit":0,"trust_other":0,"no_intern":0,"respin":1,"VAfile":1,"verify_other":1,"cert":1,"serial":1,"validity_period":1,"signkey":1,"reqout":1,"respout":1,"issuer":1,"status_age":1,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"cmp":{"help":0,"config":1,"section":1,"verbosity":1,"cmd":1,"infotype":1,"profile":1,"geninfo":1,"template":1,"keyspec":1,"newkey":1,"newkeypass":1,"centralkeygen":0,"newkeyout":1,"subject":1,"days":1,"reqexts":1,"sans":1,"san_nodefault":0,"policies":1,"policy_oids":1,"policy_oids_critical":0,"popo":1,"csr":1,"out_trusted":1,"implicit_confirm":0,"disable_confirm":0,"certout":1,"chainout":1,"oldcert":1,"issuer":1,"serial":1,"revreason":1,"server":1,"proxy":1,"no_proxy":1,"recipient":1,"path":1,"keep_alive":1,"msg_timeout":1,"total_timeout":1,"trusted":1,"untrusted":1,"srvcert":1,"expect_sender":1,"ignore_keyusage":0,"unprotected_errors":0,"no_cache_extracerts":0,"srvcertout":1,"extracertsout":1,"cacertsout":1,"oldwithold":1,"newwithnew":1,"newwithold":1,"oldwithnew":1,"crlcert":1,"oldcrl":1,"crlout":1,"ref":1,"secret":1,"cert":1,"own_trusted":1,"key":1,"keypass":1,"digest":1,"mac":1,"extracerts":1,"unprotected_requests":0,"certform":1,"crlform":1,"keyform":1,"otherpass":1,"engine":1,"tls_used":0,"tls_cert":1,"tls_key":1,"tls_keypass":1,"tls_extra":1,"tls_trusted":1,"tls_host":1,"batch":0,"repeat":1,"reqin":1,"reqin_new_tid":0,"reqout":1,"reqout_only":1,"rspin":1,"rspout":1,"use_mock_srv":0,"port":1,"max_msgs":1,"srv_ref":1,"srv_secret":1,"srv_cert":1,"srv_key":1,"srv_keypass":1,"srv_trusted":1,"srv_untrusted":1,"ref_cert":1,"rsp_cert":1,"rsp_key":1,"rsp_keypass":1,"rsp_crl":1,"rsp_extracerts":1,"rsp_capubs":1,"rsp_newwithnew":1,"rsp_newwithold":1,"rsp_oldwithnew":1,"poll_count":1,"check_after":1,"grant_implicitconf":0,"pkistatus":1,"failure":1,"failurebits":1,"statusstring":1,"send_error":0,"send_unprotected":0,"send_unprot_err":0,"accept_unprotected":0,"accept_unprot_err":0,"accept_raverified":0,"provider-path":1,"provider":1,"provparam":1,"propquery":1},"dgst":{"help":0,"list":0,"engine":1,"engine_impl":0,"passin":1,"c":0,"r":0,"out":1,"keyform":1,"hex":0,"binary":0,"xoflen":1,"d":0,"debug":0,"sign":1,"verify":1,"prverify":1,"sigopt":1,"signature":1,"hmac":1,"mac":1,"macopt":1,"fips-fingerprint":0,"provider-path":1,"provider":1,"provparam":1,"propquery":1}};
+/** Treat OpenSSL startup configuration as unproved unless a known environment selects /dev/null. */
 function opensslStartupConfigUnproved(invocation) {
   const environment = new Map((invocation.outboundEnvironmentSources || []).map(source => [source.name, source.word]));
   // Both pinned backends consume config before subcommand/help dispatch. Absence selects a default file.
@@ -3623,6 +3628,7 @@ function opensslHelpSourceUnproved(invocation) {
   const delegated = opensslNetworkRole({ ...invocation, args: [rest[0], { text: '--help', raw: '--help', dynamic: false, dynamicMaySplit: false }] });
   return !delegated || delegated.unknown || delegated.sourceUnknown;
 }
+/** Parse bounded OpenSSL operation roles, retaining selected sources, stdin, metadata and file inputs. */
 function opensslNetworkRole(invocation) {
   if (invocation.name !== 'openssl') return null;
   if (opensslDispatchSourceUnproved(invocation)) return { active: false, unknown: true, sourceUnknown: true, stdin: false, metadata: [], files: [] };
@@ -3762,6 +3768,7 @@ function sshKeyscanAddressWord(word) {
   return word;
 }
 
+/** Classify ssh-keyscan host and file inputs, preserving uncertainty about argv and execution context. */
 function sshKeyscanResolverVerdict(invocation, all) {
   if (invocation.name !== 'ssh-keyscan') return false;
   const role = sshKeyscanResolverRole(invocation);
@@ -3802,6 +3809,7 @@ function wgetBindResolverVerdict(invocation) {
 
 // R38_DIRECT_DNS_ROLE_START — ISC BIND 9.20.0 finite CLI roles, not native/backend attestation.
 const DIRECT_DNS_CLIENTS = new Set(['dig', 'host', 'nslookup', 'delv', 'ping', 'ping6']);
+/** Select resolver-bound words for supported DNS and ping clients while retaining source and argv uncertainty. */
 function directDnsRole(invocation) {
   const result = { selectedWords: [], unknownSource: false, unknownArgv: false, terminal: false };
   const words = invocation.args || [];
@@ -3991,6 +3999,7 @@ function directDnsRole(invocation) {
   result.unknownArgv = true; return result;
 }
 // R38_DIRECT_DNS_ROLE_END
+/** Classify selected resolver payloads, returning UNKNOWN for unproved sources, argv or executable context. */
 function directDnsResolverVerdict(invocation) {
   if (!DIRECT_DNS_CLIENTS.has(invocation.name) || invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
   const role = directDnsRole(invocation);
@@ -4032,6 +4041,7 @@ function ncatCredentialSourceVerdict(invocation) {
   return 'UNKNOWN';
 }
 
+/** Recognize the transfer clients and GH gist operations used by the network/read composition checks. */
 function networkInvocation(invocation) {
   return ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet'].includes(invocation.name) ||
     (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
@@ -4657,6 +4667,7 @@ function socketAuthenticationValue(word, offset) {
     ...(typeof word.outboundLiteralValue === 'string' ? { outboundLiteralValue: word.outboundLiteralValue.slice(offset) } : {}) };
 }
 
+/** Parse Ncat/Telnet authentication options and optional destination roles, retaining selected words and uncertainty. */
 function socketAuthenticationRole(invocation, destinationRoles = false) {
   const ncat = invocation.name === 'ncat';
   if (!ncat && invocation.name !== 'telnet') return null;
@@ -5143,6 +5154,7 @@ function netcatAliasName(name) {
   return ['nc.openbsd', 'nc.traditional', 'netcat'].includes(name);
 }
 
+/** Parse the supported Netcat backend grammar without guessing option roles shared by different backends. */
 function netcatAliasRole(invocation) {
   if (invocation.name !== 'nc' && !netcatAliasName(invocation.name)) return null;
   const backend = ['nc', 'netcat'].includes(invocation.name) ? 'common' :
@@ -5992,6 +6004,7 @@ function gitVerdict(g, verdict) {
 /** Parse interpreter strings as code, retaining ordinary literal arguments as data. */
 let hyphenFunctionSourceUnknown = false;
 let functionUnsetSourceUnknown = false;
+/** Recursively collect executable invocations and selected scripts, denying prohibited or uninspectable sources. */
 function collectNetworkInvocations(inspection, depth = 0) {
   if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   if (inspection.problems.length) deny(guard.problemMessage(inspection.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);

@@ -2,6 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const hooks=process.argv[2]||path.resolve(__dirname,'..'),{inspect}=require(path.join(hooks,'lib/git-guard-common.cjs'));
 const source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
+/** Extract a uniquely anchored production source section for isolated selector tests. */
 function slice(start,end){const a=source.indexOf(start),z=source.indexOf(end,a);assert.ok(a>=0&&z>a);assert.equal(source.indexOf(start,a+start.length),-1);return source.slice(a,z);}
 // Execute production selectors. No test-side implementation of option parsing or TLS toggles.
 const code=slice('function knownWord(word)',"/** Bash's first help/version")+
@@ -10,6 +11,7 @@ const code=slice('function knownWord(word)',"/** Bash's first help/version")+
  slice('// curl の値を取る option','function wgetSourceBoundary(invocation)')+
  slice('function proxyEnvironmentVerdict(invocation)','/** Return a typed refusal for the same executable egress shapes');
 const api=vm.runInNewContext(code+'\n;({terminal:curlTerminalQuery,engine:curlSelectedEngineSource,route:curlSelectedRouteOperations,netrc:curlImplicitNetrc,upload:curlReadsUpload,proxy:proxyEnvironmentVerdict})',{URL},{timeout:1000});
+/** Parse command text as data and require a curl invocation with no parser problems. */
 function inv(cmd){const data=inspect(cmd,{trackOutboundEnvironment:true});assert.deepEqual(data.problems,[]);const v=data.invocations.find(x=>x.name==='curl');assert.ok(v);return v;}
 const c=args=>inv("c''url -q "+args);
 test('R37 aliases: selected engine and independent negative TLS toggles',()=>{

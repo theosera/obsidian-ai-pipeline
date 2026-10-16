@@ -4,6 +4,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 const hooks=path.resolve(process.argv[2]||path.join(__dirname,'..'));
 const guard=require(path.join(hooks,'lib/git-guard-common.cjs'));
 const inspect=cmd=>guard.inspect(cmd,{trackOutboundEnvironment:true,deferDbusRunSessionSourceProblems:true});
+/** Parse command text as data and require an invocation wrapped by dbus-run-session. */
 function invocation(cmd){
  const parsed=inspect(cmd);assert.deepEqual(parsed.problems,[]);
  const selected=parsed.invocations.find(i=>i.wrapperNames.includes('dbus-run-session'));

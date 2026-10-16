@@ -3057,6 +3057,7 @@ function gitHttpMetadataRole(g) {
   return { ...client, kind: 'http-generated-metadata', settings, environmentSources, configEnvironmentUnknown };
 }
 
+/** Parse send-email, filter-branch and daemon roles, separating terminal queries, file operands and option values. */
 function gitOutboundRole(g) {
   if (!['send-email', 'filter-branch', 'daemon'].includes(g.sub)) return null;
   const role = { operation: g.sub, terminal: false, files: [], values: [], noSend: false,
