@@ -48,7 +48,7 @@ test('hook lookup resolves selected path and checks execute permission without r
     const spawn = (exe, args) => { argv = args; return { status: 0, stdout: hook + '\n' }; };
     assert.equal(readers.indexHookSource(context, spawn), false);
     fs.chmodSync(hook, 0o700); assert.equal(readers.indexHookSource(context, spawn), true);
-    assert.deepEqual(argv, ['-C', '/DUMMY/target', '--no-pager', 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/post-index-change']);
+    assert.deepEqual(argv, ['-C', '/DUMMY/target', '--no-pager', '--no-lazy-fetch', 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/post-index-change']);
     assert.equal(readers.indexHookSource(context, () => ({ status: 0, stdout: '/DUMMY/path\nextra\n' })), null);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

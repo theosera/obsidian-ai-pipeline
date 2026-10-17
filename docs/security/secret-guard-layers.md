@@ -1,12 +1,28 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R42:LAYERS:BEGIN -->
+
+## R42: 追加consumer・own検査・反証の境界
+
+2026-10-18 07:35:30 JST snapshotは、当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commit candidateを対象とし、最後の全体取得07:15:05.546の209thread／未解決9（CR6＋Codex3）を保持し、後着修復後の最終sourceの全件・新head CI・fresh両reviewの受入は当時PENDINGである。
+
+[R42の現在契約・通常費用・同目的の出口](git-command-guards.md#r42-current-contract)を参照する。Hook DATA、非実行query、固定sourceの全件実行・資格、公開CI／review、native成立を別の証拠として扱う。初回v1の8694 PASS／2 FAILを最終修復sourceの合格へ持ち越さない。
+
+<!-- PR191:R42:LAYERS:END -->
+
 <!-- PR191:R41:LAYERS:BEGIN -->
 
-## R41: 追加reader consumerとmanager launcherの境界（受入PENDING）
+## R41: 追加reader consumerとmanager launcherの境界
 
 commit前readerの`post-index-change` callbackと署名表示verifierは、pager/fsmonitor/textconvとは別の選択consumerとして確認する。`systemd-run`はserviceのmanager親とscopeのsystemd-run親・caller環境継承を分け、child抽出だけでcwd/env/sourceや展開条件が既知とはしない。[R41の影響表・正常対照・同目的の出口](git-command-guards.md#r41-current-contract)へ条件を集約する。
 
-必要なhook／署名検証／service/scopeを省いて同等操作と扱わず、未検査sourceのUNKNOWNと確定policy違反のFORBIDDENを分ける。query・印字DATA・非選択consumerの普通の作業と、独立FORBIDDENの対照も必要である。R41の部品・統合全件・公開CI/fresh reviewは受入PENDING。R40固定headの成功と、以下の全履歴・原FAIL/NEを新R41の資格へ持ち越さない。
+必要なhook／署名検証／service/scopeを省いて同等操作と扱わず、未検査sourceのUNKNOWNと確定policy違反のFORBIDDENを分ける。query・印字DATA・非選択consumerの普通の作業と、独立FORBIDDENの対照も必要である。
+
+**公開前snapshot**: 2026-10-17 06:47:19.559 JSTのv2固定時点では、当時の公開基点head `2f8e3c62b285073b0714a6fd39325d6fa72938af` に対する未公開R41 candidateの部品・統合全件・新head CI・fresh reviewの最終受入をPENDINGとして記録した。06:49:50.108 JSTのv3は同じ公開基点でのdocs文言修正で、この当時の状態を保持した。
+
+後続の公開head `157c15ebddae485a05fba350dae82435a432eea6` では、required CI run [38972258568](https://github.com/theosera/obsidian-ai-pipeline/actions/runs/38972258568) のjobが2026-10-17 06:53:02 JSTに成功完了した。2026-10-18 06:54:58.180 JST取得snapshotの当時head `157c15ebddae485a05fba350dae82435a432eea6` では、fresh CodeRabbit full review5560271970は06:53:01 JSTに正常完了して新6件が未解決で、fresh Codex fullは進行中のため、両fresh reviewの受入と指摘処理はPENDINGである。
+
+R40固定headの成功と、以下の全履歴・原FAIL/NEを新R41の資格へ持ち越さない。
 
 <!-- PR191:R41:LAYERS:END -->
 
@@ -128,7 +144,7 @@ Bash から起動された孫プロセスは、この層を一切通らない。
 
 ## 3. 2026-09-04 の Bash 層分析と、当時の両版に共通する単一障害点
 
-> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r40-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
+> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r42-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
 
 py 版 (`~/.claude/hooks/block-secret-egress.py` / 実体は pipeline-youtube-SDK) の集合サイズ:
 

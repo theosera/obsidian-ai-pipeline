@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const hooks=process.argv[2]||path.resolve(__dirname,'..'),{inspect}=require(path.join(hooks,'lib/git-guard-common.cjs'));
+const hooks=path.resolve(process.argv[2]||path.join(__dirname,'..')),{inspect}=require(path.join(hooks,'lib/git-guard-common.cjs'));
 const source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
 /** Extract a uniquely anchored production source section for isolated selector tests. */
 function slice(start,end){const a=source.indexOf(start),z=source.indexOf(end,a);assert.ok(a>=0&&z>a);assert.equal(source.indexOf(start,a+start.length),-1);return source.slice(a,z);}

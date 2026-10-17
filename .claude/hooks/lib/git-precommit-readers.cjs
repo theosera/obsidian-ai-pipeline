@@ -8,10 +8,10 @@ const path = require('node:path');
 const { spawnSync, execFileSync } = require('node:child_process');
 const guard = require('./git-guard-common.cjs');
 
-const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath)|pager\\..*|diff\\.(external|.*\\.(command|textconv))|trace2\\.(normal|event|perf)target|hook\\..*\\.(event|enabled)|log\\.showsignature|format\\.pretty|pretty\\..*|includeif\\..*\\.path)$';
-const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath)|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|trace2\.(?:normal|event|perf)target|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|includeif\..+\.path)$/i;
+const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath)|pager\\..*|diff\\.(external|.*\\.(command|textconv))|trace2\\.(normal|event|perf)target|hook\\..*\\.(event|enabled)|log\\.showsignature|format\\.pretty|pretty\\..*|branch\\.sort|includeif\\..*\\.path)$';
+const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath)|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|trace2\.(?:normal|event|perf)target|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|branch\.sort|includeif\..+\.path)$/i;
 const SIGNATURE_READERS = new Set(['log', 'show', 'whatchanged', 'rev-list']);
-const R41_CONFIG_KEY = /^(?:core\.hookspath|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+)$/i;
+const R41_CONFIG_KEY = /^(?:core\.hookspath|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|branch\.sort)$/i;
 const DEFAULT_PAGED = new Set(['diff', 'log', 'show', 'branch', 'shortlog', 'blame', 'grep', 'whatchanged', 'reflog']);
 // Revision/object readers can consult attributes, paths or an index as well.
 // A read-only subcommand label is not evidence that fsmonitor cannot be reached.
@@ -25,7 +25,7 @@ const FALSE = /^(?:false|no|off|0)$/i;
 const TRUE = /^(?:true|yes|on|1)$/i;
 const unknown = reason => ({ category: 'UNKNOWN', reason });
 const ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME', 'GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM']);
-const SAFE_GIT_ENV = /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG(?:_GLOBAL|_SYSTEM|_NOSYSTEM|_COUNT|_PARAMETERS|_KEY_\d+|_VALUE_\d+)?|AUTHOR_(?:NAME|EMAIL|DATE)|COMMITTER_(?:NAME|EMAIL|DATE)|PAGER|EXTERNAL_DIFF|DIFF_OPTS|OPTIONAL_LOCKS|TERMINAL_PROMPT|ATTR_(?:NOSYSTEM|SOURCE)|NO_REPLACE_OBJECTS|REPLACE_REF_BASE|SHALLOW_FILE|(?:LITERAL|GLOB|NOGLOB|ICASE)_PATHSPECS)$/;
+const SAFE_GIT_ENV = /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG(?:_GLOBAL|_SYSTEM|_NOSYSTEM|_COUNT|_PARAMETERS|_KEY_\d+|_VALUE_\d+)?|AUTHOR_(?:NAME|EMAIL|DATE)|COMMITTER_(?:NAME|EMAIL|DATE)|PAGER|EXTERNAL_DIFF|DIFF_OPTS|OPTIONAL_LOCKS|TERMINAL_PROMPT|ATTR_(?:NOSYSTEM|SOURCE)|NO_REPLACE_OBJECTS|NO_LAZY_FETCH|REPLACE_REF_BASE|SHALLOW_FILE|(?:LITERAL|GLOB|NOGLOB|ICASE)_PATHSPECS)$/;
 
 const INSPECTION_IRRELEVANT_GIT_ENV = /^GIT_(?:EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|SSH_VARIANT|ASKPASS|MERGE_AUTOEDIT)$/;
 
@@ -42,6 +42,8 @@ function safeInspectionEnvironment(environment) {
   }
   // Unsetting is insufficient: Trace2 can otherwise fall back to system config.
   result.GIT_TRACE2 = '0'; result.GIT_TRACE2_EVENT = '0'; result.GIT_TRACE2_PERF = '0';
+  // This is the inspection copy, never proof about the actual reader's source.
+  result.GIT_NO_LAZY_FETCH = '1';
   return result;
 }
 
@@ -117,7 +119,7 @@ function trustedGit() {
 
 /** These overrides harden the hook's own inspection, not the proposed command. */
 function inspectionArgs(args) {
-  return ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args.slice(0, 1),
+  return ['--no-pager', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args.slice(0, 1),
     ...(args[0] === 'diff' ? ['--no-ext-diff', '--no-textconv'] : []), ...args.slice(1)];
 }
 function readInspectionGit(args, options) {
@@ -127,7 +129,9 @@ function readInspectionGit(args, options) {
   if (env) env.GIT_OPTIONAL_LOCKS = '0';
   if (!env) throw new Error('unproved inspection Git environment');
   if (!inspectionVersionQualified) {
-    const banner = execFileSync(executable, ['--version'], {
+    // The real option query qualifies this trusted backend's CLI capability;
+    // the separate version floor below concerns fsmonitor boolean semantics.
+    const banner = execFileSync(executable, ['--no-lazy-fetch', '--version'], {
       env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 1024,
     });
     if (!supportsInspectionHardening(banner)) throw new Error('Git fsmonitor boolean hardening needs Git >= 2.36');
@@ -139,7 +143,7 @@ function readInspectionGit(args, options) {
   const ownCwd = options?.cwd || process.cwd();
   if (!ownHookConfigByCwd.has(ownCwd)) {
   try {
-    configured = execFileSync(executable, ['--no-pager', 'config', '--show-scope', '--null', '--get-regexp', '^hook\\..*\\.(event|enabled)$'], {
+    configured = execFileSync(executable, ['--no-pager', '--no-lazy-fetch', 'config', '--show-scope', '--null', '--get-regexp', '^hook\\..*\\.(event|enabled)$'], {
       cwd: options?.cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 65536,
     });
   } catch (error) {
@@ -442,7 +446,7 @@ function parseConfigOutput(output) {
   if (!Buffer.from(text, 'utf8').equals(bytes) || text && !text.endsWith('\0')) return null;
   const entries = new Map();
   const postIndexNames = new Set();
-  const postIndexEnabled = new Map();
+  const postIndexEnabled = new Map(), branchSort = [];
   const fields = text ? text.slice(0, -1).split('\0') : [];
   if (fields.length % 2) return null;
   const trace2 = new Map();
@@ -456,6 +460,7 @@ function parseConfigOutput(output) {
     if (!CONFIG_KEY.test(key)) return null;
     const value = record.slice(lf + 1);
     entries.set(key, value);
+    if (key === 'branch.sort') branchSort.push(value);
     const hookEvent = /^hook\.(.+)\.event$/i.exec(record.slice(0, lf));
     const hookEnabled = /^hook\.(.+)\.enabled$/i.exec(record.slice(0, lf));
     if (hookEvent && value === 'post-index-change') postIndexNames.add(hookEvent[1]);
@@ -469,6 +474,7 @@ function parseConfigOutput(output) {
   }
   Object.defineProperty(entries, 'postIndexNames', { value: postIndexNames });
   Object.defineProperty(entries, 'postIndexEnabled', { value: postIndexEnabled });
+  Object.defineProperty(entries, 'branchSort', { value: branchSort });
   Object.defineProperty(entries, 'trace2EarlySources', { value: trace2 });
   Object.defineProperty(entries, 'earlyConditionalSource', { value: earlyConditional });
   Object.defineProperty(entries, 'pagerConditionalSource', { value: pagerConditional });
@@ -476,7 +482,7 @@ function parseConfigOutput(output) {
 }
 
 function probeConfig(context, spawn = spawnSync) {
-  const r = spawn(context.executable, [...context.globals, '--no-pager', 'config', '--show-scope', '--null', '--get-regexp', CONFIG_PATTERN], {
+  const r = spawn(context.executable, [...context.globals, '--no-pager', '--no-lazy-fetch', 'config', '--show-scope', '--null', '--get-regexp', CONFIG_PATTERN], {
     cwd: context.cwd, env: context.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 65536,
   });
   if (r.error || r.signal || ![0, 1].includes(r.status)) return null;
@@ -493,7 +499,7 @@ function configuredPostIndex(config) {
 /** Resolve Git's selected traditional path; never read or execute the hook body. */
 function indexHookSource(context, spawn = spawnSync, access = fs.accessSync) {
   if (process.platform === 'win32') return null; // executable suffix selection is not certified here
-  const r = spawn(context.executable, [...context.globals, '--no-pager', 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/post-index-change'], {
+  const r = spawn(context.executable, [...context.globals, '--no-pager', '--no-lazy-fetch', 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/post-index-change'], {
     cwd: context.cwd, env: context.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 4096,
   });
   if (r.error || r.signal || r.status !== 0) return null;
@@ -521,8 +527,74 @@ function signatureFormatActive(format, config) {
   return true;
 }
 
+/** Ref-filter's %% escape is distinct from pretty formats and raw signature DATA. */
+function refSignatureFormatActive(format) {
+  if (typeof format !== 'string') return true;
+  for (let i = 0; i < format.length; i++) {
+    if (format[i] !== '%') continue;
+    if (format[i + 1] === '%') { i++; continue; }
+    if (format[i + 1] !== '(') continue;
+    const end = format.indexOf(')', i + 2);
+    if (end < 0) return true;
+    const atom = format.slice(i + 2, end);
+    if (/^\*?signature(?::|$)/.test(atom)) return true;
+    i = end;
+  }
+  return false;
+}
+
+/** Bound the additional pretty/ref-filter consumers without treating operands as options. */
+function nonLogSignatureSource(g, config) {
+  const pretty = g.sub === 'shortlog';
+  if (!pretty && !['for-each-ref', 'branch'].includes(g.sub)) return null;
+  let format, summary = false, showCurrent = false;
+  const groups = [], sorts = g.sub === 'branch'
+    ? [...(config.branchSort || (config.has('branch.sort') ? [config.get('branch.sort')] : []))] : [];
+  const data = new Set(pretty
+    ? ['--author', '--grep', '--since', '--until', '--date', '--max-count', '-w']
+    : ['--count', '--points-at', '--exclude']);
+  const optional = new Set(['--contains', '--no-contains', '--merged', '--no-merged']);
+  const selectors = pretty ? ['--format', '--pretty', '--group', '--summary'] : ['--format', '--sort'];
+  for (let i = 0; i < g.args.length; i++) {
+    const text = literal(g.args[i]);
+    if (text === null) return 'unproved-non-log-format';
+    if (text === '--') break;
+    if (text === '-h') return null; // these consumers exit during parse-options, before formatting
+    const eq = text.indexOf('='), name = eq < 0 ? text : text.slice(0, eq);
+    const value = () => eq < 0 ? literal(g.args[++i]) : text.slice(eq + 1);
+    if (name === '--format' || pretty && name === '--pretty') {
+      format = pretty && eq < 0 ? 'medium' : value();
+    } else if (g.sub === 'branch' && name === '--show-current') showCurrent = true;
+    else if (g.sub === 'branch' && name === '--no-show-current') showCurrent = false;
+    else if (pretty && name === '--group') {
+      const group = value();
+      if (group === null) return 'unproved-non-log-format';
+      if (group.startsWith('format:')) groups.push(group.slice(7));
+      else if (!group.startsWith('trailer:') && group.includes('%')) groups.push(group);
+    } else if (pretty && name === '--no-group') groups.length = 0;
+    else if (pretty && name === '--summary') summary = true;
+    else if (pretty && name === '--no-summary') summary = false;
+    else if (pretty && /^-[nsec]+$/.test(text)) { if (text.includes('s')) summary = true; }
+    else if (!pretty && name === '--sort') sorts.push(value());
+    else if (!pretty && name === '--no-sort') sorts.length = 0;
+    else if (data.has(name)) { if (eq < 0 && name !== '-w') i++; }
+    else if (optional.has(name)) {
+      if (eq < 0 && g.args[i + 1] && !literal(g.args[i + 1])?.startsWith('-')) i++;
+    } else if (name.startsWith('--') && selectors.some(full => full !== name && full.startsWith(name))) {
+      return 'unproved-non-log-format'; // unproved abbreviation/arity
+    }
+  }
+  if (showCurrent) return null; // branch exits before ref sorting/formatting
+  if (pretty) {
+    if ((!summary && format !== undefined && signatureFormatActive(format, config)) ||
+        groups.some(value => signatureFormatActive(value, config))) return 'non-log-signature-format';
+  } else if (format !== undefined && refSignatureFormatActive(format) ||
+      sorts.some(value => value === null || /^-?(?:(?:version|v):)?\*?signature(?::|$)/.test(value))) return 'non-log-signature-format';
+  return null;
+}
+
 /** Select active helper roles, not raw helper command strings. */
-function selectedHelper(role, g, environment, config) {
+function selectedHelper(role, g, environment, config, baseline = process.env) {
   const traceNames = ['GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF'];
   const explicitlyOff = value => typeof value === 'string' && (value === '0' || /^false$/i.test(value));
   if (config.earlyConditionalSource && !traceNames.every(name => environment.has(name) && explicitlyOff(environment.get(name)))) return 'early-trace-source';
@@ -532,6 +604,16 @@ function selectedHelper(role, g, environment, config) {
     const selected = name && environment.has(name) && environment.get(name) !== '' ? environment.get(name) : value;
     if (selected !== '' && selected !== '0' && !/^false$/i.test(selected)) return 'trace2';
   }
+  // Object/index readers can lazily fetch missing promisor objects, including
+  // through another repository. Their bounded probe does not prove transport
+  // inactivity. Preserve inherited selections; qualify command-selected ones.
+  if (!role.query && (role.index || DIFF_READERS.has(g.sub) || ['branch', 'shortlog', 'reflog'].includes(g.sub))) {
+    for (const name of ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_ASKPASS']) {
+      if (environment.has(name) && environment.get(name) !== baseline[name]) return 'command-selected-transport';
+    }
+  }
+  const nonLog = !role.query && nonLogSignatureSource(g, config);
+  if (nonLog) return nonLog;
   if (SIGNATURE_READERS.has(g.sub) && !role.query) {
     if (role.signature === true || role.signature === null && TRUE.test(config.get('log.showsignature') || 'false')) return 'signature-verifier';
     const format = role.prettyFormat === undefined ? config.get('format.pretty') : role.prettyFormat;
@@ -571,7 +653,7 @@ function assessReader(g, invocation, baseDir, deps = {}) {
     const hook = (deps.indexHook || indexHookSource)(context);
     if (hook !== false) return unknown('commit 前の Git 読取で post-index-change の source / 副作用を確認できません。');
   }
-  const selected = selectedHelper(role, g, context.selected, config);
+  const selected = selectedHelper(role, g, context.selected, config, deps.environment || process.env);
   return selected ? unknown(`commit 前の Git 読取で ${selected} の source / 副作用を確認できません。`) : null;
 }
 

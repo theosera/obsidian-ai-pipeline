@@ -96,13 +96,27 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R42:PLAYBOOK:BEGIN -->
+
+### R42: selected sourceとown inspectionを分ける
+
+2026-10-18 07:35:30 JST snapshotは、当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commit candidateを対象とし、最後の全体取得07:15:05.546の209thread／未解決9（CR6＋Codex3）を保持し、後着修復後の最終sourceの全件・新head CI・fresh両reviewの受入は当時PENDINGである。
+
+[R42の現在契約・通常費用・consumer別query対照](docs/security/git-command-guards.md#r42-current-contract)を参照する。必要なsource・署名表示・run0 contextを外して同目的とせず、対応形式がなければownerへ不足条件を示す。repositoryのbranch.sort fallbackとinline configの既存UNKNOWN境界を混同せず、reflogの新operation ALLOWは追加しない。P2はsourceと非実行listの反証に基づき現行policyを維持し、公開threadの解決と分ける。
+
+<!-- PR191:R42:PLAYBOOK:END -->
+
 <!-- PR191:R41:PLAYBOOK:BEGIN -->
 
 ### R41: readerの追加consumerとlauncherのcontextを確認する
 
 commit前readerではindex更新後の`post-index-change` callbackと、pretty format／署名表示が選ぶverifierも確認対象になる。`systemd-run`はservice（manager親）とscope（systemd-run親・caller環境継承）を分け、子commandのcwd/env/sourceや展開条件を、単なる先頭名や通常の直接実行と同一視しない。未検査sourceのUNKNOWNと、確認済みpolicy違反のFORBIDDENを分け、通常のquery／印字DATA／非署名format／独立FORBIDDENの対照も保つ。[R41の範囲・通常費用・出口](docs/security/git-command-guards.md#r41-current-contract)へ集約する。
 
-必要なhookや署名検証、service/scopeを外して同じ目的とは扱わない。意味を保てる分割ならreader後のcommitを新しいPreToolUseで再検査し、保てなければownerへ不足条件を確認する。R41は修復・受入PENDINGであり、R40の全8696／Node789／CIを新sourceの成功へ流用しない。以下のR40以前は当時の契約と測定の履歴である。
+必要なhookや署名検証、service/scopeを外して同じ目的とは扱わない。意味を保てる分割ならreader後のcommitを新しいPreToolUseで再検査し、保てなければownerへ不足条件を確認する。**公開前snapshot**: 2026-10-17 06:47:19.559 JSTのv2固定時点では、当時の公開基点head `2f8e3c62b285073b0714a6fd39325d6fa72938af` に対する未公開R41 candidateの部品・統合全件・新head CI・fresh reviewの最終受入をPENDINGとして記録した。06:49:50.108 JSTのv3は同じ公開基点でのdocs文言修正で、この当時の状態を保持した。
+
+後続の公開head `157c15ebddae485a05fba350dae82435a432eea6` では、required CI run [38972258568](https://github.com/theosera/obsidian-ai-pipeline/actions/runs/38972258568) のjobが2026-10-17 06:53:02 JSTに成功完了した。2026-10-18 06:54:58.180 JST取得snapshotの当時head `157c15ebddae485a05fba350dae82435a432eea6` では、fresh CodeRabbit full review5560271970は06:53:01 JSTに正常完了して新6件が未解決で、fresh Codex fullは進行中のため、両fresh reviewの受入と指摘処理はPENDINGである。
+
+R40の全8696／Node789／CIを新sourceの成功へ流用しない。以下のR40以前は当時の契約と測定の履歴である。
 
 <!-- PR191:R41:PLAYBOOK:END -->
 

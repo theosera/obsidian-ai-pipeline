@@ -20,6 +20,35 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R42:CONTRACT:BEGIN -->
+
+<a id="r42-current-contract"></a>
+
+## R42: 選択transport・署名consumer・run0とown inspectionの有限契約
+
+2026-10-18 07:35:30 JST snapshotは、当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commit candidateを対象とし、最後の全体取得07:15:05.546の209thread／未解決9（CR6＋Codex3）を保持し、後着修復後の最終sourceの全件・新head CI・fresh両reviewの受入は当時PENDINGである。
+
+公開157cへの両fresh fullはCodeRabbit5560271970（06:53:01 JST）とCodex5560315140（07:07:01 JST）が正常完了したが、新指摘の処理とは別である。R42 v1 actual36の初回paired fullは07:33:00.815 JSTに全8696の実行を完了し、旧157c・candidateとも8694 PASS／2 FAIL、broken0、差分0、source36／fixture安定だった。これは合格資格ではない。07:35:30 JST時点ではowned XDG_CONFIG_HOMEによる実行profile差の原因照合は未閉鎖であり、原2FAILを保存する。新readerのtarget75/75とrun0の19/19（owned Hook DATAを含む）は局所票として分け、format/source matrixと最終統合全件は別に確認する。後着2P1修復sourceはv1と別に資格化し、初回の結果を最終sourceへ持ち越さない。原8696入力・順序・非oracle項目、R41独立1oracle台帳、原FAIL／NEとR41以前の全文は保持する。
+
+| 対象・固定consumer | 確認条件と停止の境界 | 正常対照・通常作業の費用・同目的の出口 |
+| --- | --- | --- |
+| commit前readerの選択transport | 非queryでobject/index能力を持つ先行readerでは、`context.selected`の`GIT_SSH`／`GIT_SSH_COMMAND`／`GIT_SSH_VARIANT`／`GIT_ASKPASS`が継承baselineと異なると`command-selected-transport` UNKNOWN。検査envからselectorを消すだけで実行予定readerのsourceを判定済みとしない。 | 完全local fixtureの通常status＋commitでも、明示transport prefixがあるとremote activationの非選択を証明できず停止し得る。継承／baseline同値、未使用local、unset／env-u、対応するstdout query／config getter、commit後readerは新gateの追加停止対象外。helper本文の安全認証や他guard解除ではない。 |
+| guard自身のobject検査 | 検査専用env copyの`GIT_NO_LAZY_FETCH=1`と実argvの`--no-lazy-fetch`を設定し、初回trusted Git query `--no-lazy-fetch --version`で対応を確認する。実行予定readerの選択contextはDATAのまま保持する。 | fsmonitor BooleanのGit>=2.36資格とは別。stock Git2.36〜2.44等の非対応backendや、抑止下で必要objectを読めないcontextでは通常commit／staged scanもUNKNOWN。実測Git2.54以外の独自backport全動作を認証せず、backend更新または同等contextをownerへ確認する。 |
+| Git2.54の非log署名consumer | `shortlog`のpretty／formatと加算される`--group=format`、`for-each-ref`／`branch`のref-filter署名atom・sortを別consumerとして確認する。`shortlog` summaryがdescriptionを省いてもgroupは残る。`branch.sort`のrepository-config fallbackはboundedな多値・順序付きのsortとしてactivationを確認し、CLI `--sort`は追加、`--no-sort`は消去として扱う。inline `-c`／`--config-env`の同keyは従来UNKNOWNの境界を維持し、global config-key allowlistは広げない。 | 普通の表示・grouping・sortも未検査verifierを選び得るとUNKNOWN。`%%` escape、raw `contents:signature` DATA、last非署名format、消費grep値・実terminatorは別対照。対応する実`-h`の終端を確認し、manを呼び得る`--help`等を一律query免除しない。`shortlog`が消費しない`format.pretty`は非選択の正常対照。repository fallbackの`--no-sort`正常対照は07:35:30 JSTの旧cutではSG ALLOW／EG UNKNOWNだったが、07:40:07.042 JSTの閉鎖票ではknown flag対応後の同じsort resetでSG／EG／AG全ALLOWを確認した。`reflog`は既存secret-git全体のUNKNOWNのまま非対応で、新たなoperation ALLOWを足さない。必要な署名表示は勝手に外さない。 |
+| systemd v256 `run0` | v256の独自option/value/child grammarに限定して登録し、`systemd-run` grammarを流用しない。v258 sourceはrun0対defaultのdispatchと追加optionを照合した範囲で、v258全grammarの対応証明ではない。未知の新option、manager／identity／cwd/env／PAM等の未知実行contextはUNKNOWN。 | 普通の`printf` childもcontext未証明なら止まり得る。`--help`／`--version`／`-h`／`-V`はCOMMAND前の実optionとして到達した場合だけ正常queryとし、消費値やchild内の同語を免除に使わない。対応するknown scalarでは、同statementのprefix上書き前の値がargvへ展開される順序を保ち、新代入値だけでquery／childを判断しない。未知値をqueryへ推測せず、先行semicolonで確定したscalarや対応local functionを別対照にする。必要なrun0／認証／contextを削除して同目的とせず、対応形式がなければownerへ条件を渡す。 |
+| post-index-changeのP2反証 | `hook.<friendly-name>.enabled`とevent選択を区別する。`hook.post-index-change.enabled=false`が全event／traditional callbackを無効化するという提案は、Git2.54 sourceと独立した非実行listで反証され、現行policyを維持する。 | event名と同じfriendly名のfalseだけではconfigured dummyとtraditional hookが残り、dummy自身のfalseでconfigured dummyだけdisabledとなる。これはhook listの非実行queryで、callback／index／status／commitを実行した証拠ではない。公開threadは未解決のままで、説明・resolveを別に扱う。 |
+| 試験用hooks path | curl credential／curl alias／Wget credential試験のhooks引数を`path.resolve`し、`require`とfile readのtargetを一致させる。 | default／absolute／relativeの同targetを確認し、旧relative MODULE_NOT_FOUNDは原結果として残す。 |
+
+### 一次根拠と確認の限界
+
+署名consumerは[Git2.54 shortlog](https://git-scm.com/docs/git-shortlog/2.54.0)／[for-each-ref](https://git-scm.com/docs/git-for-each-ref/2.54.0)の有限なformat契約を使う。P2は[hook.cのconfigured＋traditional列挙](https://github.com/git/git/blob/v2.54.0/hook.c#L359)／[disabled判定](https://github.com/git/git/blob/v2.54.0/hook.c#L403)と[friendly-name enabledの公式設定](https://git-scm.com/docs/git-hook/2.54.0#_configuration)を、owned Git2.54の非実行listに照合した。run0対応は[systemd v256 source](https://github.com/systemd/systemd/blob/v256/src/run/run.c)／[v256 manual](https://github.com/systemd/systemd/blob/v256/man/run0.xml)へ固定し、[v258 source](https://github.com/systemd/systemd/blob/v258/src/run/run.c)のdispatch差分照合と分ける。own検査の[flag/env契約](https://git-scm.com/docs/git#Documentation/git.txt---no-lazy-fetch)も別に確認する。known scalarのprefix／argv順序は[GNU Bash 3.7.1](https://www.gnu.org/software/bash/manual/html_node/Simple-Command-Expansion.html)の有限な対応範囲に結ぶ。
+
+初回run0 candidateの同tuple Hook DATAでは、旧公開の未登録通過と、登録のみ除去したcopyでの反転を観測した。ただしprinted-DATA witnessの既存EG UNKNOWNは残り、全DATAのALLOWとは呼ばない。Hook DATA・非実行query・native実行は別の層であり、run0／PAM／認証／verifier／transportのnative成立を主張しない。最終sourceの件数・資格は冒頭の取得cutに従って別に結合する。
+
+進行candidateのPENDINGは対象source／head・snapshot時刻・当時未取得項目を同じ文へ結ぶ。新sourceの全件、same-head CI、両fresh fullと全指摘処理、公開本文readbackを別に確認し、追加L3・ZIP・全記録網羅・main報告統合をmerge4条件へ足さない。以下のR41以前は当時cutの契約・数値・current表示として保持する。
+
+<!-- PR191:R42:CONTRACT:END -->
+
 <!-- PR191:R41:CONTRACT:BEGIN -->
 
 <a id="r41-current-contract"></a>
@@ -28,7 +57,17 @@
 
 基点は公開 `2f8e3c62b285073b0714a6fd39325d6fa72938af`。fresh Codex review5553871277（2026-10-17 06:25:41 JST）から、`post-index-change`、pretty signature placeholder、`systemd-run`の3件を受領した。06:29:17.947676 JSTの保存primaryは全197thread終端取得・未解決3（Codex P1、CR0）。指摘本文が報告するnative再現を、こちらのHook DATA試験や全版の成立証明へ読み替えない。
 
-**この節はR41の修復範囲と確認条件であり、最終受入はPENDING**。R40の公開headでの8696／Node789／別parity15／CI成功はその固定sourceの履歴として下に保持し、新sourceの全件・公開CI・fresh両reviewと指摘処理へ持ち越さない。
+**公開前snapshot**: 2026-10-17 06:47:19.559 JSTのv2固定時点では、当時の公開基点head `2f8e3c62b285073b0714a6fd39325d6fa72938af` に対する未公開R41 candidateの部品・統合全件・新head CI・fresh reviewの最終受入をPENDINGとして記録した。06:49:50.108 JSTのv3は同じ公開基点でのdocs文言修正で、この当時の状態を保持した。
+
+後続の公開head `157c15ebddae485a05fba350dae82435a432eea6` では、required CI run [38972258568](https://github.com/theosera/obsidian-ai-pipeline/actions/runs/38972258568) のjobが2026-10-17 06:53:02 JSTに成功完了した。2026-10-18 06:54:58.180 JST取得snapshotの当時head `157c15ebddae485a05fba350dae82435a432eea6` では、fresh CodeRabbit full review5560271970は06:53:01 JSTに正常完了して新6件が未解決で、fresh Codex fullは進行中のため、両fresh reviewの受入と指摘処理はPENDINGである。
+
+進行candidateの記録を更新するときは、PENDINGとする未測定・未受入の項目、snapshot取得日時、対象head（未公開なら当時の公開基点headとcandidate版）を必ず同じ文に記す。後続の公開・CI・review結果は別の取得として追記し、過去snapshotや原FAIL／NEを現状へ書き換えない。
+
+この節はR41の修復範囲と確認条件を保持する。R40の公開headでの8696／Node789／別parity15／CI成功はその固定sourceの履歴として下に保持し、新sourceの全件・公開CI・fresh両reviewと指摘処理へ持ち越さない。
+
+**R42局所追補**: 2026-10-18 06:58:26 JST snapshotの当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commitcandidateであり、このcandidateの新全件・新公開head CI・fresh両reviewの受入は当時未取得である。commitより前の非queryでobject/index能力を持つreaderは、`context.selected` の `GIT_SSH`／`GIT_SSH_COMMAND`／`GIT_SSH_VARIANT`／`GIT_ASKPASS` が継承baselineと異なる場合、`command-selected-transport` UNKNOWNとなる。promisorのmissing object／lazy fetchやsubmodule等によるremote activationの非選択をbounded probeで証明していないため、完全local fixtureでも、明示transport prefix付きの通常statusとcommitの連結が停止し得る。継承値／baselineと同値の選択／未使用local／対応するenv -u／真正query／config getterはこの新gateの追加停止対象外だが、helper本文の安全認証や他guardの解除ではない。sourceの移動や検査用envの消去だけで、実行予定readerの選択sourceを判定済みとは扱わず、native helper起動・通信成立の実証も主張しない。必要なsourceを外して同じ目的と扱わず、既存の同目的・同条件を保つ出口に従う。
+
+**R42 own inspection追補**: 2026-10-18 07:02:52 JST snapshotの当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commitcandidateの局所修復であり、試験件数と新全件・新公開head CI・fresh両reviewの受入は当時PENDINGである。guard自身のdiff／ls-files等のobject読取が欠落promisor objectからlazy fetchへ進むのを抑えるため、検査専用env copyに `GIT_NO_LAZY_FETCH=1`、実own Git argvに `--no-lazy-fetch` を加え、最初のtrusted Git queryも `--no-lazy-fetch --version` で対応を確認する。[公式manualのflag/env契約](https://git-scm.com/docs/git#Documentation/git.txt---no-lazy-fetch)と[Git 2.54.0 git.c](https://github.com/git/git/blob/v2.54.0/git.c#L192)／[odb.c](https://github.com/git/git/blob/v2.54.0/odb.c#L610)／[promisor-remote.c](https://github.com/git/git/blob/v2.54.0/promisor-remote.c#L29)が同原因のown-side抑止の根拠である。既存のGit 2.36以上という資格はfsmonitor Boolean専用で、lazy fetch抑止flagの対応確認とは別である。たとえばstock Git 2.36〜2.44などflag非対応backendでは、通常のcommit／staged scanもown inspection UNKNOWNとして停止し得る。欠落objectを抑止下で検査できない場合も、backend更新または同等の検査contextをownerへ確認する費用がある。実測backendはGit 2.54.0に限り、capability queryの受理だけで独自backportの全動作を認証しない。実行予定readerの選択env/contextはDATAのまま保持し、検査用copyでの抑止をそのsourceの非選択判定やhelper本文の安全認証へ流用しない。source移動・env sanitizationだけで判定済みとせず、必要sourceを外して同等操作と扱わない既存の出口に従う。
 
 | 追加範囲 | 確認するconsumerとUNKNOWNの境界 | 通常作業への影響・正常対照 | 同目的の出口 |
 | --- | --- | --- | --- |

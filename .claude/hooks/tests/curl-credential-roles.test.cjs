@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 // Public location proposal: .claude/hooks/tests/curl-credential-roles.test.cjs.
-const hooks=process.argv[2]||path.resolve(__dirname,'..');
+const hooks=path.resolve(process.argv[2]||path.join(__dirname,'..'));
 const {inspect}=require(path.join(hooks,'lib/git-guard-common.cjs'));
 const source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
 /** Extract a uniquely anchored production source section for isolated selector tests. */

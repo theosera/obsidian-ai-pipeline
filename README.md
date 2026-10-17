@@ -18,13 +18,31 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R42:README:BEGIN -->
+
+### R42: 選択source・署名consumer・run0の追加境界
+
+2026-10-18 07:35:30 JST snapshotは、当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commit candidateを対象とし、最後の全体取得07:15:05.546の209thread／未解決9（CR6＋Codex3）を保持し、後着修復後の最終sourceの全件・新head CI・fresh両reviewの受入は当時PENDINGである。
+
+[R42の現在契約・通常費用・同目的の出口](docs/security/git-command-guards.md#r42-current-contract)へ集約する。初回固定v1の全件実行は両sourceとも8694 PASS／2 FAILで合格ではなく、後着修復sourceの最終資格と分ける。未検査sourceにより通常readerやcommitも止まり得る範囲を示す。
+
+<!-- PR191:R42:README:END -->
+
 <!-- PR191:R41:README:BEGIN -->
 
 ### R41: index更新callback・署名表示のverifier・systemd-run
 
 公開head `2f8e3c62` のfresh Codex reviewで、commit前readerの`post-index-change`、pretty formatが選ぶ署名verifier、`systemd-run`の子commandという3経路を追加で指摘された。R41はこれらのconsumer／実行contextを限定して確認する修復であり、R40の固定headでの全8696・789契約・CI成功を新sourceへ持ち越さない。[対象・通常費用・正常対照・同目的の出口](docs/security/git-command-guards.md#r41-current-contract)を参照する。
 
-**R41の部品修復・統合全件・新公開head CI・fresh reviewは受入PENDING**。2026-10-17 06:29:17 JSTの保存primaryは全197threadの未解決3（Codex P1）、CR未解決0だった。指摘本文のnative検証報告と、このリポジトリのHook DATA測定を分け、元FAIL／NEやR40以下の履歴を保持する。
+**公開前snapshot**: 2026-10-17 06:47:19.559 JSTのv2固定時点では、当時の公開基点head `2f8e3c62b285073b0714a6fd39325d6fa72938af` に対する未公開R41 candidateの部品・統合全件・新head CI・fresh reviewの最終受入をPENDINGとして記録した。06:49:50.108 JSTのv3は同じ公開基点でのdocs文言修正で、この当時の状態を保持した。
+
+後続の公開head `157c15ebddae485a05fba350dae82435a432eea6` では、required CI run [38972258568](https://github.com/theosera/obsidian-ai-pipeline/actions/runs/38972258568) のjobが2026-10-17 06:53:02 JSTに成功完了した。2026-10-18 06:54:58.180 JST取得snapshotの当時head `157c15ebddae485a05fba350dae82435a432eea6` では、fresh CodeRabbit full review5560271970は06:53:01 JSTに正常完了して新6件が未解決で、fresh Codex fullは進行中のため、両fresh reviewの受入と指摘処理はPENDINGである。
+
+2026-10-17 06:29:17 JSTの保存primaryは全197threadの未解決3（Codex P1）、CR未解決0だった。指摘本文のnative検証報告と、このリポジトリのHook DATA測定を分け、元FAIL／NEやR40以下の履歴を保持する。
+
+2026-10-18 06:58:26 JST snapshotの当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commitcandidateの[transport選択のR42局所追補](docs/security/git-command-guards.md#r41-current-contract)は、新全件・新公開head CI・fresh両reviewの受入が当時未取得であり、選択sourceが未確認の通常readerも停止し得る費用を記す。
+
+2026-10-18 07:02:52 JST snapshotの当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` の未commitcandidateには、[R42のown検査lazy fetch抑止と対応flag確認](docs/security/git-command-guards.md#r41-current-contract)を追加し、flag非対応backendでは通常commit／staged scanもUNKNOWNとなる費用を記すが、試験件数と新全件・新公開head CI・fresh両reviewの受入は当時PENDINGである。
 
 <!-- PR191:R41:README:END -->
 

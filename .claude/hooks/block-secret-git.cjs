@@ -73,7 +73,7 @@ function readOnlyMode(g) {
     flags = new Set([
       '--list', '-l', '--show-current', '--all', '-a', '--remotes', '-r',
       '--verbose', '-v', '-vv', '--quiet', '-q', '--no-color', '--column', '--no-column',
-      '--color', '--abbrev', '--no-abbrev', '--ignore-case', '-i', '--omit-empty',
+      '--color', '--abbrev', '--no-abbrev', '--ignore-case', '-i', '--omit-empty', '--no-sort',
     ]);
     for (const v of ['--format', '--sort', '--contains', '--no-contains', '--merged', '--no-merged', '--points-at']) values.add(v);
   } else if (g.sub === 'remote') {

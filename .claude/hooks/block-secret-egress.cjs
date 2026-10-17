@@ -208,6 +208,7 @@ const insp = guard.inspect(cmd, {
   deferWatchSourceProblems: true,
   deferDbusRunSessionSourceProblems: true,
   deferSystemdRunSourceProblems: true,
+  deferRun0SourceProblems: true,
   deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -609,7 +610,7 @@ function gitEditorCanRun(g) {
   }
   if (g.sub === 'branch') {
     const parsed = gitEditorOptions(g, ['format', 'sort', 'contains', 'no-contains', 'merged', 'no-merged', 'track'], '',
-      ['edit-description', 'list', 'show-current', 'help', 'all', 'remotes', 'verbose', 'delete', 'force', 'move', 'copy']);
+      ['edit-description', 'list', 'show-current', 'help', 'all', 'remotes', 'verbose', 'delete', 'force', 'move', 'copy', 'no-sort']);
     return parsed.unknown || parsed.selected.has('edit-description');
   }
   if (g.sub === 'add' || g.sub === 'stage') {
@@ -5845,6 +5846,7 @@ function opaqueLauncherNetwork(invocation) {
   if (!invocation.launcherUnknown) return false;
   // A newly selected systemd context is refused at the late source gate; keep independent verdict priority.
   if (invocation.systemdRunLauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
+  if (invocation.run0LauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
   const words = invocation.launcherArgs || [];
   const existing = curlReadsUpload(words, invocation.incomplete) || wgetReadsUpload(words) || words.some((word) =>
     ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh'].includes(word.text.split('/').pop()) ||
@@ -5945,6 +5947,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
     deferWatchSourceProblems: true,
     deferDbusRunSessionSourceProblems: true,
   deferSystemdRunSourceProblems: true,
+  deferRun0SourceProblems: true,
     deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -5994,6 +5997,13 @@ function dbusRunSessionSourceVerdict(invocation) {
 function systemdRunSourceVerdict(invocation) {
   if (invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
   return invocation.launcherUnknown && invocation.systemdRunLauncherRoles?.some(role =>
+    role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
+}
+
+/** run0 is a distinct multicall grammar; its PAM/manager context stays unqualified. */
+function run0SourceVerdict(invocation) {
+  if (invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
+  return invocation.launcherUnknown && invocation.run0LauncherRoles?.some(role =>
     role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
 }
 
@@ -6724,6 +6734,11 @@ if (invocations.some(dbusRunSessionSourceVerdict)) {
 // Scope and service use different execution contexts; neither is certified by child spelling alone.
 if (invocations.some(systemdRunSourceVerdict)) {
   deny('systemd-run の service/scope mode・実行先・identity・cwd/env/source を同じ条件で確認できません。同じ対象・操作・実行条件を保つ対応済み形式がなければ owner に不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// run0's new source uncertainty cannot replace an earlier independent refusal.
+if (invocations.some(run0SourceVerdict)) {
+  deny('run0 の manager/PAM・実行先・identity・cwd/env・既定 shell source を同じ条件で確認できません。同じ対象・操作・実行条件を保つ対応済み形式がなければ owner に不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 // New watch uncertainty cannot replace an existing confirmed refusal/category above.

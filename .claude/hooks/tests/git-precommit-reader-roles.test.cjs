@@ -279,7 +279,7 @@ test('bounded probe uses no pager, exact context, helper-only regex and no fsmon
   let captured;
   assert.deepEqual(readers.probeConfig(ctx, (...args) => { captured = args; return { status: 0, stdout: Buffer.from('local\0core.fsmonitor\nfalse\0') }; }), new Map([['core.fsmonitor', 'false']]));
   assert.equal(captured[0], '/DUMMY/git');
-  assert.deepEqual(captured[1].slice(0, 7), ['-C', '/DUMMY/repo', '--no-pager', 'config', '--show-scope', '--null', '--get-regexp']);
+  assert.deepEqual(captured[1].slice(0, 8), ['-C', '/DUMMY/repo', '--no-pager', '--no-lazy-fetch', 'config', '--show-scope', '--null', '--get-regexp']);
   assert.equal(captured[1].includes('core.fsmonitor=false'), false);
   assert.equal(captured[2].maxBuffer, 65536); assert.equal(captured[2].timeout, 2000);
   assert.deepEqual(captured[2].env, ctx.env);
@@ -302,9 +302,9 @@ test('private helper values do not enter reasons; repeated keys keep last effect
 });
 test('inspection hardening is separate from the config observation', () => {
   assert.deepEqual(readers.inspectionArgs(['diff', '--cached', '--name-only', '-z']),
-    ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'diff', '--no-ext-diff', '--no-textconv', '--cached', '--name-only', '-z']);
+    ['--no-pager', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'diff', '--no-ext-diff', '--no-textconv', '--cached', '--name-only', '-z']);
   assert.deepEqual(readers.inspectionArgs(['ls-files', '-z', '--', 'a.txt']),
-    ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'ls-files', '-z', '--', 'a.txt']);
+    ['--no-pager', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'ls-files', '-z', '--', 'a.txt']);
 });
 test('inspection does not use the boolean fsmonitor override on older or unknown Git', () => {
   for (const banner of ['git version 2.35.1\n', 'unknown', 'git version $DUMMY']) assert.equal(readers.supportsInspectionHardening(banner), false);

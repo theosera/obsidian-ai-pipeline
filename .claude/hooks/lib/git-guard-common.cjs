@@ -1520,7 +1520,7 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run']);
+const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run', 'run0']);
 
 /** util-linux 2.39.3: priority/PID roles and namespace-free direct execvp. */
 function utilLinuxLauncherArgs(rest, info, name) {
@@ -1875,7 +1875,62 @@ function systemdRunArgs(rest, info) {
   return unknown();
 }
 
+/** systemd v256 run0 has its own getopt '+' grammar and PAM/manager context. */
+function run0Args(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { backend: 'systemd-v256-run0', mode: 'unknown', childIndex: null,
+    source: 'manager/PAM/identity/cwd/environment/default-shell',
+    priorLauncherUnknown: info.launcherUnknown };
+  (info.run0Launchers ||= []).push(role);
+  const unknown = () => { info.launcherUnknown = true; return rest.length; };
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  const flags = new Set(['no-ask-password', 'slice-inherit']);
+  const values = new Set(['machine', 'unit', 'property', 'description', 'slice',
+    'user', 'group', 'nice', 'chdir', 'setenv', 'background']);
+  const canonical = known(info.argv0Word) && path.posix.basename(textOf(info.argv0Word)) === 'run0';
+  if (rest.length > 128) return unknown();
+  let k = 0;
+  while (k < rest.length) {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) return unknown();
+    if (text === '--') { k++; break; }
+    if (!text.startsWith('-') || text === '-') break;
+    if (text.startsWith('--')) {
+      if (['--help', '--version'].includes(text) && canonical && !info.launcherUnknown) {
+        role.mode = 'query'; return -1;
+      }
+      const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
+      if (flags.has(option) && eq < 0) { /* no value */ }
+      else if (values.has(option)) {
+        const value = eq < 0 ? rest[++k] : { ...word, text: text.slice(eq + 1),
+          literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(eq + 1) : undefined };
+        if (!known(value)) return unknown();
+      } else return unknown();
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        const option = text[j];
+        if ('hV'.includes(option) && canonical && !info.launcherUnknown) {
+          role.mode = 'query'; return -1;
+        }
+        if (!'ugD'.includes(option)) return unknown();
+        const value = j + 1 < text.length ? { ...word, text: text.slice(j + 1),
+          literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(j + 1) : undefined } : rest[++k];
+        if (!known(value)) return unknown();
+        break;
+      }
+    }
+    k++;
+  }
+  if (k < rest.length) role.childIndex = k;
+  // Both selected COMMAND and implied shell need a qualified execution context.
+  return unknown();
+}
+
 const WRAPPERS = {
+  run0: run0Args,
   'systemd-run': systemdRunArgs,
   'dbus-run-session': dbusRunSessionArgs,
   ...Object.fromEntries(SETARCH_ALIASES.map(name => [name, (rest, info) => opaqueUtilLinuxArgs(rest, info, name)])),
@@ -3429,7 +3484,7 @@ function inspect(cmd, options = {}) {
     for (const word of c.definitionName ? [] : c.words.concat(c.redirs.map((redir) => redir.word))) {
       for (const evaluation of word.evaluations || []) checkEvaluation(evaluation, expansionState);
       const assignment = scalarAssignment(word);
-      if (!info.name && !info.dynamicName && assignment) rememberValue(expansionState, assignment, conditional);
+      if (!info.name && !info.dynamicName && !info.wrapped && assignment) rememberValue(expansionState, assignment, conditional);
     }
     if (c.arrayInitializer) {
       for (const word of c.words) {
@@ -3540,6 +3595,7 @@ function inspect(cmd, options = {}) {
       parallelLauncherRole: info.parallelLauncher || null,
       dbusRunSessionRoles: info.dbusRunSessions || [],
       systemdRunLauncherRoles: info.systemdRunLaunchers || [],
+      run0LauncherRoles: info.run0Launchers || [],
       utilLinuxLauncherRole: info.utilLinuxLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
@@ -3946,7 +4002,10 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.run0Launchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+      const run0Unknown = info.run0Launchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
+      if (run0Unknown && options.deferRun0SourceProblems !== true) res.problems.push('run0 の COMMAND 境界または manager/PAM・identity・cwd/env・既定 shell の実行条件を確認できません。同じ対象・操作・実行条件を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
+      if (run0Unknown) return;
       const utilLinuxUnknown = info.utilLinuxLauncher?.mode === 'unknown' && !info.utilLinuxLauncher.priorLauncherUnknown;
       const parallelUnknown = info.parallelLauncher?.mode === 'unknown' && !info.parallelLauncher.priorLauncherUnknown;
       const watchUnknown = info.watchLauncher?.mode === 'unknown' && !info.watchLauncher.priorLauncherUnknown;
@@ -4889,7 +4948,7 @@ function readOnlyGitMode(g, allowHelp = true, scalarConfigOnly = false) {
     flags = new Set([
       '--list', '-l', '--show-current', '--all', '-a', '--remotes', '-r',
       '--verbose', '-v', '-vv', '--quiet', '-q', '--no-color', '--column', '--no-column',
-      '--color', '--abbrev', '--no-abbrev', '--ignore-case', '-i', '--omit-empty',
+      '--color', '--abbrev', '--no-abbrev', '--ignore-case', '-i', '--omit-empty', '--no-sort',
     ]);
     for (const v of ['--format', '--sort', '--contains', '--no-contains', '--merged', '--no-merged', '--points-at']) values.add(v);
   } else if (g.sub === 'remote') {
