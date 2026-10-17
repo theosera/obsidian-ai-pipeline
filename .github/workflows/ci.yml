@@ -42,6 +42,17 @@ jobs:
         # malformed manifests before they slip into main (see PR #23 post-mortem).
         run: python3 .github/scripts/check-package-json-duplicates.py
 
+      - name: Verify guard runner bindings and selected roles (no native commands)
+        # Runner import catches a stale ledger pin before the local full L2 bank runs.
+        # Pure roles do not execute command strings or certify native transport.
+        run: |
+          node --test \
+            .claude/hooks/tests/runner-ledger-binding.test.cjs \
+            .claude/hooks/tests/ping-resolver-roles.test.cjs \
+            .claude/hooks/tests/dbus-launcher-roles.test.cjs \
+            .claude/hooks/tests/slogin-executable-roles.test.cjs \
+            .claude/hooks/tests/ncat-credential-roles.test.cjs
+
       - name: Run injection-gate tests (python, deterministic)
         # L1 (scan-threat-report.py) + L3 (gate_decision.py) の決定論回帰。
         # stdlib のみで pnpm install 不要のため依存インストールより先に走らせる。

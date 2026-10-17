@@ -51,6 +51,69 @@ abort_rebase_if_in_progress() {
   fi
 }
 
+# Exempt only the final ASCII .env.example basename, retaining ancestor checks.
+secret_template_scan_path() {
+  secret_scan_path="${1}"
+  case "${secret_scan_path##*/}" in
+    .[eE][nN][vV].[eE][xX][aA][mM][pP][lL][eE]) secret_scan_path="${secret_scan_path%????????????}" ;;
+  esac
+}
+
+# Read only this repository's staged names. Git quoting is avoided with NUL
+# records; collect all offenders before the caller can unstage any filename.
+collect_staged_secret_paths() {
+  local LC_ALL=C list_file list_size staged_path secret_scan_path consumed=0
+  local -a found=() filter_statuses=()
+  SECRET_OFFENDERS=()
+  # ECMAScript \s beyond ASCII: exact UTF-8 sequences, not a byte bracket class.
+  # C-locale [:space:] supplies TAB/LF/VT/FF/CR/SPACE; grep -i folds ASCII terms.
+  SECRET_SPACE_UTF8_ERE=$'\xc2\xa0|\xe1\x9a\x80|\xe2\x80\x80|\xe2\x80\x81|\xe2\x80\x82|\xe2\x80\x83|\xe2\x80\x84|\xe2\x80\x85|\xe2\x80\x86|\xe2\x80\x87|\xe2\x80\x88|\xe2\x80\x89|\xe2\x80\x8a|\xe2\x80\xa8|\xe2\x80\xa9|\xe2\x80\xaf|\xe2\x81\x9f|\xe3\x80\x80|\xef\xbb\xbf'
+  SECRET_ERE='(^|/)\.env($|[.*?[:space:]]|'"${SECRET_SPACE_UTF8_ERE}"')|(^|/)x_tokens\.json$|(^|/)data/tokens\.json$|(^|/)pkce_state\.json$|(^|/)credentials[^/]*\.json$|(^|/)service-account[^/]*\.json$|[^/]*token[^/]*\.json$|(^|/)pipeline_config\.json$|\.(key|pem)$|(^|/)id_(rsa|ed25519)$|(^|/)secrets\.(json|ya?ml)$|(^|/)secrets(/|$)'
+  ALLOW_ERE='(^|/)\.env\.example$'
+  list_file="$(mktemp "${TMPDIR:-/tmp}/vault-ops-staged.XXXXXX")" || return 1
+  if ! git diff --cached --name-only -z > "${list_file}"; then
+    rm -f -- "${list_file}"
+    return 1
+  fi
+  if ! list_size="$(wc -c < "${list_file}")"; then
+    rm -f -- "${list_file}"
+    return 1
+  fi
+  if while IFS= read -r -d '' staged_path; do
+    # LF would split grep's input and could misclassify a public filename.
+    case "${staged_path}" in *$'\n'*|'') rm -f -- "${list_file}"; return 1 ;; esac
+    consumed=$((consumed + ${#staged_path} + 1))
+    secret_template_scan_path "${staged_path}"
+    if printf '%s\n' "${secret_scan_path}" | LC_ALL=C grep -ivE "${ALLOW_ERE}" | LC_ALL=C grep -iE "${SECRET_ERE}" >/dev/null; then
+      filter_statuses=( "${PIPESTATUS[@]}" )
+    else
+      filter_statuses=( "${PIPESTATUS[@]}" )
+    fi
+    # Capture every stage before another command replaces PIPESTATUS. A later
+    # no-match (1) must not hide a producer or earlier predicate failure.
+    if [ "${#filter_statuses[@]}" -ne 3 ] || [ "${filter_statuses[0]}" -ne 0 ] ||
+       [ "${filter_statuses[1]}" -gt 1 ] || [ "${filter_statuses[2]}" -gt 1 ]; then
+      rm -f -- "${list_file}"
+      return 1
+    fi
+    if [ "${filter_statuses[1]}" -eq 0 ] && [ "${filter_statuses[2]}" -eq 0 ]; then
+      found[${#found[@]}]="${staged_path}"
+    fi
+  done < "${list_file}"; then
+    :
+  else
+    rm -f -- "${list_file}"
+    return 1
+  fi
+  # A partial record or failed read must not masquerade as an empty match set.
+  if [ "${consumed}" -ne "${list_size}" ]; then
+    rm -f -- "${list_file}"
+    return 1
+  fi
+  rm -f -- "${list_file}" || return 1
+  if [ "${#found[@]}" -gt 0 ]; then SECRET_OFFENDERS=("${found[@]}"); fi
+}
+
 # Stage the whole vault except quarantined (untrusted) report bodies, then
 # run the staged secret gate. NOTE: `git add -A` is the operational norm for
 # the vault repo (a human pushing all note edits at once); the repo-wide
@@ -64,19 +127,18 @@ stage_and_gate() {
     die "内部エラー: _quarantine 配下が staged に含まれています。push を中止しました (untrusted 本文は commit しない設計)。"
   fi
 
-  # Staged secret gate — shell copy (4th system) of SECRET_RE in
-  # .claude/hooks/block-secret-git.cjs. SLA: when token/file patterns change,
-  # update both in the same PR (CLAUDE.md "Secret-pattern の維持").
-  SECRET_ERE='(^|/)\.env(\.|$)|(^|/)x_tokens\.json$|(^|/)data/tokens\.json$|(^|/)pkce_state\.json$|(^|/)credentials[^/]*\.json$|(^|/)service-account[^/]*\.json$|[^/]*token[^/]*\.json$|(^|/)pipeline_config\.json$|\.(key|pem)$|(^|/)id_(rsa|ed25519)$|(^|/)secrets\.(json|ya?ml)$|(^|/)secrets/'
-  ALLOW_ERE='(^|/)\.env\.example$'
-  offenders="$(git diff --cached --name-only | grep -ivE "${ALLOW_ERE}" | grep -iE "${SECRET_ERE}" || true)"
-  if [ -n "${offenders}" ]; then
-    printf '%s\n' "${offenders}" | while IFS= read -r f; do
+  # Staged secret gate — shell copy (4th system) of SECRET_PATH_RE in
+  # .claude/hooks/lib/git-guard-common.cjs; update both in the same PR.
+  if ! collect_staged_secret_paths; then
+    die "staged filename の読取・判定を確認できません (Git 読取失敗 / 不完全な NUL 入力 / LF filename / printf・grep の実行失敗)。何も unstage せず停止しました。対象・実行条件を owner に確認してください。"
+  fi
+  if [ "${#SECRET_OFFENDERS[@]}" -gt 0 ]; then
+    for f in "${SECRET_OFFENDERS[@]}"; do
       git restore --staged -- "${f}" || true
     done
     {
       printf '%s\n' "secret-looking file を vault に commit しようとしています:"
-      printf '%s\n' "${offenders}"
+      printf '%s\n' "${SECRET_OFFENDERS[@]}"
       printf '%s\n' "obsidian-ai-pipeline の CLAUDE.md「Secrets / sensitive files — never commit」によりブロックしました。"
       printf '%s\n' "該当ファイルは staged から外してあります。vault に置くべきでない秘密情報なら削除・移動し、誤検知なら .gitignore への追加やファイル名の変更を検討してください。"
     } >&2
