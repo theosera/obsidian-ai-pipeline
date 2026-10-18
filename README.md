@@ -18,6 +18,16 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R49:README:BEGIN -->
+
+### R49: getentの名前解決とremote loggerの送信元
+
+`getent`のhost系databaseへ渡すkeyと、util-linux `logger`の明示remote server・header・message・file/stdinを、既存の生成元追跡へ結び付ける。[版・対応条件・正常対照・停止後の出口](docs/security/git-command-guards.md#r49-current-contract)を参照する。local loggerや静的ordinaryなremote messageを一律禁止しない。`logger --no-act`でもserverの名前解決・接続は残るため、送信本文の抑止とresolverの判定を分ける。
+
+2026-10-19の修復作業中の記述であり、公開基点`30c3616`への新2件を扱う。旧headのCI・両review完了を新sourceへ持ち越さず、統合全件・新head CI・fresh両reviewと指摘処理は別に確認する。
+
+<!-- PR191:R49:README:END -->
+
 <!-- PR191:R48:README:BEGIN -->
 
 ### ガードの必須CI

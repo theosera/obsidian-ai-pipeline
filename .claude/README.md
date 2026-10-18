@@ -71,6 +71,14 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R49:CLAUDE-README:BEGIN -->
+
+### R49: selected resolverとremote logger
+
+egressは`getent`のhost系keyと、util-linux `logger`のremote DATAを有限に検査する。[R49の契約](../docs/security/git-command-guards.md#r49-current-contract)に、database/option境界、server優先、messageによるfileの非選択、stdinの生成元、local/query対照と通常利用への費用を記す。秘密由来が確定した選択値やfile uploadはFORBIDDEN、未解決source/argv/contextはUNKNOWN。両者とも既存deny wireで止める。実DNS/syslog送信、新L3、任意のNSS/backendの安全性を認定する修復ではない。
+
+<!-- PR191:R49:CLAUDE-README:END -->
+
 <!-- PR191:R48:CLAUDE-README:BEGIN -->
 
 ### ガード全体のCI検証

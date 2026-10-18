@@ -3813,7 +3813,7 @@ function wgetBindResolverVerdict(invocation) {
 }
 
 // R38_DIRECT_DNS_ROLE_START — ISC BIND 9.20.0 finite CLI roles, not native/backend attestation.
-const DIRECT_DNS_CLIENTS = new Set(['dig', 'host', 'nslookup', 'delv', 'ping', 'ping6']);
+const DIRECT_DNS_CLIENTS = new Set(['dig', 'host', 'nslookup', 'delv', 'ping', 'ping6', 'getent']);
 /** Select resolver-bound words for supported DNS and ping clients while retaining source and argv uncertainty. */
 function directDnsRole(invocation) {
   const result = { selectedWords: [], unknownSource: false, unknownArgv: false, terminal: false };
@@ -3835,6 +3835,64 @@ function directDnsRole(invocation) {
     return result;
   };
   if (words.length > 64) { result.unknownArgv = true; return result; }
+  if (invocation.name === 'getent') {
+    // glibc 2.42 getent: finite hosts-family keys, not native/NSS attestation.
+    // Service overrides select unqualified NSS backends. Do not infer files-only
+    // DNS suppression from a spelling, or apply this family to other databases.
+    const operands = [];
+    let afterDD = false, sawOperand = false, service = false;
+    if (!words.length) { result.terminal = true; return result; }
+    for (let k = 0; k < words.length; k++) {
+      const word = words[k], s = text(word), known = scalar(word);
+      if (!afterDD && known && s === '--') { afterDD = true; continue; }
+      if (!afterDD && s.startsWith('-') && s !== '-') {
+        if (!known || sawOperand) { unknown = true; continue; }
+        if (['--help', '--usage', '--version'].includes(s)) {
+          if (unknown || service) { unknown = true; break; }
+          result.terminal = true; return result;
+        }
+        if (['--no-idn', '--no-addrconfig'].includes(s)) continue;
+        if (s === '--service' || s.startsWith('--service=')) {
+          const value = s === '--service' ? words[++k] : valueWord(word, s.indexOf('=') + 1);
+          if (!value || !scalar(value)) unknown = true;
+          service = true; continue;
+        }
+        if (s.startsWith('--')) { unknown = true; continue; }
+        for (let j = 1; j < s.length; j++) {
+          const flag = s[j];
+          if (flag === 'i' || flag === 'A') continue;
+          if (flag === '?' || flag === 'V') {
+            if (unknown || service) { unknown = true; break; }
+            result.terminal = true; return result;
+          }
+          if (flag !== 's') { unknown = true; break; }
+          const value = j + 1 < s.length ? valueWord(word, j + 1) : words[++k];
+          if (!value || !scalar(value)) unknown = true;
+          service = true; break;
+        }
+        continue;
+      }
+      sawOperand = true;
+      operands.push({ word, afterDD });
+    }
+    const database = operands.length ? literal(operands[0].word) : undefined;
+    if (database === undefined || unknown) { result.unknownArgv = true; return result; }
+    if (!['hosts', 'ahosts', 'ahostsv4', 'ahostsv6'].includes(database)) {
+      // Not a process-exit query: other databases still pass keys to NSS.
+      result.inactiveDatabase = true;
+      result.unknownSource = service;
+      result.unknownArgv = operands.slice(1).some(({ word }) => !scalar(word));
+      return result;
+    }
+    for (const operand of operands.slice(1)) {
+      const word = operand.word, s = text(word);
+      if (!operand.afterDD && !scalar(word) && (!s || s.startsWith('\0') ||
+          s.startsWith('$') || s.startsWith('`') || word.dynamicMaySplit !== false)) unknown = true;
+      queryWords.push(word); // original producer range/provenance remains intact
+    }
+    fileSource = service;
+    return finish();
+  }
   if (invocation.name === 'ping' || invocation.name === 'ping6') {
     // iputils 20240117 and Apple network_cmds-606.140.1 have different option
     // grammars (-h/-t/-W in particular). Certify only the common finite roles.
@@ -4051,6 +4109,111 @@ function networkInvocation(invocation) {
   return ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet'].includes(invocation.name) ||
     (invocation.name === 'gh' && invocation.args[0] && invocation.args[0].text === 'gist');
 }
+
+// R49_LOGGER_ROLE_START — util-linux v2.41.2 selectors; no native transport attestation.
+/** Keep a consumed attached value's producer span while removing only its option prefix. */
+function loggerValueWord(word, offset) {
+  const literal = literalSourceWord(word);
+  return literal ? { ...literal, text: literal.text.slice(offset) } :
+    { ...word, text: (word.text || '').slice(offset), literalValue: undefined, outboundLiteralValue: undefined };
+}
+
+/** Separate logger's selected remote resolver, header, message and stdin/file roles. */
+function loggerRole(invocation) {
+  const result = { server: null, port: null, file: null, headerWords: [], messageWords: [],
+    terminal: false, noAct: false, journald: false, unknown: Boolean(invocation.incomplete) };
+  const words = invocation.args || [];
+  if (words.length > 96) { result.unknown = true; return result; }
+  const required = new Set(['file', 'priority', 'tag', 'socket', 'socket-errors', 'server', 'port',
+    'size', 'msgid', 'sd-id', 'sd-param']);
+  const optional = new Set(['id', 'rfc5424', 'journald']);
+  const flags = new Set(['stderr', 'no-act', 'udp', 'tcp', 'version', 'help', 'octet-count',
+    'prio-prefix', 'rfc3164', 'skip-empty']);
+  const names = [...required, ...optional, ...flags];
+  const shorts = { f: 'file', p: 'priority', S: 'size', t: 'tag', u: 'socket', n: 'server', P: 'port' };
+  const shortFlags = { e: 'skip-empty', i: 'pid', s: 'stderr', d: 'udp', T: 'tcp', V: 'version', h: 'help' };
+  const headers = new Map(), structured = [];
+  const literal = word => literalSourceWord(word)?.text;
+  const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+  let afterDD = false, operandSeen = false;
+  const select = (name, value) => {
+    if (required.has(name) && !value) result.unknown = true;
+    if (value?.dynamicMaySplit || value?.ansiCUnknown) result.unknown = true;
+    if (name === 'server' || name === 'port' || name === 'file') result[name] = value || null;
+    else if (['tag', 'msgid', 'id'].includes(name)) headers.set(name, value);
+    else if (name === 'pid') headers.delete('id');
+    else if (name === 'sd-id' || name === 'sd-param') structured.push(value);
+    else if (name === 'no-act') result.noAct = true;
+    else if (name === 'journald') result.journald = true;
+    else if (name === 'help' || name === 'version') result.terminal = true;
+    // These values select numeric/format parsing, not raw outgoing message bytes.
+    else if (value && !literalSourceWord(value)) result.unknown = true;
+  };
+  for (let k = 0; k < words.length; k++) {
+    const word = words[k], known = literalSourceWord(word), text = known?.text ?? word.text;
+    if (afterDD || posix && operandSeen) { result.messageWords.push(word); continue; }
+    if (known && text === '--') { afterDD = true; continue; }
+    if (text.startsWith('-') && text !== '-') {
+      if (operandSeen && invocation.outboundEnvironmentUnknown) result.unknown = true;
+      if (text.startsWith('--')) {
+        const eq = text.indexOf('='), key = text.slice(2, eq < 0 ? undefined : eq);
+        const matches = names.filter(name => name === key || name.startsWith(key));
+        const name = names.includes(key) ? key : matches.length === 1 ? matches[0] : null;
+        // A fixed option prefix may carry a generated scalar value; a generated option name cannot.
+        if (!name || !known && (eq < 0 || word.dynamicMaySplit !== false ||
+            word.ansiCUnknown || word.globExpanded || word.braceExpanded || word.tildeExpanded)) {
+          result.unknown = true; break;
+        }
+        if (flags.has(name) && eq >= 0) { result.unknown = true; break; }
+        const value = eq >= 0 ? loggerValueWord(word, eq + 1) : required.has(name) ? words[++k] : null;
+        select(name, value);
+      } else {
+        if (!known && (word.dynamicMaySplit !== false || word.ansiCUnknown ||
+            word.globExpanded || word.braceExpanded || word.tildeExpanded)) { result.unknown = true; break; }
+        for (let j = 1; j < text.length; j++) {
+          const name = shorts[text[j]] || shortFlags[text[j]];
+          if (!name) { result.unknown = true; break; }
+          if (shorts[text[j]]) {
+            select(name, j + 1 < text.length ? loggerValueWord(word, j + 1) : words[++k]);
+            break;
+          }
+          select(name, null);
+          if (result.terminal) break;
+        }
+      }
+      if (result.terminal) break;
+      continue;
+    }
+    // Before --, a generated leading byte can become an option after shell expansion.
+    if (!known && (!text || /^[\0$`]/.test(text) || word.dynamicMaySplit !== false)) result.unknown = true;
+    operandSeen = true;
+    result.messageWords.push(word);
+  }
+  result.headerWords = [...headers.values()].filter(Boolean).concat(structured);
+  return result;
+}
+
+/** Check only selected logger network DATA; local logging is not a blanket remote sink. */
+function loggerOutboundVerdict(invocation) {
+  if (invocation.name !== 'logger' || invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
+  const role = loggerRole(invocation);
+  if (role.unknown || untrustedClientExecution(invocation, 'logger')) return 'UNKNOWN';
+  if (role.terminal || role.journald || !role.server) return false;
+  // --no-act skips message writes, but logger_open still resolves/connects to the server.
+  const destination = outboundPayloadVerdict(invocation, [role.server, role.port].filter(Boolean));
+  if (destination || role.noAct) return destination;
+  const payload = outboundPayloadVerdict(invocation, role.headerWords.concat(role.messageWords));
+  if (payload) return payload;
+  // Operands override an earlier -f: the file was opened during getopt, but is not the payload.
+  if (role.messageWords.length) return false;
+  if (role.file) {
+    const file = literalSourceWord(role.file);
+    if (!file) return 'UNKNOWN';
+    return file.text === '/dev/null' ? false : contextualVerdict(invocation, 'FORBIDDEN');
+  }
+  return requestDataStdinVerdict(invocation, invocationSources.get(invocation) || []);
+}
+// R49_LOGGER_ROLE_END
 
 /** Bounded GH writes share file/stdin payload roles while keeping literal option values as DATA. */
 function ghFilePayload(invocation) {
@@ -6571,6 +6734,8 @@ if (parsedWords.some((word) => SECRET_LITERALS.some((pattern) => pattern.test(wo
 }
 const directDnsResolverVerdicts = invocations.map(directDnsResolverVerdict);
 if (directDnsResolverVerdicts.includes('FORBIDDEN')) deny('DNS query / selected resolver DATA の生成元が、禁止された secret filename operand に当たります。native DNS・label format・実送信は確認していません。', 'FORBIDDEN');
+const loggerOutboundVerdicts = invocations.map(loggerOutboundVerdict);
+if (loggerOutboundVerdicts.includes('FORBIDDEN')) deny('logger の選択された remote file payload または server/service/header/message/stdin DATA の生成元が既存の禁止形式に当たります。native resolver・syslog形式・権限・実送信は確認していません。', 'FORBIDDEN');
 const selectedResolverDataVerdicts = invocations.map(invocation =>
   invocation.name === 'ssh-keyscan' ? sshKeyscanResolverVerdict(invocation, invocations) :
   invocation.name === 'wget' ? wgetBindResolverVerdict(invocation) : false);
@@ -6840,6 +7005,11 @@ if (invocations.some(ncatCredentialSourceVerdict)) {
 // The new SSH compatibility-name uncertainty follows all independent existing refusals.
 if (invocations.some(invocation => deferSloginUnknown.pending?.has(invocation))) {
   deny('slogin が選ぶ SSH config / helper / authentication / DATA / stdin / 実行 identity・argv/context を確定できません。同じ program・操作・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+// Only the new logger uncertainty follows all independent existing refusals.
+if (loggerOutboundVerdicts.some(Boolean)) {
+  deny('logger の選択された remote resolver / header / message / file・stdin の source、option/値/operand 境界または実行 context を確定できません。同じ log destination・入力・版/backend・cwd/env/source を保つ対応形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

@@ -20,6 +20,31 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R49:CONTRACT:BEGIN -->
+
+<a id="r49-current-contract"></a>
+
+## R49: getent host keyとremote loggerの有限契約
+
+公開基点head `30c3616656079b36d1cb68ec68016cdbf0442423` のfresh Codex review5564628944による2件を修復する。2026-10-19の作業中の契約であり、修正候補の全件成功・新head CI・新しい両fresh reviewは測定後に別途記録する。R48はCI/説明の5ファイルだけを変更し、2件のexact Hook DATAは依頼前`df463a91`・base`ae10261`・公開基点`30c3616`でいずれも全3HookがALLOWだった。既存不足の比較結果と、修正後の停止・native成立を混同しない。
+
+| 対象・固定consumer | 判定と選択条件 | 正常対照・通常利用への費用 | 修復受入と未確認条件 |
+| --- | --- | --- | --- |
+| glibc2.42 `getent`の`hosts`/`ahosts`/`ahostsv4`/`ahostsv6` | database/keyと値付きservice option、`--`、実queryを分け、選択keyの元の語を既存payload判定へ渡す。秘密producerが確定したkeyはFORBIDDEN。未知database/option/語数・先頭byte・source/contextはUNKNOWN。明示serviceによるNSS選択をDNS無効化の証明へ昇格しない。non-host databaseでも明示serviceや未確定keyはNSS consumerを確認できないためUNKNOWNとする。 | ordinary host/IP、defaultの既知non-host databaseとstatic ordinary key、実help/version、消費されたoption値、印字DATA、捨てた無関係readerを保持する。正当なcustom NSS/serviceや未解決keyもUNKNOWNになり得る。non-hostはhost resolver roleが非選択という意味で、processがquery終了した意味ではない。 | 元exactをegress自身が止め、`--`等で境界を固定した秘密keyとordinary対照を別に検査する。登録だけを外すreverseで効果を測る。NSS構成がDNSへ到達すること、有効なlabel/hostname、binary/backend・実通信は未確認。key無しenumerationも含め、任意NSS処理全体を認定しない。 |
+| util-linux2.41.2 `logger`の明示server/service resolverとremote payload | 選択されたserver/portはresolver DATA。headerとmessageは語の生成元、message無し時のfile/stdinは選択inputで検査する。file uploadは既存policyに従いFORBIDDEN、`/dev/null`は空source対照。秘密由来の選択DATAはFORBIDDEN、不明なsource/argv/contextはUNKNOWN。 | local logging/local socketのみ、static ordinary remote message、ordinary printf pipeline、actual query、消費DATA、無関係readerを保持する。unobserved remote stdinや正当な未検査fileは停止する。fileの内容が通常名であってもfile-backed送信を自動許可しない。 | 元exactのown-egress FORBIDDEN、正常対照、logger dispatchだけを外すreverseを検査する。syslog形式、実binary/backend、socket/権限、server受入・実送信、local daemonによる別途forwardingは未確認で、Hook停止をnative成立証明にしない。 |
+
+`logger`はserver指定がUnix socket指定より優先する。後続のmessage operandがある場合、先行`-f`はparse中にopenされても送信内容としては無視される。`--no-act`は本文writeを止めるが、`logger_open`のserver名前解決・接続を止めない。journald modeはremote open前にlocal処理へ進む。これらを全logger/全fileの一律禁止や、全通信が無いという証明へ置き換えない。
+
+GNU option permutationと、`POSIXLY_CORRECT`の存在によるfirst-operand stopを区別する。値として消費された`--help`、`--`後のDATA、未確定の並びを真正queryと扱わない。未知のoption/arityを推測して後続語を捨てない。
+
+新しいUNKNOWNは既存の独立したFORBIDDENを隠さない位置で評価する。R49のcomponent testは下記R48で導入したglobへ自動的に入り、R48の「24ファイル」はその当時のsnapshotである。元8,696定義とoracleは変更せず、新しいrole/Hook DATA対照と単一edgeのreverseを別に記録する。
+
+一次consumerは[glibc2.42 getent.c](https://github.com/bminor/glibc/blob/glibc-2.42/nss/getent.c)、[NSS databasesの公式説明](https://sourceware.org/glibc/manual/latest/html_node/Name-Service-Switch.html)、[util-linux2.41.2 logger.c](https://github.com/util-linux/util-linux/blob/v2.41.2/misc-utils/logger.c)・[logger manual](https://github.com/util-linux/util-linux/blob/v2.41.2/misc-utils/logger.1.adoc)、[glibc2.41 getopt.c](https://github.com/bminor/glibc/blob/glibc-2.41/posix/getopt.c)で固定する。取得raw/hashとread failureは私有監査記録へ残し、現在hostや全独自backendの認定へ持ち越さない。
+
+同じoperation・database/NSS又はlog destination・入力内容・版/backend・cwd/env/sourceを保つ対応形式だけを代替候補とする。resolverを別の接続方法へ変える、remoteをlocalへ変える、必要inputを消す、別場所へcopyする、Hookを止めることを自動承認済みの出口にしない。対応形式が確認できなければ、対象・目的とUNKNOWNの不足条件をownerへ提示する。
+
+<!-- PR191:R49:CONTRACT:END -->
+
 <!-- PR191:R48:CI-CONTRACT:BEGIN -->
 
 <a id="r48-ci-contract"></a>

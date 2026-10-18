@@ -1,5 +1,13 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R49:LAYERS:BEGIN -->
+
+## R49: 名前解決とremote logの選択DATA
+
+公開基点`30c3616`への新2指摘は、未分類の`getent` host keyと明示remote `logger`の送信元を扱う。[R49の有限契約](git-command-guards.md#r49-current-contract)に従い、argvの役割と同じ語/選択stdinの生成元を接続する。local logger、ordinary remote message、実query、消費DATA、無関係readerを対照として残す。Hookが停止することと、NSS/DNS・syslog形式・backend・認証/権限・実接続が成立することは別欄で扱い、新sourceの全件・CI・review完了を先取りしない。
+
+<!-- PR191:R49:LAYERS:END -->
+
 <!-- PR191:R48:LAYERS:BEGIN -->
 
 ## R48: 検証を必須CIへ結び付ける層
