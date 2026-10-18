@@ -28,6 +28,12 @@ function unknown(command) {
   assert.equal(i.shadowGroupLauncherRoles.at(-1).mode, 'unknown', command);
   return i.shadowGroupLauncherRoles.at(-1);
 }
+function copyHooksWithoutTests(source, destination) {
+  fs.cpSync(source, destination, { recursive: true, filter: file => {
+    const relative = path.relative(source, file);
+    return relative !== 'tests' && !relative.startsWith('tests' + path.sep);
+  } });
+}
 test('exact review selects a shadow sg source without certifying group or compiled shell', () => {
   const r = unknown(witness);
   assert.equal(r.backend, 'shadow-utils-4.13');
@@ -135,6 +141,30 @@ test('removing the single sg registry edge restores the exact parser gap', () =>
   assert.equal(p.invocations.at(-1).shadowGroupLauncherRoles.length, 0);
   assert.ok(m.exports.inspect('newgrp root', options).invocations.at(-1).shadowGroupLauncherRoles.length);
 });
+test('edge-off copy excludes only root tests in tests-prefixed checkouts', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r45-shadow-copy-'));
+  const kept = {
+    'block-secret-egress.cjs': 'DUMMY hook\n',
+    'lib/git-guard-common.cjs': 'DUMMY common\n',
+    'tests-prefix/kept.cjs': 'DUMMY prefixed sibling\n',
+    'lib/tests/kept.cjs': 'DUMMY nested tests\n',
+  };
+  try {
+    for (const ancestor of ['tests', 'tests-prefix']) {
+      const source = path.join(root, ancestor, 'checkout', '.claude', 'hooks');
+      const destination = path.join(root, ancestor + '-off');
+      for (const [relative, data] of [...Object.entries(kept), ['tests/excluded.test.cjs', 'DUMMY excluded\n']]) {
+        const file = path.join(source, relative);
+        fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, data);
+      }
+      copyHooksWithoutTests(source, destination);
+      for (const [relative, data] of Object.entries(kept)) {
+        assert.equal(fs.readFileSync(path.join(destination, relative), 'utf8'), data);
+      }
+      assert.equal(fs.existsSync(path.join(destination, 'tests')), false);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 test('owned Hook DATA enforces the exact witness in egress, preserves normal identity and independent FORBIDDEN', t => {
   const { HOOKS, isolatedEnv, runCase } = require(path.join(hooks, 'tests/git-guards.test.cjs'));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r44-shadow-group-hook-'));
@@ -172,7 +202,7 @@ test('owned Hook DATA enforces the exact witness in egress, preserves normal ide
     }
     for (const [command, expected] of rows) run(hooks, command, expected);
     const off = path.join(root, 'sg-edge-off');
-    fs.cpSync(hooks, off, { recursive: true, filter: file => !file.includes(path.sep + 'tests') });
+    copyHooksWithoutTests(hooks, off);
     const offCommon = path.join(off, 'lib/git-guard-common.cjs');
     const source = fs.readFileSync(offCommon, 'utf8');
     const edge = "  sg: (rest, info) => shadowGroupArgs(rest, info, 'sg'),\n";
