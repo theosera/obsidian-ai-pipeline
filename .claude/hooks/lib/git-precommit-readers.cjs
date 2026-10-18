@@ -8,8 +8,8 @@ const path = require('node:path');
 const { spawnSync, execFileSync } = require('node:child_process');
 const guard = require('./git-guard-common.cjs');
 
-const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath)|pager\\..*|diff\\.(external|.*\\.(command|textconv))|trace2\\.(normal|event|perf)target|hook\\..*\\.(event|enabled)|log\\.showsignature|format\\.pretty|pretty\\..*|branch\\.sort|includeif\\..*\\.path)$';
-const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath)|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|trace2\.(?:normal|event|perf)target|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|branch\.sort|includeif\..+\.path)$/i;
+const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand)|credential(\\..*)?\\.helper|pager\\..*|diff\\.(external|.*\\.(command|textconv))|trace2\\.(normal|event|perf)target|hook\\..*\\.(event|enabled)|log\\.showsignature|format\\.pretty|pretty\\..*|branch\\.sort|includeif\\..*\\.path)$';
+const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath|askpass|sshcommand)|credential(?:\..*)?\.helper|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|trace2\.(?:normal|event|perf)target|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|branch\.sort|includeif\..+\.path)$/i;
 const SIGNATURE_READERS = new Set(['log', 'show', 'whatchanged', 'rev-list']);
 const R41_CONFIG_KEY = /^(?:core\.hookspath|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|branch\.sort)$/i;
 const DEFAULT_PAGED = new Set(['diff', 'log', 'show', 'branch', 'shortlog', 'blame', 'grep', 'whatchanged', 'reflog']);
@@ -36,7 +36,7 @@ function safeInspectionEnvironment(environment) {
     if (/^GIT_TRACE/.test(name)) {
       if (value !== '' && value !== '0' && !(/^GIT_TRACE2(?:_EVENT|_PERF)?$/.test(name) && /^false$/i.test(value))) return null;
       delete result[name];
-    } else if (INSPECTION_IRRELEVANT_GIT_ENV.test(name)) {
+    } else if (INSPECTION_IRRELEVANT_GIT_ENV.test(name) || name === 'SSH_ASKPASS') {
       delete result[name]; // inspection-only: selected actual-command values remain untouched
     } else if (/^GIT_/.test(name) && !SAFE_GIT_ENV.test(name)) return null;
   }
@@ -362,6 +362,8 @@ function targetGlobals(g, invocation, fixedCommitUsageConsumer = false) {
     const key = value.split('=', 1)[0].toLowerCase();
     if (!/^[a-z][a-z0-9-]*(?:\.[^\s=\0]+)+$/.test(key)) return null;
     if (/^(?:include(?:if)?\.|remote\..*\.url$|safe\.|extensions\.)/.test(key)) return null;
+    if (['core.askpass', 'core.sshcommand'].includes(key)) return null;
+    if (/^credential(?:\..*)?\.helper$/.test(key)) return [];
     if (CONFIG_KEY.test(key)) return ['-c', value]; // preserve the helper selection and its order
     if (/^core\./.test(key)) return null;
     // Only this exact commit usage on the fixed consumer exits before its
@@ -450,16 +452,19 @@ function parseConfigOutput(output) {
   const fields = text ? text.slice(0, -1).split('\0') : [];
   if (fields.length % 2) return null;
   const trace2 = new Map();
+  const credentialHelperRecords = [];
   let earlyConditional = false, pagerConditional = false;
   for (let i = 0; i < fields.length; i += 2) {
     const scope = fields[i], record = fields[i + 1];
     if (!['system', 'global', 'local', 'worktree', 'command'].includes(scope)) return null;
     const lf = record.indexOf('\n');
     if (lf < 1) return null;
-    const key = record.slice(0, lf).toLowerCase();
+    const rawKey = record.slice(0, lf), key = rawKey.toLowerCase();
     if (!CONFIG_KEY.test(key)) return null;
     const value = record.slice(lf + 1);
     entries.set(key, value);
+    const credential = /^credential(?:\.(.*))?\.helper$/i.exec(rawKey);
+    if (credential) credentialHelperRecords.push({ scope, rawKey, value, subsection: credential[1] ?? null });
     if (key === 'branch.sort') branchSort.push(value);
     const hookEvent = /^hook\.(.+)\.event$/i.exec(record.slice(0, lf));
     const hookEnabled = /^hook\.(.+)\.enabled$/i.exec(record.slice(0, lf));
@@ -478,6 +483,7 @@ function parseConfigOutput(output) {
   Object.defineProperty(entries, 'trace2EarlySources', { value: trace2 });
   Object.defineProperty(entries, 'earlyConditionalSource', { value: earlyConditional });
   Object.defineProperty(entries, 'pagerConditionalSource', { value: pagerConditional });
+  Object.defineProperty(entries, 'credentialHelperRecords', { value: credentialHelperRecords });
   return entries;
 }
 
@@ -593,6 +599,27 @@ function nonLogSignatureSource(g, config) {
   return null;
 }
 
+/** Preserve Git's source presence priority; an empty higher command still shadows lower sources. */
+function selectedSSHProgram(environment, config) {
+  if (environment.has('GIT_SSH_COMMAND')) return { kind: 'env', name: 'GIT_SSH_COMMAND', value: environment.get('GIT_SSH_COMMAND') };
+  if (config.has('core.sshcommand')) return { kind: 'config', value: config.get('core.sshcommand') };
+  return environment.has('GIT_SSH') ? { kind: 'env', name: 'GIT_SSH', value: environment.get('GIT_SSH') } : null;
+}
+
+/** URL matching is unproved here; only the same original subsection can reset its candidates. */
+function credentialHelperSource(config) {
+  if (!Array.isArray(config.credentialHelperRecords)) {
+    return [...config.keys()].some(key => /^credential(?:\..*)?\.helper$/i.test(key));
+  }
+  let selected = [];
+  for (const record of config.credentialHelperRecords) {
+    if (record.value !== '') selected.push(record);
+    else if (record.subsection === null) selected = [];
+    else selected = selected.filter(previous => previous.subsection !== record.subsection);
+  }
+  return selected.length !== 0;
+}
+
 /** Select active helper roles, not raw helper command strings. */
 function selectedHelper(role, g, environment, config, baseline = process.env) {
   const traceNames = ['GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF'];
@@ -606,11 +633,17 @@ function selectedHelper(role, g, environment, config, baseline = process.env) {
   }
   // Object/index readers can lazily fetch missing promisor objects, including
   // through another repository. Their bounded probe does not prove transport
-  // inactivity. Preserve inherited selections; qualify command-selected ones.
+  // inactivity. Inheritance or baseline equality is not proof that a program is inactive.
   if (!role.query && (role.index || DIFF_READERS.has(g.sub) || ['branch', 'shortlog', 'reflog'].includes(g.sub))) {
-    for (const name of ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_ASKPASS']) {
+    for (const name of ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_ASKPASS', 'SSH_ASKPASS']) {
       if (environment.has(name) && environment.get(name) !== baseline[name]) return 'command-selected-transport';
     }
+    const ssh = selectedSSHProgram(environment, config);
+    const inheritedProgram = name => environment.get(name) && environment.get(name) === baseline[name];
+    if (ssh?.kind === 'config' && ssh.value) return 'configured-ssh-command';
+    if (ssh?.kind === 'env' && inheritedProgram(ssh.name) || inheritedProgram('GIT_ASKPASS') || inheritedProgram('SSH_ASKPASS')) return 'inherited-transport-program';
+    if (!environment.has('GIT_ASKPASS') && config.get('core.askpass')) return 'configured-askpass';
+    if (credentialHelperSource(config)) return 'credential-helper';
   }
   const nonLog = !role.query && nonLogSignatureSource(g, config);
   if (nonLog) return nonLog;

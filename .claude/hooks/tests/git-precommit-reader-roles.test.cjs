@@ -290,8 +290,12 @@ test('absent status1 differs from timeout/error/partial data and malformed frami
   for (const response of [{ status: 2 }, { status: 1, stdout: Buffer.from('partial') }, { status: null, signal: 'SIGTERM' }, { status: 0, error: new Error('timeout') }]) {
     assert.equal(readers.probeConfig(ctx, () => response), null);
   }
-  for (const output of ['local\0core.fsmonitor\nfalse', 'local\0core.fsmonitor\0', 'local\0credential.helper\nDUMMY\0',
+  for (const output of ['local\0core.fsmonitor\nfalse', 'local\0core.fsmonitor\0', 'local\0credential.username\nDUMMY\0',
     'local\0core.fsmonitor\nfalse\0\0', 'unproved\0core.fsmonitor\nfalse\0']) assert.equal(readers.parseConfigOutput(output), null);
+  // credential.helper is now an observed source; retaining it must reach UNKNOWN.
+  const credential = readers.parseConfigOutput('local\0credential.helper\nDUMMY\0');
+  assert.equal(credential.get('credential.helper'), 'DUMMY');
+  assert.equal(category(assess(fixture('status'), [], { probe: () => credential })), 'UNKNOWN');
   assert.equal(readers.parseConfigOutput(Buffer.from([0xff, 0])), null);
 });
 test('private helper values do not enter reasons; repeated keys keep last effective selection', () => {

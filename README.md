@@ -18,6 +18,20 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R43:README:BEGIN -->
+
+### R43: 継承programと設定fallbackを含むreader sourceの有限契約
+
+**実装作業中・受入PENDINGのcut**。2026-10-18 09:24:37 JSTのdocs cutは、公開基点head `5c570d221b958dc212ac13e435d980d5f3d46080` に対する未commitのR43実装作業中candidateを対象とする。同headのCodeRabbit full5560708937は08:58:21 JST、Codex full5560746096は09:11:26 JSTに正常完了した。09:14:01.793 JST取得の全212threadは未解決3件（CR4305046733、Codex4305081716・4305081722）である。新R43 sourceの最終全件、新公開head／同head CI／両fresh fullと全指摘処理はPENDINGで、件数を予測しない。
+
+[R43の現在契約・通常費用・同目的の出口](docs/security/git-command-guards.md#r43-current-contract)へ集約する。SSH_ASKPASSのlate env projection・選択判定・own検査copyの3境界に加え、先行する非queryのobject/index-capable readerで、実効非空program4種と`core.askPass`／`core.sshCommand`／順序付き`credential.helper`を扱う。**継承／baseline同値だけでは非空helperを免除しない**。これは旧R43 v1/v2の免除方針からの意図した契約変更で、旧期待・理由はprivate backupへ保持する。
+
+正当な継承helperやrepository/global設定を使うlocal readerとcommitの連結もUNKNOWNで止まり得る。inherited `GIT_SSH_VARIANT`自体や空programだけに新UNKNOWNを加えず、既存changed-selectorのUNKNOWNは緩めない。readerとcommitを分けるのは意味・条件を保ち後commitを再検査できる場合だけとし、必要helperの削除を同目的の代替にしない。actual selected Map、own検査専用no-lazy-fetch hardening、既存egress UNKNOWNと独立FORBIDDENを維持し、native helper／認証／fetch／networkや新L3の成立は主張しない。
+
+以下のR42以前の本文・結果・「現在/current」は各取得日時とsourceの履歴として全文を保持し、当時の継承免除を新R43契約へ読み替えない。
+
+<!-- PR191:R43:README:END -->
+
 <!-- PR191:R42:README:BEGIN -->
 
 ### R42: 選択source・署名consumer・run0の追加境界

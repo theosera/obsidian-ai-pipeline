@@ -2240,7 +2240,7 @@ const trackedValueEnvironment = name => TRACKED_VALUE_ENV.has(name) || /^GIT_CON
 const gitConfigurationEnvironment = name => GIT_CONFIG_SOURCE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 /** Selected environment for a late pre-commit reader check; opt-in, never an outbound-value proof. */
 const gitPreCommitEnvironmentName = name => typeof name === 'string' && !/[=\0]/.test(name) &&
-  (/^GIT_/.test(name) || ['HOME', 'XDG_CONFIG_HOME', 'PAGER', 'PATH'].includes(name));
+  (/^GIT_/.test(name) || ['HOME', 'XDG_CONFIG_HOME', 'PAGER', 'PATH', 'SSH_ASKPASS'].includes(name));
 /** A stored shell value enters a child environment only with a selected export attribute. */
 function identityEnvironmentSources(state) {
   return new Map([...state.identitySources].flatMap(([name, word]) => {

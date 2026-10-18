@@ -96,6 +96,20 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R43:PLAYBOOK:BEGIN -->
+
+### R43: 実効programを継承値の一致だけで免除しない
+
+**実装作業中・受入PENDINGのcut**。2026-10-18 09:24:37 JSTのdocs cutは、公開基点head `5c570d221b958dc212ac13e435d980d5f3d46080` に対する未commitのR43実装作業中candidateを対象とする。同headのCodeRabbit full5560708937は08:58:21 JST、Codex full5560746096は09:11:26 JSTに正常完了した。09:14:01.793 JST取得の全212threadは未解決3件（CR4305046733、Codex4305081716・4305081722）である。新R43 sourceの最終全件、新公開head／同head CI／両fresh fullと全指摘処理はPENDINGで、件数を予測しない。
+
+[R43の現在契約・source優先順・通常費用と出口](docs/security/git-command-guards.md#r43-current-contract)を参照する。既存capability条件を満たす非queryのcommit前readerだけで、非空の`GIT_SSH_COMMAND`／`GIT_SSH`／`GIT_ASKPASS`／`SSH_ASKPASS`と設定fallbackを有限に確認する。継承／baseline同値でもsource不活性の証拠にはしない。SSH programはpointerの存在と優先順位を保ち、Git askpassのshadowでnative SSHのaskpass consumerまで消えたと扱わない。`core.sshCommand`と`credential.helper`もprobe→parse→gateまで保持する。
+
+credentialは順序・empty reset・URL subsection原綴りを保持し、targetが未確定の非空候補を非選択と推測しない。inherited variant自体／空programだけへの新UNKNOWNは加えず、changed envの既存UNKNOWN、exact inline core.askPass＋commit -hの既存UNKNOWN、独立FORBIDDENと既存EG UNKNOWNを維持する。actual selected Mapは保持し、own検査copyのprogram除去・no-lazy-fetchを実行予定readerのsource安全性へ流用しない。
+
+旧R43 v1/v2の継承免除はprivate backupへ残し、新しい非空inherited/equal対照のALLOW→UNKNOWNを意図した契約変更として旧期待・理由付きで記録する。必要helperを外して同目的とせず、意味・対象・mode・cwd/env/config/auth条件を保つ分割と後commit再検査、またはowner確認へ進む。以下のR42以前は本文・数値・日時を保持した履歴である。
+
+<!-- PR191:R43:PLAYBOOK:END -->
+
 <!-- PR191:R42:PLAYBOOK:BEGIN -->
 
 ### R42: selected sourceとown inspectionを分ける

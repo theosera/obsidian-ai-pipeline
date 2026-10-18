@@ -20,6 +20,56 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R43:CONTRACT:BEGIN -->
+
+<a id="r43-current-contract"></a>
+
+## R43: 継承program・設定fallback・順序付きcredentialの有限契約
+
+**実装作業中・受入PENDINGのcut**。2026-10-18 09:24:37 JSTのdocs cutは、公開基点head `5c570d221b958dc212ac13e435d980d5f3d46080` に対する未commitのR43実装作業中candidateを対象とする。同headのCodeRabbit full5560708937は08:58:21 JST、Codex full5560746096は09:11:26 JSTに正常完了した。09:14:01.793 JST取得の全212threadは未解決3件（CR4305046733、Codex4305081716・4305081722）である。新R43 sourceの最終全件、新公開head／同head CI／両fresh fullと全指摘処理はPENDINGで、件数を予測しない。Codex依頼comment6243331421のGitHub createdAtは08:48:59 JSTで、正常完了まで22分27秒である。4305081716はSSH_ASKPASSの同種指摘、4305081722はinherited `GIT_SSH_COMMAND`をbaseline一致だけで免除する不足であり、公開threadの説明・解決は実装修復やレビュー正常完了と別に扱う。
+
+### 旧方針との差とbefore証拠
+
+旧R43 v1/v2はenvの継承／baseline同値を追加gateの非適用対照としていた。その未公開4docs全文・節はprivate backupへ保持する。新しい契約は、**有効な非空programが継承値やbaselineと同値でもUNKNOWNにする**。継承だからsourceが安全・不活性とは判断しない。元のinherited/equal ALLOW期待と理由を残し、新UNKNOWNは意図した通常費用の変更として記録する。元8696のbank・期待を黙って再採点しない。
+
+修復前SSH envの20tuples／3source／180 Hook DATAでは全ownHook署名が旧2f／157c／5cで同一で、changed prefix／envの通過とlate projection欠落を観測した。core.askPassの別12tuple／4source／144 DATAではstatus・cat-fileのcore witnessが全4版3Hook ALLOWだったが、inherited GIT_ASKPASS empty/program shadowの2行には旧2f SG UNKNOWN→後続ALLOWの差があり、全12行同一とはしない。
+
+後着2P1のbeforeは25tuple×4source×3Hook＝300 Hook DATA、pure metadata152、broken0である。exact SSH_ASKPASS findingは旧2f／157c／5cの3Hook ALLOWからcore v2修復のown SG UNKNOWNとなった。exact `git diff; git commit`にDUMMY inherited GIT_SSH_COMMANDを与えた対照では、旧2f own SG UNKNOWN→157c／5c／core v2 own SG ALLOWで、EGの既存UNKNOWNは別に残る。旧UNKNOWNはown inspectionの偶発的制限であり、実行予定readerのhelper sourceを確認した証拠ではない。inherited SSH_ASKPASSの通過は旧2fにも存在した。
+
+core.sshCommand／credential.helperの別beforeは19tuple×4source×3Hook＝228 DATA、broken0で、非空configのstatus・cat-file witnessは全4版3Hook ALLOWだった。実late queryにkeyがなく、synthetic Mapだけを与えてもconsumerがない不足である。unsupported raw keyをparserが拒否してUNKNOWNにする経路と、実queryがkeyを取り落としてALLOWになる経路を混同しない。300／152／228はbefore証拠で、修復後の件数やnative helper実行回数へ加算しない。全19署名の同一も主張しない。
+
+### 固定consumerとsource優先順位
+
+| consumer | 一次根拠と有限な選択条件 | 混同しない境界 |
+| --- | --- | --- |
+| Git SSH program | Git2.54 [`connect.c`](https://github.com/git/git/blob/v2.54.0/connect.c#L1155)は存在するGIT_SSH_COMMAND、次にcore.sshCommandを選び、いずれも未設定なら[`GIT_SSH`、既定ssh](https://github.com/git/git/blob/v2.54.0/connect.c#L1382)へ進む。存在する空文字と未設定を分け、shadowされた下位programを選択済みとしない。 | GIT_SSH_VARIANTはoption／implementation familyでありprogramそのものではない。空SSH commandのnative不活性をこのsourceだけで証明せず、今回の新非空program gateと既存changed-selector判定を分ける。 |
+| Git askpass | Git2.54 [`prompt.c`](https://github.com/git/git/blob/v2.54.0/prompt.c#L44)のPROMPT_ASKPASS経路では、存在するGIT_ASKPASS（空値を含む）、core.askPass由来askpass_program、SSH_ASKPASSの順に未設定時fallbackを選ぶ。[`environment.c`](https://github.com/git/git/blob/v2.54.0/environment.c#L466)と[core設定契約](https://github.com/git/git/blob/v2.54.0/Documentation/config/core.adoc#L496)へ結ぶ。 | 選択された非空programが実行条件で、存在する空GIT_ASKPASS／空coreも下位Git askpass fallbackをshadowする。helper失敗は下位programの再選択ではなくterminal経路へ進む。GIT_TERMINAL_PROMPT=0は後段terminalの抑止で、先行askpassの無効化ではない。 |
+| native SSH askpass | portable OpenSSH [`V_10_3_P1 readpass.c`](https://github.com/openssh/openssh-portable/blob/V_10_3_P1/readpass.c#L127)はDISPLAY／WAYLAND_DISPLAY／SSH_ASKPASS_REQUIREのactivation条件と、[SSH_ASKPASS program](https://github.com/openssh/openssh-portable/blob/V_10_3_P1/readpass.c#L172)を別に選ぶ。 | GitのGIT_ASKPASS／core.askPassによるshadowでnative SSHのconsumerまで消えたとは扱わない。現在のbounded DTOにactivation変数がないことも非選択の証明ではない。portable sourceはApple patch一致やnative activationの証明ではない。 |
+| Git credential helper | Git2.54 [`credential.c`](https://github.com/git/git/blob/v2.54.0/credential.c#L119)は複数helperを順序付きで保持しemptyでresetする。[helper実行consumer](https://github.com/git/git/blob/v2.54.0/credential.c#L484)と[設定契約](https://github.com/git/git/blob/v2.54.0/Documentation/config/credential.adoc)へ結ぶ。 | helper取得が必要な認証経路の実行条件であり、通常readerが必ず認証するという証明ではない。複数値・URL条件をMapのlast値へ潰して非選択と判断しない。 |
+
+### 進行中の修復契約・正常対照・通常費用
+
+適用は既存の順序確認とcapability条件を再利用し、同commandのcommitより前にある**非queryのobject/index-capable reader**へ限定する。全reader・standalone操作・全設定の一律拒否へ広げず、既存の確定FORBIDDENを新しいUNKNOWNで隠さない。
+
+| 境界 | R43の進行契約 | 正常対照・費用 |
+| --- | --- | --- |
+| SSH envの3境界と実効program | late env projectionにSSH_ASKPASSを保持し、実効program4種GIT_SSH_COMMAND／GIT_SSH／GIT_ASKPASS／SSH_ASKPASSをsource優先順とconsumer別に扱う。非空programには継承／baseline同値でも新UNKNOWNを要求し、program選択をown inspection copyの安全性へ委ねない。 | legitimate inherited helperを持つlocal status／diffとcommitも止まり得る。inherited GIT_SSH_VARIANT自体や空programだけに今回の新UNKNOWNを追加しない。changed variant／changed空値を含む既存changed-selector UNKNOWNは維持し、空programのnative不活性や全guard ALLOWは保証しない。 |
+| core.askPass／core.sshCommand | repository/globalの実効設定をbounded probe→parse→gateまで保持する。Git askpassとSSH programはそれぞれ存在／空値／優先順を区別し、選択された非空config programをUNKNOWNとする。 | envのbaseline一致はconfig全体の免除ではない。GIT_ASKPASSが存在すると新core askpass consumerはshadowされるが、その非空env program自身や独立native SSH consumerの確認は残る。exact inline core.askPass＋commit -hの既存UNKNOWNも維持する。 |
+| ordered credential.helper | bounded probeの実出力順でconfig scope・raw key・URL subsection原綴り・whole valueをparseへ保持する。generic（URL subsectionなし）のemptyは全先行候補をclearし、scoped emptyは同じsubsection原綴りの候補だけをclearする。残る非空候補はUNKNOWN対象にする。 | section／variable名だけcasefoldし、URLのpath／username等をlowercaseしない。残存URL-scoped非空候補はtarget一致が未確定でも非選択と推測せずUNKNOWN。ordered metadataのないMap-only helper keyはemptyでも履歴未証明としてUNKNOWNとし、空helperの実行を確認したという理由にはしない。full URL matchingや新familyへ広げない。 |
+| own inspection | 検査専用env copyからprogram sourceを除去し、actual selected Map／元envを保持する。GIT_NO_LAZY_FETCH=1、実argvの--no-lazy-fetch、trusted Gitの対応queryを継続する。 | own copyの抑止は実行予定readerのsource不在・不活性・無害認証ではない。per-config askpass resetを行ったとは主張せず、flag非対応backendや抑止下での欠落objectによる通常commit／staged scanのUNKNOWN費用も継続する。 |
+
+実unset／env -uによる選択解除、未使用local、真正query／config getter、commit後reader、programのないordinary baseline、空／variantだけの対照を別に保持する。固定Git2.54の既存exact commit-usage例外では、inline credential.helperの値を実行sourceとしてreplayせず、実commit -hの非選択を維持する。core.askPass／core.sshCommandの既存UNKNOWN境界とは区別する。queryの語が値slotやDATAにあるだけで免除せず、各consumerの実modeと順序を見る。新gateが非適用でも他source・既存EG UNKNOWN・独立FORBIDDENは解除しない。継承非空programの元ALLOWから新UNKNOWNへの変更を、旧期待を黙って再採点した成功と呼ばない。
+
+同じ対象・目的・mode・argv・cwd/env/config・認証sourceを保てる場合だけreaderとcommitを分け、後commitを新しいPreToolUseで再検査する。必要helperの除去・認証条件の変更・未知の実行sourceへの置換を同目的の代替とはしない。条件を保つ対応形式がなければownerへsource／contextとUNKNOWN理由を示す。
+
+### 証拠と受入の限界
+
+Hook DATAのown判定、pure metadata、固定consumer source、owned fixtureの診断、公開head CI、通常完了したfresh full reviewは別の証拠である。native helper／認証／fetch／network activationと新L3の成立は未証明で、提案reader／commit／helperはnative実行していない。own診断のsyscall traceや任意shell・全config・全Git版の安全認証も主張しない。追加L3は行わず、原FAIL／NOT_EXERCISEDを保持する。
+
+新sourceの最終全件、新公開headのrequired CI、同head両fresh full正常完了と全指摘処理、全thread unresolved0、全本文CASと公開後の別GET readbackをそれぞれ確認する。公開5cに対する両reviewの正常完了は、新R43 sourceのfresh受入ではない。merge／公開の承認をこの文書からは得られない。以下のR42以前の全文・順序・数値・「現在/current」は各取得日時とsourceの履歴であり、旧継承免除や成功・partialを新R43の契約・資格へ持ち越さない。
+
+<!-- PR191:R43:CONTRACT:END -->
+
 <!-- PR191:R42:CONTRACT:BEGIN -->
 
 <a id="r42-current-contract"></a>

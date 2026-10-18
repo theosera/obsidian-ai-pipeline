@@ -1,5 +1,19 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R43:LAYERS:BEGIN -->
+
+## R43: program選択と自前検査・native成立を分ける
+
+**実装作業中・受入PENDINGのcut**。2026-10-18 09:24:37 JSTのdocs cutは、公開基点head `5c570d221b958dc212ac13e435d980d5f3d46080` に対する未commitのR43実装作業中candidateを対象とする。同headのCodeRabbit full5560708937は08:58:21 JST、Codex full5560746096は09:11:26 JSTに正常完了した。09:14:01.793 JST取得の全212threadは未解決3件（CR4305046733、Codex4305081716・4305081722）である。新R43 sourceの最終全件、新公開head／同head CI／両fresh fullと全指摘処理はPENDINGで、件数を予測しない。
+
+[R43の現在契約・通常対照・費用・出口](git-command-guards.md#r43-current-contract)に、SSH_ASKPASSのenv3境界、継承／baseline同値を含む非空program4種、core.askPass／core.sshCommand／ordered credential.helperをまとめる。検査用copyでhelperを外せても、実行予定readerが継承helperを起動しない証拠にはならない。旧2fのinherited SSH command拒否はown inspectionの偶発的境界であり、後続sourceのALLOWや新sourceのUNKNOWNと、actual sourceの安全性を混同しない。
+
+旧R43 v1/v2の継承免除はprivate backupへ保持し、新たなUNKNOWN費用と旧期待の差を明示する。programとvariant、存在する空値と未設定、Git askpassとnative SSH askpass、credentialの順序／reset／URL条件を区別し、未確定targetを非選択と推測しない。既存changed-selector UNKNOWN・EG UNKNOWN・独立FORBIDDENは緩めず、actual selected Mapとown no-lazy-fetch hardeningを維持する。Hook DATAの停止、一次sourceの実行条件、native helper／認証／fetch／network成立は別の証拠で、新L3は行わない。
+
+以下のR42以前の全文・数値・原FAIL／NOT_EXERCISED・「現在/current」は各日時とsourceの履歴として保持し、R43の新しい受入や公開完了へ持ち越さない。
+
+<!-- PR191:R43:LAYERS:END -->
+
 <!-- PR191:R42:LAYERS:BEGIN -->
 
 ## R42: 追加consumer・own検査・反証の境界
