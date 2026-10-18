@@ -20,6 +20,46 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R44:CONTRACT:BEGIN -->
+
+<a id="r44-current-contract"></a>
+
+## R44: ordered proxy・複合empty consumer・sg/newgrpの有限契約
+
+**修復作業中・最終受入PENDINGのsnapshot**。2026-10-18 14:46:08 JST時点、公開基点head `533a48fb08e3f27c9821eb4e145c5dc683aca670` に対する未commitのR44 candidateを対象とする。同headのCodex full5561591680は14:29:13 JST、CodeRabbit full5561600706は14:33:08 JSTに正常完了したが、14:35:36.049 JST取得の全216threadは未解決4件（Codex4305869528・4305869532・4305869534、CR4305878612）。R43承認済み公開op01–09は完了、条件付きop10は未実施であり、このsnapshotでは新R44 sourceの最終件数・全件、新公開head／同headCI／両fresh reviewと全指摘処理は当時未取得・PENDINGである。
+
+### 選択sourceと通常操作の費用
+
+| 境界 | 有限に扱う条件・正常対照・通常費用 |
+| --- | --- |
+| ordered proxy | 既存のcommit前・非query object/index-capable readerで、`core.gitProxy`の順序付き候補・domain・first match・literal `none`をprobe→parse→consumerへ保持する。last Map値へ潰さず、未知のpromisor hostに対して到達し得るprogramが残ればUNKNOWN。通常local status/object readerでも正当なproxyを使うと止まり得る。present `GIT_PROXY_COMMAND`はemptyでもconfig familyをshadowするが、他helperを無効にした意味にはしない。 |
+| 複合empty shadow | Git askpassの実効選択がemptyで、選択SSH programもeffective emptyとなる両consumer条件が揃う場合だけ、当該inherited/baseline-equal `SSH_ASKPASS`のreader理由を非選択にする。既存trusted realpath/PATH同一性を満たすown inspectionが実取得したbanner `git version 2.54.0`とPOSIXのfixed-consumer資格に限定し、別版/未資格backendのcombined tupleはUNKNOWNを維持する。片方だけempty、changed-selector、他programや独立gateは解除しない。ownSG回復後も既存EG UNKNOWNが残り得るため、all3 ALLOW回復とは呼ばない。 |
+| sg/newgrp | pinned shadow-utils4.13のargv0/group/login/optional -c/command・selected shellを分ける。backend/group/auth/shell contextが未資格なら、ordinary printfもlocal UNKNOWN。source roleが読めることと、そのgroupやshellの実行資格は別である。追加egress UNKNOWNはlate metadataに保持し、独立FORBIDDENを優先する。 |
+
+proxyのactual selected DTO/configとown検査用copyは別に保持する。検査copyの`GIT_PROXY_COMMAND`除去やno-lazy-fetch hardeningを、実行予定readerのproxy不在・非活性の証明にしない。真正query/getter、commit後reader、無programの通常baselineを別に扱い、前段や独立source/context確認は維持する。`core.gitProxy`を追加しても既存exact commit -hのunsupported core UNKNOWNは変えず、既存credential noncore例外とも混同しない。
+
+### 固定consumerの範囲
+
+[Git2.54 connect.c](https://github.com/git/git/blob/v2.54.0/connect.c#L981)のproxyはordered/first-matchingのsourceで、promisor remote hostを未観測のまま後勝ち値だけで非選択とはしない。[prompt.c](https://github.com/git/git/blob/v2.54.0/prompt.c#L45)のaskpass shadowと[run-command.c](https://github.com/git/git/blob/v2.54.0/run-command.c#L288)のPOSIX empty dispatchは別consumerの条件として結合する。Git askpassがemptyであることだけでnative SSH側consumerの非活性を証明しない。
+
+複合empty例外の実取得banner＋POSIX資格は、この有限な許可側判定を固定primaryへ結び付ける条件である。同bannerの独自patch全動作、他Git版/Windowsのempty dispatch、全backendのnative成立を認定するものではない。未資格backendでは通常のcombined tupleにもUNKNOWN費用が残る。actual helper/auth/contextを変更して空値を作れば同目的になる、という代替は示さない。
+
+[shadow-utils4.13 src/newgrp.c](https://github.com/shadow-maint/shadow/blob/4.13/src/newgrp.c#L467)と[sg manual](https://github.com/shadow-maint/shadow/blob/4.13/man/sg.1.xml)／[newgrp manual](https://github.com/shadow-maint/shadow/blob/4.13/man/newgrp.1.xml)をgrammarの固定primaryとする。sgはgroup後のoptional -cが次wordを持つ場合にだけその次をcommand sourceとし、-c単独は文字列`-c`自体がsourceとなる。追加argvを連結して別commandにはしない。sgのgroupだけの形もdefault shell選択で、command無しをqueryとはしない。newgrpはgroup省略も含めselected shellのcontextを持ち、追加argvをchild commandとしない。
+
+pinned4.13は先頭exact `-`/`-l`をlogin modeとして消費する。専用の--help/-h/version実装を確認しておらず、その後のgroup位置に残るdash tokenやsgのgroup不足は子sourceを選ばない早期usage/errorとして区別する。これを真正help/queryや実backendの資格にはしない。外側の置換・redirection・独立FORBIDDEN、printed DATAや非実行definitionの既存roleは別に評価する。primary pinはlocalのshadow-utils版・build・PAM/NSS/group設定・shell同一性の実証ではない。
+
+### 同目的の出口と、公開受入の境界
+
+必要なproxy・group・認証・shellを外して同目的とはしない。同じ対象・操作・argv・cwd/env/config・source/contextを保つ対応形だけを選び、readerとcommitの分割は意味を保ち後commitを再検査できる場合に限る。条件を保てなければownerへsource/contextとUNKNOWN理由を示す。
+
+source/argv/context未確定は既存UNKNOWNのdeny wireで停止し、確認したpolicy違反のFORBIDDENと混同しない。新gateの非適用は他guardや独立sourceの安全認証ではない。提案reader・proxy・sg/newgrp・helper・認証・fetch/networkや新L3をnative実行したとは主張しない。
+
+新R44の固定source/最終全件、公開新headのrequired CI、同head両fresh full正常完了と新指摘処理、全thread unresolved0、事実に合う本文とwhole-body CAS/readbackは別に確認する。旧533aの両normal reviewやR43の全件/CI成功を新sourceへ持ち越さず、新R44公開packetのhead/各操作を固定してowner承認を受ける。旧R43条件付きop10や本文残り操作を新headへ転用しない。
+
+以下のR43以前のround節・日時・数値・旧「現在/current」は履歴として保持する。secret-guard-layersの旧解析noteにあるcurrent global pointerだけを最新R44へ更新する例外であり、dated round linkや旧QA結果を遡及改訂したものではない。
+
+<!-- PR191:R44:CONTRACT:END -->
+
 <!-- PR191:R43:CONTRACT:BEGIN -->
 
 <a id="r43-current-contract"></a>

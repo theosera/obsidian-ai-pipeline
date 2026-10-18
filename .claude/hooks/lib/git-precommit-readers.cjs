@@ -8,8 +8,8 @@ const path = require('node:path');
 const { spawnSync, execFileSync } = require('node:child_process');
 const guard = require('./git-guard-common.cjs');
 
-const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand)|credential(\\..*)?\\.helper|pager\\..*|diff\\.(external|.*\\.(command|textconv))|trace2\\.(normal|event|perf)target|hook\\..*\\.(event|enabled)|log\\.showsignature|format\\.pretty|pretty\\..*|branch\\.sort|includeif\\..*\\.path)$';
-const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath|askpass|sshcommand)|credential(?:\..*)?\.helper|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|trace2\.(?:normal|event|perf)target|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|branch\.sort|includeif\..+\.path)$/i;
+const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)|credential(\\..*)?\\.helper|pager\\..*|diff\\.(external|.*\\.(command|textconv))|trace2\\.(normal|event|perf)target|hook\\..*\\.(event|enabled)|log\\.showsignature|format\\.pretty|pretty\\..*|branch\\.sort|includeif\\..*\\.path)$';
+const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)|credential(?:\..*)?\.helper|pager\..+|diff\.(?:external|.+\.(?:command|textconv))|trace2\.(?:normal|event|perf)target|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|branch\.sort|includeif\..+\.path)$/i;
 const SIGNATURE_READERS = new Set(['log', 'show', 'whatchanged', 'rev-list']);
 const R41_CONFIG_KEY = /^(?:core\.hookspath|hook\..+\.(?:event|enabled)|log\.showsignature|format\.pretty|pretty\..+|branch\.sort)$/i;
 const DEFAULT_PAGED = new Set(['diff', 'log', 'show', 'branch', 'shortlog', 'blame', 'grep', 'whatchanged', 'reflog']);
@@ -27,7 +27,7 @@ const unknown = reason => ({ category: 'UNKNOWN', reason });
 const ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME', 'GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM']);
 const SAFE_GIT_ENV = /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|NAMESPACE|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|CONFIG(?:_GLOBAL|_SYSTEM|_NOSYSTEM|_COUNT|_PARAMETERS|_KEY_\d+|_VALUE_\d+)?|AUTHOR_(?:NAME|EMAIL|DATE)|COMMITTER_(?:NAME|EMAIL|DATE)|PAGER|EXTERNAL_DIFF|DIFF_OPTS|OPTIONAL_LOCKS|TERMINAL_PROMPT|ATTR_(?:NOSYSTEM|SOURCE)|NO_REPLACE_OBJECTS|NO_LAZY_FETCH|REPLACE_REF_BASE|SHALLOW_FILE|(?:LITERAL|GLOB|NOGLOB|ICASE)_PATHSPECS)$/;
 
-const INSPECTION_IRRELEVANT_GIT_ENV = /^GIT_(?:EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|SSH_VARIANT|ASKPASS|MERGE_AUTOEDIT)$/;
+const INSPECTION_IRRELEVANT_GIT_ENV = /^GIT_(?:EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|SSH_VARIANT|ASKPASS|PROXY_COMMAND|MERGE_AUTOEDIT)$/;
 
 /** Do not let an inspection itself write a trace file or contact a trace socket. */
 function safeInspectionEnvironment(environment) {
@@ -362,7 +362,7 @@ function targetGlobals(g, invocation, fixedCommitUsageConsumer = false) {
     const key = value.split('=', 1)[0].toLowerCase();
     if (!/^[a-z][a-z0-9-]*(?:\.[^\s=\0]+)+$/.test(key)) return null;
     if (/^(?:include(?:if)?\.|remote\..*\.url$|safe\.|extensions\.)/.test(key)) return null;
-    if (['core.askpass', 'core.sshcommand'].includes(key)) return null;
+    if (['core.askpass', 'core.sshcommand', 'core.gitproxy'].includes(key)) return null;
     if (/^credential(?:\..*)?\.helper$/.test(key)) return [];
     if (CONFIG_KEY.test(key)) return ['-c', value]; // preserve the helper selection and its order
     if (/^core\./.test(key)) return null;
@@ -452,7 +452,7 @@ function parseConfigOutput(output) {
   const fields = text ? text.slice(0, -1).split('\0') : [];
   if (fields.length % 2) return null;
   const trace2 = new Map();
-  const credentialHelperRecords = [];
+  const credentialHelperRecords = [], gitProxyValues = [];
   let earlyConditional = false, pagerConditional = false;
   for (let i = 0; i < fields.length; i += 2) {
     const scope = fields[i], record = fields[i + 1];
@@ -466,6 +466,7 @@ function parseConfigOutput(output) {
     const credential = /^credential(?:\.(.*))?\.helper$/i.exec(rawKey);
     if (credential) credentialHelperRecords.push({ scope, rawKey, value, subsection: credential[1] ?? null });
     if (key === 'branch.sort') branchSort.push(value);
+    if (key === 'core.gitproxy') gitProxyValues.push(value);
     const hookEvent = /^hook\.(.+)\.event$/i.exec(record.slice(0, lf));
     const hookEnabled = /^hook\.(.+)\.enabled$/i.exec(record.slice(0, lf));
     if (hookEvent && value === 'post-index-change') postIndexNames.add(hookEvent[1]);
@@ -484,6 +485,7 @@ function parseConfigOutput(output) {
   Object.defineProperty(entries, 'earlyConditionalSource', { value: earlyConditional });
   Object.defineProperty(entries, 'pagerConditionalSource', { value: pagerConditional });
   Object.defineProperty(entries, 'credentialHelperRecords', { value: credentialHelperRecords });
+  Object.defineProperty(entries, 'gitProxyValues', { value: gitProxyValues });
   return entries;
 }
 
@@ -606,6 +608,33 @@ function selectedSSHProgram(environment, config) {
   return environment.has('GIT_SSH') ? { kind: 'env', name: 'GIT_SSH', value: environment.get('GIT_SSH') } : null;
 }
 
+/** Both consumer paths must stop before the lower SSH_ASKPASS is reachable.
+ * Pinned POSIX Git exec preparation rejects an empty selected SSH program; it
+ * does not substitute native ssh. Windows execution is not qualified here. */
+function sshAskpassShadowed(environment, config, ssh, qualified) {
+  const gitAskpass = environment.has('GIT_ASKPASS') ? environment.get('GIT_ASKPASS')
+    : config.has('core.askpass') ? config.get('core.askpass') : null;
+  return qualified && process.platform !== 'win32' && gitAskpass === '' && ssh?.value === '';
+}
+
+/** Remote hosts are unproved for lazy fetch. Keep every potentially first
+ * matching command; only a prior disabling match can remove its domain. */
+function gitProxySource(environment, config) {
+  if (environment.has('GIT_PROXY_COMMAND')) return environment.get('GIT_PROXY_COMMAND') !== '';
+  if (!Array.isArray(config.gitProxyValues)) return config.has('core.gitproxy');
+  const disabledDomains = [];
+  for (const value of config.gitProxyValues) {
+    const index = value.indexOf(' for ');
+    const command = index < 0 ? value : value.slice(0, index);
+    const domain = index < 0 ? null : value.slice(index + 5);
+    if (domain !== null && disabledDomains.some(previous => domain === previous || domain.endsWith('.' + previous))) continue;
+    if (command !== '' && command !== 'none') return true;
+    if (domain === null) return false; // first unconditional disabling value wins
+    disabledDomains.push(domain);
+  }
+  return false;
+}
+
 /** URL matching is unproved here; only the same original subsection can reset its candidates. */
 function credentialHelperSource(config) {
   if (!Array.isArray(config.credentialHelperRecords)) {
@@ -621,7 +650,7 @@ function credentialHelperSource(config) {
 }
 
 /** Select active helper roles, not raw helper command strings. */
-function selectedHelper(role, g, environment, config, baseline = process.env) {
+function selectedHelper(role, g, environment, config, baseline = process.env, emptySSHConsumerQualified = false) {
   const traceNames = ['GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE2_PERF'];
   const explicitlyOff = value => typeof value === 'string' && (value === '0' || /^false$/i.test(value));
   if (config.earlyConditionalSource && !traceNames.every(name => environment.has(name) && explicitlyOff(environment.get(name)))) return 'early-trace-source';
@@ -641,9 +670,10 @@ function selectedHelper(role, g, environment, config, baseline = process.env) {
     const ssh = selectedSSHProgram(environment, config);
     const inheritedProgram = name => environment.get(name) && environment.get(name) === baseline[name];
     if (ssh?.kind === 'config' && ssh.value) return 'configured-ssh-command';
-    if (ssh?.kind === 'env' && inheritedProgram(ssh.name) || inheritedProgram('GIT_ASKPASS') || inheritedProgram('SSH_ASKPASS')) return 'inherited-transport-program';
+    if (ssh?.kind === 'env' && inheritedProgram(ssh.name) || inheritedProgram('GIT_ASKPASS') || inheritedProgram('SSH_ASKPASS') && !sshAskpassShadowed(environment, config, ssh, emptySSHConsumerQualified)) return 'inherited-transport-program';
     if (!environment.has('GIT_ASKPASS') && config.get('core.askpass')) return 'configured-askpass';
     if (credentialHelperSource(config)) return 'credential-helper';
+    if (gitProxySource(environment, config)) return 'git-proxy';
   }
   const nonLog = !role.query && nonLogSignatureSource(g, config);
   if (nonLog) return nonLog;
@@ -686,7 +716,10 @@ function assessReader(g, invocation, baseDir, deps = {}) {
     const hook = (deps.indexHook || indexHookSource)(context);
     if (hook !== false) return unknown('commit 前の Git 読取で post-index-change の source / 副作用を確認できません。');
   }
-  const selected = selectedHelper(role, g, context.selected, config, deps.environment || process.env);
+  // The allow-side empty-exec proof uses the same trusted backend identity as
+  // readerContext and the actual inspection version query, not the fsmonitor floor.
+  const emptySSHConsumerQualified = deps.emptySSHConsumerQualified === true || inspectionBanner === 'git version 2.54.0';
+  const selected = selectedHelper(role, g, context.selected, config, deps.environment || process.env, emptySSHConsumerQualified);
   return selected ? unknown(`commit 前の Git 読取で ${selected} の source / 副作用を確認できません。`) : null;
 }
 

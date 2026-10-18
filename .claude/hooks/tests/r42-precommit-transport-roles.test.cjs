@@ -24,7 +24,7 @@ function selectedReader(command, environment = baseline, implementations = { gua
   assert.ok(g);
   const invocation = parsed.invocations.find(i => i.order === g.invocationOrder);
   const deps = { environment, executable: '/DUMMY/git', isTrusted: () => true,
-    probe: () => new Map(), indexHook: () => false };
+    probe: () => new Map(), indexHook: () => false, emptySSHConsumerQualified: true }; // pinned Git2.54 consumer DTO
   return { g, invocation, deps };
 }
 
@@ -38,14 +38,17 @@ function singleEdgeOff(edge) {
     projection: ["['HOME', 'XDG_CONFIG_HOME', 'PAGER', 'PATH', 'SSH_ASKPASS']", "['HOME', 'XDG_CONFIG_HOME', 'PAGER', 'PATH']"],
     transport: ["['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_ASKPASS', 'SSH_ASKPASS']", "['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_ASKPASS']"],
     inspection: [" || name === 'SSH_ASKPASS'", ''],
-    configProbe: [String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand)`, String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|sshcommand)`],
+    configProbe: [String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)`, String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|sshcommand|gitproxy)`],
     configGate: ["    if (!environment.has('GIT_ASKPASS') && config.get('core.askpass')) return 'configured-askpass';", ''],
-    configParser: [String.raw`const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath|askpass|sshcommand)`, String.raw`const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath|sshcommand)`],
-    inherited: ["    if (ssh?.kind === 'env' && inheritedProgram(ssh.name) || inheritedProgram('GIT_ASKPASS') || inheritedProgram('SSH_ASKPASS')) return 'inherited-transport-program';", ''],
-    sshConfigProbe: [String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand)`, String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass)`],
+    configParser: [String.raw`const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)`, String.raw`const CONFIG_KEY = /^(?:core\.(?:fsmonitor|pager|hookspath|sshcommand|gitproxy)`],
+    inherited: ["    if (ssh?.kind === 'env' && inheritedProgram(ssh.name) || inheritedProgram('GIT_ASKPASS') || inheritedProgram('SSH_ASKPASS') && !sshAskpassShadowed(environment, config, ssh, emptySSHConsumerQualified)) return 'inherited-transport-program';", ''],
+    sshConfigProbe: [String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)`, String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|gitproxy)`],
     sshConfigGate: ["    if (ssh?.kind === 'config' && ssh.value) return 'configured-ssh-command';", ''],
     credentialProbe: [String.raw`|credential(\\..*)?\\.helper`, ''],
     credentialGate: ["    if (credentialHelperSource(config)) return 'credential-helper';", ''],
+    proxyProbe: [String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)`, String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand)`],
+    proxyGate: ["    if (gitProxySource(environment, config)) return 'git-proxy';", ''],
+    combinedShadow: [" && !sshAskpassShadowed(environment, config, ssh, emptySSHConsumerQualified)", ''],
   };
   const edit = edits[edge];
   assert.ok(edit);
@@ -89,6 +92,63 @@ function configAssessment(records, command = 'git -P status; git commit -m x', e
   });
   return implementations.readers.assessReader(f.g, f.invocation, '/DUMMY/repo', f.deps);
 }
+
+test('ordered Git proxy sources retain first-match disables and unknown-host candidates', () => {
+  const command = 'git -P diff --no-ext-diff --no-textconv HEAD; git commit -m x';
+  const records = values => values.map(value => ['core.gitproxy', value]);
+  for (const values of [['/DUMMY/proxy'], ['/DUMMY/proxy for example.invalid'],
+    ['/DUMMY/proxy', 'none'], ['none for example.invalid', '/DUMMY/proxy for other.invalid']]) {
+    assert.match(configAssessment(records(values), command).reason, /git-proxy/);
+  }
+  for (const values of [[], [''], ['none'], ['none', '/DUMMY/proxy'],
+    ['none for example.invalid', '/DUMMY/proxy for example.invalid'],
+    ['none for example.invalid', '/DUMMY/proxy for sub.example.invalid']]) {
+    assert.equal(configAssessment(records(values), command), null);
+  }
+  for (const edge of ['proxyProbe', 'proxyGate']) {
+    assert.equal(configAssessment(records(['/DUMMY/proxy']), command, baseline, singleEdgeOff(edge)), null);
+    assert.equal(configAssessment(records(['none']), command, baseline, singleEdgeOff(edge)), null);
+  }
+  const parsed = readers.parseConfigOutput('global\0core.gitproxy\nnone for example.invalid\0local\0core.gitproxy\n/DUMMY/proxy\0');
+  assert.deepEqual(parsed.gitProxyValues, ['none for example.invalid', '/DUMMY/proxy']);
+  const role = readers.operationRole(selectedReader(command).g);
+  assert.equal(readers.selectedHelper(role, selectedReader(command).g, new Map(), new Map([['core.gitproxy', 'none']])), 'git-proxy'); // ordering absent
+  assert.equal(configAssessment(records(['/DUMMY/proxy']), command, { ...baseline, GIT_PROXY_COMMAND: '' }), null);
+  for (const value of ['none', '/DUMMY/proxy']) assert.match(configAssessment(records(['none']), command, { ...baseline, GIT_PROXY_COMMAND: value }).reason, /git-proxy/);
+  const context = selectedReader(command, { ...baseline, GIT_PROXY_COMMAND: '/DUMMY/proxy' });
+  const dto = readers.readerContext(context.g, context.invocation, '/DUMMY/repo', context.deps);
+  assert.equal(dto.selected.get('GIT_PROXY_COMMAND'), '/DUMMY/proxy');
+  assert.equal(dto.env.GIT_PROXY_COMMAND, undefined);
+  assert.equal(dto.env.GIT_NO_LAZY_FETCH, '1');
+  for (const query of ['git -P diff -h; git commit -m x', 'git -P config --get core.gitProxy; git commit -m x']) {
+    assert.equal(configAssessment(records(['/DUMMY/proxy']), query), null);
+  }
+  const usage = guard.inspect('git -c core.gitProxy=/DUMMY/proxy commit -h', { trackGitPreCommitEnvironment: true,
+    initialGitPreCommitEnvironmentSources: readers.environmentSources(baseline) });
+  const g = usage.gits[0];
+  assert.equal(readers.targetGlobals(g, usage.invocations.find(i => i.order === g.invocationOrder), true), null);
+});
+
+test('SSH askpass is suppressed only by empty effective Git and native SSH consumers together', () => {
+  const command = 'git -P status; git commit -m x';
+  const inherited = { ...baseline, SSH_ASKPASS: '/DUMMY/helper' };
+  const both = { ...inherited, GIT_ASKPASS: '', GIT_SSH_COMMAND: '' };
+  const expected = process.platform === 'win32' ? 'UNKNOWN' : undefined;
+  assert.equal(assess(command, both)?.category, expected);
+  assert.equal(configAssessment([['core.askpass', ''], ['core.sshcommand', '']], command, inherited)?.category, expected);
+  assert.equal(assess(command, { ...inherited, GIT_ASKPASS: '', GIT_SSH: '' })?.category, expected);
+  for (const environment of [inherited, { ...inherited, GIT_ASKPASS: '' }, { ...inherited, GIT_SSH_COMMAND: '' },
+    { ...both, GIT_ASKPASS: '/DUMMY/git-helper' }, { ...both, GIT_SSH_COMMAND: '/DUMMY/ssh-helper' }]) {
+    assert.equal(assess(command, environment)?.category, 'UNKNOWN');
+  }
+  const unqualified = selectedReader(command, both);
+  unqualified.deps.emptySSHConsumerQualified = false;
+  assert.equal(readers.assessReader(unqualified.g, unqualified.invocation, '/DUMMY/repo', unqualified.deps)?.category, 'UNKNOWN');
+  const off = singleEdgeOff('combinedShadow'), f = selectedReader(command, both, off);
+  assert.equal(off.readers.assessReader(f.g, f.invocation, '/DUMMY/repo', f.deps)?.category, 'UNKNOWN');
+  assert.match(assess('SSH_ASKPASS=/DUMMY/changed ' + command, both).reason, /command-selected-transport/);
+  assert.match(configAssessment([['credential.helper', '/DUMMY/helper']], command, both).reason, /credential-helper/);
+});
 
 test('changed transport selections remain in actual context and receive their own reader gate', () => {
   for (const name of transports) {
@@ -408,6 +468,32 @@ test('Hook DATA enforces selected transport only before a commit and preserves F
       assert.equal(run('git commit -m x; git -P cat-file -p HEAD:a.txt'), 'ALLOW');
       assert.equal(run('git -c credential.helper=/DUMMY/program commit -h; git commit -m x'), 'ALLOW');
       assert.equal(run(configuredReader + '; git add .env'), 'FORBIDDEN');
+    } finally { fs.writeFileSync(configPath, baseConfig); }
+    try {
+      const exact = 'git -P diff --no-ext-diff --no-textconv HEAD; git commit -m x';
+      for (const [values, expected] of [
+        [['/DUMMY/proxy'], 'UNKNOWN'], [['/DUMMY/proxy for example.invalid'], 'UNKNOWN'],
+        [['none'], 'ALLOW'], [[''], 'ALLOW'], [['none', '/DUMMY/proxy'], 'ALLOW'],
+        [['none for example.invalid', '/DUMMY/proxy for example.invalid'], 'ALLOW'],
+        [['none for example.invalid', '/DUMMY/proxy for other.invalid'], 'UNKNOWN'],
+        [['/DUMMY/proxy', 'none'], 'UNKNOWN'],
+      ]) {
+        fs.writeFileSync(configPath, baseConfig + '\n[core]\n' + values.map(value => ' gitProxy = ' + value + '\n').join(''));
+        assert.equal(run(exact), expected);
+      }
+      fs.writeFileSync(configPath, baseConfig + '\n[core]\n gitProxy = /DUMMY/proxy\n');
+      assert.equal(run(exact, { GIT_PROXY_COMMAND: '' }), 'ALLOW');
+      assert.equal(run(exact, { GIT_PROXY_COMMAND: 'none' }), 'UNKNOWN');
+      assert.equal(run('git -P diff -h; git commit -m x'), 'ALLOW');
+      assert.equal(run('git commit -m x; git -P diff --no-ext-diff --no-textconv HEAD'), 'ALLOW');
+      assert.equal(run(exact + '; git add .env'), 'FORBIDDEN');
+      fs.writeFileSync(configPath, baseConfig);
+      const both = { SSH_ASKPASS: '/DUMMY/helper', GIT_ASKPASS: '', GIT_SSH_COMMAND: '' };
+      assert.equal(run('git -P status; git commit -m x', both), process.platform === 'win32' ? 'UNKNOWN' : 'ALLOW');
+      assert.equal(run('git -P status; git commit -m x', { SSH_ASKPASS: '/DUMMY/helper', GIT_ASKPASS: '' }), 'UNKNOWN');
+      assert.equal(run('git -P status; git commit -m x', { SSH_ASKPASS: '/DUMMY/helper', GIT_SSH_COMMAND: '' }), 'UNKNOWN');
+      assert.equal(run('SSH_ASKPASS=/DUMMY/changed git -P status; git commit -m x', both), 'UNKNOWN');
+      assert.equal(run('git -P status; git commit -m x; git add .env', both), 'FORBIDDEN');
     } finally { fs.writeFileSync(configPath, baseConfig); }
     assert.equal(run(configuredReader), 'ALLOW');
     t.diagnostic(`owned fixture: ${actualHookCalls} actual secret-git Hook calls; no proposed command executed`);

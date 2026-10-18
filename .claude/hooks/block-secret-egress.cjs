@@ -209,6 +209,7 @@ const insp = guard.inspect(cmd, {
   deferDbusRunSessionSourceProblems: true,
   deferSystemdRunSourceProblems: true,
   deferRun0SourceProblems: true,
+  deferShadowGroupSourceProblems: true,
   deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -5847,6 +5848,7 @@ function opaqueLauncherNetwork(invocation) {
   // A newly selected systemd context is refused at the late source gate; keep independent verdict priority.
   if (invocation.systemdRunLauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
   if (invocation.run0LauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
+  if (invocation.shadowGroupLauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
   const words = invocation.launcherArgs || [];
   const existing = curlReadsUpload(words, invocation.incomplete) || wgetReadsUpload(words) || words.some((word) =>
     ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh'].includes(word.text.split('/').pop()) ||
@@ -5948,6 +5950,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
     deferDbusRunSessionSourceProblems: true,
   deferSystemdRunSourceProblems: true,
   deferRun0SourceProblems: true,
+  deferShadowGroupSourceProblems: true,
     deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -6004,6 +6007,13 @@ function systemdRunSourceVerdict(invocation) {
 function run0SourceVerdict(invocation) {
   if (invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
   return invocation.launcherUnknown && invocation.run0LauncherRoles?.some(role =>
+    role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
+}
+
+/** shadow sg/newgrp context uncertainty stays behind independent confirmed refusals. */
+function shadowGroupSourceVerdict(invocation) {
+  if (invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
+  return invocation.launcherUnknown && invocation.shadowGroupLauncherRoles?.some(role =>
     role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
 }
 
@@ -6739,6 +6749,10 @@ if (invocations.some(systemdRunSourceVerdict)) {
 // run0's new source uncertainty cannot replace an earlier independent refusal.
 if (invocations.some(run0SourceVerdict)) {
   deny('run0 の manager/PAM・実行先・identity・cwd/env・既定 shell source を同じ条件で確認できません。同じ対象・操作・実行条件を保つ対応済み形式がなければ owner に不明点を確認してください。個別操作の了承は hook 無効化の了承ではありません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+if (invocations.some(shadowGroupSourceVerdict)) {
+  deny('shadow-utils sg/newgrp の group・認証・command source・既定/login shell・cwd/env の実行条件を確認できません。同じ対象・group・操作・source と実行条件を保つ対応形式がなければ owner に不足条件を確認してください。必要な helper や認証を外すことを同目的の代替にしません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 // New watch uncertainty cannot replace an existing confirmed refusal/category above.

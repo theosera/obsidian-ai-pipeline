@@ -1520,7 +1520,7 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run', 'run0']);
+const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run', 'run0', 'sg', 'newgrp']);
 
 /** util-linux 2.39.3: priority/PID roles and namespace-free direct execvp. */
 function utilLinuxLauncherArgs(rest, info, name) {
@@ -1929,7 +1929,49 @@ function run0Args(rest, info) {
   return unknown();
 }
 
+/** shadow-utils 4.13 newgrp.c: sg selects one shell source; newgrp selects a login shell. */
+function shadowGroupArgs(rest, info, name) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { launcher: name, backend: 'shadow-utils-4.13', mode: 'unknown',
+    groupWord: null, commandIndex: null, sourceWord: null, login: false,
+    executionMode: 'default-shell', ignoredWords: [],
+    source: 'group/credential/cwd/environment/compiled-or-login-shell',
+    priorLauncherUnknown: info.launcherUnknown };
+  (info.shadowGroupLaunchers ||= []).push(role);
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  const canonical = known(info.argv0Word) && path.posix.basename(textOf(info.argv0Word)) === name;
+  const unknown = () => { info.launcherUnknown = true; return rest.length; };
+  if (!canonical || rest.length > 128) return unknown();
+  let k = 0;
+  if (known(rest[k]) && ['-', '-l'].includes(textOf(rest[k]))) { role.login = true; k++; }
+  if (rest[k] && !known(rest[k])) return unknown();
+  // This backend has no help/version option. A leading dash (or missing sg
+  // group) exits with usage before group selection/child execution, not help.
+  if ((rest[k] && textOf(rest[k]).startsWith('-')) || (name === 'sg' && k >= rest.length)) {
+    if (info.launcherUnknown) return unknown();
+    role.mode = 'usage-error'; return -1;
+  }
+  role.groupWord = rest[k] || null;
+  if (role.groupWord) k++;
+  if (name === 'sg' && k < rest.length) {
+    // -c is optional and consumed only when another word follows. Trailing
+    // argv are ignored by the pinned consumer, never joined to the source.
+    if (!known(rest[k])) return unknown();
+    if (textOf(rest[k]) === '-c' && k + 1 < rest.length) k++;
+    role.commandIndex = k; role.sourceWord = rest[k];
+    role.executionMode = 'command'; role.ignoredWords = rest.slice(k + 1);
+  } else role.ignoredWords = rest.slice(k);
+  // Even an ordinary command or a same-group spelling does not qualify the
+  // group/authentication, selected shell or its startup/execution context.
+  return unknown();
+}
+
 const WRAPPERS = {
+  sg: (rest, info) => shadowGroupArgs(rest, info, 'sg'),
+  newgrp: (rest, info) => shadowGroupArgs(rest, info, 'newgrp'),
   run0: run0Args,
   'systemd-run': systemdRunArgs,
   'dbus-run-session': dbusRunSessionArgs,
@@ -3596,6 +3638,7 @@ function inspect(cmd, options = {}) {
       dbusRunSessionRoles: info.dbusRunSessions || [],
       systemdRunLauncherRoles: info.systemdRunLaunchers || [],
       run0LauncherRoles: info.run0Launchers || [],
+      shadowGroupLauncherRoles: info.shadowGroupLaunchers || [],
       utilLinuxLauncherRole: info.utilLinuxLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
@@ -4002,7 +4045,10 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.run0Launchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.run0Launchers?.some(role => role.mode === 'unknown') || info.shadowGroupLaunchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+      const shadowUnknown = info.shadowGroupLaunchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
+      if (shadowUnknown && options.deferShadowGroupSourceProblems !== true) res.problems.push('shadow-utils sg/newgrp の group・認証・command source または既定/login shell の実行条件を確認できません。同じ対象・group・cwd/env/source・操作を保つ対応形式がなければ owner に不足条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
+      if (shadowUnknown) return;
       const run0Unknown = info.run0Launchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
       if (run0Unknown && options.deferRun0SourceProblems !== true) res.problems.push('run0 の COMMAND 境界または manager/PAM・identity・cwd/env・既定 shell の実行条件を確認できません。同じ対象・操作・実行条件を保つ対応済み形式がなければ owner に不足する条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
       if (run0Unknown) return;

@@ -18,6 +18,24 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R44:README:BEGIN -->
+
+### R44: proxy選択・複合empty shadow・sg/newgrpのsource境界
+
+**修復作業中・最終受入PENDINGのsnapshot**。2026-10-18 14:46:08 JST時点、公開基点head `533a48fb08e3f27c9821eb4e145c5dc683aca670` に対する未commitのR44 candidateを対象とする。同headのCodex full5561591680は14:29:13 JST、CodeRabbit full5561600706は14:33:08 JSTに正常完了したが、14:35:36.049 JST取得の全216threadは未解決4件（Codex4305869528・4305869532・4305869534、CR4305878612）。R43承認済み公開op01–09は完了、条件付きop10は未実施であり、このsnapshotでは新R44 sourceの最終件数・全件、新公開head／同headCI／両fresh reviewと全指摘処理は当時未取得・PENDINGである。
+
+[R44の現在契約・通常費用・同目的の出口](docs/security/git-command-guards.md#r44-current-contract)へ集約する。commit前の非query object/index-capable readerでは、順序付き`core.gitProxy`と`GIT_PROXY_COMMAND`のpresence/empty、first matching domain・`none`を保つ。未知のpromisor hostに対して有効になり得るproxy programが残ればUNKNOWNで、正当なproxyを使うlocal readerとcommitも止まり得る。actual選択を保ち、own検査copyから変数を除くことをsource安全性の証明にしない。
+
+両consumerがeffective emptyとなる複合shadowの例外は、既存trusted realpath/PATH同一性を満たすown inspectionで実取得したbanner `git version 2.54.0`とPOSIXのfixed-consumer資格に限定する。Git askpassだけ、またはSSH programだけがemptyでは免除せず、未資格backendのcombined tupleはUNKNOWNを維持する。ownSGの正常回復でも既存EG UNKNOWNやchanged-selector・独立FORBIDDENは解除しない。同bannerの独自patch全体やnative実行の認定ではない。
+
+`sg`/`newgrp`はpinned shadow-utils4.13のgroup・command/shell roleを分けるが、backend/group/auth/shellが未資格なら普通のprintfでもUNKNOWNとなる。先頭のlogin `-`/`-l`以外でgroup位置に残るdashのusage/errorは子を選ばない経路で、真正help実装とは呼ばない。
+
+必要なproxy・group・認証・shellを外して同目的とはしない。同じ対象・操作・argv・cwd/env/config・source/contextを保つ対応形だけを選び、readerとcommitの分割は意味を保ち後commitを再検査できる場合に限る。条件を保てなければownerへsource/contextとUNKNOWN理由を示す。
+
+以下のR43以前のround本文・数値・「現在/current」は各cutの履歴として保持し、新R44の資格へ持ち越さない。native helper／認証／fetch／networkや新L3成立、公開/merge承認をこの文書からは得ない。
+
+<!-- PR191:R44:README:END -->
+
 <!-- PR191:R43:README:BEGIN -->
 
 ### R43: 継承programと設定fallbackを含むreader sourceの有限契約

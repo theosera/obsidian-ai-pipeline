@@ -96,6 +96,24 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R44:PLAYBOOK:BEGIN -->
+
+### R44: 選択sourceを保ちproxyとlauncher contextを限定する
+
+**修復作業中・最終受入PENDINGのsnapshot**。2026-10-18 14:46:08 JST時点、公開基点head `533a48fb08e3f27c9821eb4e145c5dc683aca670` に対する未commitのR44 candidateを対象とする。同headのCodex full5561591680は14:29:13 JST、CodeRabbit full5561600706は14:33:08 JSTに正常完了したが、14:35:36.049 JST取得の全216threadは未解決4件（Codex4305869528・4305869532・4305869534、CR4305878612）。R43承認済み公開op01–09は完了、条件付きop10は未実施であり、このsnapshotでは新R44 sourceの最終件数・全件、新公開head／同headCI／両fresh reviewと全指摘処理は当時未取得・PENDINGである。
+
+[R44の現在契約・正常対照・費用と出口](docs/security/git-command-guards.md#r44-current-contract)を参照する。既存の非query object/index-capable prior-readerに対する`core.gitProxy`は順序・domain・first match・`none`を保持し、presentな`GIT_PROXY_COMMAND`（emptyを含む）がconfigをshadowする。未知のpromisor hostに残るpotential programはUNKNOWNとし、通常local readerにも費用がある。own検査copyのsanitationとactual selected DTOを分離する。
+
+inherited/baseline-equal `SSH_ASKPASS`の複合empty例外は、Git askpassと選択SSH programの両方がeffective emptyで、既存trusted realpath/PATH同一性を満たすown inspectionの実取得banner `git version 2.54.0`＋POSIXというfixed-consumer資格がある場合だけ。当該reader source理由だけの例外で、片方だけempty・未資格backend・changed-selector・他program・既存EG UNKNOWN・独立FORBIDDENは維持する。同bannerの独自patch全認証ではない。`core.gitProxy`のexact commit -hは従来のunsupported core UNKNOWN境界を保ち、help語だけを一般免除しない。
+
+`sg`/`newgrp`はshadow-utils4.13のgroup/optional -c/command・selected shellを追い、backend/group/auth/shell未資格なら普通のprintfもUNKNOWN。先頭login `-`/`-l`を消費した後のgroup位置dash usage/errorを真正helpとは認定せず、外側の置換・redirectionや確定FORBIDDENは独立に検査する。egressの追加UNKNOWNは遅延metadataとして保持し、独立FORBIDDENの優先を変えない。
+
+必要なproxy・group・認証・shellを外して同目的とはしない。同じ対象・操作・argv・cwd/env/config・source/contextを保つ対応形だけを選び、readerとcommitの分割は意味を保ち後commitを再検査できる場合に限る。条件を保てなければownerへsource/contextとUNKNOWN理由を示す。
+
+以下のR43以前は当時cutの履歴として全文を保持する。native helper/認証/fetch/networkや新L3は未実証で、新R44公開操作は新headと各操作を固定した別具体packetへのowner承認を要する。
+
+<!-- PR191:R44:PLAYBOOK:END -->
+
 <!-- PR191:R43:PLAYBOOK:BEGIN -->
 
 ### R43: 実効programを継承値の一致だけで免除しない
