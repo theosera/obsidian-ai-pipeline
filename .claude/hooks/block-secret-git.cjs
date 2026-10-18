@@ -413,6 +413,37 @@ if (commits.length) {
   }
 }
 
+let selectedInspection, selectedIndexInspection;
+function selectedCommandInspection(indexOnly = false) {
+  const cached = indexOnly ? selectedIndexInspection : selectedInspection;
+  if (cached) return cached;
+  const selected = guard.inspect(cmd, {
+    trackGitPreCommitEnvironment: true,
+    trackGitIndexInspectionEnvironment: indexOnly,
+    initialGitPreCommitEnvironmentSources: preCommitReaders.environmentSources(process.env),
+  });
+  const shape = inspection => JSON.stringify({
+    invocations: inspection.invocations.map(i => [i.order, i.name, i.nameWord, i.args, i.wrapperNames]),
+    gits: inspection.gits.map(g => [g.invocationOrder, g.sub, g.args, g.cdirs, g.configs, g.configEnvs]),
+  });
+  if (selected.problems.length || shape(selected) !== shape(insp)) {
+    deny('commit の実行先・環境・実行順を解析結果と同じ条件で確認できません (fail-closed)。', 'UNKNOWN');
+  }
+  if (indexOnly) selectedIndexInspection = selected;
+  else selectedInspection = selected;
+  return selected;
+}
+const commitInspectionContexts = new Map();
+function commitInspectionContext(g) {
+  if (commitInspectionContexts.has(g.invocationOrder)) return commitInspectionContexts.get(g.invocationOrder);
+  const selected = selectedCommandInspection(true);
+  const invocation = selected.invocations.find(i => i.order === g.invocationOrder);
+  const context = preCommitReaders.commitInspectionContext(g, invocation, baseDir);
+  if (!context) deny('commit の検査に使う Git・対象・環境を実行予定の条件へ結び付けられません (fail-closed)。', 'UNKNOWN');
+  commitInspectionContexts.set(g.invocationOrder, context);
+  return context;
+}
+
 for (const g of commits) {
   if (g.incomplete) {
     deny('`xargs` / `find -exec` から `git commit` を走らせる形は、引数を検査できないためブロックしました (fail-closed)。');
@@ -450,10 +481,11 @@ for (const g of commits) {
   }
   // 検査対象は **そのコマンドが commit するリポ**（入力の cwd と `-C` の並びから決める）。
   const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
+  const context = commitInspectionContext(g);
   let staged = '';
   try {
     staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', '-z'], {
-      cwd: inspectCwd,
+      ...context,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -486,7 +518,7 @@ for (const g of commits) {
     let listed = '';
     try {
       listed = preCommitReaders.readInspectionGit(['ls-files', '-z', '--', ...ca.pathspecs], {
-        cwd: inspectCwd,
+        ...context,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
       });
@@ -583,10 +615,16 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
   // 最初の raw match が help でも、実行する commit の対象は上で読んだ呼び出しから取る。
   const inspectCwd = commits.length ? guard.resolveDir(baseDir, commits[0].cdirs)
     : cDir ? path.resolve(legacyBaseDir, stripToken(cDir)) : legacyBaseDir;
+  // A raw DATA match has no proposed commit to bind an index probe to.
+  // Unsupported executable forms already stop through inspect().problems.
+  // Preserve the legacy argument backstops above, but query an index only for
+  // an actual parsed commit using its validated selected context.
+  if (commits.length) {
+  const context = commitInspectionContext(commits[0]);
   let staged = '';
   try {
     staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', '-z'], {
-      cwd: inspectCwd,
+      ...context,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -607,6 +645,7 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
       commits.length ? 'FORBIDDEN' : 'UNKNOWN',
     );
   }
+  }
 }
 }
 
@@ -614,17 +653,7 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
 // Seed inherited values only in this second, otherwise-ALLOW inspection: the
 // original inspection and its source/config decisions retain their old inputs.
 if (commits.length && gits.some(g => g.invocationOrder < commits[0].invocationOrder)) {
-  const late = guard.inspect(cmd, {
-    trackGitPreCommitEnvironment: true,
-    initialGitPreCommitEnvironmentSources: preCommitReaders.environmentSources(process.env),
-  });
-  const shape = inspection => JSON.stringify({
-    invocations: inspection.invocations.map(i => [i.order, i.name, i.nameWord, i.args, i.wrapperNames]),
-    gits: inspection.gits.map(g => [g.invocationOrder, g.sub, g.args, g.cdirs, g.configs, g.configEnvs]),
-  });
-  if (late.problems.length || shape(late) !== shape(insp)) {
-    deny('commit 前の Git 読取の source / 実行順を同じ条件で確認できません (fail-closed)。', 'UNKNOWN');
-  }
+  const late = selectedCommandInspection();
   for (const g of late.gits.filter(g => g.invocationOrder < commits[0].invocationOrder)) {
     const invocation = late.invocations.find(i => i.order === g.invocationOrder);
     const decision = invocation && preCommitReaders.assessReader(g, invocation, baseDir);

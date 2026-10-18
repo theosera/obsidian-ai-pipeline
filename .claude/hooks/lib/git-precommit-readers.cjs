@@ -97,24 +97,48 @@ function environmentSources(env) {
 }
 
 const ownHookConfigByCwd = new Map();
-let trustedExecutable;
-let inspectionVersionQualified = false;
-let inspectionBanner = '';
-/** Pin the existing hook PATH lookup to an absolute, existing trusted Git identity. */
+const inspectionVersions = new Map();
+/** A known installation must be the first candidate in the hook's actual search. */
 function trustedGit() {
-  if (trustedExecutable) return trustedExecutable;
-  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-    const candidate = path.resolve(dir || '.', 'git');
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (!fs.statSync(candidate).isFile()) continue;
-      const absolute = fs.realpathSync(candidate);
-      if (!guard.trustedGitExecutable({ text: absolute })) return null;
-      trustedExecutable = absolute;
-      return absolute;
-    } catch {}
+  return guard.resolveTrustedGitExecutable({ text: 'git' });
+}
+
+/** A missing tracked name is an actual removal, never an inherited fallback. */
+function invocationEnvironment(invocation, baseline = process.env) {
+  if (invocation.gitPreCommitEnvironmentUnknown || !Array.isArray(invocation.gitPreCommitEnvironmentSources)) return null;
+  const selected = new Map();
+  const env = Object.fromEntries(Object.entries(baseline).filter(([name]) => !guard.gitPreCommitEnvironmentName(name)));
+  for (const source of invocation.gitPreCommitEnvironmentSources) {
+    if (!guard.gitPreCommitEnvironmentName(source.name) || selected.has(source.name)) return null;
+    const value = literal(source.word);
+    if (value === null || value.includes('\0')) return null;
+    selected.set(source.name, value);
+    env[source.name] = value;
   }
-  return null;
+  return { env, selected };
+}
+
+/** Bind staged and pathspec reads to the parsed commit's program, environment and cwd. */
+function commitInspectionContext(g, invocation, baseDir) {
+  if (!invocation || invocation.unknownContextBefore || invocation.pathChangedBefore ||
+      g.unknownContextBefore || g.cdLikeBefore) return null;
+  const selected = invocationEnvironment(invocation);
+  const callee = literal(invocation.nameWord);
+  if (!selected || !callee || callee === 'git' && invocation.commandDefaultSearch === true) return null;
+  const cwd = guard.resolveDir(baseDir, g.cdirs || []);
+  const executable = guard.resolveTrustedGitExecutable({ text: callee }, selected.env, cwd);
+  const env = safeInspectionEnvironment(selected.env);
+  return executable && env ? { executable, env, cwd } : null;
+}
+
+function inspectionContextKey(executable, env, cwd) {
+  return JSON.stringify([executable, cwd, Object.entries(env).sort(([a], [b]) => a.localeCompare(b))]);
+}
+function cachedInspectionBanner(executable, environment, cwd) {
+  const env = safeInspectionEnvironment(environment);
+  if (!env) return '';
+  env.GIT_OPTIONAL_LOCKS = '0';
+  return inspectionVersions.get(inspectionContextKey(executable, env, cwd)) || '';
 }
 
 /** These overrides harden the hook's own inspection, not the proposed command. */
@@ -123,25 +147,26 @@ function inspectionArgs(args) {
     ...(args[0] === 'diff' ? ['--no-ext-diff', '--no-textconv'] : []), ...args.slice(1)];
 }
 function readInspectionGit(args, options) {
-  const executable = trustedGit();
-  if (!executable) throw new Error('trusted inspection Git unavailable');
-  const env = safeInspectionEnvironment(process.env);
+  const executable = options?.executable;
+  if (!executable || !guard.trustedGitExecutable({ text: executable })) throw new Error('trusted inspection Git unavailable');
+  const env = options?.env && safeInspectionEnvironment(options.env);
   if (env) env.GIT_OPTIONAL_LOCKS = '0';
   if (!env) throw new Error('unproved inspection Git environment');
-  if (!inspectionVersionQualified) {
+  const ownCwd = options?.cwd;
+  if (typeof ownCwd !== 'string' || !path.isAbsolute(ownCwd) || ownCwd.includes('\0')) throw new Error('unproved inspection Git cwd');
+  const contextKey = inspectionContextKey(executable, env, ownCwd);
+  if (!inspectionVersions.has(contextKey)) {
     // The real option query qualifies this trusted backend's CLI capability;
     // the separate version floor below concerns fsmonitor boolean semantics.
     const banner = execFileSync(executable, ['--no-lazy-fetch', '--version'], {
-      env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 1024,
+      cwd: ownCwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 1024,
     });
     if (!supportsInspectionHardening(banner)) throw new Error('Git fsmonitor boolean hardening needs Git >= 2.36');
-    inspectionVersionQualified = true;
-    inspectionBanner = banner.trim();
+    inspectionVersions.set(contextKey, banner.trim());
   }
   // Configured hook events are separate from traditional core.hooksPath hooks.
   let configured;
-  const ownCwd = options?.cwd || process.cwd();
-  if (!ownHookConfigByCwd.has(ownCwd)) {
+  if (!ownHookConfigByCwd.has(contextKey)) {
   try {
     configured = execFileSync(executable, ['--no-pager', '--no-lazy-fetch', 'config', '--show-scope', '--null', '--get-regexp', '^hook\\..*\\.(event|enabled)$'], {
       cwd: options?.cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 65536,
@@ -152,7 +177,7 @@ function readInspectionGit(args, options) {
   }
   const ownConfig = configured ? parseConfigOutput(configured) : new Map();
   if (!ownConfig || configuredPostIndex(ownConfig)) throw new Error('inspection post-index-change source uninspected');
-  ownHookConfigByCwd.set(ownCwd, true);
+  ownHookConfigByCwd.set(contextKey, true);
   }
   return execFileSync(executable, inspectionArgs(args), { ...options, env });
 }
@@ -400,13 +425,9 @@ function readerContext(g, invocation, baseDir, deps = {}) {
   const baseline = deps.environment || process.env;
   if (invocation.gitPreCommitEnvironmentUnknown || !Array.isArray(invocation.gitPreCommitEnvironmentSources) ||
       invocation.unknownContextBefore || invocation.pathChangedBefore || g.unknownContextBefore || g.cdLikeBefore) return null;
-  const selected = new Map();
-  for (const source of invocation.gitPreCommitEnvironmentSources) {
-    if (!guard.gitPreCommitEnvironmentName(source.name) || selected.has(source.name)) return null;
-    const value = literal(source.word);
-    if (value === null || value.includes('\0')) return null;
-    selected.set(source.name, value);
-  }
+  const reconstructed = invocationEnvironment(invocation, baseline);
+  if (!reconstructed) return null;
+  const { selected, env } = reconstructed;
   for (const name of ROOT_ENV) if (selected.has(name) && selected.get(name) !== baseline[name] && selected.get(name) !== '/dev/null') return null;
   if (selected.has('GIT_CONFIG')) return null; // config's source.file override is not the reader's normal config selection
   if (selected.get('GIT_CONFIG_PARAMETERS')) return null; // opaque serialization can select include/source roots
@@ -432,12 +453,12 @@ function readerContext(g, invocation, baseDir, deps = {}) {
     try { if ((deps.realpath || fs.realpathSync)(callee) !== (deps.realpath || fs.realpathSync)(executable)) return null; }
     catch { return null; }
   }
+  const safeEnv = safeInspectionEnvironment(env);
+  if (!safeEnv) return null;
+  const inspectionBanner = cachedInspectionBanner(executable, safeEnv, guard.resolveDir(baseDir, g.cdirs || []));
   const globals = targetGlobals(g, invocation, deps.commitUsageConsumerQualified === true || inspectionBanner === 'git version 2.54.0');
   if (!globals) return null;
-  const env = Object.fromEntries(Object.entries(baseline).filter(([name]) => !guard.gitPreCommitEnvironmentName(name)));
-  for (const [name, value] of selected) env[name] = value;
-  const safeEnv = safeInspectionEnvironment(env);
-  return safeEnv ? { executable, globals, cwd: baseDir, env: safeEnv, selected } : null;
+  return { executable, globals, cwd: baseDir, env: safeEnv, selected, inspectionBanner };
 }
 
 /** --show-scope --null emits scope NUL key LF value NUL; values stay internal. */
@@ -718,7 +739,7 @@ function assessReader(g, invocation, baseDir, deps = {}) {
   }
   // The allow-side empty-exec proof uses the same trusted backend identity as
   // readerContext and the actual inspection version query, not the fsmonitor floor.
-  const emptySSHConsumerQualified = deps.emptySSHConsumerQualified === true || inspectionBanner === 'git version 2.54.0';
+  const emptySSHConsumerQualified = deps.emptySSHConsumerQualified === true || context.inspectionBanner === 'git version 2.54.0';
   const selected = selectedHelper(role, g, context.selected, config, deps.environment || process.env, emptySSHConsumerQualified);
   return selected ? unknown(`commit 前の Git 読取で ${selected} の source / 副作用を確認できません。`) : null;
 }
@@ -726,3 +747,4 @@ function assessReader(g, invocation, baseDir, deps = {}) {
 module.exports = { environmentSources, operationRole, targetGlobals, readerContext, parseConfigOutput,
   probeConfig, selectedHelper, assessReader, inspectionArgs, readInspectionGit, supportsInspectionHardening,
   safeInspectionEnvironment, indexHookSource, configuredPostIndex, signatureFormatActive };
+module.exports.commitInspectionContext = commitInspectionContext;

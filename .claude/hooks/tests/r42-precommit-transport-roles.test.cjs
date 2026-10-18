@@ -330,13 +330,14 @@ function inspectionSpy({ unsupported = false, banner = 'git version 2.54.0\n' } 
     require: name => name === 'node:fs' ? fakeFs : name === 'node:child_process' ? child
       : name === './git-guard-common.cjs' ? { ...guard, trustedGitExecutable: () => true } : require(name) };
   vm.runInNewContext(fs.readFileSync(path.join(hooks, 'lib/git-precommit-readers.cjs'), 'utf8'), sandbox);
-  return { readers: sandbox.module.exports, calls, environment };
+  return { readers: sandbox.module.exports, calls, environment,
+    inspection: { cwd: '/DUMMY/repo', executable: '/DUMMY/git', env: environment } };
 }
 
 test('own version capability, configured-hook probe and diff/ls-files all receive flag and environment', () => {
   const spy = inspectionSpy();
-  assert.equal(spy.readers.readInspectionGit(['diff', '--cached', '--name-only', '-z'], { cwd: '/DUMMY/repo' }), 'DUMMY inspection');
-  assert.equal(spy.readers.readInspectionGit(['ls-files', '-z'], { cwd: '/DUMMY/repo' }), 'DUMMY inspection');
+  assert.equal(spy.readers.readInspectionGit(['diff', '--cached', '--name-only', '-z'], spy.inspection), 'DUMMY inspection');
+  assert.equal(spy.readers.readInspectionGit(['ls-files', '-z'], spy.inspection), 'DUMMY inspection');
   assert.deepEqual(spy.calls[0].args, ['--no-lazy-fetch', '--version']);
   assert.equal(spy.calls.filter(c => c.args.includes('--version')).length, 1);
   assert.ok(spy.calls.some(c => c.args.includes('config')));
@@ -353,11 +354,11 @@ test('own version capability, configured-hook probe and diff/ls-files all receiv
 
 test('unsupported capability stops before object/config reads; fsmonitor floor stays separate', () => {
   const unsupported = inspectionSpy({ unsupported: true });
-  assert.throws(() => unsupported.readers.readInspectionGit(['diff', '--cached'], { cwd: '/DUMMY/repo' }), /unsupported/);
+  assert.throws(() => unsupported.readers.readInspectionGit(['diff', '--cached'], unsupported.inspection), /unsupported/);
   assert.equal(unsupported.calls.length, 1);
   assert.deepEqual(unsupported.calls[0].args, ['--no-lazy-fetch', '--version']);
   const old = inspectionSpy({ banner: 'git version 2.35.1\n' });
-  assert.throws(() => old.readers.readInspectionGit(['diff', '--cached'], { cwd: '/DUMMY/repo' }), /fsmonitor/);
+  assert.throws(() => old.readers.readInspectionGit(['diff', '--cached'], old.inspection), /fsmonitor/);
   assert.equal(old.calls.length, 1);
   assert.equal(readers.supportsInspectionHardening('git version 2.39.5\n'), true); // fsmonitor predicate only
 });
@@ -370,6 +371,11 @@ test('Hook DATA enforces selected transport only before a commit and preserves F
     const environment = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'),
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', CLAUDE_PROJECT_DIR: repo };
+    const version = spawnSync('git', ['--version'], { cwd: repo, env: environment,
+      encoding: 'utf8', timeout: 20000 });
+    assert.equal(version.error, undefined); assert.equal(version.status, 0, version.stderr);
+    const qualifiedGit254 = version.stdout.trim() === 'git version 2.54.0';
+    t.diagnostic(`owned fixture Git banner: ${JSON.stringify(version.stdout.trim())}; exact consumer ${qualifiedGit254}`);
     const git = (...args) => {
       const r = spawnSync('git', args, { cwd: repo, env: environment, encoding: 'utf8', timeout: 20000 });
       assert.equal(r.error, undefined); assert.equal(r.status, 0, r.stderr);
@@ -466,7 +472,7 @@ test('Hook DATA enforces selected transport only before a commit and preserves F
       assert.equal(run('git -P cat-file -h; git commit -m x'), 'ALLOW');
       assert.equal(run('git -P config --get user.name; git commit -m x'), 'ALLOW');
       assert.equal(run('git commit -m x; git -P cat-file -p HEAD:a.txt'), 'ALLOW');
-      assert.equal(run('git -c credential.helper=/DUMMY/program commit -h; git commit -m x'), 'ALLOW');
+      assert.equal(run('git -c credential.helper=/DUMMY/program commit -h; git commit -m x'), qualifiedGit254 ? 'ALLOW' : 'UNKNOWN');
       assert.equal(run(configuredReader + '; git add .env'), 'FORBIDDEN');
     } finally { fs.writeFileSync(configPath, baseConfig); }
     try {
@@ -489,7 +495,7 @@ test('Hook DATA enforces selected transport only before a commit and preserves F
       assert.equal(run(exact + '; git add .env'), 'FORBIDDEN');
       fs.writeFileSync(configPath, baseConfig);
       const both = { SSH_ASKPASS: '/DUMMY/helper', GIT_ASKPASS: '', GIT_SSH_COMMAND: '' };
-      assert.equal(run('git -P status; git commit -m x', both), process.platform === 'win32' ? 'UNKNOWN' : 'ALLOW');
+      assert.equal(run('git -P status; git commit -m x', both), process.platform !== 'win32' && qualifiedGit254 ? 'ALLOW' : 'UNKNOWN');
       assert.equal(run('git -P status; git commit -m x', { SSH_ASKPASS: '/DUMMY/helper', GIT_ASKPASS: '' }), 'UNKNOWN');
       assert.equal(run('git -P status; git commit -m x', { SSH_ASKPASS: '/DUMMY/helper', GIT_SSH_COMMAND: '' }), 'UNKNOWN');
       assert.equal(run('SSH_ASKPASS=/DUMMY/changed git -P status; git commit -m x', both), 'UNKNOWN');

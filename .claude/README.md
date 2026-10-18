@@ -71,6 +71,20 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R46:CLAUDE-README:BEGIN -->
+
+### R46: own Git検査を実行予定のcontextへ結び付ける
+
+**修復作業中のsnapshot**。2026-10-19 00:15:41 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commitのR46 candidateは修復作業中であり、この当時の最終source件数・統合全件・新公開head／同head CI／両fresh review・全指摘処理は未取得・PENDINGである。 同公開headのCodex normal review5563562682は2026-10-18 23:58:48 JST、CodeRabbit normal full5563566259は23:59:20 JSTに完了したが、23:59:45.256–23:59:52.394 JST取得の全220threadには新3件（Codex P1 4307502905・4307502909、CR Minor4307504522）が未解決で残る。
+
+[現在のR46有限契約・通常費用・owner出口](../docs/security/git-command-guards.md#r46-current-contract)を参照する。own Git検査は解析したcommitのprogram・selected env・cwdへ結合し、PATHで見つけたGitをそのまま信頼集合へ足す循環を除く。既知固定installのrealpathを独立起点にし、bare Gitはselected PATHの先頭実候補を確認する。absoluteな既知Gitを別のPATH shadowへ差し替えず、`env -u`／unset／`env -i`で消えたtracked名をprocess.envから復活させない。
+
+未知install・動的/欠落PATH・`command -p`・未復元envは局所UNKNOWNとなり、正当な通常commitにも費用がある。必要な実行体・対象・cwd/env/config条件を保つ対応形だけを検討し、保てなければownerへ不足source/contextを示す。owner個別承認をHook停止の承認とはしない。sanitation・実取得banner・cacheのcontext結合はbinary内容由来/置換race/全OSの安全保証ではなく、native commit/helperや新L3も実証しない。以下のR38以前は取得cutに結合した全文履歴として保持する。
+
+**R46局所調整snapshot**: 2026-10-19 00:43:29 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commit candidateの最終新freeze・統合資格・新head/CI/freshは当時未取得・PENDINGである。 index/config検査の環境projectionを従来のactual reader/outboundのwide trackingから分離し、index専用ではAUTHOR/COMMITTERのNAME/EMAIL/DATE計6値を検査envへ載せない。実commit identityと送信policyは別wide guardで維持する。静的なordinary/identity向けnameref宣言だけをindex namespace不明とはしない一方、Git/PATH/config等の重要name/target参照や動的・無代入・未対応targetはUNKNOWNとし、後者をactual childのenv-i clear以外で勝手に解除しない。nameref全般の対応保証ではない。初回全件の過剰拒否FAILと元期待は保持し、前記の同目的条件を保つ代替とowner出口を変えない。
+
+<!-- PR191:R46:CLAUDE-README:END -->
+
 <!-- PR191:R38:CLAUDE-README:BEGIN -->
 
 ### R38: 既存dispatch上の有限契約

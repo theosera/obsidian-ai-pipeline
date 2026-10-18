@@ -20,6 +20,45 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R46:CONTRACT:BEGIN -->
+
+<a id="r46-current-contract"></a>
+
+## R46: parsed commitのprogram・selected env・cwdへ結び付くown検査
+
+**修復作業中のsnapshot**。2026-10-19 00:15:41 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commitのR46 candidateは修復作業中であり、この当時の最終source件数・統合全件・新公開head／同head CI／両fresh review・全指摘処理は未取得・PENDINGである。 同公開headのCodex normal review5563562682は2026-10-18 23:58:48 JST、CodeRabbit normal full5563566259は23:59:20 JSTに完了したが、23:59:45.256–23:59:52.394 JST取得の全220threadには新3件（Codex P1 4307502905・4307502909、CR Minor4307504522）が未解決で残る。 旧headのCI・全件成功や両normalを新R46 sourceの受入へ持ち越さない。
+
+### 観測した不足と修復の有限契約
+
+P1 2件のbefore対照は公開c3と本タスク初期head `df463a91b87547c8c228a4205e9ca1e3c057afff` の両方で再現し、R42–R45が新たに導入した危険側ALLOW退行とは分類しない。owned PATH側Gitがabsolute `/usr/bin/git commit`のown検査へ選ばれる不足と、提案`env -u GIT_INDEX_FILE`で除いた継承値をown検査が保持する不足を分ける。原26 Hook DATAはcommit実行0で、初期dfのprefix無しdenyはDENY_UNCLASSIFIEDとして保持する。実native commit/秘密の履歴混入/通信を実証したものではない。
+
+| 境界 | R46で結び付ける条件・正常対照・通常費用 |
+| --- | --- |
+| 検査programの独立起点 | POSIXの既知固定install `/usr/bin`・`/bin`・`/usr/local/bin`・`/opt/homebrew/bin`にあるGitのrealpathを独立起点とし、見つけたPATH候補を自分で信頼集合へ足さない。bareはselected PATHの先頭実候補がこの既知canonicalと一致する場合に限り、absoluteな既知Gitは別のPATH shadowから独立に扱う。未知install・未解決/動的/欠落PATH・`command -p`は局所UNKNOWN。正当な独自installのcommitも止まり得る。 |
+| selected envとcwd | parsed commitのprogram・選択env・実効cwdをown検査へ渡し、`env -u`／unset／`env -i`で消えたtracked名をprocess.env fallbackで復活させない。対応できない環境変換やcwdはUNKNOWN。意図して別index/repoを選ぶ通常操作も同じ条件を再現できなければ止まる。 |
+| sanitationとcache | no-lazy-fetchやhelper除去は結合済みcontextから作るown検査copyだけの抑止であり、実行予定readerのsource非活性や安全性へ流用しない。version/config等のcacheをprogram・env・cwdで分離する。Git2.54 fixed-consumer資格は同contextで実取得したbannerだけへ結び付け、別contextの過去bannerを借用しない。 |
+| common alias probe | 未登録namespaceはSGでもprobe前にUNKNOWNとし、既知namespaceで必要なprobeの実行体も独立に確認した絶対Gitへ固定する。継承envを誤って使う局所SG不足を、既存EG namespace UNKNOWNが止めることだけで安全としない。custom/missing subcommandのSG停止が増えるが、既存全体のEG停止や通常builtin対照と分ける。 |
+
+既知Git/復元可能なselected env/cwdのclean commit ALLOWと、同じcontextのsecret stage FORBIDDENを別対照として確認する。UNKNOWNは検査不足の局所停止であり、独立に確認したFORBIDDENの優先や他guardを解除しない。unsupported raw commitを、解析したcommitと無条件に同じ検査contextへ当てはめない。
+
+common aliasの有限before27 Hook DATAではownSGの選択config不足があったが、当該未登録namespaceはEG UNKNOWNで既に停止し、全3Hook通過や新P1とは認定しない。source/contextの同原因横断として修復し、任意namespace全般の新たな安全保証へ広げない。Minorのversion依存testも、固定consumerの実取得資格と未資格backendのUNKNOWNを区別して記録し、2.54 hostを全環境の前提にしない。
+
+### 信頼起点の限界と同目的の出口
+
+既知install realpathは有限の信頼起点であり、binary内容の由来、独自patch、実行までの置換race、全OSの同一動作を認証するものではない。Windowsの固定標準installという候補も実Windows OSで資格化したとはしない。Git2.54 bannerが一致するだけで任意backend全体の安全認証へ昇格させない。
+
+拒否時は同じ対象・操作・program・argv・cwd/env/config・source条件を保てる既知の対応形だけを検討する。必要なGit/helper・index・repo・env条件を除いて同目的とはしない。readerとcommitの分割も意味と対象を保ち後commitを再検査できる場合に限り、条件を復元できなければownerへ実行source/contextとUNKNOWN理由を示す。ownerの個別操作承認はHook停止・bypass承認ではなく、必要条件が未確認のままHookを無効にする出口を作らない。
+
+旧8696の原入力・期待や元FAIL/NEは保持し、新sourceの影響差と意図した通常費用を測る。部品閉鎖、統合全件、公開新headのrequired CI、同head両fresh normalと全指摘処理、whole-body CAS/readback、具体公開packetへのowner承認を別に確認する。このsnapshotで新R46最終件数・公開head・CI・freshを予測せず、native commit/helper・認証/通信や新L3の成立も主張しない。以下のR44以前の本文・日時・数値・リンクは各cutの全文履歴として保持する。
+
+**R46局所調整snapshot**: 2026-10-19 00:43:29 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commit candidateの最終新freeze・統合資格・新head/CI/freshは当時未取得・PENDINGである。 初回固定41-v2の全8696は5件の過剰UNKNOWNで不合格だった事実と原期待を保持し、その修復後sourceを旧873/15のPASSだけで資格化しない。
+
+index/config検査に必要な環境projectionと、actual reader/outboundの従来wide trackingを分離する。index専用の検査envへは`GIT_AUTHOR_NAME`・`GIT_AUTHOR_EMAIL`・`GIT_AUTHOR_DATE`・`GIT_COMMITTER_NAME`・`GIT_COMMITTER_EMAIL`・`GIT_COMMITTER_DATE`を載せず、実commit identityや送信policyを評価する別wide guardは維持する。identityを検査envから除くことを、実際のidentity/送信sourceが安全である証明へ流用しない。
+
+静的なordinary/identity向けnameref宣言だけでindex namespaceを不明とはしない。一方、Git/PATH/config等の重要name/targetへの参照はUNKNOWNとし、動的・無代入・未対応targetの不明状態はsticky UNKNOWNで保持する。actual childの対応済み`env -i` clear以外で自動解除せず、未対応namerefを全般対応したものではない。通常のidentityを同じ条件で使う意味を保ち、必要なtarget/envを除いた形へ逃がさない。同じ対象・操作・source/contextを復元できない場合は前記owner出口を使い、個別操作承認をHook停止承認へ読み替えない。
+
+<!-- PR191:R46:CONTRACT:END -->
+
 <!-- PR191:R44:CONTRACT:BEGIN -->
 
 <a id="r44-current-contract"></a>

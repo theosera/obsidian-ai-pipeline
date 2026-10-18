@@ -2283,6 +2283,9 @@ const gitConfigurationEnvironment = name => GIT_CONFIG_SOURCE_ENV.has(name) || /
 /** Selected environment for a late pre-commit reader check; opt-in, never an outbound-value proof. */
 const gitPreCommitEnvironmentName = name => typeof name === 'string' && !/[=\0]/.test(name) &&
   (/^GIT_/.test(name) || ['HOME', 'XDG_CONFIG_HOME', 'PAGER', 'PATH', 'SSH_ASKPASS'].includes(name));
+// Identity values are not inputs to the hook's own index/config inspection.
+// Their actual commit/outbound roles retain the separate, wider tracking pass.
+const gitIndexInspectionEnvironmentName = name => gitPreCommitEnvironmentName(name) && !GIT_IDENTITY_ENV.has(name);
 /** A stored shell value enters a child environment only with a selected export attribute. */
 function identityEnvironmentSources(state) {
   return new Map([...state.identitySources].flatMap(([name, word]) => {
@@ -3318,35 +3321,55 @@ function inspectMediatedSource(source, depth = 0) {
 }
 
 let trustedGitPaths;
-/** Permit system Git and the exact executable used by this hook's unchanged PATH lookup. */
+/** Installation roots are independent of the command's or hook's PATH. */
 function trustedGitExecutable(word) {
   if (!trustedGitPaths) {
     trustedGitPaths = new Set();
     const remember = (p) => { try { trustedGitPaths.add(fs.realpathSync(p)); } catch {} };
-    remember('/usr/bin/git');
-    remember('/bin/git');
-    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-      const candidate = path.resolve(dir || '.', 'git');
-      try {
-        fs.accessSync(candidate, fs.constants.X_OK);
-        if (!fs.statSync(candidate).isFile()) continue;
-        remember(candidate);
-        break;
-      } catch {}
-    }
+    const installations = process.platform === 'win32'
+      ? ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe',
+        'C:\\Program Files (x86)\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\bin\\git.exe']
+      : ['/usr/bin/git', '/bin/git', '/usr/local/bin/git', '/opt/homebrew/bin/git'];
+    for (const installation of installations) remember(installation);
   }
-  if (word.text === 'git') return trustedGitPaths.size > 0;
+  if (!word || word.dynamic || word.ansiCUnknown) return false;
+  if (word.text === 'git') return resolveTrustedGitExecutable(word) !== null;
   if (!path.isAbsolute(word.text)) return false;
   try { return trustedGitPaths.has(fs.realpathSync(word.text)); } catch { return false; }
+}
+
+/** Resolve the first selected candidate, never execute or skip an untrusted one. */
+function resolveTrustedGitExecutable(word, environment = process.env, cwd = process.cwd()) {
+  if (!word || word.dynamic || word.ansiCUnknown || typeof word.text !== 'string') return null;
+  const executable = candidate => {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (!fs.statSync(candidate).isFile() || !trustedGitExecutable({ text: candidate })) return null;
+      return fs.realpathSync(candidate);
+    } catch { return null; }
+  };
+  if (path.isAbsolute(word.text)) return executable(word.text);
+  if (word.text !== 'git' || typeof environment.PATH !== 'string') return null;
+  for (const dir of environment.PATH.split(path.delimiter)) {
+    const candidate = path.resolve(cwd, dir || '.', process.platform === 'win32' ? 'git.exe' : 'git');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (!fs.statSync(candidate).isFile()) continue;
+      return executable(candidate); // an untrusted first match shadows all later installations
+    } catch {}
+  }
+  return null;
 }
 
 let inspectionSerial = 0;
 
 /** Inspect executable Git invocations, associating preceding scope changes with each invocation. */
 function inspect(cmd, options = {}) {
+  const indexInspection = options.trackGitPreCommitEnvironment === true && options.trackGitIndexInspectionEnvironment === true;
+  const preCommitEnvName = indexInspection ? gitIndexInspectionEnvironmentName : gitPreCommitEnvironmentName;
   // Egress tracks arbitrary SendEnv values; the late pre-commit pass tracks only its selected environment.
   const trackedEnv = name => trackedValueEnvironment(name) ||
-    options.trackGitPreCommitEnvironment === true && gitPreCommitEnvironmentName(name) ||
+    options.trackGitPreCommitEnvironment === true && preCommitEnvName(name) ||
     options.trackOutboundEnvironment === true && typeof name === 'string' && name.length > 0 && !/[=\0]/.test(name);
   const outboundScalarWord = (word, state) => {
     const selected = literalScalarWord(word, state);
@@ -3426,7 +3449,7 @@ function inspect(cmd, options = {}) {
   if (options.trackGitPreCommitEnvironment === true && Array.isArray(options.initialGitPreCommitEnvironmentSources)) {
     const initial = stateFor(parsed.scope);
     const selected = childIdentityState(new Map(options.initialGitPreCommitEnvironmentSources
-      .filter(source => gitPreCommitEnvironmentName(source.name)).map(source => [source.name, source.word])));
+      .filter(source => preCommitEnvName(source.name)).map(source => [source.name, source.word])));
     // Values seed only the late metadata pass: inherited HOME is not a command-scope target mutation.
     for (const [name, word] of selected.identitySources) initial.identitySources.set(name, word);
     for (const [name, exported] of selected.identityExports) initial.identityExports.set(name, exported);
@@ -3654,7 +3677,7 @@ function inspect(cmd, options = {}) {
           word?.defaultGhConfigRoot && word.text !== '' ? null : word })) : [],
       outboundEnvironmentUnknown: options.trackOutboundEnvironment === true && outboundEnvironmentUnknown,
       gitPreCommitEnvironmentSources: options.trackGitPreCommitEnvironment === true
-        ? [...identitySources].filter(([name]) => gitPreCommitEnvironmentName(name)).map(([name, word]) => ({ name, word })) : [],
+        ? [...identitySources].filter(([name]) => preCommitEnvName(name)).map(([name, word]) => ({ name, word })) : [],
       gitPreCommitEnvironmentUnknown: options.trackGitPreCommitEnvironment === true && outboundEnvironmentUnknown,
       gitIdentitySources: [...identitySources].filter(([name]) => GIT_IDENTITY_ENV.has(name)).map(([name, word]) => ({ name, word })),
       gitPagerEnvSources: [...identitySources].filter(([name]) => GIT_PAGER_ENV.has(name)).map(([name, word]) => ({ name, word })),
@@ -3833,10 +3856,29 @@ function inspect(cmd, options = {}) {
     }
     const integerDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*i[A-Za-z]*$/.test(option));
     const associativeDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*A[A-Za-z]*$/.test(option));
+    const indexReferenceNames = new Set();
     if (builtin && !declarationQuery && ['declare', 'typeset', 'local'].includes(info.name) &&
         declOptions.some((option) => /^-[A-Za-z]*n[A-Za-z]*$/.test(option))) {
       state.valuesTainted = true;
-      for (const name of state.identitySources.keys()) state.identitySources.set(name, null);
+      if (indexInspection) {
+        // A known reference to ordinary/identity DATA cannot select an index.
+        // An unknown target may create a previously absent namespace variable:
+        // keep that uncertainty sticky until an actual child env clear.
+        for (const word of info.args.slice(declOptions.length).filter(word => word.text !== '--')) {
+          const assignment = !word.dynamic && scalarAssignment(word);
+          if (!assignment || assignment.append || assignment.index !== undefined ||
+              !/^[A-Za-z_][A-Za-z0-9_]*$/.test(assignment.value)) {
+            for (const name of state.identitySources.keys()) state.identitySources.set(name, null);
+            state.outboundEnvironmentUnknown = true;
+            continue;
+          }
+          for (const name of [assignment.name, assignment.value]) if (preCommitEnvName(name)) {
+            indexReferenceNames.add(name);
+          }
+        }
+      } else {
+        for (const name of state.identitySources.keys()) state.identitySources.set(name, null);
+      }
       for (const word of info.args.slice(declOptions.length)) {
         const name = /^([A-Za-z_][A-Za-z0-9_]*)(?:=|$)/.exec(word.text)?.[1];
         if (name) state.promptRefNames.add(name);
@@ -3925,6 +3967,12 @@ function inspect(cmd, options = {}) {
           if (!state.identitySources.has(name)) state.identitySources.set(name, null);
         }
       }
+    }
+    // Declaration RHS text is a reference name, not that variable's value.
+    // Apply after the ordinary declaration/export bookkeeping cannot re-prove it.
+    for (const name of indexReferenceNames) {
+      state.identitySources.set(name, null);
+      state.identityExports.set(name, null);
     }
     if (builtin && info.name === 'let') {
       for (const word of info.args) {
@@ -4448,6 +4496,7 @@ function problemMessage(problems, guardLabel) {
 /** Reject configured aliases because their executable body is outside the inspected command. */
 function aliasProblem(g, baseDir) {
   if (!g.sub || g.directHelper || BUILTIN_SUBS.has(g.sub)) return null;
+  if (g.gitNamespaceUnknown) return `未登録の git subcommand（${g.sub}）の実行 source と設定対象を確認できない`;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(g.sub)) return `git の subcommand の形を読めない（${g.sub}）`;
   if (g.gitDir || g.workTree) return `--git-dir / --work-tree を付けた builtin でない subcommand（${g.sub}）は検査できない`;
   const dir = resolveDir(baseDir, g.cdirs);
@@ -4455,8 +4504,10 @@ function aliasProblem(g, baseDir) {
   // Explicit Trace2 zeroes also prevent fallback to system/global destinations.
   const env = { ...process.env, GIT_TRACE2: '0', GIT_TRACE2_EVENT: '0', GIT_TRACE2_PERF: '0' };
   for (const name of Object.keys(env)) if (/^GIT_TRACE/.test(name)) env[name] = '0';
+  const executable = resolveTrustedGitExecutable({ text: 'git' }, env, dir);
+  if (!executable) return `git の alias 検査に使う実行先を独立に確認できない（${g.sub}）`;
   try {
-    execFileSync('git', ['--no-pager', 'config', '--get', `alias.${g.sub}`], { cwd: dir, env, stdio: ['ignore', 'ignore', 'ignore'] });
+    execFileSync(executable, ['--no-pager', 'config', '--get', `alias.${g.sub}`], { cwd: dir, env, stdio: ['ignore', 'ignore', 'ignore'] });
     return `git の alias（${g.sub}）は、中身を検査できない`;
   } catch (e) {
     if (e && e.status === 1) return null;
@@ -5258,7 +5309,9 @@ module.exports = {
   gitObjectInputDecision,
   preCommitConfigKey,
   gitPreCommitEnvironmentName,
+  gitIndexInspectionEnvironmentName,
   trustedGitExecutable,
+  resolveTrustedGitExecutable,
   messageFileSource,
   grepPagerEffect,
   gitTypedArguments,

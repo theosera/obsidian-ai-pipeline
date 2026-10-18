@@ -18,6 +18,20 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R46:README:BEGIN -->
+
+### R46: commitのGit実行体・選択env・cwdに結び付くown検査
+
+**修復作業中のsnapshot**。2026-10-19 00:15:41 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commitのR46 candidateは修復作業中であり、この当時の最終source件数・統合全件・新公開head／同head CI／両fresh review・全指摘処理は未取得・PENDINGである。 同公開headのCodex normal review5563562682は2026-10-18 23:58:48 JST、CodeRabbit normal full5563566259は23:59:20 JSTに完了したが、23:59:45.256–23:59:52.394 JST取得の全220threadには新3件（Codex P1 4307502905・4307502909、CR Minor4307504522）が未解決で残る。
+
+[R46の現在契約・通常費用・同目的の出口](docs/security/git-command-guards.md#r46-current-contract)へ集約する。PATHから自己追加したGitを信頼起点にせず、既知固定installのrealpathと解析したcommitのprogram・selected env・cwdを結合する。absoluteの既知Gitとbare Gitのselected PATH先頭候補を区別し、`env -u`／unset／`env -i`で除いたtracked値を継承環境から復活させない。
+
+未知install・動的/欠落PATH・`command -p`・未復元envでは通常commitもUNKNOWNになり得る。同じ対象・操作・実行体・cwd/env/config条件を保つ対応形を使い、保てなければownerへ不足条件を示す。必要条件を外した形やHook停止を同等の代替とはしない。own検査copyのsanitationや同contextで得たGit2.54 bannerは、実行予定sourceの安全性・binary内容由来・置換race・全OSを認証しない。以下のR44以前のround本文・日時・数値は当時cutの履歴として全文保持する。
+
+**R46局所調整snapshot**: 2026-10-19 00:43:29 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commit candidateの最終新freeze・統合資格・新head/CI/freshは当時未取得・PENDINGである。 index/config検査の環境projectionを従来のactual reader/outboundのwide trackingから分離し、index専用ではAUTHOR/COMMITTERのNAME/EMAIL/DATE計6値を検査envへ載せない。実commit identityと送信policyは別wide guardで維持する。静的なordinary/identity向けnameref宣言だけをindex namespace不明とはしない一方、Git/PATH/config等の重要name/target参照や動的・無代入・未対応targetはUNKNOWNとし、後者をactual childのenv-i clear以外で勝手に解除しない。nameref全般の対応保証ではない。初回全件の過剰拒否FAILと元期待は保持し、前記の同目的条件を保つ代替とowner出口を変えない。
+
+<!-- PR191:R46:README:END -->
+
 <!-- PR191:R44:README:BEGIN -->
 
 ### R44: proxy選択・複合empty shadow・sg/newgrpのsource境界

@@ -96,6 +96,22 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R46:PLAYBOOK:BEGIN -->
+
+### R46: inspectionのprogram/env/cwdをcommitと一致させる
+
+**修復作業中のsnapshot**。2026-10-19 00:15:41 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commitのR46 candidateは修復作業中であり、この当時の最終source件数・統合全件・新公開head／同head CI／両fresh review・全指摘処理は未取得・PENDINGである。 同公開headのCodex normal review5563562682は2026-10-18 23:58:48 JST、CodeRabbit normal full5563566259は23:59:20 JSTに完了したが、23:59:45.256–23:59:52.394 JST取得の全220threadには新3件（Codex P1 4307502905・4307502909、CR Minor4307504522）が未解決で残る。
+
+[R46の現在契約・正常対照・費用と出口](docs/security/git-command-guards.md#r46-current-contract)を参照する。own Git検査はparsed commitのprogram・selected env・cwdへ結合する。既知固定installのrealpathを独立の信頼起点とし、bareはselected PATHの先頭実候補を確認、absolute既知GitはPATH shadowから独立に扱う。`env -u`／unset／`env -i`のtracked名の消失をprocess.env fallbackで取り消さず、own検査copyのsanitationをactual selected sourceの安全性証明へ流用しない。
+
+検査cacheはprogram/env/cwdで分離し、Git2.54 fixed-consumer資格のbannerも同じcontextの実取得値だけに結び付ける。common alias probeは既知の絶対programへ固定し、未登録namespaceはSG自身もprobeせずUNKNOWNにする。既存EG namespace UNKNOWNをownSGの検査安全性証明にしない。未知install・動的/欠落PATH・`command -p`・未復元envは通常操作にもUNKNOWN費用を生む。
+
+同じ対象・操作・program・cwd/env/config/source条件を保つ対応形だけを検討し、条件を保てなければownerへUNKNOWN理由を示す。owner個別承認はHook停止の承認ではない。既知contextのclean commit ALLOWとsecret stage FORBIDDENは別の正常/禁止対照として測り、旧8696期待を黙って変更しない。binary内容由来・置換race・全OS/Windowsの実資格やnative commit/helper、新L3は認証せず、以下のR44以前は当時cutの全文履歴として保持する。
+
+**R46局所調整snapshot**: 2026-10-19 00:43:29 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commit candidateの最終新freeze・統合資格・新head/CI/freshは当時未取得・PENDINGである。 index/config検査の環境projectionを従来のactual reader/outboundのwide trackingから分離し、index専用ではAUTHOR/COMMITTERのNAME/EMAIL/DATE計6値を検査envへ載せない。実commit identityと送信policyは別wide guardで維持する。静的なordinary/identity向けnameref宣言だけをindex namespace不明とはしない一方、Git/PATH/config等の重要name/target参照や動的・無代入・未対応targetはUNKNOWNとし、後者をactual childのenv-i clear以外で勝手に解除しない。nameref全般の対応保証ではない。初回全件の過剰拒否FAILと元期待は保持し、前記の同目的条件を保つ代替とowner出口を変えない。
+
+<!-- PR191:R46:PLAYBOOK:END -->
+
 <!-- PR191:R44:PLAYBOOK:BEGIN -->
 
 ### R44: 選択sourceを保ちproxyとlauncher contextを限定する
