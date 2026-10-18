@@ -29,11 +29,33 @@ const SAFE_GIT_ENV = /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTO
 
 const INSPECTION_IRRELEVANT_GIT_ENV = /^GIT_(?:EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|SSH_VARIANT|ASKPASS|PROXY_COMMAND|MERGE_AUTOEDIT)$/;
 
+/** Loader selection happens before Git can parse even a help/version query. */
+function loaderEnvironmentUnknown(environment, platform = process.platform) {
+  for (const [name, value] of Object.entries(environment)) {
+    if (!guard.inspectionLoaderEnvironmentName(name)) continue;
+    const active = platform === 'linux' ? name.startsWith('LD_')
+      : platform === 'darwin' ? name.startsWith('DYLD_') || name === 'LD_LIBRARY_PATH' : true;
+    if (!active) continue;
+    // These two raw path consumers have no qualified empty-disables proof.
+    const knownEmpty = ['linux', 'darwin'].includes(platform) &&
+      !['LD_ORIGIN_PATH', 'DYLD_SHARED_CACHE_DIR'].includes(name);
+    if (value !== '' || !knownEmpty) return true;
+  }
+  return false;
+}
+
 /** Do not let an inspection itself write a trace file or contact a trace socket. */
-function safeInspectionEnvironment(environment) {
+function safeInspectionEnvironment(environment, platform = process.platform) {
+  if (loaderEnvironmentUnknown(environment, platform)) return null;
   const result = { ...environment };
   for (const [name, value] of Object.entries(environment)) {
-    if (/^GIT_TRACE/.test(name)) {
+    if (guard.inspectionLoaderEnvironmentName(name)) {
+      // Preserve known empty path lists: deleting an empty fallback list could
+      // re-enable the loader's default search. Only inactive families disappear.
+      const active = platform === 'linux' ? name.startsWith('LD_')
+        : platform === 'darwin' ? name.startsWith('DYLD_') || name === 'LD_LIBRARY_PATH' : true;
+      if (!active) delete result[name];
+    } else if (/^GIT_TRACE/.test(name)) {
       if (value !== '' && value !== '0' && !(/^GIT_TRACE2(?:_EVENT|_PERF)?$/.test(name) && /^false$/i.test(value))) return null;
       delete result[name];
     } else if (INSPECTION_IRRELEVANT_GIT_ENV.test(name) || name === 'SSH_ASKPASS') {
@@ -119,31 +141,40 @@ function invocationEnvironment(invocation, baseline = process.env) {
 }
 
 /** Bind staged and pathspec reads to the parsed commit's program, environment and cwd. */
-function commitInspectionContext(g, invocation, baseDir) {
+function commitInspectionContext(g, invocation, baseDir, deps = {}) {
   if (!invocation || invocation.unknownContextBefore || invocation.pathChangedBefore ||
       g.unknownContextBefore || g.cdLikeBefore) return null;
-  const selected = invocationEnvironment(invocation);
+  const selected = invocationEnvironment(invocation, deps.environment || process.env);
   const callee = literal(invocation.nameWord);
   if (!selected || !callee || callee === 'git' && invocation.commandDefaultSearch === true) return null;
-  const cwd = guard.resolveDir(baseDir, g.cdirs || []);
-  const executable = guard.resolveTrustedGitExecutable({ text: callee }, selected.env, cwd);
-  const env = safeInspectionEnvironment(selected.env);
-  return executable && env ? { executable, env, cwd } : null;
+  const cdirs = g.cdirs === undefined ? [] : g.cdirs;
+  if (!directoryGlobals(cdirs)) return null;
+  // The shell resolves the program before Git applies any -C. Keep the raw
+  // operands for Git's repeated chdir calls; lexical normalization loses links.
+  const executable = guard.resolveTrustedGitExecutable({ text: callee }, selected.env, baseDir);
+  const env = safeInspectionEnvironment(selected.env, deps.platform);
+  return executable && env ? { executable, env, cwd: baseDir, cdirs: [...cdirs] } : null;
 }
 
-function inspectionContextKey(executable, env, cwd) {
-  return JSON.stringify([executable, cwd, Object.entries(env).sort(([a], [b]) => a.localeCompare(b))]);
+function directoryGlobals(cdirs = []) {
+  if (!Array.isArray(cdirs) || cdirs.some(value => typeof value !== 'string' || value.includes('\0'))) return null;
+  return cdirs.flatMap(value => ['-C', value]);
 }
-function cachedInspectionBanner(executable, environment, cwd) {
+function inspectionContextKey(executable, env, cwd, cdirs = []) {
+  return JSON.stringify([executable, cwd, cdirs, Object.entries(env).sort(([a], [b]) => a.localeCompare(b))]);
+}
+function cachedInspectionBanner(executable, environment, cwd, cdirs = []) {
   const env = safeInspectionEnvironment(environment);
   if (!env) return '';
   env.GIT_OPTIONAL_LOCKS = '0';
-  return inspectionVersions.get(inspectionContextKey(executable, env, cwd)) || '';
+  return inspectionVersions.get(inspectionContextKey(executable, env, cwd, cdirs)) || '';
 }
 
 /** These overrides harden the hook's own inspection, not the proposed command. */
-function inspectionArgs(args) {
-  return ['--no-pager', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args.slice(0, 1),
+function inspectionArgs(args, cdirs = []) {
+  const globals = directoryGlobals(cdirs);
+  if (!globals) throw new Error('unproved inspection Git directory arguments');
+  return [...globals, '--no-pager', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args.slice(0, 1),
     ...(args[0] === 'diff' ? ['--no-ext-diff', '--no-textconv'] : []), ...args.slice(1)];
 }
 function readInspectionGit(args, options) {
@@ -154,11 +185,14 @@ function readInspectionGit(args, options) {
   if (!env) throw new Error('unproved inspection Git environment');
   const ownCwd = options?.cwd;
   if (typeof ownCwd !== 'string' || !path.isAbsolute(ownCwd) || ownCwd.includes('\0')) throw new Error('unproved inspection Git cwd');
-  const contextKey = inspectionContextKey(executable, env, ownCwd);
+  const cdirs = options?.cdirs === undefined ? [] : options.cdirs;
+  const globals = directoryGlobals(cdirs);
+  if (!globals) throw new Error('unproved inspection Git directory arguments');
+  const contextKey = inspectionContextKey(executable, env, ownCwd, cdirs);
   if (!inspectionVersions.has(contextKey)) {
     // The real option query qualifies this trusted backend's CLI capability;
     // the separate version floor below concerns fsmonitor boolean semantics.
-    const banner = execFileSync(executable, ['--no-lazy-fetch', '--version'], {
+    const banner = execFileSync(executable, [...globals, '--no-lazy-fetch', '--version'], {
       cwd: ownCwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 1024,
     });
     if (!supportsInspectionHardening(banner)) throw new Error('Git fsmonitor boolean hardening needs Git >= 2.36');
@@ -168,7 +202,7 @@ function readInspectionGit(args, options) {
   let configured;
   if (!ownHookConfigByCwd.has(contextKey)) {
   try {
-    configured = execFileSync(executable, ['--no-pager', '--no-lazy-fetch', 'config', '--show-scope', '--null', '--get-regexp', '^hook\\..*\\.(event|enabled)$'], {
+    configured = execFileSync(executable, [...globals, '--no-pager', '--no-lazy-fetch', 'config', '--show-scope', '--null', '--get-regexp', '^hook\\..*\\.(event|enabled)$'], {
       cwd: options?.cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 65536,
     });
   } catch (error) {
@@ -179,7 +213,9 @@ function readInspectionGit(args, options) {
   if (!ownConfig || configuredPostIndex(ownConfig)) throw new Error('inspection post-index-change source uninspected');
   ownHookConfigByCwd.set(contextKey, true);
   }
-  return execFileSync(executable, inspectionArgs(args), { ...options, env });
+  const childOptions = { ...options, env };
+  delete childOptions.cdirs;
+  return execFileSync(executable, inspectionArgs(args, cdirs), childOptions);
 }
 /** Older Git can interpret core.fsmonitor=false as a hook pathname. */
 function supportsInspectionHardening(banner) {
@@ -453,12 +489,14 @@ function readerContext(g, invocation, baseDir, deps = {}) {
     try { if ((deps.realpath || fs.realpathSync)(callee) !== (deps.realpath || fs.realpathSync)(executable)) return null; }
     catch { return null; }
   }
-  const safeEnv = safeInspectionEnvironment(env);
+  const safeEnv = safeInspectionEnvironment(env, deps.platform);
   if (!safeEnv) return null;
-  const inspectionBanner = cachedInspectionBanner(executable, safeEnv, guard.resolveDir(baseDir, g.cdirs || []));
+  const cdirs = g.cdirs === undefined ? [] : g.cdirs;
+  if (!directoryGlobals(cdirs)) return null;
+  const inspectionBanner = cachedInspectionBanner(executable, safeEnv, baseDir, cdirs);
   const globals = targetGlobals(g, invocation, deps.commitUsageConsumerQualified === true || inspectionBanner === 'git version 2.54.0');
   if (!globals) return null;
-  return { executable, globals, cwd: baseDir, env: safeEnv, selected, inspectionBanner };
+  return { executable, globals, cdirs: [...cdirs], cwd: baseDir, env: safeEnv, selected, inspectionBanner };
 }
 
 /** --show-scope --null emits scope NUL key LF value NUL; values stay internal. */
@@ -746,5 +784,5 @@ function assessReader(g, invocation, baseDir, deps = {}) {
 
 module.exports = { environmentSources, operationRole, targetGlobals, readerContext, parseConfigOutput,
   probeConfig, selectedHelper, assessReader, inspectionArgs, readInspectionGit, supportsInspectionHardening,
-  safeInspectionEnvironment, indexHookSource, configuredPostIndex, signatureFormatActive };
+  safeInspectionEnvironment, loaderEnvironmentUnknown, indexHookSource, configuredPostIndex, signatureFormatActive };
 module.exports.commitInspectionContext = commitInspectionContext;

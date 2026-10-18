@@ -1520,7 +1520,7 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run', 'run0', 'sg', 'newgrp']);
+const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run', 'run0', 'sg', 'newgrp', 'capsh', 'start-stop-daemon']);
 
 /** util-linux 2.39.3: priority/PID roles and namespace-free direct execvp. */
 function utilLinuxLauncherArgs(rest, info, name) {
@@ -1969,7 +1969,123 @@ function shadowGroupArgs(rest, info, name) {
   return unknown();
 }
 
+/** libcap 2.77 capsh.c: sequential attached-value options, then shell/self exec. */
+function capshArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { backend: 'libcap-2.77', mode: 'unknown', childIndex: null,
+    boundary: null, shellWord: null, sourceWord: null,
+    source: 'capability/identity/cwd/environment/selected-shell-or-self',
+    priorLauncherUnknown: info.launcherUnknown };
+  (info.capshLaunchers ||= []).push(role);
+  const unknown = () => { info.launcherUnknown = true; return rest.length; };
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  if (!known(info.argv0Word) || path.posix.basename(textOf(info.argv0Word)) !== 'capsh' || rest.length > 128) return unknown();
+  const noExec = mode => {
+    if (info.launcherUnknown) return unknown();
+    role.mode = mode; return -1;
+  };
+  const flags = new Set(['--quiet', '--print', '--current', '--modes', '--mode',
+    '--license', '--has-ambient', '--has-no-new-privs']);
+  const values = new Set(['--dropped', '--inmode', '--decode', '--supports', '--has-p',
+    '--has-i', '--has-a', '--has-b', '--is-uid', '--is-gid', '--explain', '--suggest']);
+  for (let k = 0; k < rest.length; k++) {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) return unknown();
+    if (['--', '-+', '==', '=+'].includes(text)) {
+      role.boundary = text; role.childIndex = k + 1;
+      // These are argv for the selected shell/self, not capsh options.
+      if (['--', '-+'].includes(text) && known(rest[k + 1]) && textOf(rest[k + 1]) === '-c') role.sourceWord = rest[k + 2] || null;
+      return unknown();
+    }
+    if (['--help', '-h'].includes(text)) return noExec('query');
+    // This pinned consumer has no version option; its first unknown option exits usage.
+    if (text === '--version') return noExec('usage-error');
+    if (flags.has(text)) continue;
+    const eq = text.indexOf('='), option = eq < 0 ? text : text.slice(0, eq);
+    if (eq >= 0 && option === '--shell') { role.shellWord = word; continue; }
+    if (eq >= 0 && values.has(option)) continue;
+    // Mutating options can act before a later help word (including fork/kill).
+    return unknown();
+  }
+  return noExec('query');
+}
+
+/** dpkg 1.22.22: getopt_long options select startas/exec and a post-option argv. */
+function startStopDaemonArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { backend: 'dpkg-1.22.22', mode: 'unknown', action: null, test: false,
+    childIndex: null, executableWord: null, startasWord: null, operandWords: [],
+    source: 'selected-executable/identity/cwd/environment/daemon-context',
+    priorLauncherUnknown: info.launcherUnknown };
+  (info.startStopDaemonLaunchers ||= []).push(role);
+  const unknown = () => { info.launcherUnknown = true; return rest.length; };
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const textOf = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  if (!known(info.argv0Word) || path.posix.basename(textOf(info.argv0Word)) !== 'start-stop-daemon' || rest.length > 128) return unknown();
+  const noExec = mode => {
+    if (info.launcherUnknown) return unknown();
+    role.mode = mode; return -1;
+  };
+  const flags = new Set(['oknodo', 'quiet', 'verbose', 'background', 'notify-await',
+    'no-close', 'make-pidfile', 'remove-pidfile']);
+  const values = new Set(['startas', 'name', 'pid', 'ppid', 'pidfile', 'signal', 'user',
+    'group', 'chroot', 'exec', 'chuid', 'nicelevel', 'procsched', 'iosched', 'umask',
+    'notify-timeout', 'output', 'retry', 'chdir']);
+  const short = { H: 'help', K: 'stop', S: 'start', V: 'version', T: 'status', a: 'startas',
+    n: 'name', o: 'oknodo', p: 'pidfile', q: 'quiet', r: 'chroot', s: 'signal', t: 'test',
+    u: 'user', v: 'verbose', x: 'exec', c: 'chuid', N: 'nicelevel', P: 'procsched',
+    I: 'iosched', k: 'umask', b: 'background', C: 'no-close', O: 'output',
+    m: 'make-pidfile', R: 'retry', g: 'group', d: 'chdir' };
+  const apply = (option, value) => {
+    if (option === 'help' || option === 'version') return noExec('query');
+    if (['start', 'stop', 'status'].includes(option)) {
+      if (role.action && role.action !== option) return unknown();
+      role.action = option;
+    } else if (option === 'test') role.test = true;
+    else if (values.has(option)) {
+      if (!known(value)) return unknown();
+      if (option === 'exec') role.executableWord = value;
+      if (option === 'startas') role.startasWord = value;
+    } else if (!flags.has(option)) return unknown();
+    return null;
+  };
+  for (let k = 0; k < rest.length; k++) {
+    const word = rest[k], text = textOf(word);
+    if (!known(word)) return unknown();
+    if (text === '--') { role.childIndex = k + 1; role.operandWords.push(...rest.slice(k + 1)); break; }
+    // GNU option permutation depends on POSIXLY_CORRECT. Do not use a later
+    // help/test word as proof that this earlier operand cannot select a child.
+    if (!text.startsWith('-') || text === '-') { role.operandWords.push(word); return unknown(); }
+    if (text.startsWith('--')) {
+      const eq = text.indexOf('='), option = text.slice(2, eq < 0 ? undefined : eq);
+      if (eq >= 0 && !values.has(option)) return unknown();
+      const value = values.has(option) ? (eq < 0 ? rest[++k] : { ...word,
+        text: text.slice(eq + 1), literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(eq + 1) : undefined }) : null;
+      const result = apply(option, value); if (result !== null) return result;
+    } else {
+      for (let j = 1; j < text.length; j++) {
+        const option = short[text[j]];
+        if (!option) return unknown();
+        const value = values.has(option) ? (j + 1 < text.length ? { ...word,
+          text: text.slice(j + 1), literalValue: typeof word.literalValue === 'string' ? word.literalValue.slice(j + 1) : undefined } : rest[++k]) : null;
+        const result = apply(option, value); if (result !== null) return result;
+        if (values.has(option)) break;
+      }
+    }
+  }
+  if (role.action === 'status' || (role.test && ['start', 'stop'].includes(role.action))) return noExec(role.test ? 'test' : 'query');
+  // Start may exec even when matching currently finds nothing; context is unqualified.
+  return unknown();
+}
+
 const WRAPPERS = {
+  capsh: capshArgs,
+  'start-stop-daemon': startStopDaemonArgs,
   sg: (rest, info) => shadowGroupArgs(rest, info, 'sg'),
   newgrp: (rest, info) => shadowGroupArgs(rest, info, 'newgrp'),
   run0: run0Args,
@@ -2280,9 +2396,21 @@ const GIT_TRANSPORT_SOURCE_ENV = new Set(['GIT_PROXY_COMMAND', 'GIT_SSH_COMMAND'
 const TRACKED_VALUE_ENV = new Set([...GIT_TRANSPORT_SOURCE_ENV, ...GIT_HTTP_METADATA_ENV, ...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, ...GIT_CONFIG_SOURCE_ENV, 'PS4']);
 const trackedValueEnvironment = name => TRACKED_VALUE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 const gitConfigurationEnvironment = name => GIT_CONFIG_SOURCE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
+// Finite executable-loading source inventory. Presence is tracked separately
+// from Git target variables; the inspection reader qualifies the active backend.
+const INSPECTION_LOADER_ENVIRONMENT_NAMES = Object.freeze([
+  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'LD_ORIGIN_PATH',
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH',
+  'DYLD_FALLBACK_LIBRARY_PATH', 'DYLD_FALLBACK_FRAMEWORK_PATH',
+  'DYLD_VERSIONED_LIBRARY_PATH', 'DYLD_VERSIONED_FRAMEWORK_PATH',
+  'DYLD_ROOT_PATH', 'DYLD_PATHS_ROOT', 'DYLD_IMAGE_SUFFIX', 'DYLD_SHARED_CACHE_DIR',
+]);
+const INSPECTION_LOADER_ENVIRONMENT = new Set(INSPECTION_LOADER_ENVIRONMENT_NAMES);
+const inspectionLoaderEnvironmentName = name => INSPECTION_LOADER_ENVIRONMENT.has(name);
 /** Selected environment for a late pre-commit reader check; opt-in, never an outbound-value proof. */
 const gitPreCommitEnvironmentName = name => typeof name === 'string' && !/[=\0]/.test(name) &&
-  (/^GIT_/.test(name) || ['HOME', 'XDG_CONFIG_HOME', 'PAGER', 'PATH', 'SSH_ASKPASS'].includes(name));
+  (/^GIT_/.test(name) || ['HOME', 'XDG_CONFIG_HOME', 'PAGER', 'PATH', 'SSH_ASKPASS'].includes(name) ||
+    inspectionLoaderEnvironmentName(name));
 // Identity values are not inputs to the hook's own index/config inspection.
 // Their actual commit/outbound roles retain the separate, wider tracking pass.
 const gitIndexInspectionEnvironmentName = name => gitPreCommitEnvironmentName(name) && !GIT_IDENTITY_ENV.has(name);
@@ -3325,7 +3453,7 @@ let trustedGitPaths;
 function trustedGitExecutable(word) {
   if (!trustedGitPaths) {
     trustedGitPaths = new Set();
-    const remember = (p) => { try { trustedGitPaths.add(fs.realpathSync(p)); } catch {} };
+    const remember = (p) => { try { trustedGitPaths.add(fs.realpathSync.native(p)); } catch {} };
     const installations = process.platform === 'win32'
       ? ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe',
         'C:\\Program Files (x86)\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\bin\\git.exe']
@@ -3335,7 +3463,7 @@ function trustedGitExecutable(word) {
   if (!word || word.dynamic || word.ansiCUnknown) return false;
   if (word.text === 'git') return resolveTrustedGitExecutable(word) !== null;
   if (!path.isAbsolute(word.text)) return false;
-  try { return trustedGitPaths.has(fs.realpathSync(word.text)); } catch { return false; }
+  try { return trustedGitPaths.has(fs.realpathSync.native(word.text)); } catch { return false; }
 }
 
 /** Resolve the first selected candidate, never execute or skip an untrusted one. */
@@ -3345,13 +3473,17 @@ function resolveTrustedGitExecutable(word, environment = process.env, cwd = proc
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
       if (!fs.statSync(candidate).isFile() || !trustedGitExecutable({ text: candidate })) return null;
-      return fs.realpathSync(candidate);
+      return fs.realpathSync.native(candidate);
     } catch { return null; }
   };
   if (path.isAbsolute(word.text)) return executable(word.text);
   if (word.text !== 'git' || typeof environment.PATH !== 'string') return null;
   for (const dir of environment.PATH.split(path.delimiter)) {
-    const candidate = path.resolve(cwd, dir || '.', process.platform === 'win32' ? 'git.exe' : 'git');
+    // exec's PATH search uses the filesystem spelling, including symlink/..
+    // and an empty component's cwd. Do not normalize it before access/realpath.
+    if (process.platform === 'win32' && /^[A-Za-z]:[^\\/]/.test(dir)) return null;
+    const directory = !dir ? cwd : path.isAbsolute(dir) ? dir : cwd + path.sep + dir;
+    const candidate = directory + path.sep + (process.platform === 'win32' ? 'git.exe' : 'git');
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
       if (!fs.statSync(candidate).isFile()) continue;
@@ -3662,6 +3794,8 @@ function inspect(cmd, options = {}) {
       systemdRunLauncherRoles: info.systemdRunLaunchers || [],
       run0LauncherRoles: info.run0Launchers || [],
       shadowGroupLauncherRoles: info.shadowGroupLaunchers || [],
+      capshLauncherRoles: info.capshLaunchers || [],
+      startStopDaemonLauncherRoles: info.startStopDaemonLaunchers || [],
       utilLinuxLauncherRole: info.utilLinuxLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
@@ -4093,7 +4227,14 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.run0Launchers?.some(role => role.mode === 'unknown') || info.shadowGroupLaunchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.run0Launchers?.some(role => role.mode === 'unknown') || info.shadowGroupLaunchers?.some(role => role.mode === 'unknown') || info.capshLaunchers?.some(role => role.mode === 'unknown') || info.startStopDaemonLaunchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+      const capshUnknown = info.capshLaunchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
+      const daemonUnknown = info.startStopDaemonLaunchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
+      if (capshUnknown || daemonUnknown) {
+        if (capshUnknown && options.deferCapshSourceProblems !== true) res.problems.push('capsh の capability/identity・選択 shell/self・cwd/env と実行 source を確認できません。同じ目的・対象・実行条件を保つ対応済み形式がなければ owner に不足する条件を確認してください。');
+        if (daemonUnknown && options.deferStartStopDaemonSourceProblems !== true) res.problems.push('start-stop-daemon の選択 executable/startas・identity・cwd/env・daemon 実行条件を確認できません。同じ目的・対象・実行条件を保つ対応済み形式がなければ owner に不足する条件を確認してください。');
+        return;
+      }
       const shadowUnknown = info.shadowGroupLaunchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
       if (shadowUnknown && options.deferShadowGroupSourceProblems !== true) res.problems.push('shadow-utils sg/newgrp の group・認証・command source または既定/login shell の実行条件を確認できません。同じ対象・group・cwd/env/source・操作を保つ対応形式がなければ owner に不足条件を確認してください。個別操作の了承は hook 無効化の了承ではありません。');
       if (shadowUnknown) return;
@@ -4515,9 +4656,49 @@ function aliasProblem(g, baseDir) {
   }
 }
 
-/** Resolve repeated Git -C paths sequentially, as Git does for relative paths. */
+/** Lexical display helper only; native inspection must replay raw -C arguments. */
 function resolveDir(baseDir, cdirs) {
   return cdirs.reduce((d, c) => path.resolve(d, c), baseDir);
+}
+
+/** Resolve a literal filesystem path without collapsing symlink/.. first. */
+function filesystemPath(baseDir, value) {
+  if (typeof baseDir !== 'string' || typeof value !== 'string' || /\0/.test(baseDir + value)) return null;
+  const raw = path.isAbsolute(value) ? value : baseDir + path.sep + value;
+  try { return fs.realpathSync.native(raw); } catch { return null; }
+}
+
+/** Filesystem-only path-role comparison; does not execute the proposed Git. */
+function gitFilesystemDir(baseDir, cdirs = []) {
+  let directory = filesystemPath(baseDir, '');
+  const isDirectory = value => {
+    try { return !!value && fs.statSync(value).isDirectory(); } catch { return false; }
+  };
+  if (!isDirectory(directory)) return null;
+  for (const value of cdirs) {
+    if (typeof value !== 'string') return null;
+    if (value === '') continue;
+    directory = filesystemPath(directory, value);
+    if (!isDirectory(directory)) return null;
+  }
+  return directory;
+}
+
+/** Git normalizes pathspec .. first, and stages an in-tree final symlink itself. */
+function gitPathspecRootVerdict(baseDir, value, roots) {
+  const lexical = path.resolve(baseDir, value);
+  if (roots.has(lexical)) return 'FORBIDDEN';
+  // Canonicalize only the parent: /var vs /private/var must not conceal root,
+  // while a final root-link inside the working directory is one named entry.
+  const parent = filesystemPath(path.dirname(lexical), '');
+  if (!parent) return null;
+  const selected = parent + path.sep + path.basename(lexical);
+  if (roots.has(selected)) return 'FORBIDDEN';
+  try {
+    if (fs.lstatSync(lexical).isSymbolicLink() && roots.has(filesystemPath(lexical, '')) &&
+        ![...roots].some(root => selected.startsWith(root + path.sep))) return 'UNKNOWN';
+  } catch {}
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -5303,6 +5484,9 @@ module.exports = {
   problemMessage,
   aliasProblem,
   resolveDir,
+  filesystemPath,
+  gitFilesystemDir,
+  gitPathspecRootVerdict,
   parseCommitArgs,
   parseMergeMessageArgs,
   parseGitObjectRoute,
@@ -5310,6 +5494,8 @@ module.exports = {
   preCommitConfigKey,
   gitPreCommitEnvironmentName,
   gitIndexInspectionEnvironmentName,
+  INSPECTION_LOADER_ENVIRONMENT_NAMES,
+  inspectionLoaderEnvironmentName,
   trustedGitExecutable,
   resolveTrustedGitExecutable,
   messageFileSource,

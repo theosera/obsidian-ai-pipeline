@@ -243,6 +243,7 @@ for (const g of insp.gits) {
 // root は CLAUDE_PROJECT_DIR に加えて、コマンドが走る場所（入力の cwd と `-C`）も見る。
 const projectDir = (process.env.CLAUDE_PROJECT_DIR || process.cwd()).replace(/\/+$/, '');
 let postCdPathspecUnknown = false;
+let filesystemCwdUnknown = false;
 for (const g of insp.gits) {
   if (g.sub !== 'add' && g.sub !== 'stage') continue;
   const parsed = guard.parseAddArgs(g.args);
@@ -256,8 +257,19 @@ for (const g of insp.gits) {
       (g.unknownContextBefore || (g.cdLikeBefore && !independentCwd))) {
     deny('git add / stage の前に cwd または実行 context が変わり、pathspec を一括追加の対象 root と照合できません。対象・cwd・静的 -C と不明点を owner へ確認してください。', 'UNKNOWN');
   }
-  const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
-  const roots = new Set([projectDir, baseDir, inspectCwd].map((p) => path.resolve(p)));
+  const physicalCwd = g.cdirs.length ? guard.gitFilesystemDir(baseDir, g.cdirs) : null;
+  const inspectCwd = physicalCwd || guard.resolveDir(baseDir, g.cdirs);
+  if (g.cdirs.length && !physicalCwd && !g.terminal && !parsed.terminal &&
+      (parsed.pathspecs.length || parsed.unsafePathspec)) filesystemCwdUnknown = true;
+  const rootPaths = [projectDir, baseDir, inspectCwd];
+  const roots = new Set(rootPaths.flatMap(p => [path.resolve(p), guard.filesystemPath(p, '')].filter(Boolean)));
+  // Git normalizes pathspec components lexically, unlike its -C chdir calls.
+  // Following the final symlink would also mistake a single link for root.
+  const isRootPath = value => {
+    const verdict = guard.gitPathspecRootVerdict(inspectCwd, value, roots);
+    if (verdict === 'UNKNOWN') filesystemCwdUnknown = true;
+    return verdict === 'FORBIDDEN';
+  };
   // `"$PWD"` のような変数の語は、引用符を外した元の文字で見る。
   const args = g.args.map((w) => (w.dynamic ? w.raw.replace(/['"]/g, '') : w.text));
   const blanket = args.some(
@@ -281,12 +293,12 @@ for (const g of insp.gits) {
       value = path.resolve(baseDir, `.${suffix}`);
     }
     if (!value || value.startsWith('-') || value.startsWith(':')) return false;
-    return roots.has(path.resolve(inspectCwd, value));
+    return isRootPath(value);
   });
   if (blanket || normalizedRoot || (!parsed.terminal && parsed.actualBlanket)) {
     const confirmed = !parsed.terminal && !parsed.unsafePathspec && (parsed.actualBlanket ||
       parsed.pathspecs.some((word) => ['.', './', '..', '../'].includes(word.literalPath) ||
-        roots.has(path.resolve(inspectCwd, word.literalPath))));
+        isRootPath(word.literalPath)));
     deny(confirmed
       ? '解析した git add / stage が禁止された一括追加を指定しています。確認済みの個別ファイルを列挙してください。'
       : '一括追加の候補がありますが、実際の option / pathspec と消費値の境界や対象を確定できません。確認済みの個別ファイルを指定し、無理なら owner へ確認してください。',
@@ -345,5 +357,6 @@ if (m) {
 }
 
 if (postCdPathspecUnknown) deny('git add / stage の動的 pathspec は先行 cd の shell cwd で展開され、Git の静的な絶対 -C だけでは root との関係を確定できません。同じ対象の literal なファイル名を列挙できなければ、対象・操作・cwd と不明点を owner へ確認してください。', 'UNKNOWN');
+if (filesystemCwdUnknown) deny('git add / stage の -C または pathspec の symlink が選ぶ実 filesystem context を確認できず、一括追加の対象 root を照合できません。同じ対象・操作・cwd を保つ対応形式がなければ owner に不足する条件を確認してください。', 'UNKNOWN');
 
 process.exit(0);

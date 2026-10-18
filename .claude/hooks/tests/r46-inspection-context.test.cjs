@@ -12,6 +12,41 @@ const { spawnSync } = require('node:child_process');
 const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
 const guard = require(path.join(hooks, 'lib/git-guard-common.cjs'));
 const readerFile = path.join(hooks, 'lib/git-precommit-readers.cjs');
+const readers = require(readerFile);
+
+function inspectionCapability(executable, cwd, environment, runner = spawnSync) {
+  const env = readers.safeInspectionEnvironment(environment);
+  if (!env) return { available: false, status: null, banner: '', errorCode: 'UNPROVED_ENVIRONMENT' };
+  const result = runner(executable, ['--no-lazy-fetch', '--version'], {
+    cwd, env: { ...env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000,
+  });
+  const banner = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  return { available: !result.error && result.status === 0 && readers.supportsInspectionHardening(banner),
+    status: result.status, banner, errorCode: result.error?.code || null };
+}
+
+test('native index expectations require the option query, not a successful plain version banner', () => {
+  for (const [result, available] of [
+    [{ status: 0, stdout: 'git version 2.54.0\n' }, true],
+    [{ status: 129, stdout: '', stderr: 'unknown option: --no-lazy-fetch' }, false],
+    [{ status: 0, stdout: 'git version 2.35.1\n' }, false],
+    [{ status: 0, stdout: 'DUMMY unsupported banner\n' }, false],
+    [{ status: null, stdout: '', error: { code: 'ENOENT' } }, false],
+  ]) {
+    const calls = [];
+    const capability = inspectionCapability('/DUMMY/git', '/DUMMY/repo', {}, (exe, args, options) => {
+      calls.push({ exe, args, options }); return result;
+    });
+    assert.equal(capability.available, available);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, ['--no-lazy-fetch', '--version']);
+    assert.equal(calls[0].options.env.GIT_NO_LAZY_FETCH, '1');
+    assert.equal(calls[0].options.env.GIT_OPTIONAL_LOCKS, '0');
+  }
+  assert.equal(readers.supportsInspectionHardening('git version 2.43.0'), true,
+    'Git 2.43 meets this separate floor but may still reject the option');
+});
 
 function mockedInspection(baseline) {
   const calls = [];
@@ -200,6 +235,21 @@ test('index-irrelevant nameref declarations still taint prior scalar value proof
 
 let owned;
 let actualHookCalls = 0;
+const inspectionCapabilities = new Map();
+function inspectionReady(t, f, executables) {
+  for (const executable of new Set(executables)) {
+    if (!inspectionCapabilities.has(executable)) {
+      inspectionCapabilities.set(executable, inspectionCapability(executable, f.repos.secret, f.base));
+    }
+    const capability = inspectionCapabilities.get(executable);
+    t.diagnostic(`owned fixture inspection ${JSON.stringify(executable)}: ${JSON.stringify(capability)}`);
+    if (!capability.available) {
+      t.skip('native inspection unavailable: --no-lazy-fetch capability or fsmonitor floor');
+      return false;
+    }
+  }
+  return true;
+}
 function fixtures() {
   if (owned) return owned;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r46-inspection-context-'));
@@ -279,8 +329,9 @@ test('known installations resolve independently while an unknown first PATH cand
   assert.equal(fs.existsSync(f.marker), false);
 });
 
-test('own SG reads the absolute Git index despite shadow PATH and refuses unknown programs without starting them', () => {
+test('own SG reads the absolute Git index despite shadow PATH and refuses unknown programs without starting them', t => {
   const f = fixtures();
+  if (!inspectionReady(t, f, [f.absoluteGit, f.setupGit])) return;
   const shadow = { PATH: f.fakeBin + path.delimiter + f.base.PATH };
   expect(f.absoluteGit + ' commit -m x', 'FORBIDDEN', 'secret', shadow);
   expect(f.absoluteGit + ' commit -m x', 'ALLOW', 'ordinary', shadow);
@@ -292,8 +343,9 @@ test('own SG reads the absolute Git index despite shadow PATH and refuses unknow
   assert.equal(fs.existsSync(f.marker), false, 'inspection must not launch the owned fake Git');
 });
 
-test('own SG preserves actual index and repository removals, env-i and unchanged inherited targets', () => {
+test('own SG preserves actual index and repository removals, env-i and unchanged inherited targets', t => {
   const f = fixtures();
+  if (!inspectionReady(t, f, [f.absoluteGit])) return;
   const commit = f.absoluteGit + ' commit -m x';
   const alternate = { GIT_INDEX_FILE: f.alternateIndex };
   expect('env -u GIT_INDEX_FILE ' + commit, 'FORBIDDEN', 'secret', alternate);
@@ -315,7 +367,9 @@ test('own SG preserves actual index and repository removals, env-i and unchanged
   assert.equal(fs.existsSync(f.marker), false);
 });
 
-test('own SG restores the five original normal inputs without changing the staged-secret refusals', () => {
+test('own SG restores the five original normal inputs without changing the staged-secret refusals', t => {
+  const f = fixtures();
+  if (!inspectionReady(t, f, [f.setupGit])) return;
   const normalInputs = [
     'GIT_AUTHOR_NAME="$(cat .env)" git commit --author=ordinary -m ordinary',
     'GIT_AUTHOR_NAME="$(cat .env)" git commit --author=ordinary --date=ordinary -m ordinary',
@@ -325,7 +379,6 @@ test('own SG restores the five original normal inputs without changing the stage
   ];
   for (const command of normalInputs) expect(command, 'ALLOW', 'ordinary');
   expect(normalInputs[0], 'FORBIDDEN');
-  const f = fixtures();
   expect('declare -n ref=GIT_INDEX_FILE; ' + f.absoluteGit + ' commit -m ordinary', 'UNKNOWN');
   expect('declare -n ref="$TARGET"; GIT_INDEX_FILE=/DUMMY/index ' + f.absoluteGit + ' commit -m ordinary', 'UNKNOWN');
   assert.equal(fs.existsSync(f.marker), false);

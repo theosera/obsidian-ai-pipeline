@@ -210,6 +210,8 @@ const insp = guard.inspect(cmd, {
   deferSystemdRunSourceProblems: true,
   deferRun0SourceProblems: true,
   deferShadowGroupSourceProblems: true,
+  deferCapshSourceProblems: true,
+  deferStartStopDaemonSourceProblems: true,
   deferParallelSourceProblems: true,
   deferUtilLinuxSourceProblems: true,
   deferHyphenFunctionSourceProblems: true,
@@ -5849,6 +5851,8 @@ function opaqueLauncherNetwork(invocation) {
   if (invocation.systemdRunLauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
   if (invocation.run0LauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
   if (invocation.shadowGroupLauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
+  if (invocation.capshLauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
+  if (invocation.startStopDaemonLauncherRoles?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown)) return false;
   const words = invocation.launcherArgs || [];
   const existing = curlReadsUpload(words, invocation.incomplete) || wgetReadsUpload(words) || words.some((word) =>
     ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet', 'gh'].includes(word.text.split('/').pop()) ||
@@ -6014,6 +6018,18 @@ function run0SourceVerdict(invocation) {
 function shadowGroupSourceVerdict(invocation) {
   if (invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
   return invocation.launcherUnknown && invocation.shadowGroupLauncherRoles?.some(role =>
+    role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
+}
+
+/** New opaque launcher sources follow independent confirmed payload refusals. */
+function capshSourceVerdict(invocation) {
+  if (invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
+  return invocation.launcherUnknown && invocation.capshLauncherRoles?.some(role =>
+    role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
+}
+function startStopDaemonSourceVerdict(invocation) {
+  if (invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
+  return invocation.launcherUnknown && invocation.startStopDaemonLauncherRoles?.some(role =>
     role.mode === 'unknown' && !role.priorLauncherUnknown) ? 'UNKNOWN' : false;
 }
 
@@ -6508,6 +6524,7 @@ function gitCommitObjectWords(g, parsed) {
   }
   return selected;
 }
+let gitPathRootUnknown = false;
 for (const g of inspectedGits) {
   if (g.sub !== 'commit') continue;
   const parsed = guard.parseCommitArgs(g.args);
@@ -6646,10 +6663,18 @@ for (const g of inspectedGits) {
       if (added.pathspecs.some((word) => guard.isSecretPath(word.literalPath))) {
         deny('git add / stage の literal pathspec が既存の secret filename 禁止に当たります。ファイル内容を確認したものではありません。必要な操作は owner に対象・操作を確認してください。', gitVerdict(g, 'FORBIDDEN'));
       }
-      const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
-      const roots = new Set([process.env.CLAUDE_PROJECT_DIR || process.cwd(), baseDir, inspectCwd].map((dir) => path.resolve(dir)));
-      if (added.pathspecs.some((word) => typeof word.literalValue === 'string' &&
-          (['.', '..'].includes(word.literalPath) || roots.has(path.resolve(inspectCwd, word.literalPath))))) {
+      const physicalCwd = g.cdirs.length ? guard.gitFilesystemDir(baseDir, g.cdirs) : null;
+      const inspectCwd = physicalCwd || guard.resolveDir(baseDir, g.cdirs);
+      if (g.cdirs.length && !physicalCwd && added.pathspecs.length) gitPathRootUnknown = true;
+      const rootPaths = [process.env.CLAUDE_PROJECT_DIR || process.cwd(), baseDir, inspectCwd];
+      const roots = new Set(rootPaths.flatMap(dir => [path.resolve(dir), guard.filesystemPath(dir, '')].filter(Boolean)));
+      const rootPath = value => {
+        const verdict = guard.gitPathspecRootVerdict(inspectCwd, value, roots);
+        if (verdict === 'UNKNOWN') gitPathRootUnknown = true;
+        return verdict === 'FORBIDDEN';
+      };
+      if (added.pathspecs.some((word) => !word.dynamic &&
+          (['.', '..'].includes(word.literalPath) || rootPath(word.literalPath)))) {
         deny('git add / stage の実行時 literal pathspec が既存の包括追加対象に解決されます。必要な操作は owner に対象・操作・cwd を確認してください。', gitVerdict(g, 'FORBIDDEN'));
       }
     }
@@ -6679,11 +6704,12 @@ for (const g of inspectedGits) {
   }
   if (g.outboundRole && !g.outboundRole.terminal) {
     const role = g.outboundRole;
-    const directory = guard.resolveDir(baseDir, g.cdirs);
+    const directory = guard.gitFilesystemDir(baseDir, g.cdirs);
     const confirmedFile = word => {
       const literal = literalSourceWord(word);
       if (!literal || !directory) return false;
-      try { const stat = fs.statSync(path.resolve(directory, literal.text)); return stat.isFile() || stat.isDirectory(); }
+      try { const raw = path.isAbsolute(literal.text) ? literal.text : directory + path.sep + literal.text;
+        const stat = fs.statSync(raw); return stat.isFile() || stat.isDirectory(); }
       catch { return false; }
     };
     const verdict = g.sub === 'send-email' && !role.unknown && !role.noSend && role.files.length &&
@@ -6753,6 +6779,17 @@ if (invocations.some(run0SourceVerdict)) {
 
 if (invocations.some(shadowGroupSourceVerdict)) {
   deny('shadow-utils sg/newgrp の group・認証・command source・既定/login shell・cwd/env の実行条件を確認できません。同じ対象・group・操作・source と実行条件を保つ対応形式がなければ owner に不足条件を確認してください。必要な helper や認証を外すことを同目的の代替にしません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+if (gitPathRootUnknown) {
+  deny('git add / stage の -C または pathspec の symlink が選ぶ実 filesystem context を確認できず、一括追加の対象 root を照合できません。同じ対象・操作・cwd を保つ対応形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+
+if (invocations.some(capshSourceVerdict)) {
+  deny('capsh の capability/identity・選択 shell/self・cwd/env と実行 source を確認できません。同じ目的・対象・実行条件を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
+if (invocations.some(startStopDaemonSourceVerdict)) {
+  deny('start-stop-daemon の選択 executable/startas・identity・cwd/env・daemon 実行条件を確認できません。同じ目的・対象・実行条件を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 // New watch uncertainty cannot replace an existing confirmed refusal/category above.

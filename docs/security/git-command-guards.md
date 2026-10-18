@@ -20,6 +20,45 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R47:CONTRACT:BEGIN -->
+
+<a id="r47-current-contract"></a>
+
+## R47: ordered filesystem `-C`・loader環境・active launcherの有限契約
+
+**修復作業中のsnapshot**。2026-10-19 02:35:24 JST時点、公開基点head `ec3bd520ef450fb2899bef1f33618417158e4ff8` に対する未commitのR47 candidateは修復作業中であり、この当時の最終source固定・統合全件・新公開head／同head CI／両fresh reviewと全指摘処理は未取得・PENDINGである。 公開ec3への新5指摘を、実行条件2・launcher2・試験能力1として修復する。旧不足と退行の比較、局所対照、最終固定sourceの資格はそれぞれ原票で区別し、過去の成功数を新R47へ持ち越さない。
+
+### source・正常対照・通常利用への費用
+
+| 境界 | R47 candidateの有限契約と通常費用 |
+| --- | --- |
+| Git own検査の`-C` | base cwdを保ち、validated literalなraw `-C`を順序どおりversion・hook-config・index/config・index-hookの各native readへ一回引き継ぐ。symlink/`..`を先に`path.resolve`で別対象へ潰さず、複数`-C`・空値もGitのfilesystem意味を保つ。calleeのPATH選択は`-C`前のcontextでraw候補をfilesystem lookupし、native realpathを既知installの独立信頼起点へ結ぶ。`-C`でcallee検索場所を後付けしない。cacheもordered `-C`を含める。未復元・動的・存在しない/非directoryのcwdはUNKNOWNで、正当な別repo/index操作も条件を復元できなければ止まる。 |
+| AG/EGのroot/path比較 | 同じ`-C`原因の隣接修復としてphysical CWDを使うが、add pathspecはGit consumerのlexical normalizeが先であり、CWDのchdirと同じ解釈にはしない。lexical pathの親をcanonical化して`/var`等のaliasを合わせ、最終in-tree symlinkはそのentryを追加する対象として保つ。通常root-link個別追加はALLOW、`link/..`がlexicalにroot全体を選ぶ包括操作はFORBIDDENの対照。外側symlinkからrootへ向くselectionが不明ならUNKNOWNとする。必要な`-C`/linkを外した別対象へ変更せず、このcross-consumer修復の最終統合資格は当時PENDINGである。 |
+| loaderの実backend選択 | 下記15名をselected envとindex seedへ有限に含める。Linuxは`LD_` family、Darwinは`DYLD_` familyと`LD_LIBRARY_PATH`をactiveと扱い、当該backendで確認したinactive familyだけをown検査copyから除く。activeな非空/未知はGitがhelp/versionを解釈する前にも作用し得るためnative Git前にUNKNOWNとする。未資格backendは空値も自動免除しない。 |
+| known empty | qualifiedな空のloader listは削除せず空のまま検査envへ渡し、削除によりdefault fallbackを再有効化しない。activeな`LD_ORIGIN_PATH`と`DYLD_SHARED_CACHE_DIR`はempty-disablesの資格がなく、空でもUNKNOWN。inactive familyの除去やown sanitationを、実際のsourceやbinary内容が安全という証明には使わない。 |
+| `capsh`のshell/self source | libcap2.77の`--`/`-+`によるshell、`==`/`=+`によるselfと、その後のargvを区別する。active sourceはidentity/capability・shell/self・cwd/env/backendが未資格なので普通のprintfでもUNKNOWN。前段の変更/fork/killを後置helpで消さない。 |
+| `capsh`のqueryとDATA | pinned consumerの`--help`/`-h`や有限read-only形は非exec側の対照。`--version`はこのpinでは未対応optionのusage-errorで、真正versionではない。`--shell=--help`は値DATA、source境界後のhelpは選ばれたshell/selfのargvであり、capsh queryと混同しない。 |
+| `start-stop-daemon`のsource | dpkg1.22.22のrequired-value arityに従い`--exec`/`--startas`とpost-`--` argvを区別する。active startはmatch/no-match、identity・cwd/env・daemon/backend未資格により普通のprintfでもUNKNOWN。exact help/version、status、解析済みstart/stop test modeの非selected-program対照と分ける。bare operand後はGNU permutation/POSIXLY_CORRECT差が未資格で、後置help/testだけでは免除しない。 |
+| native依存test | own検査依存のALLOW/FORBIDDEN群は、選択された既知Gitで実`--no-lazy-fetch --version`が成功し、別のfsmonitor boolean版下限も満たす場合に実行する。不対応backendは当該native群をskipし、pure DTO・option error/未対応bannerの対照は維持する。Git2.43が版下限を満たしてもflag受理を証明せず、Git2.54固定consumer資格もこの能力gateとは別条件である。CIへのtest登録も成功数の先取りにはしない。 |
+
+loader inventoryは`LD_PRELOAD`、`LD_LIBRARY_PATH`、`LD_AUDIT`、`LD_ORIGIN_PATH`、`DYLD_INSERT_LIBRARIES`、`DYLD_LIBRARY_PATH`、`DYLD_FRAMEWORK_PATH`、`DYLD_FALLBACK_LIBRARY_PATH`、`DYLD_FALLBACK_FRAMEWORK_PATH`、`DYLD_VERSIONED_LIBRARY_PATH`、`DYLD_VERSIONED_FRAMEWORK_PATH`、`DYLD_ROOT_PATH`、`DYLD_PATHS_ROOT`、`DYLD_IMAGE_SUFFIX`、`DYLD_SHARED_CACHE_DIR`の15名に限定する。全環境変数や全loader/OSの対応を保証するものではない。
+
+印字DATA、先に消費された値、実selected sourceを別roleとして扱い、既知function shadowと未確認functionを混同しない。capshの既知function正常対照があっても、hyphenを含むdaemon functionの既存UNKNOWNを新たなALLOWへ読み替えない。専用のlate source UNKNOWNは独立に確認したFORBIDDENより後で評価し、外側の未知launcher/contextを内側queryで消さない。
+
+### 一次consumer・設計判断・実測を分ける
+
+`-C`のcwd順序は[Git2.54.0 documentation](https://github.com/git/git/blob/v2.54.0/Documentation/git.adoc)と[git.c](https://github.com/git/git/blob/v2.54.0/git.c)に固定する。add pathspecのprefix/lexical normalizeは同版[setup.c](https://github.com/git/git/blob/v2.54.0/setup.c)のconsumerとして別に確認する。loaderの限定は[glibc2.42 rtld.c](https://github.com/bminor/glibc/blob/glibc-2.42/elf/rtld.c)・[dl-load.c](https://github.com/bminor/glibc/blob/glibc-2.42/elf/dl-load.c)・[dl-origin.c](https://github.com/bminor/glibc/blob/glibc-2.42/sysdeps/unix/sysv/linux/dl-origin.c)、[Apple dyld-852.2](https://github.com/apple-oss-distributions/dyld/blob/dyld-852.2/src/dyld2.cpp)の有限consumer読解に基づく。launcherは[libcap2.77公式source archive](https://www.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.77.tar.xz)と[dpkg1.22.22公式source archive](https://deb.debian.org/debian/pool/main/d/dpkg/dpkg_1.22.22.tar.xz)のsource/manを固定した。
+
+これらのsource契約を現在hostの全binary・独自patch・全OSのnative認定へ昇格させない。`-C`対照のowned DUMMYとnative readonly `rev-parse`、pathspec対照のGit2.54 `add --dry-run`、fixture setup、Hook stdin DATAによる提案command判定、native launcher/loader constructorの成立は別の証拠である。pathspecのdry-run対照ではindex作成・actual stage/commit/networkは0であり、全件成功の証拠ではない。このR47追補でAPI／実送信・active launcher／loader constructorのnative成立・新L3を主張しない。
+
+### 同目的の出口と受入
+
+同じ対象・操作・ordered cwd・実Git・loader/backend・capability/identity・shell/program・argv・env/config/source条件を保てる対応形だけを検討する。必要なlauncher/loaderや`-C`を単に除くことを同目的の代替とせず、条件を保てなければownerへ必要source/contextとUNKNOWN理由を示す。個別操作承認はHook停止・bypass承認ではない。独立FORBIDDENや別guardを解除する出口も作らない。
+
+旧8696 bankの原入力・原期待/oracleと原FAIL/NEを保持する。局所試験・能力skip・部品閉鎖を統合全件、新公開head CI、同head両fresh正常review/全指摘処理、本文whole-body CAS/readbackの代わりにしない。新しい具体公開稿・head・各操作へのowner承認も別に確認する。以下のR46以前のround本文・日時・数値・リンクは当時の全文履歴として保持する。
+
+<!-- PR191:R47:CONTRACT:END -->
+
 <!-- PR191:R46:CONTRACT:BEGIN -->
 
 <a id="r46-current-contract"></a>

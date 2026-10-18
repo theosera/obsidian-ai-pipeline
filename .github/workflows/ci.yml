@@ -51,7 +51,12 @@ jobs:
             .claude/hooks/tests/ping-resolver-roles.test.cjs \
             .claude/hooks/tests/dbus-launcher-roles.test.cjs \
             .claude/hooks/tests/slogin-executable-roles.test.cjs \
-            .claude/hooks/tests/ncat-credential-roles.test.cjs
+            .claude/hooks/tests/ncat-credential-roles.test.cjs \
+            .claude/hooks/tests/r42-precommit-transport-roles.test.cjs \
+            .claude/hooks/tests/r46-inspection-context.test.cjs \
+            .claude/hooks/tests/r47-inspection-sources.test.cjs \
+            .claude/hooks/tests/r47-launcher-sources.test.cjs \
+            .claude/hooks/tests/r47-filesystem-path-roles.test.cjs
 
       - name: Run injection-gate tests (python, deterministic)
         # L1 (scan-threat-report.py) + L3 (gate_decision.py) の決定論回帰。

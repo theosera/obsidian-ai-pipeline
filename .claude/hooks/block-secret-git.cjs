@@ -480,8 +480,8 @@ for (const g of commits) {
     );
   }
   // 検査対象は **そのコマンドが commit するリポ**（入力の cwd と `-C` の並びから決める）。
-  const inspectCwd = guard.resolveDir(baseDir, g.cdirs);
   const context = commitInspectionContext(g);
+  const inspectCwd = context.cwd + (context.cdirs.length ? ' (Git -C 引数を保持)' : '');
   let staged = '';
   try {
     staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', '-z'], {
@@ -538,8 +538,6 @@ for (const g of commits) {
 // main の「git の文字が無ければ exit」はブロックの条件にした。ファイル名 inventory は共通 isSecretPath を使う。
 const RECHECK_AS_MAIN = true;
 if (RECHECK_AS_MAIN && /\bgit\b/.test(cmd)) {
-const path = require('node:path');
-
 // `git` と subcommand の間には global option (`-c k=v` / `-C <dir>` / `--git-dir=…`) を
 // 挟めるため、素の /git\s+commit\b/ では `git -c core.hooksPath=/dev/null commit` に
 // すり抜けられる。subcommand の検出は必ずこのヘルパを通す（捕獲 group 1 = 引数列）。
@@ -610,17 +608,13 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
       'ブロックしました (fail-closed)。対象リポの中で直接 commit してください。',
     );
   }
-  const cDir = (gitOptsPart.match(/-C\s*(\S+)/) || [])[1];
-  const legacyBaseDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  // 最初の raw match が help でも、実行する commit の対象は上で読んだ呼び出しから取る。
-  const inspectCwd = commits.length ? guard.resolveDir(baseDir, commits[0].cdirs)
-    : cDir ? path.resolve(legacyBaseDir, stripToken(cDir)) : legacyBaseDir;
   // A raw DATA match has no proposed commit to bind an index probe to.
   // Unsupported executable forms already stop through inspect().problems.
   // Preserve the legacy argument backstops above, but query an index only for
   // an actual parsed commit using its validated selected context.
   if (commits.length) {
   const context = commitInspectionContext(commits[0]);
+  const inspectCwd = context.cwd + (context.cdirs.length ? ' (Git -C 引数を保持)' : '');
   let staged = '';
   try {
     staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', '-z'], {

@@ -18,6 +18,20 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R47:README:BEGIN -->
+
+### R47: filesystemの`-C`・loader環境・active launcherと試験能力
+
+**修復作業中のsnapshot**。2026-10-19 02:35:24 JST時点、公開基点head `ec3bd520ef450fb2899bef1f33618417158e4ff8` に対する未commitのR47 candidateは修復作業中であり、この当時の最終source固定・統合全件・新公開head／同head CI／両fresh reviewと全指摘処理は未取得・PENDINGである。
+
+[R47の現在契約・通常費用・同目的の出口](docs/security/git-command-guards.md#r47-current-contract)へ集約する。Git `-C`のorderedなphysical CWDと、calleeのraw PATH候補lookup/native realpathを結ぶ。AG/EGではそのCWDとGitがlexical normalizeするadd pathspecを分け、親canonical化と最終in-tree symlink個別entryを保つ。通常root-link個別追加はALLOW、`link/..`のroot包括はFORBIDDENの対照とし、外側symlinkからrootへのselectionが不明ならUNKNOWN。loaderの有限15名は実backendのactive/inactiveと既知emptyを区別し、実行前sourceを確認できなければ普通のcommitやhelp/versionでもUNKNOWNになり得る。native依存testは実Gitの`--no-lazy-fetch --version`成功能力とfsmonitorの別条件でgateし、不対応時はnative群をskipしてpure DTOを維持する。Git2.54固定consumer資格はさらに別条件である。
+
+`capsh`（libcap2.77）と`start-stop-daemon`（dpkg1.22.22）のactive sourceは、identity・shell/executable・cwd/env/backendが未資格なら普通のprintfでもUNKNOWNとする。真正query・消費DATAはpinned consumerの有限境界だけで区別し、`capsh --version`のusage-errorを真正versionとは呼ばない。必要なlauncher・loader・実行条件を外して同目的の代替とはせず、同じ対象・操作・条件を保つ対応形がなければownerへ不足を示す。個別操作承認はHook停止承認ではない。
+
+この追補はAPI／実送信やactive launcher・loader constructorのnative成立、新L3・全OS保証を含まない。旧8696 bank/oracleと原FAIL/NE、以下のround本文・日時・数値は履歴として保持する。
+
+<!-- PR191:R47:README:END -->
+
 <!-- PR191:R46:README:BEGIN -->
 
 ### R46: commitのGit実行体・選択env・cwdに結び付くown検査

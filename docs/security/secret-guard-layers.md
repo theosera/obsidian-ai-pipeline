@@ -1,5 +1,19 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R47:LAYERS:BEGIN -->
+
+## R47: filesystem・loader・launcher sourceを有限に確認する層
+
+**修復作業中のsnapshot**。2026-10-19 02:35:24 JST時点、公開基点head `ec3bd520ef450fb2899bef1f33618417158e4ff8` に対する未commitのR47 candidateは修復作業中であり、この当時の最終source固定・統合全件・新公開head／同head CI／両fresh reviewと全指摘処理は未取得・PENDINGである。
+
+[現在のR47契約と同目的の出口](git-command-guards.md#r47-current-contract)を参照する。own Git検査はordered raw `-C`とcalleeのraw PATH候補lookup/native realpathを保つ。AG/EGではphysical CWDとGitがlexical normalizeするadd pathspecを分け、親canonical化と最終in-tree symlinkの個別entryを維持する。通常root-link個別追加ALLOW、`link/..`のroot包括FORBIDDEN、外側symlinkからrootへのselection不明UNKNOWNを区別し、loader有限15名を実backend・known emptyごとに追跡する。確認できないloaderなら通常commit/helpもUNKNOWNとなる。`capsh`/`start-stop-daemon`のactive sourceは普通のprintfでもidentity・shell/program・cwd/env/backend未資格で停止し、pinned sourceの正常query・消費DATAだけを別roleにする。必要なlauncherやloaderを取り除くことを同目的の代替にしない。
+
+native依存testの実Git option能力、fsmonitor版下限、固定2.54 consumer資格を分け、不対応時はnative群skipでもpure DTOを維持する。これは試験の適用能力を示す層で、API／実送信やactive launcher・loader constructorのnative成立、新L3、全OSの認定ではない。独立FORBIDDENと他guardを維持する。
+
+同じ対象・操作・identity・必要source・cwd/env/configを保つ対応形がなければownerへ不足を示し、個別操作承認をHook停止承認へ転換しない。旧8696 bank/oracle・原FAIL/NEと以下の旧roundは全文保持する。旧分析内の一箇所だけにある「現在の Git ガード契約」はround履歴リンクではなくcurrent global pointerのためR47へ更新し、元ラベルと本文は保つ。
+
+<!-- PR191:R47:LAYERS:END -->
+
 <!-- PR191:R44:LAYERS:BEGIN -->
 
 ## R44: probe・consumer・launcher・公開受入の別境界
@@ -176,7 +190,7 @@ Bash から起動された孫プロセスは、この層を一切通らない。
 
 ## 3. 2026-09-04 の Bash 層分析と、当時の両版に共通する単一障害点
 
-> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r44-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
+> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r47-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
 
 py 版 (`~/.claude/hooks/block-secret-egress.py` / 実体は pipeline-youtube-SDK) の集合サイズ:
 

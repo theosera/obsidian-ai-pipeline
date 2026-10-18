@@ -16,6 +16,41 @@ const guard = require(path.join(hooks, 'lib/git-guard-common.cjs'));
 const baseline = { PATH: '/DUMMY/bin', HOME: '/DUMMY/home' };
 const transports = ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_SSH_VARIANT', 'GIT_ASKPASS', 'SSH_ASKPASS'];
 
+function inspectionCapability(executable, cwd, environment, runner = spawnSync) {
+  const env = readers.safeInspectionEnvironment(environment);
+  if (!env) return { available: false, status: null, banner: '', errorCode: 'UNPROVED_ENVIRONMENT' };
+  const result = runner(executable, ['--no-lazy-fetch', '--version'], {
+    cwd, env: { ...env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000,
+  });
+  const banner = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  return { available: !result.error && result.status === 0 && readers.supportsInspectionHardening(banner),
+    status: result.status, banner, errorCode: result.error?.code || null };
+}
+
+test('native fixture gate requires the actual no-lazy-fetch capability as well as the fsmonitor floor', () => {
+  for (const [result, available] of [
+    [{ status: 0, stdout: 'git version 2.54.0\n' }, true],
+    [{ status: 0, stdout: 'git version 2.53.0\n' }, true],
+    [{ status: 129, stdout: '', stderr: 'unknown option: --no-lazy-fetch' }, false],
+    [{ status: 0, stdout: 'git version 2.35.1\n' }, false],
+    [{ status: 0, stdout: 'DUMMY unsupported banner\n' }, false],
+    [{ status: null, stdout: '', error: { code: 'ENOENT' } }, false],
+  ]) {
+    const calls = [];
+    const capability = inspectionCapability('/DUMMY/git', '/DUMMY/repo', baseline, (exe, args, options) => {
+      calls.push({ exe, args, options }); return result;
+    });
+    assert.equal(capability.available, available);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, ['--no-lazy-fetch', '--version']);
+    assert.equal(calls[0].options.env.GIT_NO_LAZY_FETCH, '1');
+    assert.equal(calls[0].options.env.GIT_OPTIONAL_LOCKS, '0');
+  }
+  assert.equal(readers.supportsInspectionHardening('git version 2.43.0'), true,
+    'the version floor alone does not prove that --no-lazy-fetch is implemented');
+});
+
 function selectedReader(command, environment = baseline, implementations = { guard, readers }) {
   const parsed = implementations.guard.inspect(command, { trackGitPreCommitEnvironment: true,
     initialGitPreCommitEnvironmentSources: implementations.readers.environmentSources(environment) });
@@ -371,11 +406,13 @@ test('Hook DATA enforces selected transport only before a commit and preserves F
     const environment = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'),
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', CLAUDE_PROJECT_DIR: repo };
-    const version = spawnSync('git', ['--version'], { cwd: repo, env: environment,
-      encoding: 'utf8', timeout: 20000 });
-    assert.equal(version.error, undefined); assert.equal(version.status, 0, version.stderr);
-    const qualifiedGit254 = version.stdout.trim() === 'git version 2.54.0';
-    t.diagnostic(`owned fixture Git banner: ${JSON.stringify(version.stdout.trim())}; exact consumer ${qualifiedGit254}`);
+    const executable = guard.resolveTrustedGitExecutable({ text: 'git' }, environment, repo);
+    if (!executable) { t.skip('native inspection requires a known selected Git installation'); return; }
+    const capability = inspectionCapability(executable, repo, environment);
+    t.diagnostic(`owned fixture inspection capability: ${JSON.stringify(capability)}`);
+    if (!capability.available) { t.skip('native inspection unavailable: --no-lazy-fetch capability or fsmonitor floor'); return; }
+    const qualifiedGit254 = capability.banner === 'git version 2.54.0';
+    t.diagnostic(`owned fixture exact consumer ${qualifiedGit254}`);
     const git = (...args) => {
       const r = spawnSync('git', args, { cwd: repo, env: environment, encoding: 'utf8', timeout: 20000 });
       assert.equal(r.error, undefined); assert.equal(r.status, 0, r.stderr);

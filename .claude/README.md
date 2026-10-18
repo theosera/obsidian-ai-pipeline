@@ -71,6 +71,20 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R47:CLAUDE-README:BEGIN -->
+
+### R47: own Git検査の実filesystem・loaderとopaque launcher source
+
+**修復作業中のsnapshot**。2026-10-19 02:35:24 JST時点、公開基点head `ec3bd520ef450fb2899bef1f33618417158e4ff8` に対する未commitのR47 candidateは修復作業中であり、この当時の最終source固定・統合全件・新公開head／同head CI／両fresh reviewと全指摘処理は未取得・PENDINGである。
+
+[現在のR47契約](../docs/security/git-command-guards.md#r47-current-contract)を参照する。own検査はbase cwdからvalidated raw `-C`を順に一回渡し、symlink/`..`をlexicalな別対象へ縮約しない。PATHでcalleeを選ぶ段階と`-C`後の検査対象を分け、raw PATH候補lookupとnative realpathを既知installへ結ぶ。AG/EGはphysical CWDを使う一方、add pathspecはGitのlexical normalize先行・親canonical化・最終in-tree symlinkの個別entryを保つ。通常root-link個別追加ALLOWと`link/..`のroot包括FORBIDDENを分け、外側symlinkからrootへのselection不明はUNKNOWN。有限15名のloader変数はplatformでactive/inactiveを区別し、既知emptyは削除せず保持する。activeな非空・未知や、空の無効化を未資格の値はnative Git前にUNKNOWNとなり、通常のcommit/queryも止まり得る。
+
+`capsh`/`start-stop-daemon`のactive commandは普通のprintfでもidentity・shell/program・cwd/env/backend未資格の費用でUNKNOWNとなる。pinned libcap2.77/dpkg1.22.22のqueryと消費DATAを有限に区別し、後置helpや`capsh --version`で前段sourceを免除しない。native検査依存testはactual option queryの能力でgateし、不対応時のnative群skipとpure DTOを分ける。fsmonitor版下限、Git2.54固定consumer資格、全OS/backendの保証は同一ではない。
+
+同じ対象・操作・必要launcher/loader・identity・cwd/env/configを保つ対応形だけを選び、保てなければownerへsource/contextとUNKNOWN理由を示す。必要条件を外す形やHook停止を同目的とせず、個別操作承認をbypass承認にしない。今回のAPI／実送信、active launcher／loader constructorのnative成立、新L3は未証明。旧8696 bank/oracle・原FAIL/NE・以下のround履歴を変更しない。
+
+<!-- PR191:R47:CLAUDE-README:END -->
+
 <!-- PR191:R46:CLAUDE-README:BEGIN -->
 
 ### R46: own Git検査を実行予定のcontextへ結び付ける
