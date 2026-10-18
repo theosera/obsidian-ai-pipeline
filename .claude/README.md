@@ -71,6 +71,14 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R48:CLAUDE-README:BEGIN -->
+
+### ガード全体のCI検証
+
+必須root CIは全component test、別filename parity、standaloneの全L2 bankを実行する。[R48のCI契約](../docs/security/git-command-guards.md#r48-ci-contract)に、固定Git 2.54.0・owned fixture環境・再実行方法を示す。bankのcommandはHook JSONのDATAとして渡し、upload等の提案commandを実行するものではない。能力不足を理由に全bankをskipして緑へ変えず、失敗は必須jobの失敗として返す。新headのCI結果は実行後に別途確認する。
+
+<!-- PR191:R48:CLAUDE-README:END -->
+
 <!-- PR191:R47:CLAUDE-README:BEGIN -->
 
 ### R47: own Git検査の実filesystem・loaderとopaque launcher source

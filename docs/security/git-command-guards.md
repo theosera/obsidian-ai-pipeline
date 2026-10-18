@@ -20,6 +20,44 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R48:CI-CONTRACT:BEGIN -->
+
+<a id="r48-ci-contract"></a>
+
+## R48: ガード全体を必須CIで実行する
+
+2026-10-19の修復作業中の契約である。公開基点head `9c2198cbffaae92dbe5b04ec031726160556d8b8` のCodex review5564282334は、必須CIが10個のselected role fileだけを実行し、ローカルで報告した全ガード試験を継続的に守っていない不足を指摘した。新しい実行・送信経路の修復ではなく、検証の結線を修復する。新headの全件成功・CI・両fresh reviewは実測するまでPENDINGである。
+
+必須の `Pipeline (root) - test & typecheck` 内で、次を省略せず順に実行する。
+
+1. `.claude/hooks/tests/*.test.cjs` からstandalone runnerとparityの2本だけを除いた全component test。現在は24ファイルで、analysis・precommit readers・全role test・ledger bindingを含む。将来追加されたcomponentも同じglobで選択する。
+2. `secret-path-parity.test.cjs` を独立実行する。通常のcheckout配置にあるproduction shellを使い、凍結copy向けの参照先へ置き換えない。
+3. `git-guards.test.cjs` の公開CLIで全bankを実行する。現在の8,696定義、担当Hookの判定・理由prefix・brokenも既存runnerのまま検査する。importや選択した代表入力だけの実行で代用しない。
+
+```bash
+component_tests=()
+for test_file in .claude/hooks/tests/*.test.cjs; do
+  case "$test_file" in
+    */git-guards.test.cjs|*/secret-path-parity.test.cjs) ;;
+    *) component_tests+=("$test_file") ;;
+  esac
+done
+test "${#component_tests[@]}" -gt 0
+node --test "${component_tests[@]}"
+node --test .claude/hooks/tests/secret-path-parity.test.cjs
+node .claude/hooks/tests/git-guards.test.cjs
+```
+
+上記はrepository rootからBashで実行するコマンドで、実Gitとfixture環境の条件も必要である。既存のaccepted bankはGit 2.54.0の固定consumerを使う正常対照を含む。たとえば `R40-QUERY-PERCMD-CAT` は、別版で必要情報を確認できずUNKNOWNになることを、原ALLOW期待の成功へ再採点しない。
+
+CIでは[公式Git 2.54.0 source](https://www.kernel.org/pub/software/scm/git/git-2.54.0.tar.xz)をSHA-256 `f689162364c10de79ef89aa8dbf48731eb057e34edbbd20aca510ce0154681a3`（[公式checksum一覧](https://www.kernel.org/pub/software/scm/git/sha256sums.asc)）で展開前に確認し、ephemeral runner内の `/usr` へbuild/installする。[公式INSTALL](https://github.com/git/git/blob/v2.54.0/INSTALL)に従い、buildとinstallのprefixを一致させる。CLIのtransport・Perl/Python helperを省いて検査を通す構成にはせず、GUIとlocalizationだけを除外する。bare Gitと `/usr/bin/git` を同じ固定backendで確認し、実 `--no-lazy-fetch --version` の成功と別のfsmonitor版下限も確認する。runnerの既定Git 2.55.0の成功やbannerだけで、この固定consumerを認定しない。
+
+試験はowned HOMEと一時directoryで実行し、callerのcredential・loader・Git設定・XDG selectorを継承しない。caseに明示された環境条件と既存oracleは変更しない。必要backendの欠落や各試験の非zero終了は必須jobの失敗にし、全bankのskipや `continue-on-error` へ変換しない。既存の局所native群にある能力skipは、そのtestの適用範囲の表示として残し、全bank実行の代わりにはしない。
+
+command文字列は引き続きHook JSONのDATAで、native Gitはdisposable DUMMY fixtureの準備・検査に限る。CIの成功は、実秘密の読取・外部通信・任意backendの安全性や新しいL3 dispatchの証明ではない。元のローカル結果、原FAIL/NE、過去のCIが部分試験だけだった事実と、修復後の同head CI結果は別記録にする。
+
+<!-- PR191:R48:CI-CONTRACT:END -->
+
 <!-- PR191:R47:CONTRACT:BEGIN -->
 
 <a id="r47-current-contract"></a>

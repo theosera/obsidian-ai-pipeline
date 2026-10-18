@@ -1,5 +1,13 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R48:LAYERS:BEGIN -->
+
+## R48: 検証を必須CIへ結び付ける層
+
+[ガード全体のCI契約](git-command-guards.md#r48-ci-contract)に従い、component・filename parity・全L2 bankを同じ必須root jobへ結ぶ。部分試験の成功やrunnerのimportだけで全bankを実行したとは扱わない。固定consumerのGit 2.54.0と実option能力を確認し、元入力・期待を維持する。これはCI検証範囲の修復で、HookのALLOW/FORBIDDEN/UNKNOWN policyや実Claude入口のdispatchを変更するものではない。既存の原FAIL/NE、backendの制限、local実測と新head CIの違いを保持する。
+
+<!-- PR191:R48:LAYERS:END -->
+
 <!-- PR191:R47:LAYERS:BEGIN -->
 
 ## R47: filesystem・loader・launcher sourceを有限に確認する層

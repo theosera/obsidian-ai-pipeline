@@ -18,6 +18,16 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R48:README:BEGIN -->
+
+### ガードの必須CI
+
+ガードの検証は、必須の `Pipeline (root) - test & typecheck` 内で、全component test・独立したfilename parity・全L2入力bankを順に実行する。[R48のCI契約と再実行コマンド](docs/security/git-command-guards.md#r48-ci-contract)を参照する。受入済みbankの固定consumer条件を保つため、CI内だけで公式sourceのSHA-256を固定したGit 2.54.0を用意する。利用者のローカルGitやNodeの版を変更する手順ではない。
+
+2026-10-19のR48修復作業中の記述であり、新headのCI成功を先取りしない。ローカルの成功数、CIで実行する範囲、同headのfresh reviewと指摘処理は別に確認する。
+
+<!-- PR191:R48:README:END -->
+
 <!-- PR191:R47:README:BEGIN -->
 
 ### R47: filesystemの`-C`・loader環境・active launcherと試験能力
