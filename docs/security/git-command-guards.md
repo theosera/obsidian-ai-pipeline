@@ -20,6 +20,28 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R51:CONTRACT:BEGIN -->
+
+<a id="r51-current-contract"></a>
+
+## R51: special builtinのexport境界と検証器のwire判定
+
+公開基点 `4046a6cd83be746a5b6b430cd3138211652e7465` のfresh fullはCodexが4件、CodeRabbitが2件を返した。Codexの4件は通常コメント、CodeRabbitの2件はreview threadに公開されており、thread件数だけでは未処理指摘数を表せない。以下は修復候補の契約であり、新headの受入完了ではない。R50以前の節は当時の履歴として保持する。
+
+| 境界 | 判定と根拠 | 正常対照・制限 |
+| --- | --- | --- |
+| special builtinへの追跡対象値のprefix代入 | 直接のspecial builtinや子なしexecに付くprefixを、次のchildへ非exportと断定しない。`POSIXLY_CORRECT`だけでなく、既に追跡しているGH metadata・identity等にも同じexport境界を保つ。外側shellのmode・版が未資格ならpresence/sourceを不明にし、依存する操作をUNKNOWNとする。 | GNU Bashの[Special Builtins](https://www.gnu.org/software/bash/manual/html_node/Special-Builtins.html)と[Environment](https://www.gnu.org/software/bash/manual/html_node/Environment.html)を参照する。DUMMY属性観測ではBash5.3.15と3.2.57で当該prefixの永続性に差があった。全Bash/backendを資格したとは扱わない。 |
+| exportの実際の変更と普通のclient操作 | 後続の`export -n`・unset、実childのenv clearは別に反映する。未知presenceでも、既存loggerの両modeで同じALLOWと証明できるordinaryな選択は維持する。 | mode不明だけで全clientを禁止しない。秘密由来の生成messageや未確認sourceをordinaryの対照で免除しない。`command`/`builtin` wrapperの一時prefixやfunction・subshell scopeも直接のspecial builtinと区別する。 |
+| GH metadataの正常費用 | special builtinのprefixに保存された`GH_HOST`/`GH_REPO`も、非exportとして送信先sourceから消さない。秘密由来を通常exportした場合のFORBIDDENと、export persistenceが不明な場合のUNKNOWNを分ける。 | literalのordinary hostでも、その特殊prefix形式は新たにUNKNOWNになり得る。これは実行環境・認証先の選択を確定できない費用である。単なる未export local、実際のexport解除、temporary wrapperは別に保つ。子へ渡すことが意図と一致すると確認できる場合だけ、同じ値の明示export等を検討し、意味を保てなければownerへ提示する。 |
+| getentのservice指定とterminal query | glibc2.42の既知で完全なservice値の後でも、後続の真正help/usage/versionはterminalとする。service値として消費されたhelp風の語はDATAのまま。 | 未知service値・未確定argv、実`--`後のkey、active NSS/backendの既存UNKNOWNを保つ。service名がfilesであることを、active lookupの一般的な安全証明にはしない。一次根拠は[固定getent.c](https://github.com/bminor/glibc/blob/glibc-2.42/nss/getent.c)のparse_option/mainと[argp-parse.c](https://github.com/bminor/glibc/blob/glibc-2.42/argp/argp-parse.c)。 |
+| 単体補助と全件runnerのdeny理由 | `[禁止] `だけをFORBIDDEN、`[判断不能] `だけをUNKNOWNとする。他prefix・欠落・非stringは検証器上のBROKENとして失敗させ、generic deny期待でも通さない。 | 入力8,696件・oracleは変えない。DUMMY Hookの不正wireを実runnerへ与え、exit/JSON/textで失敗を確認する。BROKENはHook permissionの新enumではない。 |
+
+修正前・後に同じ入力を与える。special builtinの正確な指摘入力はR49の停止からR50の許可へ変化した退行として記録し、既存getent service queryの過拒否と区別する。危険入力の停止、普通の対照、追加したexport境界・query修復・runnerの失敗条件をそれぞれ単独で戻す逆検証を別に残す。任意の実送信・認証・installed consumerや新L3は認証しない。
+
+停止後は、同じ対象・操作・argv・cwd/env/config/source条件を保つ対応形式だけを検討する。条件を保てなければ不足条件をownerへ提示する。必要なmode・helper・sourceを外すことや、Hookを止めることは自動的な代替経路ではない。
+
+<!-- PR191:R51:CONTRACT:END -->
+
 <!-- PR191:R50:CONTRACT:BEGIN -->
 
 <a id="r50-current-contract"></a>

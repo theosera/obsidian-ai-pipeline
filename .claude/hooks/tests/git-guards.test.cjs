@@ -17067,6 +17067,7 @@ function runCase(hooksDir, c, repos, stopAtFirstDeny = false) {
       const reason = out.hookSpecificOutput.permissionDecisionReason;
       reasonPrefixes[h] = typeof reason === 'string' && reason.startsWith('[禁止] ') ? '[禁止] '
         : typeof reason === 'string' && reason.startsWith('[判断不能] ') ? '[判断不能] ' : null;
+      if (reasonPrefixes[h] === null) broken.push(`${h}: unrecognized deny reason prefix`);
       if (stopAtFirstDeny) break;
     }
   }

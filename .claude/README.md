@@ -71,6 +71,12 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R51:CLAUDE-README:BEGIN -->
+
+[現在のR51契約](../docs/security/git-command-guards.md#r51-current-contract)では、直接のspecial builtinのprefix代入を非exportと断定せず、未資格のmode・版によるchild option順序やGH metadata等のsource選択をUNKNOWNで止める。literal ordinaryなGH_HOSTでも特殊prefixは停止し得るため、意味を保つ明示export等の条件とowner出口を契約に記す。getentの既知service指定後の真正query、実際のexport解除、普通の対照を別に保つ。単体補助と全件runnerの不正deny理由はBROKENとして失敗させる。自動読込される`CLAUDE.md`にも現在契約を示し、以下のR50以前は履歴とする。新headの受入は未完了である。
+
+<!-- PR191:R51:CLAUDE-README:END -->
+
 <!-- PR191:R50:CLAUDE-README:BEGIN -->
 
 ### R50: child環境・正常query・理由prefixの確認

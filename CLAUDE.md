@@ -96,6 +96,20 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R51:PLAYBOOK:BEGIN -->
+
+### 現在のガード契約: R51（修復候補・受入未完了）
+
+[現在の契約・正常対照・停止後の出口](docs/security/git-command-guards.md#r51-current-contract)を優先する。[R50契約](docs/security/git-command-guards.md#r50-current-contract)と以下のR46以前の節は、当時の履歴である。R50公開head `4046a6cd83be746a5b6b430cd3138211652e7465` のfresh fullはCodexが4件、CodeRabbitが2件を返した。両reviewの実行完了は、指摘処理や修復後の受入完了を意味しない。
+
+追跡対象の値とexport属性を分ける。直接のspecial builtinへのprefix代入は、外側shellのmode・版でexportの永続性が変わるため、非exportとは断定しない。`POSIXLY_CORRECT`のoption順序だけでなくGH metadata等のchild sourceにも同じ境界を保ち、未資格ならUNKNOWNとする。literal ordinaryなGH_HOSTの特殊prefixも停止し得る費用を契約に明記する。実際のexport解除・unset・childのenv clear、ordinaryな両mode同一policy対照は別に保つ。
+
+glibc2.42 getentの既知service値の後でも真正help/usage/versionはterminalである。serviceが消費するDATA、実`--`、未知argv、active NSSの未資格は免除しない。テストでは未知・欠落したdeny理由をUNKNOWNの合格へ変換せずBROKENとして失敗させる。Hookのwire enumは変更しない。
+
+既存8,696入力・oracleを維持する。新候補の全件・同じ新headの必須CI・両fresh full・指摘処理・公開本文一致は、取得前に成功へ持ち越さない。新L3やnative通信の追加資格は主張しない。同じ対象・操作・環境・source条件を保てない代替はownerへ確認し、個別操作の了承をHook停止の了承とは扱わない。
+
+<!-- PR191:R51:PLAYBOOK:END -->
+
 <!-- PR191:R46:PLAYBOOK:BEGIN -->
 
 ### R46: inspectionのprogram/env/cwdをcommitと一致させる

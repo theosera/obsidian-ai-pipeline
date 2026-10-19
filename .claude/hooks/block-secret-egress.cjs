@@ -3853,7 +3853,7 @@ function directDnsRole(invocation) {
       if (!afterDD && s.startsWith('-') && s !== '-') {
         if (!known || sawOperand && posixUnknown) { unknown = true; continue; }
         if (['--help', '--usage', '--version'].includes(s)) {
-          if (unknown || service) { unknown = true; break; }
+          if (unknown) { unknown = true; break; }
           result.terminal = true; return result;
         }
         if (['--no-idn', '--no-addrconfig'].includes(s)) continue;
@@ -3867,7 +3867,7 @@ function directDnsRole(invocation) {
           const flag = s[j];
           if (flag === 'i' || flag === 'A') continue;
           if (flag === '?' || flag === 'V') {
-            if (unknown || service) { unknown = true; break; }
+            if (unknown) { unknown = true; break; }
             result.terminal = true; return result;
           }
           if (flag !== 's') { unknown = true; break; }

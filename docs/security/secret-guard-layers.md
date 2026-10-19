@@ -1,5 +1,11 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R51:LAYERS:BEGIN -->
+
+現在の修復候補は[R51契約](git-command-guards.md#r51-current-contract)を参照する。special builtinへのprefix代入のexport境界を、client option環境変数だけでなく追跡済みGH metadata等にも保持する。literal ordinaryの特殊prefixもsource未資格としてUNKNOWNになり得る正常費用は契約に明記する。getentのservice指定後のquery、単体補助・全件runnerの不正wire検出、自動読込playbookの契約参照も扱う。R50の両fresh fullは正常に実行完了したが計6指摘を返しており、新候補の受入完了ではない。Codexの通常コメント内の指摘をreview thread件数から除外して未処理0と報告しない。以下は履歴である。
+
+<!-- PR191:R51:LAYERS:END -->
+
 <!-- PR191:R50:LAYERS:BEGIN -->
 
 ## R50: child環境とqueryの修復、review実行と指摘成立の区別

@@ -298,13 +298,18 @@ function run(command, repoName = 'secret', extra = {}) {
     cwd, env: { ...f.base, ...extra, CLAUDE_PROJECT_DIR: cwd }, encoding: 'utf8',
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd }),
   });
+  return observeHookResult(result);
+}
+function observeHookResult(result) {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, '');
   if (!result.stdout) return { verdict: 'ALLOW', reason: '' };
   const output = JSON.parse(result.stdout).hookSpecificOutput;
   assert.equal(output.permissionDecision, 'deny');
-  return { verdict: output.permissionDecisionReason.startsWith('[禁止]') ? 'FORBIDDEN' : 'UNKNOWN',
-    reason: output.permissionDecisionReason };
+  const reason = output.permissionDecisionReason;
+  return { verdict: typeof reason !== 'string' ? 'BROKEN'
+    : reason.startsWith('[禁止] ') ? 'FORBIDDEN'
+    : reason.startsWith('[判断不能] ') ? 'UNKNOWN' : 'BROKEN', reason };
 }
 function expect(command, expected, repoName, extra) {
   const result = run(command, repoName, extra);
@@ -317,6 +322,19 @@ test.after(() => {
     ? fs.readFileSync(owned.marker, 'utf8').trim().split('\n').length : 0;
   if (owned) fs.rmSync(owned.root, { recursive: true, force: true });
   console.log('r46 owned Hook DATA calls: ' + actualHookCalls + '; fake Git invocations: ' + fakeCalls + '; proposed commits: 0');
+});
+
+test('malformed deny wire cannot satisfy an UNKNOWN inspection expectation', () => {
+  const observe = reason => observeHookResult({ status: 0, stderr: '', stdout: JSON.stringify({
+    hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: reason },
+  }) });
+  for (const reason of ['DUMMY unexpected prefix', '', '[判断不能]DUMMY', '[禁止]DUMMY', null, 42, {}, undefined]) {
+    assert.deepEqual(observe(reason), { verdict: 'BROKEN', reason });
+  }
+  for (const [reason, verdict] of [['[禁止] DUMMY staged .env', 'FORBIDDEN'], ['[判断不能] DUMMY context', 'UNKNOWN']]) {
+    assert.deepEqual(observe(reason), { verdict, reason });
+  }
+  assert.deepEqual(observeHookResult({ status: 0, stderr: '', stdout: '' }), { verdict: 'ALLOW', reason: '' });
 });
 
 test('known installations resolve independently while an unknown first PATH candidate is never trusted', () => {

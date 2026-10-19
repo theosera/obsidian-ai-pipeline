@@ -4058,7 +4058,18 @@ function inspect(cmd, options = {}) {
       if (assignment && canRemember && state.promptRefNames.has(assignment.name)) state.identitySources.set('PS4', null);
       if (assignment && canRemember && trackedEnv(assignment.name)) {
         const prior = state.identityExports.get(assignment.name) ?? false;
-        const selected = state.functionAutoExport === true ? true : state.functionAutoExport === false ? prior : prior === true ? true : null;
+        // A direct special-builtin prefix can persist as exported in POSIX
+        // mode. The outer shell mode/version is not qualified here (Bash 3.2
+        // and 5.3 differ when POSIXLY_CORRECT itself is the prefix), so absence
+        // is not a proof. Keep the tracked child-environment boundary unknown;
+        // this also covers selected GH metadata and other tracked values. Actual
+        // export/unset/-n processing below may still establish or remove it.
+        const specialPrefixExportUnknown = prefix &&
+          ((!info.wrapped && builtin && SPECIAL_BUILTINS.has(info.name)) ||
+            (info.persistsEnv && info.name === 'exec' && info.nonExec));
+        const selected = state.functionAutoExport === true ? true :
+          specialPrefixExportUnknown ? prior === true ? true : null :
+            state.functionAutoExport === false ? prior : prior === true ? true : null;
         state.identityExports.set(assignment.name, conditional && prior !== selected ? null : selected);
         const value = literalScalarWord(word, expansionState);
         const prefixLength = assignment.name.length + (assignment.name === 'PS4' && assignment.append ? 2 : 1);

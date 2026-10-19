@@ -207,12 +207,31 @@ function run(f, command, inherited = {}) {
     'Object.assign(process.env,' + JSON.stringify(inherited) + ');require(' + JSON.stringify(path.join(hooks, 'block-secret-git.cjs')) + ');';
   const result = spawnSync(process.execPath, ['-e', launcher], { cwd: f.base, env: { ...f.env, CLAUDE_PROJECT_DIR: f.base }, encoding: 'utf8',
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: f.base }) });
+  return observeHookResult(result).verdict;
+}
+function observeHookResult(result) {
   assert.equal(result.status, 0, result.stderr); assert.equal(result.stderr, '');
-  if (!result.stdout) return 'ALLOW';
+  if (!result.stdout) return { verdict: 'ALLOW', reason: '' };
   const output = JSON.parse(result.stdout).hookSpecificOutput;
   assert.equal(output.permissionDecision, 'deny');
-  return output.permissionDecisionReason.startsWith('[禁止]') ? 'FORBIDDEN' : 'UNKNOWN';
+  const reason = output.permissionDecisionReason;
+  return { verdict: typeof reason !== 'string' ? 'BROKEN'
+    : reason.startsWith('[禁止] ') ? 'FORBIDDEN'
+    : reason.startsWith('[判断不能] ') ? 'UNKNOWN' : 'BROKEN', reason };
 }
+
+test('malformed deny wire cannot satisfy an UNKNOWN loader inspection expectation', () => {
+  const observe = reason => observeHookResult({ status: 0, stderr: '', stdout: JSON.stringify({
+    hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: reason },
+  }) });
+  for (const reason of ['DUMMY unexpected prefix', '', '[判断不能]DUMMY', '[禁止]DUMMY', null, 42, {}, undefined]) {
+    assert.deepEqual(observe(reason), { verdict: 'BROKEN', reason });
+  }
+  for (const [reason, verdict] of [['[禁止] DUMMY .env', 'FORBIDDEN'], ['[判断不能] DUMMY loader', 'UNKNOWN']]) {
+    assert.deepEqual(observe(reason), { verdict, reason });
+  }
+  assert.deepEqual(observeHookResult({ status: 0, stderr: '', stdout: '' }), { verdict: 'ALLOW', reason: '' });
+});
 
 test('owned Hook DATA inspects the physical target for symlink/parent, repeated, absolute and empty -C', t => {
   const f = fixtures(t); if (!f) return;

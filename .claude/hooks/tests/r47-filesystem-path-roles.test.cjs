@@ -26,14 +26,41 @@ fs.symlinkSync(target, path.join(root, 'outside-root-link'), 'dir');
 fs.writeFileSync(path.join(base, 'not-a-directory'), 'DUMMY');
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+function observeHookResult(r) {
+  if (r.error || r.signal !== null || r.status !== 0 || r.stderr !== '' || typeof r.stdout !== 'string') return 'BROKEN';
+  if (r.stdout === '') return 'ALLOW';
+  let output;
+  try { output = JSON.parse(r.stdout); } catch { return 'BROKEN'; }
+  const wire = output?.hookSpecificOutput;
+  const reason = wire?.permissionDecisionReason;
+  return wire?.permissionDecision === 'deny' && typeof reason === 'string' &&
+    (reason.startsWith('[禁止] ') || reason.startsWith('[判断不能] ')) ? reason : 'BROKEN';
+}
 function invoke(hook, command, cwd = base) {
   const r = spawnSync(process.execPath, [path.join(hooks, hook)], { env, cwd,
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd }),
     encoding: 'utf8', timeout: 10000 });
-  assert.equal(r.error, undefined); assert.equal(r.signal, null); assert.equal(r.status, 0);
-  const output = r.stdout.trim() ? JSON.parse(r.stdout) : {};
-  return output.hookSpecificOutput?.permissionDecisionReason || 'ALLOW';
+  return observeHookResult(r);
 }
+
+test('filesystem observer accepts only empty ALLOW or exact known deny wire', () => {
+  const result = stdout => ({ error: undefined, status: 0, signal: null, stdout, stderr: '' });
+  const wire = (reason, decision = 'deny') => JSON.stringify({ hookSpecificOutput: {
+    permissionDecision: decision, ...(reason === undefined ? {} : { permissionDecisionReason: reason }),
+  } });
+  assert.equal(observeHookResult(result('')), 'ALLOW');
+  for (const reason of ['[禁止] DUMMY', '[判断不能] DUMMY']) {
+    assert.equal(observeHookResult(result(wire(reason))), reason);
+  }
+  for (const stdout of [' ', 'DUMMY non-JSON', 'null', '{}', wire(), wire(''), wire(false), wire(7),
+    wire('[禁止]DUMMY'), wire('[判断不能]DUMMY'), wire('[禁止] DUMMY', 'allow')]) {
+    assert.equal(observeHookResult(result(stdout)), 'BROKEN', stdout);
+  }
+  for (const fault of [{ error: new Error('DUMMY') }, { status: 7 }, { signal: 'SIGTERM' },
+    { stderr: 'DUMMY diagnostic' }, { stdout: undefined }]) {
+    assert.equal(observeHookResult({ ...result(''), ...fault }), 'BROKEN');
+  }
+});
 
 test('filesystem cwd preserves symlink before .. and ordered empty/absolute -C', () => {
   const physical = fs.realpathSync.native(target);
