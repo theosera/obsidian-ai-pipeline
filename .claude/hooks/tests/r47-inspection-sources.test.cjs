@@ -47,6 +47,17 @@ function selected(command, platform = 'linux', environment = baseline) {
   return { ...mock, parsed, invocation, g, context };
 }
 
+test('quoted Git executable DATA preserves spaces, backslashes and apostrophes as one word', () => {
+  for (const executable of [String.raw`C:\Program Files\Git\cmd\git.exe`,
+    String.raw`/DUMMY/Git Tools\bin/git`, String.raw`/DUMMY/O'Brien Git\bin/git`]) {
+    const parsed = guard.inspect(q(executable) + ' -C ' + q('/DUMMY/repo name') + ' commit -m DUMMY');
+    assert.equal(parsed.invocations.length, 1);
+    assert.deepEqual(parsed.invocations[0].words.map(word => word.text),
+      [executable, '-C', '/DUMMY/repo name', 'commit', '-m', 'DUMMY']);
+    assert.equal(parsed.invocations[0].words[0].dynamic, false);
+  }
+});
+
 test('the finite loader inventory participates in both selected and index environment snapshots', () => {
   assert.equal(guard.INSPECTION_LOADER_ENVIRONMENT_NAMES.length, 15);
   for (const name of guard.INSPECTION_LOADER_ENVIRONMENT_NAMES) {
@@ -235,39 +246,41 @@ test('malformed deny wire cannot satisfy an UNKNOWN loader inspection expectatio
 
 test('owned Hook DATA inspects the physical target for symlink/parent, repeated, absolute and empty -C', t => {
   const f = fixtures(t); if (!f) return;
+  const gitWord = q(f.git);
   try { fs.symlinkSync(f.child, path.join(f.base, 'jump'), 'dir'); }
   catch (error) { t.skip('symlink fixture unavailable: ' + error.code); return; }
   assert.equal(f.native(f.base, ['-C', 'jump/..', 'diff', '--no-ext-diff', '--no-textconv', '--cached', '--name-only', '-z']), '.env\0');
   for (const args of ['-C jump/..', '-C jump -C ..', '-C ' + q(f.base + '/jump/..'), "-C '' -C jump/..", '-C jump -C ' + q(f.secret)]) {
-    assert.equal(run(f, f.git + ' ' + args + ' commit -m DUMMY'), 'FORBIDDEN', args);
+    assert.equal(run(f, gitWord + ' ' + args + ' commit -m DUMMY'), 'FORBIDDEN', args);
   }
   for (const args of ['', '-C .', '-C ' + q(f.ordinary), "-C ''"]) {
-    assert.equal(run(f, f.git + ' ' + args + ' commit -m DUMMY'), 'ALLOW', args);
+    assert.equal(run(f, gitWord + ' ' + args + ' commit -m DUMMY'), 'ALLOW', args);
   }
-  assert.equal(run(f, f.git + ' -C does-not-exist commit -m DUMMY'), 'UNKNOWN');
+  assert.equal(run(f, gitWord + ' -C does-not-exist commit -m DUMMY'), 'UNKNOWN');
   assert.equal(f.native(f.base, ['diff', '--no-ext-diff', '--no-textconv', '--cached', '--name-only', '-z']), 'a.txt\0');
 });
 
 test('owned Hook DATA refuses active prefix/export/prior-reader loaders before any unsafe replay', t => {
   const f = fixtures(t); if (!f) return;
+  const gitWord = q(f.git);
   const active = process.platform === 'darwin' ? 'DYLD_INSERT_LIBRARIES' : 'LD_PRELOAD';
-  const commit = f.git + ' commit -m DUMMY';
+  const commit = gitWord + ' commit -m DUMMY';
   for (const command of [active + '=/DUMMY/source ' + commit, 'export ' + active + '=/DUMMY/source; ' + commit,
-    active + '=/DUMMY/source ' + f.git + ' -P status; ' + commit,
-    active + '=/DUMMY/source ' + f.git + ' --version; ' + commit]) {
+    active + '=/DUMMY/source ' + gitWord + ' -P status; ' + commit,
+    active + '=/DUMMY/source ' + gitWord + ' --version; ' + commit]) {
     assert.equal(run(f, command), 'UNKNOWN', command);
   }
   assert.equal(run(f, active + "='' " + commit), process.platform === 'win32' ? 'UNKNOWN' : 'ALLOW');
   assert.equal(run(f, active + '=/DUMMY/source; ' + commit), 'ALLOW', 'unused local');
-  assert.equal(run(f, commit + '; ' + active + '=/DUMMY/source ' + f.git + ' status'), 'ALLOW', 'after-commit source is outside the prior-reader gate');
-  assert.equal(run(f, active + '=/DUMMY/source ' + f.git + ' add .env; ' + commit), 'FORBIDDEN', 'independent forbidden filename remains');
+  assert.equal(run(f, commit + '; ' + active + '=/DUMMY/source ' + gitWord + ' status'), 'ALLOW', 'after-commit source is outside the prior-reader gate');
+  assert.equal(run(f, active + '=/DUMMY/source ' + gitWord + ' add .env; ' + commit), 'FORBIDDEN', 'independent forbidden filename remains');
   assert.equal(fs.existsSync(f.marker), false);
 });
 
 test('owned Hook DATA safely models inherited/removal/empty/inactive selection without native loader activation', t => {
   const f = fixtures(t); if (!f) return;
   const active = process.platform === 'darwin' ? 'DYLD_INSERT_LIBRARIES' : 'LD_PRELOAD';
-  const commit = f.git + ' commit -m DUMMY';
+  const commit = q(f.git) + ' commit -m DUMMY';
   assert.equal(run(f, commit, { [active]: '/DUMMY/source' }), 'UNKNOWN');
   for (const prefix of ['env -u ' + active + ' ', 'unset ' + active + '; ']) {
     assert.equal(run(f, prefix + commit, { [active]: '/DUMMY/source' }), 'ALLOW', prefix);

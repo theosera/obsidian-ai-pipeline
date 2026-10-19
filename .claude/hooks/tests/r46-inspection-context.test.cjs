@@ -13,6 +13,7 @@ const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
 const guard = require(path.join(hooks, 'lib/git-guard-common.cjs'));
 const readerFile = path.join(hooks, 'lib/git-precommit-readers.cjs');
 const readers = require(readerFile);
+const q = value => "'" + value.replaceAll("'", "'\\''") + "'";
 
 function inspectionCapability(executable, cwd, environment, runner = spawnSync) {
   const env = readers.safeInspectionEnvironment(environment);
@@ -111,7 +112,7 @@ test('env-i removes inherited targets in the snapshot behind the existing root-s
     GIT_INDEX_FILE: '/DUMMY/inherited-index', GIT_DIR: '/DUMMY/inherited-repo' };
   const { readers, calls } = mockedInspection(baseline);
   const parsed = guard.inspect('env -i HOME=/DUMMY/home GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null ' +
-    absoluteGit + ' commit -m x', { trackGitPreCommitEnvironment: true,
+    q(absoluteGit) + ' commit -m x', { trackGitPreCommitEnvironment: true,
     initialGitPreCommitEnvironmentSources: readers.environmentSources(baseline) });
   assert.ok(parsed.problems.some(problem => /HOME \/ XDG_CONFIG_HOME/.test(problem)), 'existing early refusal is retained');
   const invocation = parsed.invocations.find(invocation => invocation.name === 'git');
@@ -143,7 +144,7 @@ function indexSnapshot(prefix, options = {}) {
   const { readers, calls } = mockedInspection(baseline);
   const sources = readers.environmentSources(baseline).filter(source =>
     options.wide || guard.gitIndexInspectionEnvironmentName(source.name));
-  const parsed = guard.inspect(prefix + executable + ' commit -m ordinary', {
+  const parsed = guard.inspect(prefix + q(executable) + ' commit -m ordinary', {
     trackGitPreCommitEnvironment: true, trackGitIndexInspectionEnvironment: !options.wide,
     initialGitPreCommitEnvironmentSources: sources,
   });
@@ -351,10 +352,10 @@ test('own SG reads the absolute Git index despite shadow PATH and refuses unknow
   const f = fixtures();
   if (!inspectionReady(t, f, [f.absoluteGit, f.setupGit])) return;
   const shadow = { PATH: f.fakeBin + path.delimiter + f.base.PATH };
-  expect(f.absoluteGit + ' commit -m x', 'FORBIDDEN', 'secret', shadow);
-  expect(f.absoluteGit + ' commit -m x', 'ALLOW', 'ordinary', shadow);
+  expect(q(f.absoluteGit) + ' commit -m x', 'FORBIDDEN', 'secret', shadow);
+  expect(q(f.absoluteGit) + ' commit -m x', 'ALLOW', 'ordinary', shadow);
   expect('git commit -m x', 'UNKNOWN', 'secret', shadow);
-  expect(f.fakeGit + ' commit -m x', 'UNKNOWN', 'secret', shadow);
+  expect(q(f.fakeGit) + ' commit -m x', 'UNKNOWN', 'secret', shadow);
   expect('command -p git commit -m x', 'UNKNOWN');
   expect('git commit -m x', 'FORBIDDEN');
   expect('git commit -m x', 'ALLOW', 'ordinary');
@@ -364,7 +365,7 @@ test('own SG reads the absolute Git index despite shadow PATH and refuses unknow
 test('own SG preserves actual index and repository removals, env-i and unchanged inherited targets', t => {
   const f = fixtures();
   if (!inspectionReady(t, f, [f.absoluteGit])) return;
-  const commit = f.absoluteGit + ' commit -m x';
+  const commit = q(f.absoluteGit) + ' commit -m x';
   const alternate = { GIT_INDEX_FILE: f.alternateIndex };
   expect('env -u GIT_INDEX_FILE ' + commit, 'FORBIDDEN', 'secret', alternate);
   expect('unset GIT_INDEX_FILE; ' + commit, 'FORBIDDEN', 'secret', alternate);
@@ -376,7 +377,7 @@ test('own SG preserves actual index and repository removals, env-i and unchanged
   expect('unset GIT_DIR; ' + commit, 'FORBIDDEN', 'secret', otherRepo);
   expect('builtin unset GIT_DIR; ' + commit, 'FORBIDDEN', 'secret', otherRepo);
   expect(commit, 'ALLOW', 'secret', otherRepo);
-  const reset = 'env -i HOME=' + f.home + ' GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null ';
+  const reset = 'env -i HOME=' + q(f.home) + ' GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null ';
   for (const repo of ['secret', 'ordinary']) {
     const refusal = expect(reset + commit, 'UNKNOWN', repo, alternate);
     assert.match(refusal.reason, /^\[判断不能\].*HOME \/ XDG_CONFIG_HOME/);
@@ -397,7 +398,7 @@ test('own SG restores the five original normal inputs without changing the stage
   ];
   for (const command of normalInputs) expect(command, 'ALLOW', 'ordinary');
   expect(normalInputs[0], 'FORBIDDEN');
-  expect('declare -n ref=GIT_INDEX_FILE; ' + f.absoluteGit + ' commit -m ordinary', 'UNKNOWN');
-  expect('declare -n ref="$TARGET"; GIT_INDEX_FILE=/DUMMY/index ' + f.absoluteGit + ' commit -m ordinary', 'UNKNOWN');
+  expect('declare -n ref=GIT_INDEX_FILE; ' + q(f.absoluteGit) + ' commit -m ordinary', 'UNKNOWN');
+  expect('declare -n ref="$TARGET"; GIT_INDEX_FILE=/DUMMY/index ' + q(f.absoluteGit) + ' commit -m ordinary', 'UNKNOWN');
   assert.equal(fs.existsSync(f.marker), false);
 });
