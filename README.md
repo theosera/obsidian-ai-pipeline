@@ -24,6 +24,12 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 
 <!-- PR191:R54:README:END -->
 
+<!-- PR191:R55:README:BEGIN -->
+
+[R55: 権限変更wrapperの子検索と宣言全件の試験証拠](docs/security/git-command-guards.md#r55-current-contract)では、sudo/doasが選ぶchildの検索条件をHookの継承PATHで代用しない。通常目的のbare childもUNKNOWNになり得る。必要なsudo/doasを保持したabsolute childは実行体選択を確認する候補であり、権限・認証・設定や子shell内の別検索の認証ではない。試験text出力は固定profileの全654宣言について、条件が非適用のpresent/I/O不明でも元期待と実wireを残す。旧646宣言を保持し、policyを経た子検索が未資格の既存8入力だけを追加宣言する。元8,696 oracleと追加8件の元FORBIDDEN期待に対するFAILを残し、新sourceの全件・CI・fresh reviewは取得前に成功へ持ち越さない。
+
+<!-- PR191:R55:README:END -->
+
 <!-- PR191:R51:README:BEGIN -->
 
 現在のガード修復候補は[R51の契約](docs/security/git-command-guards.md#r51-current-contract)を参照する。直接のspecial builtinへのprefix代入は、shellのmode・版によるexport永続性を未資格のまま非exportとは扱わない。追跡済みのGH metadata等も同じ境界に含め、ordinaryなGH_HOSTでもこの特殊prefix形式はUNKNOWNになり得る費用を明記する。getentの完全なservice値の後の真正queryを保ち、検証器では未知のdeny理由をBROKENとして失敗させる。旧8,696入力・oracleを維持し、新headの全件・CI・両fresh review・指摘処理は取得前に合格へ持ち越さない。以下は当時の履歴である。

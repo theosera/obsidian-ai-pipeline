@@ -17146,8 +17146,10 @@ function main() {
   } else {
     for (const r of results) {
       if (!r.ok) console.log(`✗ ${r.id}: expect ${r.profileExpected?.expect || r.expect} got ${r.decision} ${r.denied.join(',')} ${r.broken.join('; ')}`);
-      if (selectedProfile && (r.profileQualification.applies || !r.profileOK)) {
+      if (selectedProfile && (r.profileQualification.source === 'declaration-and-independent-filesystem-only' || !r.profileOK)) {
         // Keep CI qualification evidence beside the original assertion result.
+        // Declared but inactive prerequisites (present or I/O unknown) also need
+        // a row; only qualification.applies changes the profile expectation.
         // Do not infer a missing executable merely from the runner platform.
         console.log('Executable profile evidence: ' + JSON.stringify({ id: r.id,
           originalOK: r.originalOK, profileOK: r.profileOK,

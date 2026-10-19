@@ -20,6 +20,35 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R55:CONTRACT:BEGIN -->
+
+<a id="r55-current-contract"></a>
+
+## R55: sudo/doasの子検索と非適用profileの証拠
+
+公開基点f16ddf1e4469e4281973655729ebcd6a266103f0のCodex通常コメント6270698365は、権限変更wrapper後のbare child選択（P1）と、宣言済みだが非適用の試験証拠欠落（P2）を指摘した。以下は修復候補の有限契約である。新sourceの統合全件・新head CI・両fresh review・全指摘処理は実測前に合格とせず、旧節・原FAIL・元8,696入力とoracleを保持する。
+
+| 境界 | 保護・UNKNOWNとなる範囲 | 正常対照・費用 |
+| --- | --- | --- |
+| sudo/doasが選ぶ子 | wrapper自身の検索と、policyを経たchildの検索を分ける。後者が未資格ならHookの継承PATHからbare clientの既知実行体を決めない。順序付きの未資格検索metadataを後続wrapper・calleeへ伝える。 | sudo curl等の普通の用途もUNKNOWNになり得る。これは実際のPATH消失を観測したという意味ではなく、選択条件の未資格である。 |
+| terminal queryとabsolute child | 真正terminal queryで子を実行しない経路には、子実行用の追加条件を付けない。必要なwrapper自身の実行体・既存context検査は残す。独立して資格できるabsolute childは、その実行体選択を確認する候補となる。 | absolute指定でsudoers/doas policy、権限、認証、loaderや設定全体を認証しない。既存のUNKNOWNや独立FORBIDDENを解除しない。 |
+| 子shellの先の検索 | absolute shellを指定しても、そのbodyが使う別のbare programへ継承PATHの安全性を持ち越さない。既存のsource再検査へ未資格検索状態を伝える。 | 親shellをabsoluteにしただけで内部のwrapper/clientが確認済みとはならない。直接の普通の操作や、実行体・source/contextを確認できる正常対照は別に保つ。 |
+| profileのtext証拠 | 固定ledgerの全654宣言についてstructured rowを出す。present又はI/O不明でapplies=false、かつ元期待がPASSでも省略しない。非宣言の普通のPASSへ行を増やさず、非宣言FAILの診断は残す。 | 宣言の存在と条件適用は別である。非適用時の元semantic assertion、own-hook判定・理由、前後安定性を保持し、I/O不明をmissingへ変換しない。行の存在だけでnative semanticsを認定しない。 |
+
+一次根拠のsudoは公式sudo-project/sudoの[v1.9.17p2 sudoers.c](https://github.com/sudo-project/sudo/blob/v1.9.17p2/plugins/sudoers/sudoers.c)と[env.c](https://github.com/sudo-project/sudo/blob/v1.9.17p2/plugins/sudoers/env.c)である。secure_pathが有効で利用者が免除対象でない条件では、command解決のPATHとchild環境のPATHへその値を使う。sudo.wsの文書URLは既存取得でrobots拒否があり、今回それを取得成功とは扱わず公式sourceを照合した。
+
+OpenBSDは固定revision b196a8e95931e4ddf19f9a664a8498bf157fea77の[doas.c](https://github.com/openbsd/src/blob/b196a8e95931e4ddf19f9a664a8498bf157fea77/usr.bin/doas/doas.c)と[env.c](https://github.com/openbsd/src/blob/b196a8e95931e4ddf19f9a664a8498bf157fea77/usr.bin/doas/env.c)を照合した。targetのPATHを含む環境を作り、実行時のcommand検索にはruleのcommand指定に応じてsafe PATH又は元のPATHを使う境界がある。全doas呼出しが一律にtarget PATHで検索されるとは記録しない。補助資料の[doas(1)](https://man.openbsd.org/doas.1)と[doas.conf(5)](https://man.openbsd.org/doas.conf.5)も、target環境・設定による変更とcommandの制約を示すが、これは取得時のcurrent manualであり固定revisionの版とは分ける。installed policyの読取・sudo/doas実行・権限変更や実通信のnative成立はこの資料照合に含まない。
+
+停止後は必要なsudo/doas・対象・操作・argv・cwd/env/config/sourceを保ち、確認できるabsolute childへ結ぶ形だけを同目的の代替候補とする。必要なwrapperを削除したり、absolute shellの内部検索を無視したりして代替成功とはしない。条件を保てなければ未資格の検索段と必要条件をownerへ提示する。個別操作の承認はHook停止の承認ではない。
+
+旧646宣言の全値と順序を保持し、既存R29SW01〜07・R29SW39だけに、policyを経たbare curlの検索が未資格という8宣言を追加した。これはprogramの不在や実際のPATH削除を測った宣言ではない。元8,696入力・oracleを固定し、この8件の元FORBIDDEN期待に対するFAILと、新しいUNKNOWN契約への適合を二重に残す。absolute child・真正query・独立した置換の送信には宣言を借用せず、SG/AGの独立した禁止条件も弱めない。
+
+受入では、bare childの停止、absolute childと真正queryの対照、子shellの先への伝播、独立FORBIDDENの維持を分けて確認する。P2は注入FSとwireによるpure試験でdeclared present/missing/I/O不明と非宣言の対照を持つ。元期待・適用件数・profile結果を併記し、条件付きUNKNOWNのPASSを欠落programのnative意味論の成功へ読み替えない。
+
+2026-10-20 01:00:42 JSTに終端したローカルの固定source全8,696件は、更新前646宣言を使い、元期待8058 PASS / 638 FAIL、旧profile8688 PASS / 8 FAILだった。8件は上記の追加宣言と一致する。source・fixtureは前後一致し、実Hook出力26,088行を保持した。その保存出力だけに新654宣言を適用した再集計は8,696件適合・BROKEN0だったが、これは新runnerの再実行ではない。新head CIでは更新後654宣言を使う実際の全件実行と、全宣言の適用・非適用のtext証拠を別に確認する。同headのCI・両fresh review・全指摘処理は取得前に合格へ持ち越さない。
+
+<!-- PR191:R55:CONTRACT:END -->
+
 <!-- PR191:R54:CONTRACT:BEGIN -->
 
 <a id="r54-executable-selection"></a>

@@ -2313,6 +2313,11 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
       if (base === 'script' && info.launcherUnknown) {
         info.name = base; info.nameWord = w; info.args = rest; return info;
       }
+      // sudoers/doas policy selects the child's PATH, independently of lookup
+      // of the launcher itself. Keep this ordered boundary for later wrappers
+      // and for source reparsed inside an absolute child shell. A real terminal
+      // query returned above and never selects a child search environment.
+      if (base === 'sudo' || base === 'doas') info.envOps.push({ unqualifiedExecutableSearch: true });
       k = k + 1 + r;
       continue;
     }
@@ -3809,6 +3814,7 @@ function inspect(cmd, options = {}) {
       if (op.set && HELPER_SOURCE_ENV.has(op.set)) helperEnv.add(op.set);
       if (op.set && CLIENT_OPTION_ENV.has(op.set)) helperEnvUnknown.delete(op.set);
       if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
+      if (op.unqualifiedExecutableSearch) pathChanged = true;
       if (op.functionEnvironment) {
         const imported = op.functionEnvironment;
         if (imported.callee) environmentFunctions.set(imported.environment, imported.callee);
