@@ -95,6 +95,8 @@ import {
 import { closeDb } from '../threat-reports/db';
 import { exportThreatReportsJson } from '../threat-reports/json_export';
 import { regenerateIndexPage } from '../threat-reports/index_writer';
+import { DeliveryStore, type IngestionReceiptInput } from '../threat-reports/delivery_store';
+import { sha256 } from '../utils/document_integrity';
 
 // --- 公開定数 (テストから参照) ---
 export const PERIOD_END_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -163,6 +165,36 @@ export interface GateResult {
  * 保存され、CI 隔離で本文が runner と共に消えた後の再取得に使う。
  */
 export type GateRunner = (rawPath: string, sourceRef?: string) => GateResult;
+
+/** Optional local receipt bridge. No delivery credentials or Gmail calls. */
+export function recordDeliveryIngestion(
+  receipt: Omit<IngestionReceiptInput, 'contentSha256'> & { body: string },
+  dbPath: string | undefined = envOrUndefined('LLM_SEC_DELIVERY_DB'),
+): boolean {
+  if (!dbPath) return false;
+  // A typo must not silently create a fresh ledger and lose all sender identity.
+  if (!fs.existsSync(dbPath)) throw new Error('LLM_SEC_DELIVERY_DB does not exist');
+  const store = new DeliveryStore(dbPath);
+  try {
+    const { body, ...metadata } = receipt;
+    return store.recordIngestion({ ...metadata, contentSha256: sha256(Buffer.from(body, 'utf8')) });
+  } finally {
+    store.close();
+  }
+}
+
+function tryRecordDeliveryIngestion(
+  receipt: Omit<IngestionReceiptInput, 'contentSha256'> & { body: string },
+): void {
+  try {
+    recordDeliveryIngestion(receipt);
+  } catch (error: unknown) {
+    // Receiver work can still finish; a missing receipt must remain pending,
+    // rather than changing the gate decision or marking a failed ingest done.
+    console.error('::error::配送台帳への取り込み結果記録に失敗:',
+      error instanceof Error ? error.stack : String(error));
+  }
+}
 
 /** ゲート subprocess の上限時間。untrusted 本文で hang しても週次バッチを止めない。 */
 const GATE_EXEC_TIMEOUT_MS = 60_000;
@@ -1038,7 +1070,7 @@ async function processThread(
 }
 
 /** フェーズ 1: thread 内の 1 message を取込む (ゲート → 昇格 → ingest)。 */
-async function processMessage(
+export async function processMessage(
   threadId: string,
   msg: gmail_v1.Schema$Message,
   reportMessageCount: number,
@@ -1127,6 +1159,11 @@ async function processMessage(
   fs.writeFileSync(tmpPath, body, 'utf8');
   fs.renameSync(tmpPath, stagedPath);
 
+  const receipt = (scanStatus: IngestionReceiptInput['scanStatus'],
+    ingestionStatus: IngestionReceiptInput['ingestionStatus'], ingestReportId?: string): void => {
+    tryRecordDeliveryIngestion({ body, messageId, scanStatus, ingestionStatus, ingestReportId });
+  };
+
   // ★ インジェクション・ゲート: ingest が DB/JSON/index に何か書く前に検査。
   // non-clean は本文を _quarantine/ へ退避して継続 (run 全体は fail させない)。
   // ルーティング自体の例外 (rename の EXDEV / permission 等) も 1 message の
@@ -1146,6 +1183,7 @@ async function processMessage(
           reason: gateOutcome.detail || 'gate 実行失敗 (fail-closed)',
         });
       }
+      receipt(gateOutcome.verdict === 'clean' ? 'error' : gateOutcome.verdict, 'quarantined');
       return {
         ...at,
         periodEnd,
@@ -1153,7 +1191,9 @@ async function processMessage(
         reason: `ゲート ${gateOutcome.verdict}: ${gateOutcome.detail}`,
       };
     }
+    receipt('clean', 'pending');
   } catch (e) {
+    receipt('error', 'error');
     if (e instanceof QuarantineCapacityError) {
       // quarantine 枯渇は一時的な1-message障害ではなく運用上のsystemic failure。
       // gate 側が pending queue を書いた後でも、本 run 自体を失敗させれば vault push /
@@ -1175,6 +1215,7 @@ async function processMessage(
     promotion = promoteStagedRaw(stagedPath, rawPath);
   } catch (e) {
     removeIfExists(stagedPath);
+    receipt('clean', 'error');
     return { ...at, periodEnd, status: 'error', reason: `raw/ への昇格に失敗: ${errText(e)}` };
   }
   if (promotion === 'conflict') {
@@ -1198,6 +1239,7 @@ async function processMessage(
       verdict: 'conflict',
       reason: `raw/${rawFilename} が既存で内容が異なる (上書きしない)`,
     });
+    receipt('clean', 'quarantined');
     return {
       ...at,
       periodEnd,
@@ -1217,7 +1259,9 @@ async function processMessage(
     console.log(
       `  ✅ ${periodEnd} ingested: ${result.vulnerabilities} vulns, ${result.implementationChecks} checks`
     );
+    receipt('clean', 'ingested', result.reportId);
   } catch (e) {
+    receipt('clean', 'error');
     // ★ ingest が失敗した本文は「正典」ではない。この run が昇格させた raw/ を
     // 残すと llm-sec-weekly.yml が `git add -f .../raw/` でそのまま commit/push し
     // (ゲートは clean なので raw/ 不変条件チェックも素通りする)、後から届いた

@@ -19,6 +19,10 @@ import { run as runThreatRelevance } from './test/threat_reports_relevance';
 import { run as runThreatEvidence } from './test/threat_reports_evidence';
 import { run as runThreatRepoTarget } from './test/threat_reports_repo_target';
 import { run as runLlmSecWeeklyFetcher } from './test/llm_sec_weekly_fetcher';
+import { run as runLlmSecWeeklyDelivery } from './test/llm_sec_weekly_delivery';
+import { run as runLlmSecWeeklyDeliveryEdges } from './test/llm_sec_weekly_delivery_edges';
+import { run as runLlmSecWeeklyDeliveryAuth } from './test/llm_sec_weekly_delivery_auth';
+import { run as runLlmSecWeeklyPublish } from './test/llm_sec_weekly_publish';
 import { run as runToolUse } from './test/tool_use';
 
 interface Suite {
@@ -42,6 +46,10 @@ const suites: Suite[] = [
   { name: 'ThreatEvidence', run: runThreatEvidence },
   { name: 'ThreatRepoTarget', run: runThreatRepoTarget },
   { name: 'LlmSecWeeklyFetcher', run: runLlmSecWeeklyFetcher },
+  { name: 'LlmSecWeeklyDelivery', run: runLlmSecWeeklyDelivery },
+  { name: 'LlmSecWeeklyDeliveryEdges', run: runLlmSecWeeklyDeliveryEdges },
+  { name: 'LlmSecWeeklyDeliveryAuth', run: runLlmSecWeeklyDeliveryAuth },
+  { name: 'LlmSecWeeklyPublish', run: runLlmSecWeeklyPublish },
   { name: 'ToolUse', run: runToolUse },
 ];
 
