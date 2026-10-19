@@ -89,3 +89,4 @@
 /storage.ts              @theosera
 /types.ts                @theosera
 /threat-reports/         @theosera
+/utils/document_integrity.ts  @theosera
