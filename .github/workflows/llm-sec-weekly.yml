@@ -87,6 +87,35 @@ jobs:
         # 現行バージョンの根拠と次の bump 発動条件は ci.yml の同名ステップに正典。
         run: pnpm rebuild better-sqlite3
 
+      - name: Configure vault bot identity
+        working-directory: vault
+        run: |
+          git config user.name "llm-sec-weekly-bot"
+          git config user.email "llm-sec-weekly-bot@users.noreply.github.com"
+
+      # The publisher commits only its delivery ledger. Run before migration or
+      # intake stages other Vault files, and persist sending before Gmail POST.
+      - name: Publish canonical weekly reports
+        if: ${{ vars.LLM_SEC_DELIVERY_ENABLED == 'true' && github.event.inputs.dry_run != 'true' }}
+        working-directory: pipeline
+        env:
+          VAULT_ROOT: ${{ github.workspace }}/vault
+          GMAIL_DELIVERY_CLIENT_ID: ${{ secrets.GMAIL_DELIVERY_CLIENT_ID }}
+          GMAIL_DELIVERY_CLIENT_SECRET: ${{ secrets.GMAIL_DELIVERY_CLIENT_SECRET }}
+          GMAIL_DELIVERY_REFRESH_TOKEN: ${{ secrets.GMAIL_DELIVERY_REFRESH_TOKEN }}
+          GMAIL_DELIVERY_ACCOUNT: ${{ secrets.GMAIL_DELIVERY_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          publisher_status=0
+          pnpm tsx scripts/llm_sec_weekly_publish.ts \
+            --vault-root="${VAULT_ROOT}" --account="${GMAIL_DELIVERY_ACCOUNT}" || publisher_status=$?
+          if [ "${publisher_status}" -eq 2 ]; then
+            echo "::warning::配送状態が未確定または再試行待ちです。再送を追加せず既存メールの取り込みを継続します。"
+          elif [ "${publisher_status}" -ne 0 ]; then
+            echo "::error::配送処理の認証・原文検証・永続化に失敗しました。後続処理を停止します。"
+            exit "${publisher_status}"
+          fi
+
       # ----------------------------------------------------------------
       # DB 配置移行 (iCloud 除外): 旧 __skills/pipeline/threat_reports.db を
       # __skills/pipeline.nosync/ へ一度だけ git mv する (idempotent / 自己修復)。
@@ -162,6 +191,10 @@ jobs:
           # (vault checkout の中ではないので git commit には巻き込まれない)。
           PENDING_LABELS_FILE: ${{ github.workspace }}/pending-labels.json
         run: |
+          delivery_db="${VAULT_ROOT}/__skills/pipeline.nosync/llm-sec-delivery/llm-sec-delivery.sqlite3"
+          if [ -f "${delivery_db}" ]; then
+            export LLM_SEC_DELIVERY_DB="${delivery_db}"
+          fi
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             pnpm tsx scripts/llm_sec_weekly_fetcher.ts --phase=ingest --dry-run
           else
@@ -254,13 +287,12 @@ jobs:
           # ここは常に新パスを指す。fetcher の PIPELINE_DB_DIR と一致させること (食い違うと
           # commit される .db が空 / stale になる)。
           DB_PATH: __skills/pipeline.nosync/threat_reports.db
+          DELIVERY_DB_PATH: __skills/pipeline.nosync/llm-sec-delivery/llm-sec-delivery.sqlite3
         run: |
           set -euo pipefail
-          git config user.name "llm-sec-weekly-bot"
-          git config user.email "llm-sec-weekly-bot@users.noreply.github.com"
 
-          # 個別パスを add (5 種: raw md 群 / JSON / index.md / _gate (判断トレース・
-          # 隔離キュー・heightened 状態 — いずれも redact 済み) / DB)。すべて本パイプラインの
+          # 個別パスを add (raw md 群 / JSON / index.md / _gate (判断トレース・
+          # 隔離キュー・heightened 状態 — いずれも redact 済み) / DB / 配送台帳)。本パイプラインの
           # 既知の出力なので -f を付け、vault repo の .gitignore 方針に依存せず確実に追跡する。
           # 特に `.threat_reports.json` は dot 始まりで、Obsidian Vault 共通の
           # `.*` (全 dotfile 除外) gitignore に黙って弾かれる (commit から欠落し
@@ -270,6 +302,11 @@ jobs:
           git add -f "${TR_DIR}/raw/" "${TR_DIR}/.threat_reports.json" "${TR_DIR}/_index.md" || true
           if [ -d "${TR_DIR}/_gate" ]; then
             git add -f "${TR_DIR}/_gate/"
+          fi
+          # DeliveryStore uses DELETE journaling and the fetcher closes each
+          # receipt connection. Persist observed scan/ingest state separately.
+          if [ -f "${DELIVERY_DB_PATH}" ]; then
+            git add -f -- "${DELIVERY_DB_PATH}"
           fi
           if [ -f "${DB_PATH}" ]; then
             # 二重防御: fetcher の closeDb() が既に wal_checkpoint(TRUNCATE) 済みのはずだが、

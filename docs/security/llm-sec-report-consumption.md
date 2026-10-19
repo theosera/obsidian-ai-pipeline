@@ -79,13 +79,19 @@ owner 本人が送った証明にはならない。insert 経路でも `SENT` �
 | `search_threads` (対象ラベルのみ) | ✅ 必須 |
 | `get_thread` (本文取得) | ✅ 必須 |
 | `label_thread` (`processed` 付与のみ) | ✅ 必須 |
-| `send_email` | ❌ **禁止** (このリポは送信しない) |
+| `send_email` | ❌ **禁止** (本ポリシーの受信・取込フローは送信しない) |
 | `delete_email` / `trash` | ❌ **禁止** |
 | `modify_labels` (上記以外) | ❌ **原則禁止** |
 | `search_all_mail` (ラベル無制限) | ❌ **原則禁止**。誤って全 inbox を読まない |
 
 Gmail API scope は **`gmail.readonly` + 限定 modify** が理想。
 避けるべき scope: `gmail.modify` (広域), `gmail.send`, `mail.google.com`。
+
+この制約は `/sec-mode`、受信 fetcher、Actions 取込経路に適用する。
+任意の発行者 CLI による self-send 配送管理は
+[`llm-sec-weekly-delivery.md`](./llm-sec-weekly-delivery.md) の独立した credential / 台帳 /
+明示的な呼出しで扱い、受信フローへ send scope を追加しない。
+配送済み状態や SHA-256 の一致は、L0〜L3 の通過・取込成功を意味しない。
 
 ### 取得件数の上限
 

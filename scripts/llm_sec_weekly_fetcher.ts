@@ -72,7 +72,6 @@
  */
 
 import { execFileSync } from 'child_process';
-import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -95,6 +94,29 @@ import {
 import { closeDb } from '../threat-reports/db';
 import { exportThreatReportsJson } from '../threat-reports/json_export';
 import { regenerateIndexPage } from '../threat-reports/index_writer';
+import { DeliveryStore, type IngestionReceiptInput } from '../threat-reports/delivery_store';
+import { sha256 } from '../utils/document_integrity';
+import { PERIOD_END_FUTURE_HORIZON_DAYS, isPeriodEndTooFarInFuture } from '../threat-reports/period_policy';
+import {
+  appendQuarantineQueueEntry,
+  GATE_SUBDIR,
+  quarantineBody,
+  QuarantineCapacityError,
+  readQuarantinePendingSourceRefs,
+} from '../threat-reports/quarantine_queue';
+
+// 隔離 (quarantine) の責務は threat-reports 側へ移した (2026-10-18)。
+// 旧 import 経路 (test / workflow / docs) を壊さないため、同じ名前をここから再公開する。
+export {
+  appendQuarantineQueueEntry,
+  GATE_SUBDIR,
+  QUARANTINE_QUEUE_SCHEMA,
+  quarantineBody,
+  QuarantineCapacityError,
+  readQuarantinePendingSourceRefs,
+} from '../threat-reports/quarantine_queue';
+export type { FetcherQueueEntry } from '../threat-reports/quarantine_queue';
+export { PERIOD_END_FUTURE_HORIZON_DAYS, isPeriodEndTooFarInFuture } from '../threat-reports/period_policy';
 
 // --- 公開定数 (テストから参照) ---
 export const PERIOD_END_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -104,8 +126,6 @@ export const DEFAULT_PROCESSED_LABEL = 'LLM-Sec-Report/processed';
 export const DEFAULT_MAX_RESULTS = 10;
 /** フェーズ間で受け渡すファイルのデフォルトパス (cwd 相対)。 */
 export const DEFAULT_PENDING_LABELS_FILE = 'pending-labels.json';
-/** ゲート出力 (trace / queue / state) を置く vault 内サブディレクトリ。 */
-export const GATE_SUBDIR = '_gate';
 /** non-clean レポート本文の退避先 (vault 側で git/iCloud 同期除外)。 */
 export const QUARANTINE_SUBDIR = '_quarantine';
 /**
@@ -119,10 +139,6 @@ export const QUARANTINE_SUBDIR = '_quarantine';
  * ここに残骸が出ても commit されない (各経路で必ず片付ける)。
  */
 export const STAGING_SUBDIR = '_staging';
-/** 隔離キュー JSON の schema 識別子 (gate_decision.py の QUEUE_SCHEMA と一致)。 */
-export const QUARANTINE_QUEUE_SCHEMA = 'quarantine-queue@1';
-/** period_end の未来許容幅 (日)。送信遅延 / タイムゾーン差の余裕を見て 2 週間。 */
-export const PERIOD_END_FUTURE_HORIZON_DAYS = 14;
 /** thread 一覧のページング上限 (API 濫用と無限ループの防止)。 */
 export const MAX_THREAD_LIST_PAGES = 10;
 
@@ -163,6 +179,36 @@ export interface GateResult {
  * 保存され、CI 隔離で本文が runner と共に消えた後の再取得に使う。
  */
 export type GateRunner = (rawPath: string, sourceRef?: string) => GateResult;
+
+/** Optional local receipt bridge. No delivery credentials or Gmail calls. */
+export function recordDeliveryIngestion(
+  receipt: Omit<IngestionReceiptInput, 'contentSha256'> & { body: string },
+  dbPath: string | undefined = envOrUndefined('LLM_SEC_DELIVERY_DB'),
+): boolean {
+  if (!dbPath) return false;
+  // A typo must not silently create a fresh ledger and lose all sender identity.
+  if (!fs.existsSync(dbPath)) throw new Error('LLM_SEC_DELIVERY_DB does not exist');
+  const store = new DeliveryStore(dbPath);
+  try {
+    const { body, ...metadata } = receipt;
+    return store.recordIngestion({ ...metadata, contentSha256: sha256(Buffer.from(body, 'utf8')) });
+  } finally {
+    store.close();
+  }
+}
+
+function tryRecordDeliveryIngestion(
+  receipt: Omit<IngestionReceiptInput, 'contentSha256'> & { body: string },
+): void {
+  try {
+    recordDeliveryIngestion(receipt);
+  } catch (error: unknown) {
+    // Receiver work can still finish; a missing receipt must remain pending,
+    // rather than changing the gate decision or marking a failed ingest done.
+    console.error('::error::配送台帳への取り込み結果記録に失敗:',
+      error instanceof Error ? error.stack : String(error));
+  }
+}
 
 /** ゲート subprocess の上限時間。untrusted 本文で hang しても週次バッチを止めない。 */
 const GATE_EXEC_TIMEOUT_MS = 60_000;
@@ -209,23 +255,6 @@ export function extractPeriodEnd(body: string): string | null {
 /** `^\d{4}-\d{2}-\d{2}$` 厳密一致のみ通す。これがファイル名安全の核心。 */
 export function isSafePeriodEnd(value: string | null): value is string {
   return typeof value === 'string' && PERIOD_END_RE.test(value);
-}
-
-/**
- * 未来の週を騙る (または暦として存在しない) `period_end` を弾く多層防御。
- *
- * `period_end` は untrusted 本文由来なのに、ファイル名・隔離キューのキー・
- * decision_id の一部になる。遠い未来の週を名乗るメールを取り込ませると、
- * 後から届く**その週の正規レポート**と衝突させられる。形式 (`PERIOD_END_RE`) を
- * 通った後の追加ふるいなので、ここでは暦としての妥当性も見る。
- * `new Date()` は `2026-02-31` のような非実在日を黙って繰り上げる (→ 03-03) ため、
- * ISO 文字列への往復比較で確かめる。
- */
-export function isPeriodEndTooFarInFuture(periodEnd: string, now: Date = new Date()): boolean {
-  const parsed = new Date(`${periodEnd}T00:00:00Z`);
-  const t = parsed.getTime();
-  if (Number.isNaN(t) || parsed.toISOString().slice(0, 10) !== periodEnd) return true;
-  return t - now.getTime() > PERIOD_END_FUTURE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 }
 
 /**
@@ -588,41 +617,6 @@ export function makeCliGateRunner(vaultRoot: string): GateRunner {
 }
 
 /**
- * 本文を隔離ディレクトリへ退避し、実際に置いたパスを返す。
- *
- * 同名が既にある場合 (同じ週を騙る別メールが続けて隔離された等) は連番を付ける。
- * 上書きすると先に隔離した証拠が消え、裁定できなくなるため。
- */
-export class QuarantineCapacityError extends Error {
-  constructor(filename: string) {
-    super(`quarantine collision が 100 件を超えたため上書きせず停止: ${filename}`);
-    this.name = 'QuarantineCapacityError';
-  }
-}
-
-export function quarantineBody(srcPath: string, quarantineDir: string): string {
-  fs.mkdirSync(quarantineDir, { recursive: true });
-  const srcBase = path.basename(srcPath);
-  // Vault 内の quarantine に executable Markdown を残さない。
-  // legacy/staging .md は .md.txt へ変換し、重複連番も拡張子の前へ入れて
-  // `*.md.txt` 終端を常に維持する。
-  const inertBase = srcBase.endsWith('.md.txt')
-    ? srcBase
-    : srcBase.endsWith('.md') ? `${srcBase}.txt` : `${srcBase}.md.txt`;
-  const suffix = '.md.txt';
-  const stem = inertBase.slice(0, -suffix.length);
-  let dest = path.join(quarantineDir, inertBase);
-  for (let n = 1; fs.existsSync(dest); n++) {
-    if (n > 100) {
-      throw new QuarantineCapacityError(inertBase);
-    }
-    dest = path.join(quarantineDir, `${stem}.${n}${suffix}`);
-  }
-  fs.renameSync(srcPath, dest);
-  return dest;
-}
-
-/**
  * ゲートを実行し、non-clean なら staging 本文を隔離ディレクトリへ移す。
  *
  * 判断トレース / 隔離キューへの記録は gate_decision.py 側が済ませているため、
@@ -712,123 +706,6 @@ export function discardFailedPromotion(args: {
     reason: args.reason,
   });
   return 'quarantined';
-}
-
-/** fetcher が自前で隔離キューへ積む 1 件分の入力。 */
-export interface FetcherQueueEntry {
-  periodEnd: string;
-  /** 退避先の本文パス (裁定時に人間が開く)。 */
-  file: string;
-  sourceRef: string;
-  /** `error` (ゲート実行失敗) / `conflict` (既存 raw と不一致)。 */
-  verdict: string;
-  reason: string;
-}
-
-/**
- * 隔離キューへ fetcher 由来のエントリを 1 件追記する (失敗しても throw しない)。
- *
- * gate_decision.py の queue_add は verdict が suspicious/blocked のときだけ走る。
- * exit 4 / spawn 失敗 / timeout (= fetcher 側 verdict `error`) と、既存 raw との
- * 内容衝突は **キューに 1 件も載らない**ため、(a) 人間の裁定対象から漏れ、
- * (b) 再取込ループ防止ガード (`source_ref`) も噛まず毎 run 隔離を繰り返す。
- * ここで最小のエントリを補完してその穴を塞ぐ。
- * 壊れた / 別 schema のキューは**上書きしない** (人手データを壊さない)。
- */
-export function appendQuarantineQueueEntry(queuePath: string, entry: FetcherQueueEntry): boolean {
-  try {
-    let items: Array<Record<string, unknown>> = [];
-    if (fs.existsSync(queuePath)) {
-      const parsed = JSON.parse(fs.readFileSync(queuePath, 'utf8')) as {
-        schema?: unknown; items?: unknown;
-      };
-      if (parsed.schema !== QUARANTINE_QUEUE_SCHEMA || !Array.isArray(parsed.items)) {
-        console.error(
-          `::error::隔離キューの schema が想定外のため fetcher 由来エントリを追記できません: ${queuePath}`
-        );
-        return false;
-      }
-      items = parsed.items as Array<Record<string, unknown>>;
-    }
-    // idempotent: 同じ原本が pending のまま残っているなら二重登録しない
-    // (gate_decision.py の queue_add も period_end + source_ref で同じガードを行う)。
-    const key = normalizeSourceRef(entry.sourceRef);
-    if (items.some(it => it.status === 'pending' &&
-        typeof it.source_ref === 'string' && normalizeSourceRef(it.source_ref) === key)) {
-      return false;
-    }
-    const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-    const compact = ts.replace(/[-:TZ]/g, '');
-    // ★ 秒精度の時刻だけでは id が衝突する。同じ period_end を名乗る別スレッドが
-    // 同一 run で積まれると decision_id が完全一致し、queue_id は下 4 桁 (= 分秒)
-    // しか使わないので **時刻が違っても**衝突する。衝突すると `--resolve` が
-    // 曖昧になり、人間の裁定が別の本文に付きうる。
-    // gate_decision.py の decision_id が body_sha の先頭 4 桁を持つのと同じ形で、
-    // 原本 (thread) の同一性を id に織り込む。
-    const srcDisc = crypto.createHash('sha1').update(key).digest('hex').slice(0, 4);
-    const decisionId = `fetcher-${entry.periodEnd}-${compact}-${srcDisc}`;
-    items.push({
-      queue_id: `q-${entry.periodEnd}-${decisionId.slice(-4)}`,
-      period_end: entry.periodEnd,
-      file: entry.file,
-      source_ref: entry.sourceRef,
-      decision_id: decisionId,
-      verdict: entry.verdict,
-      reasons: [entry.reason],
-      queued_at: ts,
-      source: 'fetcher',
-      status: 'pending',
-      adjudicated_at: null,
-      adjudication_note: null,
-      ksp_candidate: null,
-    });
-    fs.mkdirSync(path.dirname(queuePath), { recursive: true });
-    const tmp = queuePath + '.tmp';
-    fs.writeFileSync(
-      tmp, JSON.stringify({ schema: QUARANTINE_QUEUE_SCHEMA, items }, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmp, queuePath);
-    return true;
-  } catch (e) {
-    console.error(
-      `::error::隔離キューへの追記に失敗: ${e instanceof Error ? e.message : String(e)}`);
-    return false;
-  }
-}
-
-/** `gmail:<threadId>#...` の fragment を落として thread 同一性だけを取り出す。 */
-function normalizeSourceRef(ref: string): string {
-  return ref.split('#')[0];
-}
-
-/**
- * 隔離キューで pending の `source_ref` 一覧を返す (再取込ループ防止ガード)。
- *
- * 隔離済み thread は `processed` ラベルが付かないため次 cron でも検索に
- * 出てくる。ここで skip しないと、毎週 本文書込 → 隔離 → キュー重複登録を
- * 繰り返す。
- *
- * ガードのキーは **原本 (thread) の同一性**であって period_end ではない。
- * period_end は untrusted 本文が名乗る値なので、わざと non-clean にした数通で
- * 未来の月曜を名乗らせるだけで、その週の正規レポートを恒久的に (しかも
- * `skipped` = 成功扱いのまま) 塞げてしまう。
- * キューが無い/壊れている場合は空扱い (ゲート自体は毎回走るので安全側)。
- */
-export function readQuarantinePendingSourceRefs(vaultRoot: string): Set<string> {
-  const queuePath = path.join(
-    vaultRoot, getThreatReportsBaseFolder(), GATE_SUBDIR, 'quarantine_queue.json');
-  if (!fs.existsSync(queuePath)) return new Set();
-  try {
-    const parsed = JSON.parse(fs.readFileSync(queuePath, 'utf8')) as {
-      items?: Array<{ source_ref?: unknown; status?: unknown }>;
-    };
-    return new Set(
-      (parsed.items ?? [])
-        .filter(i => i.status === 'pending' && typeof i.source_ref === 'string')
-        .map(i => normalizeSourceRef(i.source_ref as string))
-    );
-  } catch {
-    return new Set();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,7 +915,7 @@ async function processThread(
 }
 
 /** フェーズ 1: thread 内の 1 message を取込む (ゲート → 昇格 → ingest)。 */
-async function processMessage(
+export async function processMessage(
   threadId: string,
   msg: gmail_v1.Schema$Message,
   reportMessageCount: number,
@@ -1127,6 +1004,11 @@ async function processMessage(
   fs.writeFileSync(tmpPath, body, 'utf8');
   fs.renameSync(tmpPath, stagedPath);
 
+  const receipt = (scanStatus: IngestionReceiptInput['scanStatus'],
+    ingestionStatus: IngestionReceiptInput['ingestionStatus'], ingestReportId?: string): void => {
+    tryRecordDeliveryIngestion({ body, messageId, scanStatus, ingestionStatus, ingestReportId });
+  };
+
   // ★ インジェクション・ゲート: ingest が DB/JSON/index に何か書く前に検査。
   // non-clean は本文を _quarantine/ へ退避して継続 (run 全体は fail させない)。
   // ルーティング自体の例外 (rename の EXDEV / permission 等) も 1 message の
@@ -1146,6 +1028,7 @@ async function processMessage(
           reason: gateOutcome.detail || 'gate 実行失敗 (fail-closed)',
         });
       }
+      receipt(gateOutcome.verdict === 'clean' ? 'error' : gateOutcome.verdict, 'quarantined');
       return {
         ...at,
         periodEnd,
@@ -1153,7 +1036,9 @@ async function processMessage(
         reason: `ゲート ${gateOutcome.verdict}: ${gateOutcome.detail}`,
       };
     }
+    receipt('clean', 'pending');
   } catch (e) {
+    receipt('error', 'error');
     if (e instanceof QuarantineCapacityError) {
       // quarantine 枯渇は一時的な1-message障害ではなく運用上のsystemic failure。
       // gate 側が pending queue を書いた後でも、本 run 自体を失敗させれば vault push /
@@ -1175,6 +1060,7 @@ async function processMessage(
     promotion = promoteStagedRaw(stagedPath, rawPath);
   } catch (e) {
     removeIfExists(stagedPath);
+    receipt('clean', 'error');
     return { ...at, periodEnd, status: 'error', reason: `raw/ への昇格に失敗: ${errText(e)}` };
   }
   if (promotion === 'conflict') {
@@ -1198,6 +1084,7 @@ async function processMessage(
       verdict: 'conflict',
       reason: `raw/${rawFilename} が既存で内容が異なる (上書きしない)`,
     });
+    receipt('clean', 'quarantined');
     return {
       ...at,
       periodEnd,
@@ -1217,7 +1104,9 @@ async function processMessage(
     console.log(
       `  ✅ ${periodEnd} ingested: ${result.vulnerabilities} vulns, ${result.implementationChecks} checks`
     );
+    receipt('clean', 'ingested', result.reportId);
   } catch (e) {
+    receipt('clean', 'error');
     // ★ ingest が失敗した本文は「正典」ではない。この run が昇格させた raw/ を
     // 残すと llm-sec-weekly.yml が `git add -f .../raw/` でそのまま commit/push し
     // (ゲートは clean なので raw/ 不変条件チェックも素通りする)、後から届いた
