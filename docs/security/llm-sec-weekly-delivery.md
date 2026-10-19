@@ -149,7 +149,7 @@ control report を使い、配送・実際の gate 判定・取り込み結果�
 | `retryable` | Gmail が明示的に 429 を返した。記録された待機時刻後に再度 `send` を呼べる |
 | `rejected` | 明示的な非再試行 4xx、または最大3試行に到達。自動再送しない |
 | `unknown` | timeout・5xx・応答欠落・読戻し失敗等。`reconcile` のみ。検索で見つからなくても再送しない |
-| `conflict` | 原文不一致、複数の一致メール等。証跡を確認するまで送信しない |
+| `conflict` | 原文不一致、複数の一致メール等。再送しない。既知の受理 ID の読戻し不一致だけは下記の読み取り照合で復旧できる |
 
 自動的な送信ループは持たない。再試行可能な拒否は最大3回、待機は1分、2分。
 HTTP 408、5xx、通信断は「未配送」の証明ではないため再試行可能にはしない。
@@ -169,18 +169,31 @@ workflow の concurrency と Git の競合検出も使うが、人による競�
 件名は `[LLM-Sec-Weekly] <period_end>`。MIME は text/plain UTF-8 を base64
 transfer encoding とし、Markdown の改行 bytes を保持する。配送ヘッダーは次のとおり。
 
-- `Message-ID`: account / report_id / SHA-256 から決まる識別子
+- `Message-ID`: account / report_id / SHA-256 から決まる送信時の識別子。Gmail が書き換える場合があるため検索の手掛かりとして使う
 - `X-LLM-Report-ID`: 発行側 report_id
 - `X-Content-SHA256`: 保存原文の SHA-256
 
-送信済みの照合は、対象 self-send の Sent mailbox を RFC Message-ID と件名で検索し、
-full message を再取得して検証する。最大50候補・5ページを超える検索は失敗として扱い、
-部分結果を「未送信」の根拠にしない。Gmail の message ID と thread ID は別々に記録する。
+送信済みの照合は、対象 self-send の Sent mailbox を RFC Message-ID または件名で検索し、
+full message を再取得して検証する。送信 API が返した Gmail message ID が既知なら、
+検索候補に含まれない場合もその ID を直接読み戻す。RFC Message-ID は Gmail 側で
+`mail.gmail.com` の値へ書き換わることが実運用で確認されたため、不変な受理 ID として扱わない。
+配送の一致には `X-LLM-Report-ID`・`X-Content-SHA256`、self-send の SENT / From / 単一 To、
+件名、保存済み全文 bytes と SHA-256 をすべて要求する。受理済み Gmail message ID が
+台帳にある場合は、その API ID の一致も必須であり、RFC ヘッダーの変更を理由に緩めない。
+最大50候補・5ページを超える検索は失敗として扱い、部分結果を「未送信」の根拠にしない。
+Gmail の API message ID、thread ID、RFC Message-ID は区別する。
 ヘッダー重複、複数 text/plain、追加受信者、不完全な body は拒否する。
 既存 Connector の HTML alternative があっても、照合対象は一意な text/plain 原文のみ。
 配送ヘッダーのない従来メールは、SENT / アカウント / 単一宛先 / 完全一致件名 /
-完全一致本文の組み合わせで照合できる。一致メールが複数あれば競合として停止する。
+完全一致本文の組み合わせで、送信試行前に限り照合できる。一致メールが複数あれば競合として停止する。
 Message-ID や SHA-256 は authenticity や scan 通過の証明として扱わない。
+
+`conflict` の読み取りによる復旧は、`last_error=sent_message_integrity_mismatch` で
+Gmail 受理 ID が保存されている場合だけに限定する。`reconcile` はその既知 ID を読み戻し、
+上記の本文・custom header・宛先等の全条件と、一意な一致を確認する。
+状態更新には照合開始時の status・試行回数・既知 message ID の一致を要求し、
+照合中に台帳が変わっていれば更新しない。新たな送信や試行回数の加算は行わない。
+複数一致、別の受理 ID、原文の相違、その他の identity conflict は自動解除しない。
 
 ## scan・取り込みとの連携
 
