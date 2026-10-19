@@ -8,6 +8,7 @@ import { DeliveryStore, type DeliveryRecord } from '../threat-reports/delivery_s
 import { type DeliveryEnvelope, type DeliveryTransport, type SentMessage } from '../threat-reports/delivery';
 import { PUBLISH_DB_REL, PUBLISH_OUTBOX_REL, parsePublishArgs, persistDeliveryLedger, publishOutbox } from '../scripts/llm_sec_weekly_publish';
 import { documentSha256 } from '../utils/document_integrity';
+import { PERIOD_END_FUTURE_HORIZON_DAYS } from '../threat-reports/period_policy';
 
 const ACCOUNT = 'weekly@example.test';
 const REPORT_ID = 'llm-security-weekly-2026-10-19';
@@ -35,12 +36,13 @@ class FakeTransport implements DeliveryTransport {
   async send({ record, body }: DeliveryEnvelope): Promise<{ messageId: string; threadId: string | null }> {
     this.onSend?.(record);
     this.sends++;
+    const messageId = this.sends === 1 ? 'test-message' : `test-message-${this.sends}`;
     this.messages.push({
-      messageId: 'test-message', threadId: 'test-thread', from: ACCOUNT, to: [ACCOUNT],
+      messageId, threadId: 'test-thread', from: ACCOUNT, to: [ACCOUNT],
       subject: record.subject, rfcMessageId: record.rfc_message_id, reportId: record.report_id,
       contentSha256: record.content_sha256, body: Buffer.from(body), sent: true,
     });
-    return { messageId: 'test-message', threadId: 'test-thread' };
+    return { messageId, threadId: 'test-thread' };
   }
 }
 
@@ -128,6 +130,18 @@ export async function run(): Promise<TestSuiteResult> {
     assert.equal(transport.sends, 0);
   }));
 
+  await t.testAsync('date beyond the receiver horizon rejects before state, persistence or Gmail traffic', () => fixture(async ({ root, file, dbPath, transport }) => {
+    const future = new Date(Date.now() + (PERIOD_END_FUTURE_HORIZON_DAYS + 2) * 86_400_000).toISOString().slice(0, 10);
+    fs.renameSync(file, path.join(path.dirname(file), `${future}.md.txt`));
+    fs.writeFileSync(path.join(path.dirname(file), `${future}.md.txt`), MARKDOWN.replace('period_end: 2026-10-19', `period_end: ${future}`));
+    transport.account = async () => { throw new Error('Future reports must not contact Gmail'); };
+    await assert.rejects(publishOutbox(root, ACCOUNT, {
+      transport, persist: async () => { throw new Error('Future reports must not persist'); },
+    }), /intake horizon/);
+    assert.equal(transport.sends, 0);
+    assert.equal(fs.existsSync(dbPath), false);
+  }));
+
   await t.testAsync('symlink report is rejected', () => fixture(async ({ root, file, transport }) => {
     const original = path.join(root, 'source.txt');
     fs.renameSync(file, original);
@@ -147,6 +161,52 @@ export async function run(): Promise<TestSuiteResult> {
     assert.deepEqual(states, ['prepared', 'sending', 'sent']);
     await publishOutbox(root, ACCOUNT, { transport, persist });
     assert.equal(transport.sends, 1);
+  }));
+
+  await t.testAsync('completed append-only history skips all persistence and Gmail work without credentials', () => fixture(async ({ root, transport }) => {
+    await publishOutbox(root, ACCOUNT, { transport, persist: async () => {} });
+    const names = ['GMAIL_DELIVERY_CLIENT_ID', 'GMAIL_DELIVERY_CLIENT_SECRET', 'GMAIL_DELIVERY_REFRESH_TOKEN'] as const;
+    const previous = names.map(name => process.env[name]);
+    for (const name of names) delete process.env[name];
+    const persist = async (): Promise<void> => { throw new Error('Completed history must not persist'); };
+    try {
+      const [offline] = await publishOutbox(root, ACCOUNT, { persist });
+      assert.equal(offline.status, 'sent');
+      transport.account = async () => { throw new Error('Completed history must not load Gmail profile'); };
+      transport.findSent = async () => { throw new Error('Completed history must not search Gmail'); };
+      transport.getSent = async () => { throw new Error('Completed history must not read Gmail'); };
+      transport.send = async () => { throw new Error('Completed history must not send Gmail'); };
+      const [unchanged] = await publishOutbox(root, ACCOUNT, { transport, persist });
+      assert.equal(unchanged.gmail_message_id, 'test-message');
+      assert.equal(unchanged.attempt_count, 1);
+    } finally {
+      for (const [index, name] of names.entries()) {
+        if (previous[index] === undefined) delete process.env[name];
+        else process.env[name] = previous[index];
+      }
+    }
+  }));
+
+  await t.testAsync('completed history skips work while a newly appended week still sends once', () => fixture(async ({ root, file, transport }) => {
+    await publishOutbox(root, ACCOUNT, { transport, persist: async () => {} });
+    const nextPeriod = '2026-10-26';
+    const nextReport = `llm-security-weekly-${nextPeriod}`;
+    fs.writeFileSync(path.join(path.dirname(file), `${nextPeriod}.md.txt`), MARKDOWN.replace('period_end: 2026-10-19', `period_end: ${nextPeriod}`));
+    let accounts = 0;
+    const searches: string[] = [];
+    const reads: string[] = [];
+    let persisted = 0;
+    transport.account = async () => { accounts++; return ACCOUNT; };
+    transport.findSent = async record => { searches.push(record.report_id); return [...transport.messages]; };
+    const originalGet = transport.getSent.bind(transport);
+    transport.getSent = async messageId => { reads.push(messageId); return originalGet(messageId); };
+    const records = await publishOutbox(root, ACCOUNT, { transport, persist: async () => { persisted++; } });
+    assert.deepEqual(records.map(record => [record.report_id, record.status]), [[REPORT_ID, 'sent'], [nextReport, 'sent']]);
+    assert.equal(accounts, 2);
+    assert.deepEqual(searches, [nextReport]);
+    assert.deepEqual(reads, ['test-message-2']);
+    assert.equal(persisted, 3);
+    assert.equal(transport.sends, 2);
   }));
 
   await t.testAsync('failed durability hook forbids send and later automatic retry', () => fixture(async ({ root, dbPath, transport }) => {

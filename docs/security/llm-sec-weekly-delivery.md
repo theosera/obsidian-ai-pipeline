@@ -146,12 +146,15 @@ control report を使い、配送・実際の gate 判定・取り込み結果�
 | `prepared` | 本文と宛先を固定済み。`send` が利用可能 |
 | `sending` | 送信試行を原子的に取得済み。中断した場合は照合へ進む |
 | `sent` | Gmail SENT message の件名・From/To・配送ヘッダー・原文 bytes / SHA-256 を確認済み |
-| `retryable` | Gmail が明示的に 429 を返した。記録された待機時刻後に再度 `send` を呼べる |
+| `retryable` | Gmail が明示的に 429、または reason が `rateLimitExceeded` / `userRateLimitExceeded` だけの403を返した。記録された待機時刻後に再度 `send` を呼べる |
 | `rejected` | 明示的な非再試行 4xx、または最大3試行に到達。自動再送しない |
 | `unknown` | timeout・5xx・応答欠落・読戻し失敗等。`reconcile` のみ。検索で見つからなくても再送しない |
 | `conflict` | 原文不一致、複数の一致メール等。再送しない。既知の受理 ID の読戻し不一致だけは下記の読み取り照合で復旧できる |
 
 自動的な送信ループは持たない。再試行可能な拒否は最大3回、待機は1分、2分。
+403は構造化された `error.errors[]` の全 reason が上記2値のいずれかと完全一致する場合だけ
+再試行する。権限不足・domain policy・未知の reason、欠落・不正な形式、非再試行 reason の
+混在は terminal な拒否とする。message 文字列から再試行可否を推測しない。
 HTTP 408、5xx、通信断は「未配送」の証明ではないため再試行可能にはしない。
 SDK の一般 retry を明示的に無効化し、OAuth の 401/403 再認証による POST replay も
 発行前の token 取得と、refresh 権限を持たない request client に分けて防ぐ。
@@ -225,7 +228,7 @@ Hosted workflow では publisher が復元・更新した同じ Vault checkout �
 ## 検証と公式仕様
 
 ローカル検証では注入した transport と一時 DB を用い、実メールは送信しない。
-確認対象は重複・本文変更・送信前照合・並行 claim・429 backoff・曖昧な応答・
+確認対象は重複・本文変更・送信前照合・並行 claim・429 / 明示的な403 rate limit の backoff・曖昧な応答・
 受領 message ID の永続化・MIME bytes・配送と scan/ingest の独立性。
 認証補助は fake services で PKCE / callback、scope・client・account 照合、
 private 保存・上書き拒否、拒否・タイムアウト時に保存しないことを検証する。
@@ -236,6 +239,7 @@ Gmail MIME/base64URL と send 戻り値の仕様:
 
 - [Sending email](https://developers.google.com/workspace/gmail/api/guides/sending)
 - [users.messages.send](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send)
+- [Resolve Gmail API errors](https://developers.google.com/workspace/gmail/api/guides/handle-errors)
 - [OAuth 2.0 for Desktop Apps](https://developers.google.com/identity/protocols/oauth2/native-app)
 - [Choose Gmail API scopes](https://developers.google.com/workspace/gmail/api/auth/scopes)
 

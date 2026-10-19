@@ -130,6 +130,24 @@ function httpStatus(error: unknown): number | null {
   return typeof response.status === 'number' ? response.status : null;
 }
 
+/** A 403 is retryable only when all structured Gmail reasons are known rate limits. */
+function isGmailRateLimitRejection(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('response' in error)) return false;
+  const response = error.response;
+  if (!response || typeof response !== 'object' || !('data' in response)) return false;
+  const data = response.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !('error' in data)) return false;
+  const details = data.error;
+  if (!details || typeof details !== 'object' || Array.isArray(details) || !('errors' in details)) return false;
+  if ('code' in details && details.code !== 403) return false;
+  if (!Array.isArray(details.errors) || details.errors.length === 0) return false;
+  for (const entry of details.errors) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !('reason' in entry) ||
+      (entry.reason !== 'rateLimitExceeded' && entry.reason !== 'userRateLimitExceeded')) return false;
+  }
+  return true;
+}
+
 /** No API call runs until an explicit transport method is invoked. */
 export class GmailDeliveryTransport implements DeliveryTransport {
   private readonly refreshClient: InstanceType<typeof gmailAuth.OAuth2>;
@@ -213,7 +231,7 @@ export class GmailDeliveryTransport implements DeliveryTransport {
     } catch (error: unknown) {
       const status = httpStatus(error);
       if (status !== null && status >= 400 && status < 500 && status !== 408) {
-        throw new DefiniteSendError(`gmail_http_${status}`, status === 429);
+        throw new DefiniteSendError(`gmail_http_${status}`, status === 429 || (status === 403 && isGmailRateLimitRejection(error)));
       }
       // 5xx/timeouts/network failures may occur after Gmail accepted the message.
       // Core stores an unknown outcome and reconciles; it must never resend here.

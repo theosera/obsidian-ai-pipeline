@@ -97,6 +97,9 @@ import { exportThreatReportsJson } from '../threat-reports/json_export';
 import { regenerateIndexPage } from '../threat-reports/index_writer';
 import { DeliveryStore, type IngestionReceiptInput } from '../threat-reports/delivery_store';
 import { sha256 } from '../utils/document_integrity';
+import { PERIOD_END_FUTURE_HORIZON_DAYS, isPeriodEndTooFarInFuture } from '../threat-reports/period_policy';
+
+export { PERIOD_END_FUTURE_HORIZON_DAYS, isPeriodEndTooFarInFuture } from '../threat-reports/period_policy';
 
 // --- 公開定数 (テストから参照) ---
 export const PERIOD_END_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -123,8 +126,6 @@ export const QUARANTINE_SUBDIR = '_quarantine';
 export const STAGING_SUBDIR = '_staging';
 /** 隔離キュー JSON の schema 識別子 (gate_decision.py の QUEUE_SCHEMA と一致)。 */
 export const QUARANTINE_QUEUE_SCHEMA = 'quarantine-queue@1';
-/** period_end の未来許容幅 (日)。送信遅延 / タイムゾーン差の余裕を見て 2 週間。 */
-export const PERIOD_END_FUTURE_HORIZON_DAYS = 14;
 /** thread 一覧のページング上限 (API 濫用と無限ループの防止)。 */
 export const MAX_THREAD_LIST_PAGES = 10;
 
@@ -241,23 +242,6 @@ export function extractPeriodEnd(body: string): string | null {
 /** `^\d{4}-\d{2}-\d{2}$` 厳密一致のみ通す。これがファイル名安全の核心。 */
 export function isSafePeriodEnd(value: string | null): value is string {
   return typeof value === 'string' && PERIOD_END_RE.test(value);
-}
-
-/**
- * 未来の週を騙る (または暦として存在しない) `period_end` を弾く多層防御。
- *
- * `period_end` は untrusted 本文由来なのに、ファイル名・隔離キューのキー・
- * decision_id の一部になる。遠い未来の週を名乗るメールを取り込ませると、
- * 後から届く**その週の正規レポート**と衝突させられる。形式 (`PERIOD_END_RE`) を
- * 通った後の追加ふるいなので、ここでは暦としての妥当性も見る。
- * `new Date()` は `2026-02-31` のような非実在日を黙って繰り上げる (→ 03-03) ため、
- * ISO 文字列への往復比較で確かめる。
- */
-export function isPeriodEndTooFarInFuture(periodEnd: string, now: Date = new Date()): boolean {
-  const parsed = new Date(`${periodEnd}T00:00:00Z`);
-  const t = parsed.getTime();
-  if (Number.isNaN(t) || parsed.toISOString().slice(0, 10) !== periodEnd) return true;
-  return t - now.getTime() > PERIOD_END_FUTURE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 }
 
 /**

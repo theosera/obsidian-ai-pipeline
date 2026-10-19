@@ -7,6 +7,7 @@ import { parseReport } from '../threat-reports/parser';
 import { DeliveryStore, normalizeDeliveryAddress, type DeliveryRecord } from '../threat-reports/delivery_store';
 import { deliverReport, reconcileDelivery, type DeliveryTransport } from '../threat-reports/delivery';
 import { GmailDeliveryTransport, deliveryGmailCredentialsFromEnv } from '../threat-reports/delivery_gmail';
+import { PERIOD_END_FUTURE_HORIZON_DAYS, isPeriodEndTooFarInFuture } from '../threat-reports/period_policy';
 
 export const PUBLISH_STATE_REL = '__skills/pipeline.nosync/llm-sec-delivery';
 export const PUBLISH_OUTBOX_REL = `${PUBLISH_STATE_REL}/outbox`;
@@ -108,13 +109,12 @@ export async function publishOutbox(vaultRoot: string, expectedAccount: string, 
     const hash = documentSha256(bytes);
     const parsed = parseReport(decodeDocument(readDocument(full, hash)));
     if (parsed.frontmatter.period_end !== match[1]) throw new Error('Publisher report date differs from its canonical filename');
-    const date = new Date(`${match[1]}T00:00:00.000Z`);
-    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== match[1]) throw new Error('Publisher report filename has an invalid calendar date');
+    if (isPeriodEndTooFarInFuture(match[1])) throw new Error(`Publisher report date is invalid or beyond the intake horizon (+${PERIOD_END_FUTURE_HORIZON_DAYS} days)`);
     return [{ file: full, hash, reportId: `llm-security-weekly-${match[1]}` }];
   });
   if (files.length === 0) return [];
   const dbPath = fixedPath(root, PUBLISH_DB_REL);
-  const transport = options.transport ?? new GmailDeliveryTransport(deliveryGmailCredentialsFromEnv());
+  let transport = options.transport;
   const persist = options.persist ?? persistDeliveryLedger;
   const store = new DeliveryStore(dbPath);
   const results: DeliveryRecord[] = [];
@@ -122,6 +122,11 @@ export async function publishOutbox(vaultRoot: string, expectedAccount: string, 
     for (const file of files) {
       const prepared = store.prepare({ reportId: file.reportId, filePath: file.file, expectedSha256: file.hash, account });
       if (prepared.file_path !== file.file) throw new Error('Publisher canonical outbox path differs from the prepared delivery');
+      if (prepared.status === 'sent') {
+        results.push(prepared);
+        continue;
+      }
+      transport ??= new GmailDeliveryTransport(deliveryGmailCredentialsFromEnv());
       await persist(root, dbPath);
       const record = prepared.status === 'conflict' && prepared.last_error === 'sent_message_integrity_mismatch' &&
         prepared.gmail_message_id !== null

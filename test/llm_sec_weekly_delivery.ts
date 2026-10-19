@@ -415,6 +415,73 @@ export async function run(): Promise<TestSuiteResult> {
     }));
   }
 
+  for (const [name, data, retryable] of [
+    ['project rate limit', { error: { code: 403, errors: [{ reason: 'rateLimitExceeded' }] } }, true],
+    ['user rate limit', { error: { code: 403, errors: [{ reason: 'userRateLimitExceeded' }] } }, true],
+    ['multiple known rate limits', { error: { errors: [{ reason: 'rateLimitExceeded' }, { reason: 'userRateLimitExceeded' }] } }, true],
+    ['permission denied', { error: { errors: [{ reason: 'insufficientPermissions' }] } }, false],
+    ['domain policy', { error: { errors: [{ reason: 'domainPolicy' }] } }, false],
+    ['daily quota', { error: { errors: [{ reason: 'dailyLimitExceeded' }] } }, false],
+    ['unknown reason', { error: { errors: [{ reason: 'unknownLimit' }] } }, false],
+    ['mixed permanent and transient reasons', { error: { errors: [{ reason: 'rateLimitExceeded' }, { reason: 'domainPolicy' }] } }, false],
+    ['mixed unknown and transient reasons', { error: { errors: [{ reason: 'userRateLimitExceeded' }, { reason: 'unknownLimit' }] } }, false],
+    ['missing reasons', { error: {} }, false],
+    ['empty reasons', { error: { errors: [] } }, false],
+    ['string reasons', { error: { errors: 'rateLimitExceeded' } }, false],
+    ['null reason entry', { error: { errors: [{ reason: 'rateLimitExceeded' }, null] } }, false],
+    ['missing reason entry', { error: { errors: [{ reason: 'rateLimitExceeded' }, {}] } }, false],
+    ['sparse reason entries', { error: { errors: Object.assign(new Array<unknown>(2), { 1: { reason: 'rateLimitExceeded' } }) } }, false],
+    ['non-string reason', { error: { errors: [{ reason: 429 }] } }, false],
+    ['non-exact reason', { error: { errors: [{ reason: 'rateLimitExceeded ' }] } }, false],
+    ['conflicting nested status', { error: { code: 500, errors: [{ reason: 'rateLimitExceeded' }] } }, false],
+    ['message text alone', { error: { message: 'rateLimitExceeded' } }, false],
+  ] as const) {
+    await t.testAsync(`Gmail HTTP 403 ${name} is ${retryable ? 'retryable' : 'terminal'} with one SDK-disabled POST`, () => fixture(async ({ store }) => {
+      let calls = 0;
+      const client = { users: { messages: { send: async (_input: unknown, options: unknown) => {
+        calls++;
+        assert.deepEqual(options, { retry: false, retryConfig: { retry: 0 }, timeout: 30_000 });
+        throw { response: { status: 403, data } };
+      } } } } as unknown as gmail_v1.Gmail;
+      const transport = new GmailDeliveryTransport({ clientId: 'fixture', clientSecret: 'fixture', refreshToken: 'fixture' }, client);
+      await assert.rejects(transport.send({ record: store.required(REPORT_ID), body: MARKDOWN }), error => {
+        assert.ok(error instanceof DefiniteSendError);
+        assert.equal(error.code, 'gmail_http_403');
+        assert.equal(error.retryable, retryable);
+        return true;
+      });
+      assert.equal(calls, 1);
+    }));
+  }
+
+  for (const reason of ['rateLimitExceeded', 'userRateLimitExceeded']) {
+    await t.testAsync(`Gmail 403 ${reason} uses existing bounded backoff and stops at three attempts`, () => fixture(async ({ store, transport }) => {
+      let posts = 0;
+      const client = { users: { messages: { send: async () => {
+        posts++;
+        throw { response: { status: 403, data: { error: { code: 403, errors: [{ reason }] } } } };
+      } } } } as unknown as gmail_v1.Gmail;
+      const gmailTransport = new GmailDeliveryTransport({ clientId: 'fixture', clientSecret: 'fixture', refreshToken: 'fixture' }, client);
+      transport.onSend = async envelope => { await gmailTransport.send(envelope); };
+      const now = Date.parse('2026-10-19T00:00:00Z');
+      const first = await deliverReport(store, transport, REPORT_ID, now);
+      assert.equal(first.status, 'retryable');
+      assert.equal(first.next_attempt_at, new Date(now + 60_000).toISOString());
+      await deliverReport(store, transport, REPORT_ID, now + 59_999);
+      assert.equal(posts, 1);
+      const second = await deliverReport(store, transport, REPORT_ID, now + 60_000);
+      assert.equal(second.status, 'retryable');
+      assert.equal(second.next_attempt_at, new Date(now + 180_000).toISOString());
+      const third = await deliverReport(store, transport, REPORT_ID, now + 180_000);
+      assert.equal(third.status, 'rejected');
+      assert.equal(third.next_attempt_at, null);
+      await deliverReport(store, transport, REPORT_ID, now + 300_000);
+      assert.equal(posts, 3);
+      assert.equal(store.required(REPORT_ID).attempt_count, 3);
+      assert.deepEqual(store.attempts(REPORT_ID).map(attempt => attempt.status), ['retryable', 'retryable', 'rejected']);
+    }));
+  }
+
   await t.testAsync('Gmail successful send passes RFC MIME and records returned identity', () => fixture(async ({ store }) => {
     let calls = 0;
     const client = { users: { messages: { send: async (input: { requestBody: { raw: string } }) => {
