@@ -58,11 +58,26 @@ test('getent actual prefix help version and usage remain terminal', () => {
   for (const command of ['getent --help', 'getent --usage', "getent '-?'", 'getent -V',
     'getent --version', 'getent -iA --help']) assert.equal(inspect(command).role.terminal, true, command);
 });
-test('getent after terminator option-looking words are keys and post-operand options stay unproved', () => {
+test('getent after terminator words stay keys while known GNU options can permute', () => {
   const { invocation, role } = inspect('getent -- hosts --help');
   assert.equal(role.terminal, false); assert.equal(role.unknownArgv, false);
   assert.equal(role.selectedWords[0], invocation.args[2]);
-  assert.equal(inspect('getent hosts ordinary.invalid -i').role.unknownArgv, true);
+  assert.equal(inspect('getent hosts ordinary.invalid -i').role.unknownArgv, false);
+});
+test('R50 getent permuted queries respect child POSIX presence and unknown export', () => {
+  for (const option of ['--help', '--usage', '--version', "'-?'", '-V']) {
+    assert.equal(inspect('getent hosts ' + option).role.terminal, true, option);
+    assert.equal(inspect('POSIXLY_CORRECT=; getent hosts ' + option).role.terminal, true, option);
+    assert.equal(inspect('POSIXLY_CORRECT= getent hosts ' + option).role.terminal, false, option);
+    assert.equal(inspect('export POSIXLY_CORRECT=; getent hosts ' + option).role.terminal, false, option);
+    assert.equal(inspect('getent -- hosts ' + option).role.terminal, false, option);
+    const { invocation } = inspect('getent hosts ' + option);
+    const uncertain = sandbox.role({ ...invocation, helperEnvNames: [],
+      helperEnvUnknownNames: ['POSIXLY_CORRECT'] });
+    assert.equal(uncertain.terminal, false, option); assert.equal(uncertain.unknownArgv, true, option);
+  }
+  assert.equal(inspect('getent "$DB" --help').role.unknownArgv, true);
+  assert.equal(inspect('getent hosts -?').role.unknownArgv, true, 'unquoted ? can glob');
 });
 test('getent non-host databases and empty-key forms add no new outbound policy', () => {
   for (const command of ['getent passwd DUMMY', 'getent', 'getent hosts']) {
@@ -114,6 +129,10 @@ test('owned Hook DATA stops the review source, keeps normal controls and proves 
     const rows = [[witness, 'UNKNOWN'], [bounded, 'FORBIDDEN'], ['getent hosts ordinary.invalid', 'ALLOW'],
       ['getent passwd DUMMY', 'ALLOW'], ['getent -s files passwd DUMMY', 'UNKNOWN'],
       ['getent passwd "$KEY"', 'UNKNOWN'], ['getent --help', 'ALLOW'], ['exec -a ordinary getent --help', 'ALLOW'],
+      ...['--help', '--usage', '--version', "'-?'", '-V'].map(option => ['getent hosts ' + option, 'ALLOW']),
+      ['POSIXLY_CORRECT=; getent hosts --help', 'ALLOW'],
+      ['POSIXLY_CORRECT= getent hosts --help', 'ALLOW'], ['getent -- hosts --help', 'ALLOW'],
+      ['getent hosts "$DB" --help', 'UNKNOWN'],
       ['getent -s --help hosts ordinary.invalid', 'UNKNOWN'], ['getent hosts "$HOST"', 'UNKNOWN'],
       [independent, 'FORBIDDEN'], ['printf %s ' + JSON.stringify(witness), 'ALLOW'],
       ['getent(){ printf ordinary; }; getent hosts ordinary.invalid', 'ALLOW'],
@@ -133,7 +152,7 @@ test('owned Hook DATA stops the review source, keeps normal controls and proves 
     run(off, witness, 'ALLOW'); run(off, bounded, 'ALLOW'); run(off, 'getent hosts ordinary.invalid', 'ALLOW');
     run(off, independent, 'FORBIDDEN');
     assert.equal(fs.existsSync(marker), false, 'no native child was attempted by a Hook');
-    assert.equal(calls, 54);
-    t.diagnostic(`owned Hook DATA ${calls} calls (42 candidate +12 single registration edge off); native getent/resolver/proposed commands0`);
+    assert.equal(calls, 81);
+    t.diagnostic(`owned Hook DATA ${calls} calls (69 candidate +12 single registration edge off); native getent/resolver/proposed commands0`);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -1,5 +1,15 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R50:LAYERS:BEGIN -->
+
+## R50: child環境とqueryの修復、review実行と指摘成立の区別
+
+公開c6a916eの両full reviewは正常完了したが、新6件を返した。正常なreview実行、各指摘の成立、修復後の受入は別の結果である。[R50の現在契約](git-command-guards.md#r50-current-contract)では未exportのPOSIXLY_CORRECT、getentのquery過拒否、試験の未知prefix検出を扱う。loggerの2指摘は固定official consumerとhelp/診断文の食い違いを確認し、処方をそのまま実装しない。
+
+旧8,696入力・oracleと原FAIL/NEを保持する。新sourceの全件・同head CI・両fresh review/thread処理は実測前に合格とせず、実接続・秘密送信・任意backend・新L3も認定しない。以下のround別記録は当時の履歴であり、旧分析内のglobalなcurrent pointerだけを最新契約へ向ける。
+
+<!-- PR191:R50:LAYERS:END -->
+
 <!-- PR191:R49:LAYERS:BEGIN -->
 
 ## R49: 名前解決とremote logの選択DATA
@@ -206,7 +216,7 @@ Bash から起動された孫プロセスは、この層を一切通らない。
 
 ## 3. 2026-09-04 の Bash 層分析と、当時の両版に共通する単一障害点
 
-> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r47-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
+> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r50-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
 
 py 版 (`~/.claude/hooks/block-secret-egress.py` / 実体は pipeline-youtube-SDK) の集合サイズ:
 

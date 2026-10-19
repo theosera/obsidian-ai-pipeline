@@ -71,6 +71,16 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R50:CLAUDE-README:BEGIN -->
+
+### R50: child環境・正常query・理由prefixの確認
+
+先行する未exportの`POSIXLY_CORRECT`をchildへ継承したと扱わず、prefix/export/解除・不明presenceとchild scopeを分ける。getentの真正後置queryは、実`--`や消費DATAと区別する。既存clientのoption順序が不明な境界だけをUNKNOWNとし、全clientの一律停止にはしない。[R50の契約](../docs/security/git-command-guards.md#r50-current-contract)に正常対照、loggerの固定consumerによる反証、停止後の出口を示す。
+
+loggerのfile/message優先とsocket-errorsのarityは、help・診断文だけで実consumerと逆に変更しない。未知のdeny理由prefixは試験上BROKENとして検出する。候補の全件・新head CI・両fresh reviewは別の受入gateで、旧成功やHook DATAをnative送信・新L3へ持ち越さない。
+
+<!-- PR191:R50:CLAUDE-README:END -->
+
 <!-- PR191:R49:CLAUDE-README:BEGIN -->
 
 ### R49: selected resolverとremote logger

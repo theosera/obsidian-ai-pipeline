@@ -18,6 +18,16 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R50:README:BEGIN -->
+
+### R50: child環境のexport属性とgetentの正常query
+
+`POSIXLY_CORRECT`のshell内の値と、外部clientが継承するexport属性を分ける。未exportの先行代入だけでchildのoption順序を変えたと判断せず、不明なpresenceは対象選択が変わる箇所でUNKNOWNとして止める。getentのdatabase後の真正query、実delimiterと消費DATAも固定consumerに従って区別する。[現在の契約・正常対照・制限](docs/security/git-command-guards.md#r50-current-contract)を参照する。
+
+loggerのfile/message優先とsocket-errorsのarityについては、helpや古い診断文と実consumerを照合し、固定util-linux2.41.2と矛盾する変更を採用しない。Hook試験では未知deny prefixをBROKENとして検出する。これは修復作業中の契約であり、新sourceの全件・同head CI・両fresh reviewとthread処理は実測後に別途確認する。旧8,696入力・oracleと原FAIL/NEは保持する。
+
+<!-- PR191:R50:README:END -->
+
 <!-- PR191:R49:README:BEGIN -->
 
 ### R49: getentの名前解決とremote loggerの送信元

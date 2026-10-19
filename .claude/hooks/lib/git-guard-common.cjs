@@ -2382,6 +2382,9 @@ const EXPORT_LIKE = new Set(['export', 'declare', 'typeset', 'local', 'readonly'
 const CONFIG_ROOT_ENV = new Set(['HOME', 'XDG_CONFIG_HOME']);
 // Track explicit external-helper selectors separately from Git target/config variables.
 const HELPER_SOURCE_ENV = new Set(['VISUAL', 'EDITOR', 'RSYNC_RSH', 'BASH_ENV', 'GIT_ASKPASS', 'SSH_ASKPASS', 'WGET_ASKPASS', 'ENV', 'GIT_EXTERNAL_DIFF', 'SHELLOPTS', 'POSIXLY_CORRECT', 'GIT_PAGER', 'PAGER', 'GH_EDITOR', 'GH_BROWSER', 'GH_PAGER', 'GH_CONFIG_DIR', 'BROWSER']);
+// Option ordering needs the child's actual export attribute. Other helper
+// selectors retain their existing conservative source-presence policy.
+const CLIENT_OPTION_ENV = new Set(['POSIXLY_CORRECT']);
 /** Include Git's configuration-root variables in per-invocation environment effects. */
 const affectsGitEnvironment = (name) => /^GIT_/.test(name) || CONFIG_ROOT_ENV.has(name);
 const GIT_IDENTITY_ENV = new Set(['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_AUTHOR_DATE',
@@ -2393,7 +2396,7 @@ const SHELL_STARTUP_ENV = new Set(['BASH_ENV', 'ENV']);
 const GIT_CONFIG_SOURCE_ENV = new Set(['GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG']);
 const GIT_HTTP_METADATA_ENV = new Set(['GIT_HTTP_USER_AGENT']);
 const GIT_TRANSPORT_SOURCE_ENV = new Set(['GIT_PROXY_COMMAND', 'GIT_SSH_COMMAND', 'GIT_SSH']);
-const TRACKED_VALUE_ENV = new Set([...GIT_TRANSPORT_SOURCE_ENV, ...GIT_HTTP_METADATA_ENV, ...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, ...GIT_CONFIG_SOURCE_ENV, 'PS4']);
+const TRACKED_VALUE_ENV = new Set([...GIT_TRANSPORT_SOURCE_ENV, ...GIT_HTTP_METADATA_ENV, ...GIT_IDENTITY_ENV, ...GIT_PAGER_ENV, ...GH_METADATA_ENV, ...GH_HELPER_ENV, ...SHELL_STARTUP_ENV, ...GIT_CONFIG_SOURCE_ENV, ...CLIENT_OPTION_ENV, 'PS4']);
 const trackedValueEnvironment = name => TRACKED_VALUE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 const gitConfigurationEnvironment = name => GIT_CONFIG_SOURCE_ENV.has(name) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name);
 // Finite executable-loading source inventory. Presence is tracked separately
@@ -2422,10 +2425,12 @@ function identityEnvironmentSources(state) {
   }));
 }
 /** A child receives the invocation's selected environment, not unexported shell values. */
-function childIdentityState(sources) {
-  const childSources = new Map([...sources].map(([name, word]) => [name,
+function childIdentityState(sources, unknownExports = new Set()) {
+  const selected = new Map(sources);
+  for (const name of unknownExports) if (!selected.has(name)) selected.set(name, null);
+  const childSources = new Map([...selected].map(([name, word]) => [name,
     word && (!word.dynamic || typeof word.literalValue === 'string') ? word : null]));
-  const childExports = new Map([...sources.keys()].map(name => [name, true]));
+  const childExports = new Map([...selected.keys()].map(name => [name, unknownExports.has(name) ? null : true]));
   if (!childSources.has('PS4')) {
     childSources.set('PS4', { text: '+ ', dynamic: false }); childExports.set('PS4', false);
   }
@@ -3587,7 +3592,19 @@ function inspect(cmd, options = {}) {
     for (const [name, exported] of selected.identityExports) initial.identityExports.set(name, exported);
   }
   if (Array.isArray(options.initialHelperEnvNames)) {
-    for (const name of options.initialHelperEnvNames) if (HELPER_SOURCE_ENV.has(name)) stateFor(parsed.scope).helperEnv.add(name);
+    const initial = stateFor(parsed.scope);
+    for (const name of options.initialHelperEnvNames) if (HELPER_SOURCE_ENV.has(name)) {
+      initial.helperEnv.add(name);
+      if (CLIENT_OPTION_ENV.has(name)) {
+        if (!initial.identitySources.has(name)) initial.identitySources.set(name, null);
+        initial.identityExports.set(name, true);
+      }
+    }
+  }
+  for (const name of options.initialHelperEnvUnknownNames || []) if (CLIENT_OPTION_ENV.has(name)) {
+    const initial = stateFor(parsed.scope);
+    initial.identitySources.set(name, null); initial.identityExports.set(name, null);
+    initial.helperEnv.delete(name);
   }
   if (Array.isArray(options.initialGitIdentityEnvNames) || Array.isArray(options.initialPagerEnvNames) || Array.isArray(options.initialGhEnvNames) || Array.isArray(options.initialShellStartupEnvNames) || Array.isArray(options.initialGitConfigEnvNames) || Array.isArray(options.initialGitHttpEnvNames) || Array.isArray(options.initialGitTransportEnvNames)) {
     const initial = stateFor(parsed.scope);
@@ -3727,6 +3744,15 @@ function inspect(cmd, options = {}) {
     const identitySources = identityEnvironmentSources(state);
     let outboundEnvironmentUnknown = state.outboundEnvironmentUnknown || !!info.envUnknown;
     const helperEnv = new Set(state.helperEnv);
+    const helperEnvUnknown = new Set();
+    for (const name of CLIENT_OPTION_ENV) {
+      helperEnv.delete(name);
+      const exported = state.identityExports.get(name);
+      if (state.identitySources.has(name)) {
+        if (exported === true) helperEnv.add(name);
+        else if (exported !== false) helperEnvUnknown.add(name);
+      } else if (outboundEnvironmentUnknown) helperEnvUnknown.add(name);
+    }
     const exportedFunctions = new Set(state.exportedFunctions);
     let exportedFunctionUnknown = state.exportedFunctionUnknown;
     const environmentFunctions = new Map(state.environmentFunctions);
@@ -3745,12 +3771,13 @@ function inspect(cmd, options = {}) {
           { ...carrier, literalValue: undefined } : literalScalarWord(carrier, expansionState) : null);
         if (op.assignmentStage === 'shell-prefix') priorShellPrefixNames.add(op.set);
       }
-      if (op.clear) { outboundEnvironmentUnknown = false; identitySources.clear(); env.clear(); helperEnv.clear(); exportedFunctions.clear(); exportedFunctionUnknown = false;
+      if (op.clear) { outboundEnvironmentUnknown = false; identitySources.clear(); env.clear(); helperEnv.clear(); helperEnvUnknown.clear(); exportedFunctions.clear(); exportedFunctionUnknown = false;
         environmentFunctions.clear(); environmentFunctionUnknown.clear(); for (const root of CONFIG_ROOT_ENV) env.add(root); pathChanged = false; }
       if (op.unset) {
         identitySources.delete(op.unset);
         if (CONFIG_ROOT_ENV.has(op.unset)) env.add(op.unset); else env.delete(op.unset);
         helperEnv.delete(op.unset);
+        helperEnvUnknown.delete(op.unset);
         environmentFunctions.delete(op.unset); environmentFunctionUnknown.delete(op.unset);
         if (op.unset === 'PATH') pathChanged = false;
       }
@@ -3760,6 +3787,7 @@ function inspect(cmd, options = {}) {
         identitySources.set(op.set, value ? commitInlineValue(value, value, value.text.slice(op.set.length + 1), op.set.length + 1) : null);
       }
       if (op.set && HELPER_SOURCE_ENV.has(op.set)) helperEnv.add(op.set);
+      if (op.set && CLIENT_OPTION_ENV.has(op.set)) helperEnvUnknown.delete(op.set);
       if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
       if (op.functionEnvironment) {
         const imported = op.functionEnvironment;
@@ -3771,7 +3799,7 @@ function inspect(cmd, options = {}) {
     const shell = SHELLS.has(info.name) ? shellInvocation(info.args, info.name) : null;
     const shellXtrace = shell && helperEnv.has('SHELLOPTS') && shell.privileged !== true && ['bash', 'sh'].includes(info.name)
       ? shell.xtrace === true ? true : null : shell?.xtrace;
-    if (shell && !shell.posixExplicit && (helperEnv.has('SHELLOPTS') || helperEnv.has('POSIXLY_CORRECT'))) shell.posix = null;
+    if (shell && !shell.posixExplicit && (helperEnv.has('SHELLOPTS') || helperEnv.has('POSIXLY_CORRECT') || helperEnvUnknown.has('POSIXLY_CORRECT'))) shell.posix = null;
     const importedFunctionNames = [...new Set([...exportedFunctions, ...environmentFunctions.values()])];
     const builtin = info.wrapperNames.every((name) => name === 'command' || name === 'builtin');
     const trap = info.name === 'trap' && builtin ? trapInvocation(info.args) : null;
@@ -3803,6 +3831,7 @@ function inspect(cmd, options = {}) {
       functionBodyUnknown: !!c.functionBodyUnknown || !!c.functionBody?.unknown,
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
       helperEnvNames: [...helperEnv],
+      helperEnvUnknownNames: [...helperEnvUnknown],
       outboundEnvironmentSources: options.trackOutboundEnvironment === true ? [...identitySources].map(([name, word]) => ({ name,
         // Context markers identify an inherited config root, not its transmitted
         // bytes. Keep family DTOs unchanged; only the outbound DATA proof is opaque.
@@ -4396,7 +4425,7 @@ function inspect(cmd, options = {}) {
             const inner = parseShell(h.body);
             for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
             res.async = res.async || inner.async;
-            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
               environmentFunctions, environmentFunctionUnknown,
               functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                 .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -4412,7 +4441,7 @@ function inspect(cmd, options = {}) {
                 const inner = parseShell(r.word.text);
                 for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
                 res.async = res.async || inner.async;
-                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
                   environmentFunctions, environmentFunctionUnknown,
                   functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                     .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -4567,6 +4596,7 @@ function inspect(cmd, options = {}) {
     g.unsafeGroupSetup = invocation.unsafeGroupSetup;
     g.gitEnvNames = [...env];
     g.helperEnvNames = [...helperEnv];
+    g.helperEnvUnknownNames = [...helperEnvUnknown];
     g.gitIdentitySources = invocation.gitIdentitySources;
     g.gitPagerEnvSources = invocation.gitPagerEnvSources;
     g.gitConfigurationSources = invocation.gitConfigurationSources;

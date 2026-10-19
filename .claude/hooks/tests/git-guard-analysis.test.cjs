@@ -853,7 +853,11 @@ test('R15 startup selector names and shell modes retain argv boundaries and mode
   }
   assert.equal(inspect('SHELLOPTS=DUMMY bash -i -c :').invocations[0].shellPosix, null);
   assert.equal(inspect('POSIXLY_CORRECT=1 bash -i -c :').invocations[0].shellPosix, null);
-  assert.equal(inspect('false && POSIXLY_CORRECT=1; bash -c :').invocations.find(i => i.name === 'bash').shellPosix, null);
+  // A conditional assignment without export still cannot put this shell-local
+  // value into the later external Bash environment.
+  assert.equal(inspect('false && POSIXLY_CORRECT=1; bash -c :').invocations.find(i => i.name === 'bash').shellPosix, false);
+  assert.equal(inspect('POSIXLY_CORRECT=1; bash -c :').invocations.find(i => i.name === 'bash').shellPosix, false);
+  assert.equal(inspect('true && export POSIXLY_CORRECT=1; bash -c :').invocations.find(i => i.name === 'bash').shellPosix, null);
   assert.equal(inspect('bash --help').invocations[0].shellTerminal, true);
 });
 

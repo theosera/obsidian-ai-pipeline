@@ -3840,13 +3840,18 @@ function directDnsRole(invocation) {
     // Service overrides select unqualified NSS backends. Do not infer files-only
     // DNS suppression from a spelling, or apply this family to other databases.
     const operands = [];
+    const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+    const posixUnknown = (invocation.helperEnvUnknownNames || []).includes('POSIXLY_CORRECT');
     let afterDD = false, sawOperand = false, service = false;
     if (!words.length) { result.terminal = true; return result; }
     for (let k = 0; k < words.length; k++) {
       const word = words[k], s = text(word), known = scalar(word);
+      // argp flags0 use getopt permutation unless the child actually inherits
+      // POSIXLY_CORRECT (presence, including empty). Unknown export is not GNU proof.
+      if (afterDD || posix && sawOperand) { operands.push({ word, afterDD: true }); continue; }
       if (!afterDD && known && s === '--') { afterDD = true; continue; }
       if (!afterDD && s.startsWith('-') && s !== '-') {
-        if (!known || sawOperand) { unknown = true; continue; }
+        if (!known || sawOperand && posixUnknown) { unknown = true; continue; }
         if (['--help', '--usage', '--version'].includes(s)) {
           if (unknown || service) { unknown = true; break; }
           result.terminal = true; return result;
@@ -3872,6 +3877,7 @@ function directDnsRole(invocation) {
         }
         continue;
       }
+      if (!known && (!s || /^[\0$`]/.test(s) || word.dynamicMaySplit !== false)) unknown = true;
       sawOperand = true;
       operands.push({ word, afterDD });
     }
@@ -4135,6 +4141,7 @@ function loggerRole(invocation) {
   const headers = new Map(), structured = [];
   const literal = word => literalSourceWord(word)?.text;
   const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+  const posixUnknown = (invocation.helperEnvUnknownNames || []).includes('POSIXLY_CORRECT');
   let afterDD = false, operandSeen = false;
   const select = (name, value) => {
     if (required.has(name) && !value) result.unknown = true;
@@ -4154,7 +4161,7 @@ function loggerRole(invocation) {
     if (afterDD || posix && operandSeen) { result.messageWords.push(word); continue; }
     if (known && text === '--') { afterDD = true; continue; }
     if (text.startsWith('-') && text !== '-') {
-      if (operandSeen && invocation.outboundEnvironmentUnknown) result.unknown = true;
+      if (operandSeen && (invocation.outboundEnvironmentUnknown || posixUnknown)) result.unknown = true;
       if (text.startsWith('--')) {
         const eq = text.indexOf('='), key = text.slice(2, eq < 0 ? undefined : eq);
         const matches = names.filter(name => name === key || name.startsWith(key));
@@ -4193,11 +4200,29 @@ function loggerRole(invocation) {
   return result;
 }
 
+/** Unknown POSIX presence is harmless only for two fully known, ordinary DATA selections. */
+function loggerOrdinaryOptionOrder(invocation) {
+  if (!(invocation.helperEnvUnknownNames || []).includes('POSIXLY_CORRECT') ||
+      (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT') || invocation.outboundEnvironmentUnknown) return false;
+  const known = { ...invocation,
+    helperEnvUnknownNames: invocation.helperEnvUnknownNames.filter(name => name !== 'POSIXLY_CORRECT') };
+  const roles = [loggerRole(known), loggerRole({ ...known,
+    helperEnvNames: (known.helperEnvNames || []).concat('POSIXLY_CORRECT') })];
+  return roles.every(role => {
+    // Do not use equivalence to certify file/journald or unobserved stdin sources.
+    if (role.unknown || role.file || role.journald ||
+        role.server && !role.messageWords.length && !role.noAct && !role.terminal) return false;
+    const words = [role.server, role.port, ...role.headerWords, ...role.messageWords].filter(Boolean);
+    return words.every(word => literalSourceWord(word)) && !outboundPayloadVerdict(invocation, words);
+  });
+}
+
 /** Check only selected logger network DATA; local logging is not a blanket remote sink. */
 function loggerOutboundVerdict(invocation) {
   if (invocation.name !== 'logger' || invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
   const role = loggerRole(invocation);
-  if (role.unknown || untrustedClientExecution(invocation, 'logger')) return 'UNKNOWN';
+  if (untrustedClientExecution(invocation, 'logger')) return 'UNKNOWN';
+  if (role.unknown) return loggerOrdinaryOptionOrder(invocation) ? false : 'UNKNOWN';
   if (role.terminal || role.journald || !role.server) return false;
   // --no-act skips message writes, but logger_open still resolves/connects to the server.
   const destination = outboundPayloadVerdict(invocation, [role.server, role.port].filter(Boolean));
@@ -4854,6 +4879,7 @@ function socketAuthenticationRole(invocation, destinationRoles = false) {
   const ncatLongNames = ["4", "6", "unixsock", "vsock", "crlf", "g", "G", "exec", "sh-exec", "lua-exec", "lua-exec-internal", "max-conns", "help", "delay", "listen", "output", "hex-dump", "append-output", "idle-timeout", "keep-open", "recv-only", "source-port", "source", "send-only", "no-shutdown", "broker", "chat", "talk", "deny", "denyfile", "allow", "allowfile", "telnet", "udp", "sctp", "version", "verbose", "wait", "nodns", "proxy", "proxy-type", "proxy-auth", "proxy-dns", "nsock-engine", "test", "ssl", "ssl-cert", "ssl-key", "ssl-verify", "ssl-trustfile", "ssl-ciphers", "ssl-servername", "ssl-alpn"];
   const selected = new Map(), operands = [], selectedFlags = new Set(), earlyDnsWords = [], routeWords = [], aclSpecs = [], aclFiles = [];
   const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+  const posixUnknown = (invocation.helperEnvUnknownNames || []).includes('POSIXLY_CORRECT');
   let internalExit = false, argumentExit = false, execCount = 0;
   let socketFamily = 'default';
   let unknown = !!invocation.incomplete, terminal = false, hasAuth = false, listen = false, localSocket = false;
@@ -4874,7 +4900,7 @@ function socketAuthenticationRole(invocation, destinationRoles = false) {
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k], literal = socketAuthenticationLiteralWord(word);
     if (ncat && posix && operands.length) { operands.push(word); continue; }
-    if (ncat && operands.length && invocation.outboundEnvironmentUnknown && literal?.text.startsWith('-')) unknown = true;
+    if (ncat && operands.length && (invocation.outboundEnvironmentUnknown || posixUnknown) && literal?.text.startsWith('-')) unknown = true;
     // A fixed auth option prefix can have one generated scalar value without making its name dynamic.
     const attachedAuth = !literal && word.dynamicMaySplit === false && !word.globExpanded &&
       !word.braceExpanded && !word.tildeExpanded && !word.ansiCUnknown &&
@@ -5069,6 +5095,7 @@ function ncTelnetDestinationRole(invocation) {
   let autologin = null, rlogin = null, forwardCount = 0;
   const disabledAuth = [];
   const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+  const posixUnknown = (invocation.helperEnvUnknownNames || []).includes('POSIXLY_CORRECT');
   let unknown = !!invocation.incomplete, terminal = false, terminalArgumentError = false, family = 'default', afterDash = false;
   const take = (key, value) => {
     if (!value) unknown = true;
@@ -5093,7 +5120,7 @@ function ncTelnetDestinationRole(invocation) {
     const word = invocation.args[k], literal = socketAuthenticationLiteralWord(word);
     if (afterDash || posix && operands.length) { operands.push(word); continue; }
     // A later option is not proven active after an operand when inherited option ordering is unknown.
-    if (operands.length && invocation.outboundEnvironmentUnknown && literal?.text.startsWith('-')) unknown = true;
+    if (operands.length && (invocation.outboundEnvironmentUnknown || posixUnknown) && literal?.text.startsWith('-')) unknown = true;
     if (!literal) {
       if (word.dynamicMaySplit !== false || word.globExpanded || word.braceExpanded || word.tildeExpanded || word.ansiCUnknown) unknown = true;
       // A fixed required option prefix still has one scalar DATA operand.
@@ -5117,7 +5144,7 @@ function ncTelnetDestinationRole(invocation) {
       if (required[key] || key === ':') take(key, eq < 0 ? invocation.args[++k] : socketAuthenticationValue(word, eq + 1));
       else if (eq >= 0) {
         unknown = true;
-        if (!nc && (!operands.length || !invocation.outboundEnvironmentUnknown)) terminalArgumentError = true;
+        if (!nc && (!operands.length || !invocation.outboundEnvironmentUnknown && !posixUnknown)) terminalArgumentError = true;
       }
       else flag(key);
     } else if (text.startsWith('-') && text !== '-') {
@@ -5335,11 +5362,12 @@ function netcatAliasRole(invocation) {
   const required = backend === 'common' ? 'ipswx' : backend === 'openbsd' ? 'IiMmOPpsTVWwXx' : 'cegGiopqswT';
   const flags = backend === 'common' ? '46hlntUuvz' : backend === 'openbsd' ? '46DdFhklNnrStUuvz' : 'hlnbrtuvCz';
   const posix = (invocation.helperEnvNames || []).includes('POSIXLY_CORRECT');
+  const posixUnknown = (invocation.helperEnvUnknownNames || []).includes('POSIXLY_CORRECT');
   let afterDash = false;
   for (let k = 0; k < invocation.args.length; k++) {
     const word = invocation.args[k], literal = socketAuthenticationLiteralWord(word);
     if (afterDash || posix && role.operands.length) { role.operands.push(word); continue; }
-    if (role.operands.length && invocation.outboundEnvironmentUnknown && literal?.text.startsWith('-')) role.unknown = true;
+    if (role.operands.length && (invocation.outboundEnvironmentUnknown || posixUnknown) && literal?.text.startsWith('-')) role.unknown = true;
     if (!literal) {
       // A quoted scalar is one word, but can still be a permuted option. NUL is
       // the parser's unresolved expansion sentinel; only a fixed non-option
@@ -6125,6 +6153,7 @@ function sourceInspectionOptions(invocation, extra = {}) {
     initialOutboundEnvironmentSources: invocation.outboundEnvironmentSources || [],
     initialOutboundEnvironmentUnknown: !!invocation.outboundEnvironmentUnknown,
     initialHelperEnvNames: invocation.helperEnvNames,
+    initialHelperEnvUnknownNames: invocation.helperEnvUnknownNames || [],
     initialGitIdentitySources: invocation.gitIdentitySources || [],
     initialGitConfigSources: invocation.gitConfigurationSources || [],
     initialGitHttpSources: invocation.gitHttpMetadataSources || [],
@@ -6347,7 +6376,12 @@ function collectNetworkInvocations(inspection, depth = 0) {
       const nested = script.mediated ? guard.inspectMediatedSource(script, options) :
         guard.inspect(literal.text, options);
       if (script.mediated) for (const nestedInvocation of nested.invocations) {
-        nestedInvocation.helperEnvNames = [...new Set((nestedInvocation.helperEnvNames || []).concat(invocation.helperEnvNames || []))];
+        // POSIX presence was seeded into the child parse; keep that child's
+        // actual unset/env-u/env-i result rather than resurrecting the parent.
+        nestedInvocation.helperEnvNames = [...new Set((nestedInvocation.helperEnvNames || [])
+          .concat((invocation.helperEnvNames || []).filter(name => name !== 'POSIXLY_CORRECT')))];
+        nestedInvocation.helperEnvUnknownNames = [...new Set((nestedInvocation.helperEnvUnknownNames || [])
+          .concat((invocation.helperEnvUnknownNames || []).filter(name => name !== 'POSIXLY_CORRECT')))];
       }
       if (script.gitContext) for (const g of nested.gits) {
         g.gitEnvNames = [...new Set(g.gitEnvNames.concat(script.gitContext.gitEnvNames))];

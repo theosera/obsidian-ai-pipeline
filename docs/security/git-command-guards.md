@@ -20,6 +20,35 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R50:CONTRACT:BEGIN -->
+
+<a id="r50-current-contract"></a>
+
+## R50: childのexport状態・getent queryとレビュー反証
+
+公開基点 `c6a916e8ce528a34813f1581050d7c0b68a1f2ed` の両full reviewは正常に完了したが、未解決6件を返した。以下は2026-10-19の修復候補の契約である。候補の全件検証、新公開headの必須CI、両fresh reviewと公開thread処理は、それぞれ実測前に合格へ持ち越さない。旧8,696入力・oracleは変更しない。
+
+| 境界 | 対応と判定 | 正常対照・通常作業への影響 |
+| --- | --- | --- |
+| `POSIXLY_CORRECT`のchildへの継承 | shell内の値とexport属性を分け、子が実際に受け取る場合だけ既知presenceへ入れる。先行する代入だけではchildのoption順序を変更したと扱わない。条件付きexportなどpresence不明は別metadataに保ち、option順序によって選択対象が変わる箇所をUNKNOWNにする。 | prefix・inherited・export・allexport、空値のpresence、実際のexport解除・unset・`env -u`/`env -i`、function/child scopeを区別する。未使用変数や順序に依存しないordinary操作を存在だけで一律停止しない。 |
+| glibc2.42 `getent`のquery | database後の真正help/usage/versionも固定argp consumerの順序で解釈する。消費されたservice値や実`--`後のkeyをqueryにしない。生成語のoption境界や有効な順序が未証明ならUNKNOWNを保つ。 | 対応queryの過剰停止を修復する。unquoted `-?`はshell globであり、quoted `'-?'`のquery対照と分ける。既存のhost key由来検査とcustom NSS/serviceの制限は残る。 |
+| 既存のoption順序consumer | logger、Ncat、Telnet、Netcatの既存roleへ、既知presenceと不明presenceを引き継ぐ。childを再解析した後のunsetを、parentのmetadataとの結合で復活させない。 | 不明presenceを理由に全clientを禁止せず、後置option等で選択結果が変わる境界だけを停止する。真正query、実delimiter、消費DATA、独立したFORBIDDENは別に保つ。 |
+| Hook試験の理由prefix | `[禁止] `はFORBIDDEN、`[判断不能] `はUNKNOWN、それ以外のdeny prefixは試験上のBROKENとして失敗させる。 | BROKENは検証器具の結果であり、新しいHook permission enumではない。UNKNOWNの期待を満たすために不明なwireを合格へ変換しない。 |
+
+loggerに限り、不明なPOSIX presenceについて両方の順序を有限に解析し、両方とも既知のgrammar・literalな選択値で、file/journaldや未検査remote stdinがなく、既存payload判定でも禁止や不足がない場合は、同じALLOWを保つ。これは通常メッセージを余計に止めないための限定した等価確認である。生成された値・秘密由来・file入力・未知option・未検査callee/env/contextを、この例外で許可しない。
+
+### loggerの2指摘はhelp・診断文だけで採用しない
+
+固定した[util-linux2.41.2 logger.c](https://github.com/util-linux/util-linux/blob/v2.41.2/misc-utils/logger.c)では、`--socket-errors`は`required_argument`であり、`-f`でstdinを開いてもmessage operandがあれば`logger_command_line`が選ばれる。socket-errorsの不正値は警告後にAUTOへ戻る処理で、致命的終了とは扱わない。旧版のhelpにあるoptional表記や「message is ignored」という診断だけから、後続語の消費や送信sourceを逆に変更しない。後段のconsumerまで照合する。
+
+このため、file＋ordinary messageをfile uploadとして一律FORBIDDENへ変えたり、socket-errorsをoptionalへ変更したりする修復は採用しない。正確なレビュー入力のHook結果、選択された語とsource、値を実際に消費する正常対照を別々に残す。指定fileを開くことと、その内容が送信されることも分ける。これは固定consumerに対する反証であり、未確認のinstalled binary/build、任意backend、実接続・実送信の安全認証ではない。
+
+child環境の一次根拠は[BashのEnvironment](https://www.gnu.org/software/bash/manual/html_node/Environment.html)、getentのqueryは[glibc2.42 getent.c](https://github.com/bminor/glibc/blob/glibc-2.42/nss/getent.c)と[argp-parse.c](https://github.com/bminor/glibc/blob/glibc-2.42/argp/argp-parse.c)で確認する。取得した版・raw/hash、原FAILと新しい期待の訂正、危険入力と正常対照、単一edgeの逆検証は別の監査記録へ保存する。
+
+停止後の代替は、同じ対象・入力・環境・consumerを保つ対応形式だけを候補とする。必要なexport属性やoption・sourceを消して別の操作へ変えたり、Hookを止めたりすることは自動的に許可しない。条件を保てる形式が確認できなければ、対象と不足条件をownerへ提示する。
+
+<!-- PR191:R50:CONTRACT:END -->
+
 <!-- PR191:R49:CONTRACT:BEGIN -->
 
 <a id="r49-current-contract"></a>
