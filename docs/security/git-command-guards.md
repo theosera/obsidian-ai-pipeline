@@ -20,6 +20,27 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R56:CONTRACT:BEGIN -->
+
+<a id="r56-absolute-policy-child"></a>
+
+## R56: 子の検索条件と確定した禁止理由
+
+head `b9964122cc9496a2fff9d1524f24264ea46dcefd`へのCodex normal review 5575302879のP2（comment 4316832587）は、sudo/doas後の独立して確認できるabsolute clientでも、子検索の未資格を一般の`pathChangedBefore`へ入れたため、確定した禁止理由がUNKNOWNへ変わる点を指摘した。以下はその修復候補の有限契約であり、新sourceの全件・CI・fresh review成功は取得前に主張しない。
+
+| 境界 | 判定と保持する条件 | 対照・停止後の扱い |
+| --- | --- | --- |
+| policy後のbare child・中間wrapper | 順序付きの未資格検索を保持し、Hookの継承PATHから実行体を補わずUNKNOWNにする。 | sudo/doasを外して普通の操作が通ることを同目的の代替成功とは扱わない。 |
+| 全実行段を確認できるabsolute client | 検索条件だけの未資格を、実際のPATH/FPATH変更やcwd等の一般context不明と混同しない。既存payload判定が禁止を確定できればFORBIDDENを維持する。 | ordinaryなabsolute clientや真正terminal queryの既存対照を保つ。absolute指定はpolicy・権限・認証・設定全体の証明ではない。 |
+| 子shell・関数・再検査するsource | 検索の未資格を実行される子scopeへ伝え、absolute shell内のbare programを確認済みにしない。独立した別statementへ持ち出さない。 | 子sourceの不明点をownerへ示し、必要なwrapper・対象・操作・cwd/env/config/sourceを保って代替候補を確認する。 |
+| 実際の環境・context変更 | PATH/FPATHの変更、未知の実行体・中間段、cwd、未検査source等には既存UNKNOWNを適用する。Gitの既存context停止も保持する。 | clientをabsoluteに変えたことだけで、他の不明条件やGitの検査境界を解除しない。 |
+
+共通解析ではpolicyに由来する検索未資格を別のscope状態として保持し、実行体の検索snapshotと子scopeへ引き継ぐ。`pathChangedBefore`には既存の実際のPATH/FPATH・shell search変更を残す。これはsudo/doasの文字列例外や全absolute commandの許可ではなく、実行体選択と判定contextの責務を分ける修復である。R55の固定した公式source・backendの境界は拡張せず、installed policyの読取、sudo/doas実行や実通信は行わない。
+
+受入では同じ入力をf16／b996／修復sourceへ渡し、ALLOW・FORBIDDEN・UNKNOWNとown-egressの理由prefixを比較する。解析DTOだけでなく、egressの実Hook入口でabsolute payloadのFORBIDDEN、bare／中間段／nested sourceのUNKNOWN、ordinary／query／DATAの対照を確認する。追加した境界だけを戻すreverse comparisonを別に残し、別の独立した禁止が停止を維持する場合は単独の必要性を主張しない。旧8,696入力とoracle・654宣言を変更せず、固定した修復sourceの全件結果と新head CIを別に取得する。Hookへ渡すcommandはDATAであり、native privileged/client executionや実Claude入口の追加試行ではない。
+
+<!-- PR191:R56:CONTRACT:END -->
+
 <!-- PR191:R55:CONTRACT:BEGIN -->
 
 <a id="r55-current-contract"></a>

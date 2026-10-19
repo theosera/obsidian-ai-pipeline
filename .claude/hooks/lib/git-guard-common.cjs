@@ -3576,7 +3576,7 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown ||
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, unqualifiedSearch: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown ||
     options.trackGitPreCommitEnvironment === true && !!options.initialGitPreCommitEnvironmentUnknown, identitySources: new Map([['PS4', { text: '+ ', dynamic: false }]]), identityExports: new Map([['PS4', false]]), promptRefNames: new Set(), xtrace: false, promptvars: true, localShellOptions: false });
   const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports), promptRefNames: new Set(s.promptRefNames) });
   const stateFor = (scope) => {
@@ -3776,10 +3776,14 @@ function inspect(cmd, options = {}) {
     const environmentFunctions = new Map(state.environmentFunctions);
     const environmentFunctionUnknown = new Set(state.environmentFunctionUnknown);
     let pathChanged = state.pathChanged;
+    // A policy-selected search is not a PATH/FPATH mutation. Keep it in lookup
+    // snapshots and child scopes without downgrading an independently qualified
+    // absolute child's definite payload verdict through pathChangedBefore.
+    let unqualifiedSearch = state.unqualifiedSearch;
     const executableSearchAt = new Map();
     const executableSearch = (defaultSearch = false) => ({
       pathPresent: identitySources.has('PATH'),
-      pathChanged: pathChanged || state.searchChanged || options.initialExecutableSearchChanged === true,
+      pathChanged: pathChanged || unqualifiedSearch || state.searchChanged || options.initialExecutableSearchChanged === true,
       defaultSearch,
     });
     executableSearchAt.set(0, executableSearch());
@@ -3814,7 +3818,7 @@ function inspect(cmd, options = {}) {
       if (op.set && HELPER_SOURCE_ENV.has(op.set)) helperEnv.add(op.set);
       if (op.set && CLIENT_OPTION_ENV.has(op.set)) helperEnvUnknown.delete(op.set);
       if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
-      if (op.unqualifiedExecutableSearch) pathChanged = true;
+      if (op.unqualifiedExecutableSearch) unqualifiedSearch = true;
       if (op.functionEnvironment) {
         const imported = op.functionEnvironment;
         if (imported.callee) environmentFunctions.set(imported.environment, imported.callee);
@@ -3973,7 +3977,7 @@ function inspect(cmd, options = {}) {
         functionIdentitySources.set(name, identitySources.get(name) ?? null);
         functionIdentityExports.set(name, true);
       }
-      seedScope(body.scope, env, cdBefore, { ...state, helperEnv, pathChanged,
+      seedScope(body.scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch,
         identitySources: functionIdentitySources, identityExports: functionIdentityExports,
         exportedFunctions, exportedFunctionUnknown, environmentFunctions, environmentFunctionUnknown,
         localNames: new Set(), localShellOptions: false, positionals: knownPositionals(info.args), positionalsTainted: !!info.incomplete });
@@ -4466,7 +4470,7 @@ function inspect(cmd, options = {}) {
             const inner = parseShell(h.body);
             for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
             res.async = res.async || inner.async;
-            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, unqualifiedSearch, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
               environmentFunctions, environmentFunctionUnknown,
               functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                 .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -4482,7 +4486,7 @@ function inspect(cmd, options = {}) {
                 const inner = parseShell(r.word.text);
                 for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
                 res.async = res.async || inner.async;
-                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, unqualifiedSearch, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
                   environmentFunctions, environmentFunctionUnknown,
                   functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                     .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -4514,7 +4518,7 @@ function inspect(cmd, options = {}) {
           const sub = resolveCommand(info.args.slice(k + 1, e));
           sub.incomplete = true;
           const scope = { parent: null };
-          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, exportedFunctions, exportedFunctionUnknown,
+          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch, exportedFunctions, exportedFunctionUnknown,
             environmentFunctions, environmentFunctionUnknown });
           visit({ words: info.args.slice(k + 1, e), redirs: [], piped: false, heredocBodies: [], scope, effects: c.effects }, sub, depth + 1);
           k = e;
@@ -4542,7 +4546,7 @@ function inspect(cmd, options = {}) {
         if (writes || unclear) {
           // 外側が xargs / find なら、未知 wrapper を外しても追加引数の不確定性を保つ。
           const scope = { parent: null };
-          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, exportedFunctions, exportedFunctionUnknown,
+          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch, exportedFunctions, exportedFunctionUnknown,
             environmentFunctions, environmentFunctionUnknown });
           const sub = resolveCommand(tail);
           sub.incomplete = info.incomplete || sub.incomplete;
@@ -4607,7 +4611,7 @@ function inspect(cmd, options = {}) {
       res.problems.push('HOME / XDG_CONFIG_HOME の設定・解除で git の設定ファイルの場所が変わり、書込みや helper の実行を検査できない');
       return;
     }
-    if ((!directOperation && !trustedGitExecutable(info.nameWord)) || pathChanged || state.searchChanged || state.gitShadowed) {
+    if ((!directOperation && !trustedGitExecutable(info.nameWord)) || pathChanged || unqualifiedSearch || state.searchChanged || state.gitShadowed) {
       res.problems.push('git の実行ファイルやコマンド探索が変わっていて、検査に使う git と同じ実行先か確かめられない');
       return;
     }

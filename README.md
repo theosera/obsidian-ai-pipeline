@@ -18,6 +18,12 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R56:README:BEGIN -->
+
+現在の修復候補は[R56: 子の検索条件と確定した禁止理由](docs/security/git-command-guards.md#r56-absolute-policy-child)を参照する。sudo/doas後のbare programの検索未資格と、実際のPATH/FPATH変更を分ける。必要なwrapperを残し、全実行段を独立して確認できるabsolute clientの確定した送信禁止はFORBIDDENを保つ。bare child・未確認の中間wrapper・子shell内の別検索や、実際の環境変更等のUNKNOWNは維持する。これは権限・認証・policyやclient全体の安全認証ではない。旧8,696入力・oracle・654宣言を保持し、新sourceの全件・CI・両fresh reviewは取得前に合格へ持ち越さない。
+
+<!-- PR191:R56:README:END -->
+
 <!-- PR191:R54:README:BEGIN -->
 
 実行体選択の契約は[R54: 実行ファイルの選択](docs/security/git-command-guards.md#r54-executable-selection)を参照する。commit前の読取や対応する送信clientを、名前だけで既知のプログラムと扱わず、継承PATHの先頭実行候補を固定installのrealpathと照合する。各wrapperとchildの検索条件を分け、環境消去・PATH欠落・未資格のdefault検索を元のPATHで補わない。独自install、欠落したclient、未解決の検索条件はUNKNOWNになり得る。通常のbuiltinと確認できたsystem/Homebrew installの対照を別に保つ。元の試験期待と環境条件付きprofileを別に記録する。以下の履歴の成功を、実行体確認を加えたsourceや別headのCI・fresh reviewの証拠へ持ち越さない。
