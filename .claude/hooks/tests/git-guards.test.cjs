@@ -17146,6 +17146,16 @@ function main() {
   } else {
     for (const r of results) {
       if (!r.ok) console.log(`✗ ${r.id}: expect ${r.profileExpected?.expect || r.expect} got ${r.decision} ${r.denied.join(',')} ${r.broken.join('; ')}`);
+      if (selectedProfile && (r.profileQualification.applies || !r.profileOK)) {
+        // Keep CI qualification evidence beside the original assertion result.
+        // Do not infer a missing executable merely from the runner platform.
+        console.log('Executable profile evidence: ' + JSON.stringify({ id: r.id,
+          originalOK: r.originalOK, profileOK: r.profileOK,
+          ownEG: r.ownEG, ownSG: r.ownSG, ownAG: r.ownAG,
+          reasonPrefixes: r.reasonPrefixes, reasonTexts: r.reasonTexts,
+          qualification: r.profileQualification, qualificationStable: r.profileQualificationStable,
+          operationalReasonFailure: r.operationalReasonFailure }));
+      }
     }
     console.log(`${results.length - failed}/${results.length} ok`);
     if (selectedProfile) console.log(`Original oracle: ${results.length - originalFailed}/${results.length} pass; ` +

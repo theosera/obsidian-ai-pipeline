@@ -53,7 +53,7 @@ P2のnative nonlog fixtureは、選んだ信頼済みGitのplain versionで既�
 
 `node .claude/hooks/tests/git-guards.test.cjs`は、従来どおり元8,696入力・oracleをそのまま評価する。新しい実行体確認のため、未導入programや未資格lookupでは元のALLOW/FORBIDDEN期待に不一致が残る。これは元期待で全件成功したことにはしない。
 
-CIは明示的な`--executable-profile`も使う。固定JSONの642 IDと各元CASEのhashに限り、実際のcase環境のPATHを独立FSで調べた欠落、または宣言した未資格lookup段について、ownEGの期待をUNKNOWNへ分ける。うち65件は真正query・childなし・sourceを含む外部wrapper自身の選択であり、実行体が存在すれば元の意味の期待を保持する。絶対`/sbin/ping`の1件だけは、既知installの実在・realpathを独立確認できた場合に、既存の秘密由来destination規則に従うFORBIDDENへの分類精密化を別に宣言する。元のUNKNOWN期待は残す。50件の試作過剰拒否はこの調整へ入れない。元CASESの値や原結果は変えず、`originalFailed`・`profileAdjusted`・`profileOK`と理由を併記する。存在する実行体、I/O不明、相対PATHや変更済み検索条件を、missing調整で通さない。profileの期待はguardの実測判定から生成しない。
+CIは明示的な`--executable-profile`も使う。固定JSONの646 IDと各元CASEのhashに限り、実際のcase環境のPATHを独立FSで調べた欠落、または宣言した未資格lookup段について、ownEGの期待をUNKNOWNへ分ける。うち69件は真正query・childなし・sourceを含む外部wrapper自身の選択であり、実行体が存在すれば元の意味の期待を保持する。絶対`/sbin/ping`の1件だけは、既知installの実在・realpathを独立確認できた場合に、既存の秘密由来destination規則に従うFORBIDDENへの分類精密化を別に宣言する。元のUNKNOWN期待は残す。`caffeinate`の4件もOS名から不在とは仮定せず、actual PATHで独立に確認する同じ条件に限る。50件の試作過剰拒否はこの調整へ入れない。元CASESの値や原結果は変えず、`originalFailed`・`profileAdjusted`・`profileOK`と理由を併記する。text出力でも、条件適用又はprofile不一致の各入力について、独立資格・前後の安定性・own-hook判定・理由全文を記録し、プラットフォーム名やdenyだけから欠落を推測しない。存在する実行体、I/O不明、相対PATHや変更済み検索条件を、missing調整で通さない。profileの期待はguardの実測判定から生成しない。
 
 変更するのは限定したownEGの分類だけで、元ALLOWのSG/AG ALLOWや、別の独立FORBIDDENを保つ。実行前後でFS資格が変わった入力は、停止結果が期待形でもprofile失敗にする。`command -p ... git add -f .env`のSG FORBIDDENは追加で必須にする。部品load失敗や例外を示す理由は、UNKNOWN期待でもprofile成功へ数えない。programが確認できる場合の元semantic assertionは維持し、未資格時のUNKNOWN検証を、そのprogram本来の意味・通信・認証の実証へ読み替えない。profile自体のID/hash/PATH結合と、qualified ordinaryに常時UNKNOWNを返す不正な実装が落ちることは、独立したpure試験で確認する。
 

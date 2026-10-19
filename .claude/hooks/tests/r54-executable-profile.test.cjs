@@ -16,7 +16,7 @@ const ledger = JSON.parse(ledgerBytes);
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const caseHash = value => sha(JSON.stringify(value));
 const ORIGINAL_DIGEST = '450e94994846d221d3056b1580822b513d6f87c5f086f14b7b95389c85a46b75';
-const LEDGER_DIGEST = 'aeaa0cde757c735a6580fc2b279d1e51c54e4e5b95ff01cbdce5fb37bab17789';
+const LEDGER_DIGEST = '097bb5f68a126dba325e498c54356f1e00643d3ac5555948767bf4c0901b7e17';
 const SG = 'block-secret-git.cjs', AG = 'block-git-add-all.cjs', EG = 'block-secret-egress.cjs';
 const HOOKS = [SG, AG, EG];
 // Literal excluded IDs from the reviewed proposal d807f549..., not a filter of
@@ -83,7 +83,7 @@ function wire(own = {}, broken = []) {
     reasonPrefixes: Object.fromEntries(denied.map(hook => [hook, values[hook] === 'FORBIDDEN' ? '[禁止] ' : '[判断不能] '])) };
 }
 
-function syntheticMain(fault = null) {
+function syntheticMain(fault = null, asText = false) {
   const source = fs.readFileSync(path.join(hooks, 'tests/git-guards.test.cjs'), 'utf8');
   const start = source.indexOf('function main() {'), end = source.indexOf('\n}\n', start);
   assert.ok(start >= 0 && end > start);
@@ -91,15 +91,15 @@ function syntheticMain(fault = null) {
   const cases = [missingCase(), { id: 'UNCHANGED', cmd: 'printf ordinary', expect: 'allow' }];
   const selectedLedger = syntheticLedger(cases, [declaration(cases[0])]);
   const reason = fault === 'operational' ? '[判断不能] DUMMY componentを読み込めません' : '[判断不能] DUMMY missing selected executable';
-  const calls = [], output = [];
+  const calls = [], output = [], lines = [];
   const filesystemEntries = {}, filesystem = fakeFilesystem(filesystemEntries);
   let cleanups = 0;
-  const processDTO = { argv: ['node', 'DUMMY', '--hooks-dir', '/DUMMY/hooks', '--json', '--executable-profile'],
+  const processDTO = { argv: ['node', 'DUMMY', '--hooks-dir', '/DUMMY/hooks', ...(!asText ? ['--json'] : []), '--executable-profile'],
     stdout: { write(value) { output.push(value); } }, exitCode: null,
     exit(code) { throw Error('unexpected synthetic process.exit ' + code); } };
   const tools = { ...profile, createProfile(c, l) { return profile.createProfile(c, l, filesystem); } };
   const sandbox = { process: processDTO, __dirname: '/DUMMY/hooks/tests', path, CASES: cases, HOOKS,
-    console: { log() { throw Error('JSON mode must not log'); }, error() { throw Error('unexpected error output'); } },
+    console: { log(value) { if (!asText) throw Error('JSON mode must not log'); lines.push(value); }, error() { throw Error('unexpected error output'); } },
     require(name) {
       if (name === './executable-profile-qualification.cjs') return tools;
       if (name === './fixtures/r54-selected-executable-profile.json') return selectedLedger;
@@ -118,15 +118,16 @@ function syntheticMain(fault = null) {
     } };
   vm.runInNewContext(source.slice(start, end + 3) + '\nmain();', sandbox, { filename: 'pure-profile-main-extract.cjs' });
   assert.equal(cleanups, 1); assert.equal(calls.length, 2);
-  return { result: JSON.parse(output.join('')), exitCode: processDTO.exitCode, reason, calls, filesystemCalls: filesystem.calls };
+  return { result: !asText ? JSON.parse(output.join('')) : null, lines,
+    exitCode: processDTO.exitCode, reason, calls, filesystemCalls: filesystem.calls };
 }
 
-test('original 8696 definitions and all 642 declarations remain exact and exclude 50 overrefusals', () => {
+test('original 8696 definitions and all 646 declarations remain exact and exclude 50 overrefusals', () => {
   assert.equal(CASES.length, 8696);
   assert.equal(caseHash(CASES), ORIGINAL_DIGEST);
   assert.equal(sha(ledgerBytes), LEDGER_DIGEST);
   assert.equal(ledger.baselineDefinitionsSHA256, ORIGINAL_DIGEST);
-  assert.equal(ledger.entries.length, 642);
+  assert.equal(ledger.entries.length, 646);
   const originals = new Map(CASES.map(c => [c.id, c]));
   const declared = new Set();
   for (const entry of ledger.entries) {
@@ -291,7 +292,7 @@ test('one qualified absolute ping installation refines only its declared secret 
 test('query absence changes no original semantic assertion when its external program is present', () => {
   const originals = new Map(CASES.map(c => [c.id, c]));
   const queries = ledger.entries.filter(d => d.stages.some(s => s.stageKind === 'selected-wrapper-query-or-source'));
-  assert.equal(queries.length, 65);
+  assert.equal(queries.length, 69);
   for (const d of queries) {
     const original = originals.get(d.id), word = d.stages[0].word;
     const present = profile.qualification(original, d, environment, fakeFilesystem({ [file(one, word)]: {} }));
@@ -354,4 +355,23 @@ test('pure main refuses absent-to-present prerequisite drift even when UNKNOWN m
   assert.equal(filesystemCalls.filter(([operation, name]) => operation === 'stat' && name === file(one)).length, 2);
   assert.equal(result.results[1].profileQualificationStable, true);
   assert.equal(result.originalDefinitionsUnchanged, true); assert.equal(caseHash(CASES), ORIGINAL_DIGEST);
+});
+
+test('text runner emits independent prerequisite and actual wire reasons without losing original failures', () => {
+  for (const fault of [null, 'operational']) {
+    const { lines, exitCode, reason } = syntheticMain(fault, true);
+    const prefix = 'Executable profile evidence: ';
+    const rows = lines.filter(line => line.startsWith(prefix)).map(line => JSON.parse(line.slice(prefix.length)));
+    assert.equal(rows.length, 1);
+    const row = rows[0];
+    assert.equal(row.id, 'SYNTHETIC'); assert.equal(row.originalOK, false);
+    assert.equal(row.ownEG, 'UNKNOWN'); assert.equal(row.ownSG, 'ALLOW'); assert.equal(row.ownAG, 'ALLOW');
+    assert.equal(row.reasonTexts[EG], reason); assert.equal(row.reasonPrefixes[EG], '[判断不能] ');
+    assert.equal(row.qualification.applies, true); assert.equal(row.qualificationStable, true);
+    assert.equal(row.qualification.reasons[0].reason, 'no-executable-in-explicit-actual-path');
+    assert.equal(row.operationalReasonFailure, fault === 'operational');
+    assert.equal(row.profileOK, fault !== 'operational');
+    assert.equal(exitCode, fault === 'operational' ? 1 : 0);
+    assert.equal(lines.some(line => line.startsWith('Original oracle: 1/2 pass;')), true);
+  }
 });

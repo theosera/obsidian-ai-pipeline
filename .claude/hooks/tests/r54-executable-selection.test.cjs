@@ -11,7 +11,8 @@ const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
 const guard = require(path.join(hooks, 'lib/git-guard-common.cjs'));
 const readers = require(path.join(hooks, 'lib/git-precommit-readers.cjs'));
 const identity = require(path.join(hooks, 'lib/executable-identity.cjs'));
-const { HOOKS } = require(path.join(hooks, 'tests/git-guards.test.cjs'));
+const { HOOKS, CASES } = require(path.join(hooks, 'tests/git-guards.test.cjs'));
+const executableProfile = require(path.join(hooks, 'tests/executable-profile-qualification.cjs'));
 const inspect = command => guard.inspect(command, {
   trackExecutableSearch: true, initialExecutableSearchPathPresent: true,
 });
@@ -163,6 +164,25 @@ test('owned inherited shadows cannot borrow system executable or shell builtin i
     run('shadow-terminal-timeout-query', 'timeout --help', shadow('timeout'), { [EG]: 'UNKNOWN' });
     run('normal-terminal-timeout-query', 'timeout --help', clean, allow);
     run('normal-command-v-curl-query', 'command -v curl', clean, allow);
+    // Reproduce a missing selected wrapper without assuming a particular OS.
+    // A trusted curl remains selectable, so its absence cannot explain the
+    // dependent child-payload refusals. The proposed commands remain Hook DATA.
+    const curlOnly = path.join(root, 'curl-only'); fs.mkdirSync(curlOnly);
+    const selectedCurl = identity.resolveExecutableIdentity({ text: 'curl', dynamic: false }, {
+      name: 'curl', searchMode: 'path', searchPath: systemPath, cwd: repo,
+    });
+    assert.equal(selectedCurl.kind, 'trusted-external');
+    fs.symlinkSync(selectedCurl.resolvedPath, path.join(curlOnly, 'curl'));
+    const missingWrapper = { ...clean, PATH: curlOnly };
+    assert.equal(executableProfile.independentlyAbsent('caffeinate', missingWrapper).applies, true);
+    assert.equal(identity.resolveExecutableIdentity({ text: 'curl', dynamic: false }, {
+      name: 'curl', searchMode: 'path', searchPath: curlOnly, cwd: repo,
+    }).kind, 'trusted-external');
+    for (const id of ['R33N-C01', 'R33N-C03', 'R33N-C05', 'R33OR-caffeinate-local']) {
+      const original = CASES.find(c => c.id === id);
+      assert.ok(original, id);
+      run(id + '-missing-wrapper', original.cmd, missingWrapper, { ...allow, [EG]: 'UNKNOWN' });
+    }
     t.diagnostic(`R54 owned Hook DATA calls: ${hookCalls}; shadow executions/attempts: 0; proposed commits/client/network/L3: 0`);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
