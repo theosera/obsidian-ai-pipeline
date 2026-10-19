@@ -20,6 +20,8 @@ logs/
 # X bookmarks SQLite metadata cache (個人データ。.md が source of truth)
 x_bookmarks.db
 x_bookmarks.db-*
+llm-sec-delivery.sqlite3
+llm-sec-delivery.sqlite3-*
 *.corrupted_*
 
 # X API OAuth tokens (機密データ) — Claude 側 (vault 配下) + Codex 側 (repo 配下)
