@@ -71,9 +71,15 @@ cat .env  # → permission denied (deny rule に該当)
 
 ### PreToolUse の Git / egress hook
 
+<!-- PR191:R57:CLAUDE-README:BEGIN -->
+
+[現在のガード契約](../docs/security/git-command-guards.md#current-guard-contract)を入口とする。R57修復候補はBusyBoxの内部source、sudo policyのroot、子sourceへ渡す実PATH条件、parser問題と独立FORBIDDENの優先を扱う。通常のactive appletやsudoのabsolute ordinary childもUNKNOWNになり得る。真正query・表示DATA・各guardの担当を保ち、必要なwrapperを外すことを同目的の代替にしない。元8,696期待とR54宣言を保持し、新sudo制限の11入力を別policy契約に記録する。新headの受入は全件・CI・両fresh reviewと指摘処理で別に確認する。以下のround別記述は履歴である。
+
+<!-- PR191:R57:CLAUDE-README:END -->
+
 <!-- PR191:R51:CLAUDE-README:BEGIN -->
 
-[現在のR51契約](../docs/security/git-command-guards.md#r51-current-contract)では、直接のspecial builtinのprefix代入を非exportと断定せず、未資格のmode・版によるchild option順序やGH metadata等のsource選択をUNKNOWNで止める。literal ordinaryなGH_HOSTでも特殊prefixは停止し得るため、意味を保つ明示export等の条件とowner出口を契約に記す。getentの既知service指定後の真正query、実際のexport解除、普通の対照を別に保つ。単体補助と全件runnerの不正deny理由はBROKENとして失敗させる。自動読込される`CLAUDE.md`にも現在契約を示し、以下のR50以前は履歴とする。新headの受入は未完了である。
+[R51当時の契約](../docs/security/git-command-guards.md#r51-current-contract)では、直接のspecial builtinのprefix代入を非exportと断定せず、未資格のmode・版によるchild option順序やGH metadata等のsource選択をUNKNOWNで止める。literal ordinaryなGH_HOSTでも特殊prefixは停止し得るため、意味を保つ明示export等の条件とowner出口を契約に記す。getentの既知service指定後の真正query、実際のexport解除、普通の対照を別に保つ。単体補助と全件runnerの不正deny理由はBROKENとして失敗させる。当時、自動読込される`CLAUDE.md`にもR51契約を示した。ここに記す受入未完了はR51当時の状態であり、現在の受入判定へ持ち越さない。
 
 <!-- PR191:R51:CLAUDE-README:END -->
 
@@ -109,7 +115,7 @@ egressは`getent`のhost系keyと、util-linux `logger`のremote DATAを有限�
 
 **修復作業中のsnapshot**。2026-10-19 02:35:24 JST時点、公開基点head `ec3bd520ef450fb2899bef1f33618417158e4ff8` に対する未commitのR47 candidateは修復作業中であり、この当時の最終source固定・統合全件・新公開head／同head CI／両fresh reviewと全指摘処理は未取得・PENDINGである。
 
-[現在のR47契約](../docs/security/git-command-guards.md#r47-current-contract)を参照する。own検査はbase cwdからvalidated raw `-C`を順に一回渡し、symlink/`..`をlexicalな別対象へ縮約しない。PATHでcalleeを選ぶ段階と`-C`後の検査対象を分け、raw PATH候補lookupとnative realpathを既知installへ結ぶ。AG/EGはphysical CWDを使う一方、add pathspecはGitのlexical normalize先行・親canonical化・最終in-tree symlinkの個別entryを保つ。通常root-link個別追加ALLOWと`link/..`のroot包括FORBIDDENを分け、外側symlinkからrootへのselection不明はUNKNOWN。有限15名のloader変数はplatformでactive/inactiveを区別し、既知emptyは削除せず保持する。activeな非空・未知や、空の無効化を未資格の値はnative Git前にUNKNOWNとなり、通常のcommit/queryも止まり得る。
+[R47当時の契約](../docs/security/git-command-guards.md#r47-current-contract)を参照する。own検査はbase cwdからvalidated raw `-C`を順に一回渡し、symlink/`..`をlexicalな別対象へ縮約しない。PATHでcalleeを選ぶ段階と`-C`後の検査対象を分け、raw PATH候補lookupとnative realpathを既知installへ結ぶ。AG/EGはphysical CWDを使う一方、add pathspecはGitのlexical normalize先行・親canonical化・最終in-tree symlinkの個別entryを保つ。通常root-link個別追加ALLOWと`link/..`のroot包括FORBIDDENを分け、外側symlinkからrootへのselection不明はUNKNOWN。有限15名のloader変数はplatformでactive/inactiveを区別し、既知emptyは削除せず保持する。activeな非空・未知や、空の無効化を未資格の値はnative Git前にUNKNOWNとなり、通常のcommit/queryも止まり得る。
 
 `capsh`/`start-stop-daemon`のactive commandは普通のprintfでもidentity・shell/program・cwd/env/backend未資格の費用でUNKNOWNとなる。pinned libcap2.77/dpkg1.22.22のqueryと消費DATAを有限に区別し、後置helpや`capsh --version`で前段sourceを免除しない。native検査依存testはactual option queryの能力でgateし、不対応時のnative群skipとpure DTOを分ける。fsmonitor版下限、Git2.54固定consumer資格、全OS/backendの保証は同一ではない。
 
@@ -123,7 +129,7 @@ egressは`getent`のhost系keyと、util-linux `logger`のremote DATAを有限�
 
 **修復作業中のsnapshot**。2026-10-19 00:15:41 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commitのR46 candidateは修復作業中であり、この当時の最終source件数・統合全件・新公開head／同head CI／両fresh review・全指摘処理は未取得・PENDINGである。 同公開headのCodex normal review5563562682は2026-10-18 23:58:48 JST、CodeRabbit normal full5563566259は23:59:20 JSTに完了したが、23:59:45.256–23:59:52.394 JST取得の全220threadには新3件（Codex P1 4307502905・4307502909、CR Minor4307504522）が未解決で残る。
 
-[現在のR46有限契約・通常費用・owner出口](../docs/security/git-command-guards.md#r46-current-contract)を参照する。own Git検査は解析したcommitのprogram・selected env・cwdへ結合し、PATHで見つけたGitをそのまま信頼集合へ足す循環を除く。既知固定installのrealpathを独立起点にし、bare Gitはselected PATHの先頭実候補を確認する。absoluteな既知Gitを別のPATH shadowへ差し替えず、`env -u`／unset／`env -i`で消えたtracked名をprocess.envから復活させない。
+[R46当時の有限契約・通常費用・owner出口](../docs/security/git-command-guards.md#r46-current-contract)を参照する。own Git検査は解析したcommitのprogram・selected env・cwdへ結合し、PATHで見つけたGitをそのまま信頼集合へ足す循環を除く。既知固定installのrealpathを独立起点にし、bare Gitはselected PATHの先頭実候補を確認する。absoluteな既知Gitを別のPATH shadowへ差し替えず、`env -u`／unset／`env -i`で消えたtracked名をprocess.envから復活させない。
 
 未知install・動的/欠落PATH・`command -p`・未復元envは局所UNKNOWNとなり、正当な通常commitにも費用がある。必要な実行体・対象・cwd/env/config条件を保つ対応形だけを検討し、保てなければownerへ不足source/contextを示す。owner個別承認をHook停止の承認とはしない。sanitation・実取得banner・cacheのcontext結合はbinary内容由来/置換race/全OSの安全保証ではなく、native commit/helperや新L3も実証しない。以下のR38以前は取得cutに結合した全文履歴として保持する。
 
@@ -147,7 +153,7 @@ R38はEGのDNS/Netcat/Wget sourceとAGの先行cd後pathspecを対象にする�
 
 <!-- PR191:R37:CLAUDE-README:BEGIN -->
 <a id="r37-claude-readme-contract"></a>
-[現在の有限契約・通常影響・owner出口](../docs/security/git-command-guards.md#r37-current-contract)。
+[R37当時の有限契約・通常影響・owner出口](../docs/security/git-command-guards.md#r37-current-contract)。
 
 **R37 guard契約（固定sourceのローカル受入済み・公開前cut）**: 基点は公開 `7b3436bc49f8736c7b465de026a2510ae0e6b0cf`。引数の役割、実行されるprogram/source、resolver/authentication/payloadの役割、値の生成元を分ける有限修復です。対応条件を満たす経路はALLOW、確認したpolicy違反はFORBIDDEN、不足するsource/argv/contextはUNKNOWNとして、後二者は既存deny wireで停止します。
 

@@ -1,8 +1,14 @@
 # Secret ガードの層と被覆 — 基準線
 
+<!-- PR191:R57:LAYERS:BEGIN -->
+
+[現在のガード契約](git-command-guards.md#current-guard-contract)を参照する。R57修復候補では内部appletのsource、sudo policyのroot、子scopeの実PATH条件、独立した禁止とparser問題の優先を分ける。active BusyBoxやsudoのordinary absolute childも未資格ならUNKNOWNとなる通常費用を明示し、各guardの担当・真正query・表示DATAを維持する。元入力・元期待・環境profileと新sudo制限のpolicy契約を分け、Hookの停止とnative成立、reviewの正常完了と指摘処理完了も区別する。以下はround別の履歴である。
+
+<!-- PR191:R57:LAYERS:END -->
+
 <!-- PR191:R51:LAYERS:BEGIN -->
 
-現在の修復候補は[R51契約](git-command-guards.md#r51-current-contract)を参照する。special builtinへのprefix代入のexport境界を、client option環境変数だけでなく追跡済みGH metadata等にも保持する。literal ordinaryの特殊prefixもsource未資格としてUNKNOWNになり得る正常費用は契約に明記する。getentのservice指定後のquery、単体補助・全件runnerの不正wire検出、自動読込playbookの契約参照も扱う。R50の両fresh fullは正常に実行完了したが計6指摘を返しており、新候補の受入完了ではない。Codexの通常コメント内の指摘をreview thread件数から除外して未処理0と報告しない。以下は履歴である。
+R51当時の修復候補は[R51契約](git-command-guards.md#r51-current-contract)を参照する。special builtinへのprefix代入のexport境界を、client option環境変数だけでなく追跡済みGH metadata等にも保持する。literal ordinaryの特殊prefixもsource未資格としてUNKNOWNになり得る正常費用は契約に明記する。getentのservice指定後のquery、単体補助・全件runnerの不正wire検出、自動読込playbookの契約参照も扱う。R50の両fresh fullは正常に実行完了したが計6指摘を返しており、新候補の受入完了ではない。Codexの通常コメント内の指摘をreview thread件数から除外して未処理0と報告しない。以下は履歴である。
 
 <!-- PR191:R51:LAYERS:END -->
 
@@ -10,7 +16,7 @@
 
 ## R50: child環境とqueryの修復、review実行と指摘成立の区別
 
-公開c6a916eの両full reviewは正常完了したが、新6件を返した。正常なreview実行、各指摘の成立、修復後の受入は別の結果である。[R50の現在契約](git-command-guards.md#r50-current-contract)では未exportのPOSIXLY_CORRECT、getentのquery過拒否、試験の未知prefix検出を扱う。loggerの2指摘は固定official consumerとhelp/診断文の食い違いを確認し、処方をそのまま実装しない。
+公開c6a916eの両full reviewは正常完了したが、新6件を返した。正常なreview実行、各指摘の成立、修復後の受入は別の結果である。[R50当時の契約](git-command-guards.md#r50-current-contract)では未exportのPOSIXLY_CORRECT、getentのquery過拒否、試験の未知prefix検出を扱う。loggerの2指摘は固定official consumerとhelp/診断文の食い違いを確認し、処方をそのまま実装しない。
 
 旧8,696入力・oracleと原FAIL/NEを保持する。新sourceの全件・同head CI・両fresh review/thread処理は実測前に合格とせず、実接続・秘密送信・任意backend・新L3も認定しない。以下のround別記録は当時の履歴であり、旧分析内のglobalなcurrent pointerだけを最新契約へ向ける。
 
@@ -38,7 +44,7 @@
 
 **修復作業中のsnapshot**。2026-10-19 02:35:24 JST時点、公開基点head `ec3bd520ef450fb2899bef1f33618417158e4ff8` に対する未commitのR47 candidateは修復作業中であり、この当時の最終source固定・統合全件・新公開head／同head CI／両fresh reviewと全指摘処理は未取得・PENDINGである。
 
-[現在のR47契約と同目的の出口](git-command-guards.md#r47-current-contract)を参照する。own Git検査はordered raw `-C`とcalleeのraw PATH候補lookup/native realpathを保つ。AG/EGではphysical CWDとGitがlexical normalizeするadd pathspecを分け、親canonical化と最終in-tree symlinkの個別entryを維持する。通常root-link個別追加ALLOW、`link/..`のroot包括FORBIDDEN、外側symlinkからrootへのselection不明UNKNOWNを区別し、loader有限15名を実backend・known emptyごとに追跡する。確認できないloaderなら通常commit/helpもUNKNOWNとなる。`capsh`/`start-stop-daemon`のactive sourceは普通のprintfでもidentity・shell/program・cwd/env/backend未資格で停止し、pinned sourceの正常query・消費DATAだけを別roleにする。必要なlauncherやloaderを取り除くことを同目的の代替にしない。
+[R47当時の契約と同目的の出口](git-command-guards.md#r47-current-contract)を参照する。own Git検査はordered raw `-C`とcalleeのraw PATH候補lookup/native realpathを保つ。AG/EGではphysical CWDとGitがlexical normalizeするadd pathspecを分け、親canonical化と最終in-tree symlinkの個別entryを維持する。通常root-link個別追加ALLOW、`link/..`のroot包括FORBIDDEN、外側symlinkからrootへのselection不明UNKNOWNを区別し、loader有限15名を実backend・known emptyごとに追跡する。確認できないloaderなら通常commit/helpもUNKNOWNとなる。`capsh`/`start-stop-daemon`のactive sourceは普通のprintfでもidentity・shell/program・cwd/env/backend未資格で停止し、pinned sourceの正常query・消費DATAだけを別roleにする。必要なlauncherやloaderを取り除くことを同目的の代替にしない。
 
 native依存testの実Git option能力、fsmonitor版下限、固定2.54 consumer資格を分け、不対応時はnative群skipでもpure DTOを維持する。これは試験の適用能力を示す層で、API／実送信やactive launcher・loader constructorのnative成立、新L3、全OSの認定ではない。独立FORBIDDENと他guardを維持する。
 
@@ -52,7 +58,7 @@ native依存testの実Git option能力、fsmonitor版下限、固定2.54 consume
 
 **修復作業中・最終受入PENDINGのsnapshot**。2026-10-18 14:46:08 JST時点、公開基点head `533a48fb08e3f27c9821eb4e145c5dc683aca670` に対する未commitのR44 candidateを対象とする。同headのCodex full5561591680は14:29:13 JST、CodeRabbit full5561600706は14:33:08 JSTに正常完了したが、14:35:36.049 JST取得の全216threadは未解決4件（Codex4305869528・4305869532・4305869534、CR4305878612）。R43承認済み公開op01–09は完了、条件付きop10は未実施であり、このsnapshotでは新R44 sourceの最終件数・全件、新公開head／同headCI／両fresh reviewと全指摘処理は当時未取得・PENDINGである。
 
-[R44の現在契約・通常費用・出口](git-command-guards.md#r44-current-contract)に、ordered `core.gitProxy`、複合empty shadowの固定consumer、`sg`/`newgrp`のgroup/shell sourceを集約する。proxyが必要な通常readerも、hostや有効programを有限に確定できなければUNKNOWNとなる。`GIT_PROXY_COMMAND`のpresent emptyによるfamily非選択と、own検査copyからの除去をactual source安全性と混同しない。
+[R44当時の契約・通常費用・出口](git-command-guards.md#r44-current-contract)に、ordered `core.gitProxy`、複合empty shadowの固定consumer、`sg`/`newgrp`のgroup/shell sourceを集約する。proxyが必要な通常readerも、hostや有効programを有限に確定できなければUNKNOWNとなる。`GIT_PROXY_COMMAND`のpresent emptyによるfamily非選択と、own検査copyからの除去をactual source安全性と混同しない。
 
 複合emptyによるinherited `SSH_ASKPASS`例外は、Git askpassと選択SSH programの両consumerがeffective emptyで、既存trusted realpath/PATH同一性と実取得`git version 2.54.0`＋POSIXのfixed-consumer資格がある場合だけである。未資格backendはUNKNOWNを保ち、ownSGの正常回復をaggregate ALLOWと呼ばない。既存EG UNKNOWN、changed-selectorや他program、独立FORBIDDENは別に残る。同banner独自patchやnativeの同一性全般を認定しない。
 
@@ -70,7 +76,7 @@ native依存testの実Git option能力、fsmonitor版下限、固定2.54 consume
 
 **実装作業中・受入PENDINGのcut**。2026-10-18 09:24:37 JSTのdocs cutは、公開基点head `5c570d221b958dc212ac13e435d980d5f3d46080` に対する未commitのR43実装作業中candidateを対象とする。同headのCodeRabbit full5560708937は08:58:21 JST、Codex full5560746096は09:11:26 JSTに正常完了した。09:14:01.793 JST取得の全212threadは未解決3件（CR4305046733、Codex4305081716・4305081722）である。新R43 sourceの最終全件、新公開head／同head CI／両fresh fullと全指摘処理はPENDINGで、件数を予測しない。
 
-[R43の現在契約・通常対照・費用・出口](git-command-guards.md#r43-current-contract)に、SSH_ASKPASSのenv3境界、継承／baseline同値を含む非空program4種、core.askPass／core.sshCommand／ordered credential.helperをまとめる。検査用copyでhelperを外せても、実行予定readerが継承helperを起動しない証拠にはならない。旧2fのinherited SSH command拒否はown inspectionの偶発的境界であり、後続sourceのALLOWや新sourceのUNKNOWNと、actual sourceの安全性を混同しない。
+[R43当時の契約・通常対照・費用・出口](git-command-guards.md#r43-current-contract)に、SSH_ASKPASSのenv3境界、継承／baseline同値を含む非空program4種、core.askPass／core.sshCommand／ordered credential.helperをまとめる。検査用copyでhelperを外せても、実行予定readerが継承helperを起動しない証拠にはならない。旧2fのinherited SSH command拒否はown inspectionの偶発的境界であり、後続sourceのALLOWや新sourceのUNKNOWNと、actual sourceの安全性を混同しない。
 
 旧R43 v1/v2の継承免除はprivate backupへ保持し、新たなUNKNOWN費用と旧期待の差を明示する。programとvariant、存在する空値と未設定、Git askpassとnative SSH askpass、credentialの順序／reset／URL条件を区別し、未確定targetを非選択と推測しない。既存changed-selector UNKNOWN・EG UNKNOWN・独立FORBIDDENは緩めず、actual selected Mapとown no-lazy-fetch hardeningを維持する。Hook DATAの停止、一次sourceの実行条件、native helper／認証／fetch／network成立は別の証拠で、新L3は行わない。
 
@@ -84,7 +90,7 @@ native依存testの実Git option能力、fsmonitor版下限、固定2.54 consume
 
 2026-10-18 07:35:30 JST snapshotは、当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commit candidateを対象とし、最後の全体取得07:15:05.546の209thread／未解決9（CR6＋Codex3）を保持し、後着修復後の最終sourceの全件・新head CI・fresh両reviewの受入は当時PENDINGである。
 
-[R42の現在契約・通常費用・同目的の出口](git-command-guards.md#r42-current-contract)を参照する。Hook DATA、非実行query、固定sourceの全件実行・資格、公開CI／review、native成立を別の証拠として扱う。初回v1の8694 PASS／2 FAILを最終修復sourceの合格へ持ち越さない。
+[R42当時の契約・通常費用・同目的の出口](git-command-guards.md#r42-current-contract)を参照する。Hook DATA、非実行query、固定sourceの全件実行・資格、公開CI／review、native成立を別の証拠として扱う。初回v1の8694 PASS／2 FAILを最終修復sourceの合格へ持ち越さない。
 
 <!-- PR191:R42:LAYERS:END -->
 
@@ -108,7 +114,7 @@ R40固定headの成功と、以下の全履歴・原FAIL/NEを新R41の資格へ
 
 ## R40: 先行readerのsource判定と、guard自身の検査を分ける
 
-同一commandのcommit前にあるGit readerは、実効設定が選ぶpager・fsmonitor・diff driver/textconvの副作用を検査できなければ、secret-gitが既存の確定FORBIDDENの後でUNKNOWNにする。新gateはstandalone readerへ広げず、egress/add-all等の既存の独立判定も解除しない。[現在の条件・通常費用・同目的の出口](git-command-guards.md#r40-current-contract)に契約をまとめる。既定pagerが分からない普通のdiff/logもcommitと連結すると止まり得る。
+同一commandのcommit前にあるGit readerは、実効設定が選ぶpager・fsmonitor・diff driver/textconvの副作用を検査できなければ、secret-gitが既存の確定FORBIDDENの後でUNKNOWNにする。新gateはstandalone readerへ広げず、egress/add-all等の既存の独立判定も解除しない。[R40当時の条件・通常費用・同目的の出口](git-command-guards.md#r40-current-contract)に契約をまとめる。既定pagerが分からない普通のdiff/logもcommitと連結すると止まり得る。
 
 guard自身のstaged/path読取は、信頼済みGit・対応版を確かめてhelperを抑止する検査である。提案された先行readerの実効設定観測とは別に扱い、helper設定を消してから安全と判定しない。設定値やhelper本文を公開する検査ではない。必要なhelperを外しても同じ意味とは決めつけず、同条件を保てる分割と後commitの再検査、またはowner確認を選ぶ。
 
@@ -146,7 +152,7 @@ R38の部品／私有合成を、公開修復受入・実settings入口・native
 <a id="r37-layers-contract"></a>
 ## R37: 意味・判定・実入口・native条件を分ける（固定sourceのローカル受入cut）
 
-基点はpublic7b。今回の部品はcommand-scope Git設定、flock/有限util-linux、queryを含む実program identity、curlの認証/engine、hyphen functionとordinary-unset、keyscan/Wgetの選択resolverを扱う。範囲と通常費用は[現在の有限契約](git-command-guards.md#r37-current-contract)を参照する。FORBIDDENは確認したpolicy違反、UNKNOWNはsource/argv/context不足、ALLOWはこのguardの停止要求がないことを表し、対応外を保護済みと記録しない。
+基点はpublic7b。今回の部品はcommand-scope Git設定、flock/有限util-linux、queryを含む実program identity、curlの認証/engine、hyphen functionとordinary-unset、keyscan/Wgetの選択resolverを扱う。範囲と通常費用は[R37当時の有限契約](git-command-guards.md#r37-current-contract)を参照する。FORBIDDENは確認したpolicy違反、UNKNOWNはsource/argv/context不足、ALLOWはこのguardの停止要求がないことを表し、対応外を保護済みと記録しない。
 
 | 層 | 記録する証拠 | 記録の限界 |
 |---|---|---|
@@ -222,7 +228,7 @@ Bash から起動された孫プロセスは、この層を一切通らない。
 
 ## 3. 2026-09-04 の Bash 層分析と、当時の両版に共通する単一障害点
 
-> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#r51-current-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
+> **旧実装の分析（as-of 2026-09-04）**: 本節の「両版」「単一障害点」は当時の py / cjs 版を指す。現在の cjs 版では、`@` を要求する [legacy regex（固定 a09c7c5 の83行）](https://github.com/theosera/obsidian-ai-pipeline/blob/a09c7c585f186321cfc7aaed05588e99e96efb16/.claude/hooks/block-secret-egress.cjs#L83) は残るが、それとは別に shell / curl の引数解析を行う。実選択された対応済み file-backed upload は FORBIDDEN、必要な source / argv を解釈できなければ UNKNOWN として停止する。このため、以下の旧 regex だけの構造や cjs 版への未実測の推測を、現在も成立する不足として扱わない。対応条件・正常対照・制限は [現在の Git ガード契約](git-command-guards.md#current-guard-contract) を参照する。以下の ALLOW は当時の Hook 判定の記録で、実秘密の読取・実外部通信・被害発生の新たな確認ではない。
 
 py 版 (`~/.claude/hooks/block-secret-egress.py` / 実体は pipeline-youtube-SDK) の集合サイズ:
 

@@ -42,7 +42,7 @@ if (!cmd) process.exit(0);
 
 const insp = guard.inspect(cmd, { trackExecutableSearch: true,
   initialExecutableSearchPathPresent: typeof process.env.PATH === 'string' });
-if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'secret ガード'));
+// Keep parser uncertainty pending while independently confirmed policy forms are checked.
 const gits = insp.gits;
 for (const g of gits) {
   const decision = guard.gitObjectInputDecision(g);
@@ -667,4 +667,5 @@ if (commits.length && gits.some(g => g.invocationOrder < commits[0].invocationOr
   }
 }
 
+if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'secret ガード'));
 process.exit(0);

@@ -1,0 +1,315 @@
+{
+  "schema": "R57_REQUIRED_SUDO_POLICY_CONTRACT_V1",
+  "contractID": "R57_REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED_V1",
+  "baselineCount": 8696,
+  "baselineDefinitionsSHA256": "450e94994846d221d3056b1580822b513d6f87c5f086f14b7b95389c85a46b75",
+  "r54BackendLedgerSHA256": "f7760a0bc01b10caf7b302ac3e0686c1cd762d219041568f054f8816c2f95d90",
+  "r54BackendDeclarationCount": 654,
+  "reviewReference": {
+    "commentID": 4317915874,
+    "reviewID": 5576618827,
+    "publicHead": "c1c5bd9dcccd0a42c769f473d5328cf1b651708d",
+    "bodySHA256": "152be833275462b75ac10a2860027c666f486b919a89f32a4620b89e9fcae0d2"
+  },
+  "declarationBasis": "Fixed root-specified eleven active required-sudo cases. Unknown sudoers policy root is an explicit allow-side contract cost, not executable absence or a result-derived adjustment. No guard output is an input to qualification.",
+  "normalCost": "Original ALLOW definitions/results remain. Required sudo is not removed automatically; operator must qualify policy root/backend or accept narrow UNKNOWN via explicit owner exit.",
+  "entries": [
+    {
+      "id": "R29SW19",
+      "originalIndex": 5864,
+      "originalDefinition": {
+        "id": "R29SW19",
+        "cmd": "sudo --user root printf ordinary",
+        "expect": "allow",
+        "basis": "ordinary known user child"
+      },
+      "originalDefinitionJSONSHA256": "2bf5986e9e1e431099c946e55fdc1380a4b3d75f6a6048e76014585cb36cdbdb",
+      "originalInput": {
+        "id": "R29SW19",
+        "cmd": "sudo --user root printf ordinary",
+        "basis": "ordinary known user child"
+      },
+      "originalInputJSONSHA256": "c892b1969a53a9e4f9864f40171ef21e57df9883f9012e8e2e1c65fa1e6ce860",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW20",
+      "originalIndex": 5865,
+      "originalDefinition": {
+        "id": "R29SW20",
+        "cmd": "sudo -n -g staff -- printf ordinary",
+        "expect": "allow",
+        "basis": "ordinary known grouped child"
+      },
+      "originalDefinitionJSONSHA256": "5e81da5fa39a468b0083332439715e698e96aee95142ac1e9b97ec02239d8fc1",
+      "originalInput": {
+        "id": "R29SW20",
+        "cmd": "sudo -n -g staff -- printf ordinary",
+        "basis": "ordinary known grouped child"
+      },
+      "originalInputJSONSHA256": "a19625356e711296125a8c84816d5f974ce21128939606e4e5526acbf75e8ff2",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW21",
+      "originalIndex": 5866,
+      "originalDefinition": {
+        "id": "R29SW21",
+        "cmd": "sudo --preserve-env printf ordinary",
+        "expect": "allow",
+        "basis": "optional long operand is not next child"
+      },
+      "originalDefinitionJSONSHA256": "28b0a8257f652647e02ef04a8d4dc51aca12df44efbf5b61db068d71d3d325e9",
+      "originalInput": {
+        "id": "R29SW21",
+        "cmd": "sudo --preserve-env printf ordinary",
+        "basis": "optional long operand is not next child"
+      },
+      "originalInputJSONSHA256": "0f560b538e4651dc5d989ee2451d02750fd8118e79e0c4c8ce9739d1854193c0",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW22",
+      "originalIndex": 5867,
+      "originalDefinition": {
+        "id": "R29SW22",
+        "cmd": "sudo --preserve-env=FOO printf ordinary",
+        "expect": "allow",
+        "basis": "optional equals consumed"
+      },
+      "originalDefinitionJSONSHA256": "1d97087f7c0c5473c49f69f8e10fe99d6e75f9cec562fb0953f9ece6e13c5968",
+      "originalInput": {
+        "id": "R29SW22",
+        "cmd": "sudo --preserve-env=FOO printf ordinary",
+        "basis": "optional equals consumed"
+      },
+      "originalInputJSONSHA256": "3dc32e64d1820d32601c68de946a50e3aefe540680c9064c9a76611d4f73ac58",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW23",
+      "originalIndex": 5868,
+      "originalDefinition": {
+        "id": "R29SW23",
+        "cmd": "sudo -- printf '%s' --user root",
+        "expect": "allow",
+        "basis": "option-looking child DATA after --"
+      },
+      "originalDefinitionJSONSHA256": "3f4ea95ac68162d164cb197d6db07d6f112f6dd891b0fc2db91ad49014059770",
+      "originalInput": {
+        "id": "R29SW23",
+        "cmd": "sudo -- printf '%s' --user root",
+        "basis": "option-looking child DATA after --"
+      },
+      "originalInputJSONSHA256": "baf09dd081ebb4a9d7af458a81132abe83c6c36229a7baee73b74574af286545",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW32",
+      "originalIndex": 5901,
+      "originalDefinition": {
+        "id": "R29SW32",
+        "cmd": "sudo -- FOO=bar curl -q URL",
+        "expect": "allow",
+        "basis": "after -- assignment-looking executable not env syntax"
+      },
+      "originalDefinitionJSONSHA256": "9dbb5856cd723f6ba618e093b3db6cde032c5caf1c12fc80f27ae27365644837",
+      "originalInput": {
+        "id": "R29SW32",
+        "cmd": "sudo -- FOO=bar curl -q URL",
+        "basis": "after -- assignment-looking executable not env syntax"
+      },
+      "originalInputJSONSHA256": "7d758731746de7c65e3f6a07d4101809bd6f54af2e6032c81f47db2a7fefbfd3",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW34",
+      "originalIndex": 5905,
+      "originalDefinition": {
+        "id": "R29SW34",
+        "cmd": "sudo FOO=ordinary --user root printf ordinary",
+        "expect": "allow",
+        "basis": "supported assignment carrier before option"
+      },
+      "originalDefinitionJSONSHA256": "86334ace89e011474abe03b7befe170a74b28514c890e4ccc8b5ff5223088b48",
+      "originalInput": {
+        "id": "R29SW34",
+        "cmd": "sudo FOO=ordinary --user root printf ordinary",
+        "basis": "supported assignment carrier before option"
+      },
+      "originalInputJSONSHA256": "ed67ea197d6eecd060924542659e1eb4a4c79d867012fa1ded369ede08ca1c8f",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW35",
+      "originalIndex": 5907,
+      "originalDefinition": {
+        "id": "R29SW35",
+        "cmd": "sudo --user curl printf ordinary",
+        "expect": "allow",
+        "basis": "required option operand curl is DATA"
+      },
+      "originalDefinitionJSONSHA256": "62c77c8c58c652ec149edd24a2caf29827301ae9cc4fa86a723ce4ca19cc7350",
+      "originalInput": {
+        "id": "R29SW35",
+        "cmd": "sudo --user curl printf ordinary",
+        "basis": "required option operand curl is DATA"
+      },
+      "originalInputJSONSHA256": "64f49cb886061f792e18c46c73b53f4ba6d2d06dc7a30fdcdc868e2b41011818",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW40",
+      "originalIndex": 5912,
+      "originalDefinition": {
+        "id": "R29SW40",
+        "cmd": "sudo --prompt '' printf ordinary",
+        "expect": "allow",
+        "basis": "native legal empty prompt normal"
+      },
+      "originalDefinitionJSONSHA256": "5e34b8da6bfb65d1fe0cb7e9a95f02bccedab5a5edf4dea4a366cad9531ac26c",
+      "originalInput": {
+        "id": "R29SW40",
+        "cmd": "sudo --prompt '' printf ordinary",
+        "basis": "native legal empty prompt normal"
+      },
+      "originalInputJSONSHA256": "9b20c8d91b49c4855333e4a5e4c92d64db7dab0a619a2d946d625ab26b868d8a",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW44",
+      "originalIndex": 5916,
+      "originalDefinition": {
+        "id": "R29SW44",
+        "cmd": "sudo -- 'BAD-NAME=ordinary' printf ordinary",
+        "expect": "allow",
+        "basis": "Pinned got_end_of_args excludes envcarrier after literal --; actual operand callee retained, no universal program safety claim"
+      },
+      "originalDefinitionJSONSHA256": "f5bc3d76acd73b8435239d9bb0ee9b8c955d1c41e970ead1ead383d5c8a6e082",
+      "originalInput": {
+        "id": "R29SW44",
+        "cmd": "sudo -- 'BAD-NAME=ordinary' printf ordinary",
+        "basis": "Pinned got_end_of_args excludes envcarrier after literal --; actual operand callee retained, no universal program safety claim"
+      },
+      "originalInputJSONSHA256": "527ef23c872b0568d1e79f2348b91a4c14fd54bdaab7fc9eca98e06d7e656e67",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    },
+    {
+      "id": "R29SW45",
+      "originalIndex": 5917,
+      "originalDefinition": {
+        "id": "R29SW45",
+        "cmd": "sudo 'FOO=ordinary' --user root printf ordinary",
+        "expect": "allow",
+        "basis": "Supported quoted identifier carrier normal remains"
+      },
+      "originalDefinitionJSONSHA256": "907f71cec302c87c59f30484879e320becee4a40613342a7ac6224115d0be7fb",
+      "originalInput": {
+        "id": "R29SW45",
+        "cmd": "sudo 'FOO=ordinary' --user root printf ordinary",
+        "basis": "Supported quoted identifier carrier normal remains"
+      },
+      "originalInputJSONSHA256": "7d396a7382a77872281a41b9e66dfdebb497e9c47aba2154825937e147810fb8",
+      "kind": "REQUIRED_SUDO_POLICY_ROOT_UNQUALIFIED",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnEG": "UNKNOWN",
+        "denyBy": "block-secret-egress.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-egress.cjs": "[判断不能] "
+        }
+      },
+      "preserveNonEgress": "Original allow requires ownSG=ALLOW and ownAG=ALLOW; no SG/AG obligation is removed."
+    }
+  ]
+}

@@ -40,8 +40,8 @@ const groups = [
     ['actual-path-prefix', 'PATH=/DUMMY/unqualified /usr/bin/sudo ' + secret, 'UNKNOWN'],
     ['actual-fpath-prefix', 'FPATH=/DUMMY/unqualified /usr/bin/doas ' + secret, 'UNKNOWN'],
   ]],
-  ['qualified ordinary absolute children and no-child queries keep their meaning', [
-    ['ordinary-absolute-child', 'sudo /usr/bin/curl -q https://example.com', 'ALLOW'],
+  ['R57 uninspected sudo policy root stops ordinary children while no-child queries remain', [
+    ['ordinary-absolute-child', 'sudo /usr/bin/curl -q https://example.com', 'UNKNOWN'],
     ['ordinary-absolute-env-child', '/usr/bin/doas /usr/bin/env /usr/bin/curl -q https://example.com', 'ALLOW'],
     ['sudo-query', 'sudo --help', 'ALLOW'],
     ['doas-query', 'doas -L', 'ALLOW'],

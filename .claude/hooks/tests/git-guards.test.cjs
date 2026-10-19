@@ -17087,12 +17087,18 @@ function main() {
   }
   const hooksDir = path.resolve(hi >= 0 ? argv[hi + 1] : path.join(__dirname, '..'));
   const asJson = argv.includes('--json');
+  const usePolicyContract = argv.includes('--r57-policy-contract');
+  if (usePolicyContract && !argv.includes('--executable-profile')) throw new Error('--r57-policy-contract requires --executable-profile');
   // Optional explicit qualification profile. CASES and their original oracle
   // remain unchanged; both original and profile assertion results are reported.
   const profileTools = argv.includes('--executable-profile') ? require('./executable-profile-qualification.cjs') : null;
   const selectedProfile = profileTools && profileTools.createProfile(CASES, require('./fixtures/r54-selected-executable-profile.json'));
+  const policyTools = usePolicyContract ? require('./r57-policy-contract.cjs') : null;
+  const selectedPolicy = policyTools && policyTools.createPolicyContract(CASES, require('./fixtures/r57-policy-contract.json'),
+    fs.readFileSync(path.join(__dirname, 'fixtures/r54-selected-executable-profile.json')));
   const repos = setupRepos();
   let failed = 0, originalFailed = 0, profileAdjusted = 0, operationalReasonFailures = 0;
+  let profileBeforePolicyFailed = 0, policyContractAdjusted = 0;
   const results = [];
   try {
     for (const c of CASES) {
@@ -17100,6 +17106,9 @@ function main() {
         ...(c.fixtureEnvironment === undefined ? {} : repos.fixtureEnvironmentSets[c.fixtureEnvironment]),
         ...(c.env || {}), CLAUDE_PROJECT_DIR: repos.dirs[c.project || 'clean'] };
       const qualifiedBefore = selectedProfile && selectedProfile.qualify(c, environment);
+      const policyQualifiedBefore = selectedPolicy && selectedPolicy.qualify(c);
+      const policyExpectedBefore = selectedPolicy && selectedPolicy.effectiveCase(c,
+        selectedProfile.effectiveCase(c, qualifiedBefore, environment), policyQualifiedBefore);
       const r = runCase(hooksDir, c, repos, false, !!selectedProfile);
       r.expect = c.expect;
       const egressPrefix = r.reasonPrefixes['block-secret-egress.cjs'];
@@ -17132,6 +17141,23 @@ function main() {
         if (qualified.applies) profileAdjusted++;
         r.ok = r.profileOK;
       }
+      if (selectedPolicy) {
+        r.profileBeforePolicyOK = r.profileOK;
+        if (!r.profileBeforePolicyOK) profileBeforePolicyFailed++;
+        r.policyContractQualification = policyQualifiedBefore;
+        r.policyContractQualificationStable = JSON.stringify(policyQualifiedBefore) === JSON.stringify(selectedPolicy.qualify(c));
+        if (policyQualifiedBefore.applies) {
+          policyContractAdjusted++;
+          const expected = policyExpectedBefore;
+          r.policyExpected = { expect: expected.expect, expectedOwnEG: expected.expectedOwnEG,
+            expectedOwnSG: expected.expectedOwnSG, expectedOwnAG: expected.expectedOwnAG,
+            denyBy: expected.denyBy, allowBy: expected.allowBy, expectReasonPrefixes: expected.expectReasonPrefixes };
+          r.policyContractOK = r.profileQualificationStable && r.policyContractQualificationStable &&
+            profileTools.matchesCase(r, expected, HOOKS) && selectedPolicy.nonEgressAssertionsMatch(r, c) && !r.operationalReasonFailure;
+        } else r.policyContractOK = r.policyContractQualificationStable && r.profileBeforePolicyOK;
+        r.profileOK = r.policyContractOK;
+        r.ok = r.profileOK;
+      }
       if (!r.ok) failed++;
       results.push(r);
     }
@@ -17139,13 +17165,16 @@ function main() {
     cleanupRepos(repos);
   }
   if (selectedProfile && !selectedProfile.definitionsUnchanged()) throw new Error('Original CASES changed during profile execution');
+  if (selectedPolicy && !selectedPolicy.definitionsUnchanged()) throw new Error('Original CASES changed during R57 policy execution');
   if (asJson) {
     process.stdout.write(JSON.stringify({ hooksDir, total: results.length, failed,
       ...(selectedProfile ? { profile: 'R54 selected executable prerequisites', originalFailed, profileAdjusted,
-        operationalReasonFailures, originalDefinitionsUnchanged: true } : {}), results }, null, 1) + '\n');
+        operationalReasonFailures, originalDefinitionsUnchanged: true } : {}),
+      ...(selectedPolicy ? { policyContract: selectedPolicy.contractID, policyContractDeclared: selectedPolicy.declaredCount,
+        profileBeforePolicyFailed, policyContractAdjusted, policyDefinitionsUnchanged: true } : {}), results }, null, 1) + '\n');
   } else {
     for (const r of results) {
-      if (!r.ok) console.log(`✗ ${r.id}: expect ${r.profileExpected?.expect || r.expect} got ${r.decision} ${r.denied.join(',')} ${r.broken.join('; ')}`);
+      if (!r.ok) console.log(`✗ ${r.id}: expect ${r.policyExpected?.expect || r.profileExpected?.expect || r.expect} got ${r.decision} ${r.denied.join(',')} ${r.broken.join('; ')}`);
       if (selectedProfile && (r.profileQualification.source === 'declaration-and-independent-filesystem-only' || !r.profileOK)) {
         // Keep CI qualification evidence beside the original assertion result.
         // Declared but inactive prerequisites (present or I/O unknown) also need
@@ -17158,11 +17187,21 @@ function main() {
           qualification: r.profileQualification, qualificationStable: r.profileQualificationStable,
           operationalReasonFailure: r.operationalReasonFailure }));
       }
+      if (selectedPolicy && r.policyContractQualification.applies) {
+        console.log('R57 policy contract evidence: ' + JSON.stringify({ id: r.id, originalExpect: r.expect,
+          originalOK: r.originalOK, profileBeforePolicyOK: r.profileBeforePolicyOK, profileOK: r.profileOK,
+          policyContractOK: r.policyContractOK, qualification: r.policyContractQualification,
+          qualificationStable: r.policyContractQualificationStable, policyExpected: r.policyExpected,
+          ownEG: r.ownEG, ownSG: r.ownSG, ownAG: r.ownAG, broken: r.broken,
+          reasonPrefixes: r.reasonPrefixes, reasonTexts: r.reasonTexts, operationalReasonFailure: r.operationalReasonFailure }));
+      }
     }
     console.log(`${results.length - failed}/${results.length} ok`);
     if (selectedProfile) console.log(`Original oracle: ${results.length - originalFailed}/${results.length} pass; ` +
       `explicit profile prerequisites active: ${profileAdjusted}; operational denial failures: ${operationalReasonFailures}`);
   }
+  if (selectedPolicy && !asJson) console.log(`R57 policy contract: declared ${selectedPolicy.declaredCount}; ` +
+    `adjusted: ${policyContractAdjusted}; R54 failures before policy: ${profileBeforePolicyFailed}; original assertions retained`);
   process.exitCode = failed ? 1 : 0;
 }
 

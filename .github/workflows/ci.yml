@@ -119,7 +119,9 @@ jobs:
           # Preserve original assertion totals beside the explicit R54 selected-
           # executable profile. Missing/unsupported selection is UNKNOWN, not
           # evidence that the unavailable program's argv semantics were exercised.
-          node .claude/hooks/tests/git-guards.test.cjs --executable-profile
+          # R57 separately records eleven new sudo policy-root restrictions;
+          # preserve original and pre-policy results, distinct from backend absence.
+          node .claude/hooks/tests/git-guards.test.cjs --executable-profile --r57-policy-contract
           GUARD_TESTS
 
       - name: Run injection-gate tests (python, deterministic)

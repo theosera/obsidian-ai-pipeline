@@ -1520,7 +1520,7 @@ function calleeTerminatorArgs(rest, info) {
 }
 
 // Only these parsers accept the existing finite quoted-scalar argv proof.
-const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run', 'run0', 'sg', 'newgrp', 'capsh', 'start-stop-daemon']);
+const SCALAR_LAUNCHERS = new Set(['flock', 'chrt', 'nsenter', 'taskset', 'watch', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas', 'dbus-run-session', 'systemd-run', 'run0', 'sg', 'newgrp', 'capsh', 'start-stop-daemon', 'busybox']);
 
 /** util-linux 2.39.3: priority/PID roles and namespace-free direct execvp. */
 function utilLinuxLauncherArgs(rest, info, name) {
@@ -2083,7 +2083,38 @@ function startStopDaemonArgs(rest, info) {
   return unknown();
 }
 
+/** BusyBox 1.37.0 internally dispatches applets, without child PATH lookup.
+ * Terminal queries are bounded below. Active applets stay source-unknown;
+ * never borrow proof from an unrelated external wget/sh executable.
+ */
+function busyboxArgs(rest, info) {
+  info.launcherArgs.push(...rest);
+  info.launcherChildNoAssignments = true;
+  const role = { backend: 'busybox-1.37.0-source', mode: 'unknown',
+    appletWord: rest[0] || null, internalAppletDispatch: true,
+    source: 'selected-busybox-build/applet/compile-features',
+    priorLauncherUnknown: info.launcherUnknown };
+  (info.busyboxLaunchers ||= []).push(role);
+  const unknown = () => { info.launcherUnknown = true; return rest.length; };
+  const known = word => word && wrapperValueKnown(word) && !word.ansiCUnknown &&
+    (!word.dynamic || typeof word.literalValue === 'string');
+  const text = word => typeof word?.literalValue === 'string' ? word.literalValue : word?.text;
+  const terminal = () => {
+    if (info.launcherUnknown) return unknown();
+    role.mode = 'query'; return -1;
+  };
+  if (!known(info.argv0Word) || path.posix.basename(text(info.argv0Word)) !== 'busybox' || rest.length > 128) return unknown();
+  if (!rest.length) return terminal();
+  if (!known(rest[0])) return unknown();
+  const first = text(rest[0]);
+  // Only whole-dispatcher no-applet/help/list forms are qualified here.
+  // Applet-specific help, extra operands and all active applets stay unknown.
+  if (['--help', '--list', '--list-full'].includes(first) && rest.length === 1) return terminal();
+  return unknown();
+}
+
 const WRAPPERS = {
+  busybox: busyboxArgs,
   capsh: capshArgs,
   'start-stop-daemon': startStopDaemonArgs,
   sg: (rest, info) => shadowGroupArgs(rest, info, 'sg'),
@@ -2310,14 +2341,16 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
         info.args = [literal('-c'), literal(info.watchLauncher.source)];
         return info;
       }
-      if (base === 'script' && info.launcherUnknown) {
+      if ((base === 'script' || base === 'busybox') && info.launcherUnknown) {
         info.name = base; info.nameWord = w; info.args = rest; return info;
       }
       // sudoers/doas policy selects the child's PATH, independently of lookup
       // of the launcher itself. Keep this ordered boundary for later wrappers
       // and for source reparsed inside an absolute child shell. A real terminal
       // query returned above and never selects a child search environment.
-      if (base === 'sudo' || base === 'doas') info.envOps.push({ unqualifiedExecutableSearch: true });
+      if (base === 'sudo' || base === 'doas') info.envOps.push({ unqualifiedExecutableSearch: true,
+        // sudoers can select CHROOT/runchroot even for an absolute child.
+        policyRootUnknown: base === 'sudo' });
       k = k + 1 + r;
       continue;
     }
@@ -3455,7 +3488,9 @@ function inspectMediatedSource(source, depth = 0) {
   if (depth && typeof depth === 'object') depth = options.sourceDepth || 0;
   const word = typeof source === 'string' ? { text: source, dynamic: false } : source;
   if (!word || word.dynamic) return { gits: [], invocations: [], problems: ['実行する source 文字列が動的で、中身を検査できない'] };
-  const inner = inspect(word.text, { ...options, sourceDepth: depth + 1 });
+  // This entry never qualifies Git's cwd/environment/helper context. Retain
+  // that Git-specific boundary through later reparses without tainting clients.
+  const inner = inspect(word.text, { ...options, initialGitSourceContextUnknown: true, sourceDepth: depth + 1 });
   const opaque = inner.invocations.some((invocation) => invocation.dynamicName || invocation.definitionName ||
     ['.', 'source', 'eval'].includes(invocation.name) || COMMAND_SEARCH_MUTATORS.has(invocation.name) ||
     invocation.shellSourceUnknown || invocation.shellScripts.some((script) => script.dynamic) ||
@@ -3576,7 +3611,7 @@ function inspect(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: false, unqualifiedSearch: false, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown ||
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: options.initialPathContextChanged === true, unqualifiedSearch: false, policyRootUnknown: options.initialPolicyRootUnknown === true, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown ||
     options.trackGitPreCommitEnvironment === true && !!options.initialGitPreCommitEnvironmentUnknown, identitySources: new Map([['PS4', { text: '+ ', dynamic: false }]]), identityExports: new Map([['PS4', false]]), promptRefNames: new Set(), xtrace: false, promptvars: true, localShellOptions: false });
   const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports), promptRefNames: new Set(s.promptRefNames) });
   const stateFor = (scope) => {
@@ -3780,6 +3815,7 @@ function inspect(cmd, options = {}) {
     // snapshots and child scopes without downgrading an independently qualified
     // absolute child's definite payload verdict through pathChangedBefore.
     let unqualifiedSearch = state.unqualifiedSearch;
+    let policyRootUnknown = state.policyRootUnknown;
     const executableSearchAt = new Map();
     const executableSearch = (defaultSearch = false) => ({
       pathPresent: identitySources.has('PATH'),
@@ -3819,6 +3855,7 @@ function inspect(cmd, options = {}) {
       if (op.set && CLIENT_OPTION_ENV.has(op.set)) helperEnvUnknown.delete(op.set);
       if (op.set === 'PATH' || op.set === 'FPATH') pathChanged = true;
       if (op.unqualifiedExecutableSearch) unqualifiedSearch = true;
+      if (op.policyRootUnknown) policyRootUnknown = true;
       if (op.functionEnvironment) {
         const imported = op.functionEnvironment;
         if (imported.callee) environmentFunctions.set(imported.environment, imported.callee);
@@ -3837,6 +3874,7 @@ function inspect(cmd, options = {}) {
     const alias = info.name === 'alias' && builtin ? aliasInvocation(info.args) : null;
     const invocation = {
       order: res.invocations.length, name: info.name, nameWord: info.nameWord,
+      gitSourceContextUnknown: options.initialGitSourceContextUnknown === true,
       args: info.args.map(word => outboundScalarWord(word, expansionState)),
       words: c.words, redirs: c.redirs, heredocBodies: c.heredocBodies, scope: c.scope, incomplete: info.incomplete,
       wrapped: info.wrapped, nonExec: info.nonExec, dynamicName: info.dynamicName,
@@ -3858,6 +3896,7 @@ function inspect(cmd, options = {}) {
       shadowGroupLauncherRoles: info.shadowGroupLaunchers || [],
       capshLauncherRoles: info.capshLaunchers || [],
       startStopDaemonLauncherRoles: info.startStopDaemonLaunchers || [],
+      busyboxLauncherRoles: info.busyboxLaunchers || [],
       utilLinuxLauncherRole: info.utilLinuxLauncher || null,
       positionalExec: !!positionalExec, positionalUnknown, positionalsBefore,
       splitString: info.splitString, splitWords: info.splitWords, envUnknown: info.envUnknown,
@@ -3890,6 +3929,8 @@ function inspect(cmd, options = {}) {
       shellXtrace,
       exportedFunctionNames: importedFunctionNames, exportedFunctionUnknown: exportedFunctionUnknown || environmentFunctionUnknown.size > 0,
       pathChangedBefore: pathChanged || state.searchChanged,
+      // Allow-side qualification only; never erase independent payload FORBIDDEN.
+      policyRootUnknown,
       unknownContextBefore: state.unknownContext,
       pipelineParticipant: (c.effects || []).some((e) => e.pipeline),
       pipelineIds: (c.effects || []).filter((effect) => effect.pipeline).map((effect) => {
@@ -3977,7 +4018,7 @@ function inspect(cmd, options = {}) {
         functionIdentitySources.set(name, identitySources.get(name) ?? null);
         functionIdentityExports.set(name, true);
       }
-      seedScope(body.scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch,
+      seedScope(body.scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch, policyRootUnknown,
         identitySources: functionIdentitySources, identityExports: functionIdentityExports,
         exportedFunctions, exportedFunctionUnknown, environmentFunctions, environmentFunctionUnknown,
         localNames: new Set(), localShellOptions: false, positionals: knownPositionals(info.args), positionalsTainted: !!info.incomplete });
@@ -4301,7 +4342,11 @@ function inspect(cmd, options = {}) {
       res.problems.push('env の option が不明・曖昧、または値が複数の語になりうるため、git の実行を検査できない');
       return;
     }
-    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.run0Launchers?.some(role => role.mode === 'unknown') || info.shadowGroupLaunchers?.some(role => role.mode === 'unknown') || info.capshLaunchers?.some(role => role.mode === 'unknown') || info.startStopDaemonLaunchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+    if (info.launcherUnknown && (gitContext || c.words.some(wordHasGit) || info.utilLinuxLauncher?.mode === 'unknown' || info.dbusRunSessions?.some(role => role.mode === 'unknown') || info.systemdRunLaunchers?.some(role => role.mode === 'unknown') || info.run0Launchers?.some(role => role.mode === 'unknown') || info.shadowGroupLaunchers?.some(role => role.mode === 'unknown') || info.capshLaunchers?.some(role => role.mode === 'unknown') || info.startStopDaemonLaunchers?.some(role => role.mode === 'unknown') || info.busyboxLaunchers?.some(role => role.mode === 'unknown') || info.wrapperNames.some(name => ['chrt', 'nsenter', 'parallel', 'watch', 'timeout', 'nice', 'stdbuf', 'chroot', 'sudo', 'unshare', 'setpriv', 'prlimit', 'script', 'builtin', 'nohup', 'time', 'exec', 'caffeinate', 'doas'].includes(name)))) {
+      if (info.busyboxLaunchers?.some(role => role.mode === 'unknown')) {
+        res.problems.push('BusyBox の内部 applet/build feature と実行 source を確認できません。外部 PATH 上の同名 program の証明を内部 applet へ転用できません。同じ目的・対象・操作を保つ対応済み形式が無ければ owner に不足する backend/source 条件を確認してください。');
+        return;
+      }
       const capshUnknown = info.capshLaunchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
       const daemonUnknown = info.startStopDaemonLaunchers?.some(role => role.mode === 'unknown' && !role.priorLauncherUnknown);
       if (capshUnknown || daemonUnknown) {
@@ -4470,7 +4515,7 @@ function inspect(cmd, options = {}) {
             const inner = parseShell(h.body);
             for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
             res.async = res.async || inner.async;
-            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, unqualifiedSearch, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+            seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, unqualifiedSearch, policyRootUnknown, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
               environmentFunctions, environmentFunctionUnknown,
               functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                 .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -4486,7 +4531,7 @@ function inspect(cmd, options = {}) {
                 const inner = parseShell(r.word.text);
                 for (const ic of inner.cmds) ic.effects.push(...(c.effects || []));
                 res.async = res.async || inner.async;
-                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, unqualifiedSearch, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
+                seedScope(inner.scope, env, cdBefore, { ...state, ...childIdentityState(identitySources, helperEnvUnknown), outboundEnvironmentUnknown, xtrace: shellXtrace, promptvars: true, helperEnv, pathChanged, unqualifiedSearch, policyRootUnknown, functionAutoExport: false, exportedFunctions, exportedFunctionUnknown,
                   environmentFunctions, environmentFunctionUnknown,
                   functions: new Map((shell.privileged === true && ['bash', 'sh'].includes(name) ? [] : importedFunctionNames)
                     .map(name => [name, sourcePlaceholder(name)])), positionals: shell.unknown ? null : knownPositionals(shell.positionals) });
@@ -4506,6 +4551,8 @@ function inspect(cmd, options = {}) {
     }
     if (name === 'eval') {
       if (info.args.some((w) => wordHasGit(w) || (w.dynamic && gitContext))) {
+        // Keep this source's refusal separate from unrelated parser problems.
+        invocation.evalGitSourceUnknown = true;
         res.problems.push('eval に渡した git は、中身を検査できない');
       }
       return;
@@ -4518,7 +4565,7 @@ function inspect(cmd, options = {}) {
           const sub = resolveCommand(info.args.slice(k + 1, e));
           sub.incomplete = true;
           const scope = { parent: null };
-          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch, exportedFunctions, exportedFunctionUnknown,
+          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch, policyRootUnknown, exportedFunctions, exportedFunctionUnknown,
             environmentFunctions, environmentFunctionUnknown });
           visit({ words: info.args.slice(k + 1, e), redirs: [], piped: false, heredocBodies: [], scope, effects: c.effects }, sub, depth + 1);
           k = e;
@@ -4546,7 +4593,7 @@ function inspect(cmd, options = {}) {
         if (writes || unclear) {
           // 外側が xargs / find なら、未知 wrapper を外しても追加引数の不確定性を保つ。
           const scope = { parent: null };
-          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch, exportedFunctions, exportedFunctionUnknown,
+          seedScope(scope, env, cdBefore, { ...state, helperEnv, pathChanged, unqualifiedSearch, policyRootUnknown, exportedFunctions, exportedFunctionUnknown,
             environmentFunctions, environmentFunctionUnknown });
           const sub = resolveCommand(tail);
           sub.incomplete = info.incomplete || sub.incomplete;

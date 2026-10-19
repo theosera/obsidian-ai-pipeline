@@ -47,7 +47,7 @@ const insp = guard.inspect(cmd, {
     /^GIT_CONFIG_KEY_\d+$/.test(name) && /^[A-Za-z][A-Za-z0-9.-]*$/.test(process.env[name] || ''))
     .map(name => ({ name, word: { text: process.env[name], dynamic: false, dynamicMaySplit: false } })),
 });
-if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'git ガード'));
+// Keep parser uncertainty pending while independently confirmed policy forms are checked.
 
 /** Match no-verify and its guarded long-option prefixes, while leaving no-verbose intact. */
 function isNoVerifyOption(text) {
@@ -359,4 +359,5 @@ if (m) {
 if (postCdPathspecUnknown) deny('git add / stage の動的 pathspec は先行 cd の shell cwd で展開され、Git の静的な絶対 -C だけでは root との関係を確定できません。同じ対象の literal なファイル名を列挙できなければ、対象・操作・cwd と不明点を owner へ確認してください。', 'UNKNOWN');
 if (filesystemCwdUnknown) deny('git add / stage の -C または pathspec の symlink が選ぶ実 filesystem context を確認できず、一括追加の対象 root を照合できません。同じ対象・操作・cwd を保つ対応形式がなければ owner に不足する条件を確認してください。', 'UNKNOWN');
 
+if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'git ガード'));
 process.exit(0);

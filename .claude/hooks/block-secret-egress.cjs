@@ -257,7 +257,7 @@ const insp = guard.inspect(cmd, {
   initialFunctionSourceNames: inheritedFunctionNames,
   initialExportedFunctionNames: inheritedFunctionNames,
 });
-if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
+const pendingParserProblems = new Set(insp.problems);
 const URL_ARG_RE = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)/;
 // Git は最初の `:` より前に `/` が無い宛先を scp 形と読む。`./a:b` はローカル。
 const SCP_ARG_RE = /^[^/:]+:/;
@@ -6173,6 +6173,11 @@ function sourceInspectionOptions(invocation, extra = {}) {
     trackExecutableSearch: true,
     // command -p selects this program; it does not replace the child's PATH.
     initialExecutableSearchChanged: !!invocation.executableSearch?.pathChanged,
+    // Actual PATH/FPATH context must survive reparsing independently of lookup.
+    initialPathContextChanged: !!invocation.pathChangedBefore,
+    initialPolicyRootUnknown: !!invocation.policyRootUnknown,
+    // A mediated source's Git proof cannot be recreated by child reparsing.
+    initialGitSourceContextUnknown: invocation.gitSourceContextUnknown === true,
     trackOutboundEnvironment: true,
     deferWatchSourceProblems: true,
     deferDbusRunSessionSourceProblems: true,
@@ -6279,13 +6284,20 @@ let functionUnsetSourceUnknown = false;
 /** Recursively collect executable invocations and selected scripts, denying prohibited or uninspectable sources. */
 function collectNetworkInvocations(inspection, depth = 0) {
   if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
-  if (inspection.problems.length) deny(guard.problemMessage(inspection.problems, 'egress ガード') + UNKNOWN_OWNER_GATE);
-  inspectedGits.push(...inspection.gits);
+  for (const problem of inspection.problems) pendingParserProblems.add(problem);
   for (const invocation of inspection.invocations) invocationSources.set(invocation, inspection.invocations);
   for (const g of inspection.gits) gitInvocationContexts.set(g,
     inspection.invocations.find((invocation) => invocation.order === g.invocationOrder));
-  const activeCommits = inspection.gits.filter(g => g.sub === 'commit' && !guard.parseCommitArgs(g.args).terminal);
-  for (const g of inspection.gits) {
+  // Unqualified mediated Git stays pending before every Git consumer. Keep its
+  // invocation and other clients, but do not recreate proof from the same DTO.
+  const sourceQualifiedGits = inspection.gits.filter(g => {
+    if (!gitInvocationContexts.get(g)?.gitSourceContextUnknown) return true;
+    pendingParserProblems.add('trap / alias / helper を介した Git の source・cwd・環境・helper が未確認のため、同じ source から確定した Git 操作の判定を作れない');
+    return false;
+  });
+  inspectedGits.push(...sourceQualifiedGits);
+  const activeCommits = sourceQualifiedGits.filter(g => g.sub === 'commit' && !guard.parseCommitArgs(g.args).terminal);
+  for (const g of sourceQualifiedGits) {
     if (g.gitNamespaceUnknown) deny(`Git namespace (${g.sub}) が選ぶ external helper / alias の実行 source・lookup・argv/context を検査できません。alias 不在や query風の子argvはsource認証ではありません。同目的・同条件の対応済みbuiltin/queryがなければownerに実helper/body・対象・cwd/env/config/sourceと不明点を確認してください。` + UNKNOWN_OWNER_GATE, 'UNKNOWN');
     const httpMetadata = gitHttpMetadataVerdict(g, gitInvocationContexts.get(g));
     if (httpMetadata) deny(httpMetadata === 'FORBIDDEN' ?
@@ -6343,7 +6355,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
     if (sshAuthenticationSource(invocation)) deny('SSH_ASKPASS が actual SSH / SCP / SFTP / rsync remote-shell の authentication route で選ぶローカル helper source を検査できません。download と不明な route も判断不能です。' + UNKNOWN_OWNER_GATE);
     result.push(invocation);
     const scripts = [];
-    const gitCommand = inspection.gits.find((g) => g.invocationOrder === invocation.order);
+    const gitCommand = sourceQualifiedGits.find((g) => g.invocationOrder === invocation.order);
     if (gitCommand && gitAskpassSource(gitCommand, invocation)) deny('Git の GIT_ASKPASS / SSH_ASKPASS / core.askPass が選ぶ credential program を検査できません。push と authentication を伴い得る remote query 等ではローカル helper が実行され得ます。' + UNKNOWN_OWNER_GATE);
     if (gitCommand) scripts.push(...credentialHelperSources(gitCommand));
     scripts.push(...sshCommandSources(invocation));
@@ -6401,7 +6413,8 @@ function collectNetworkInvocations(inspection, depth = 0) {
       } else if (!invocation.shellCommandMode) {
         deny('シェルが実行する filename / executable source の内容を検査できません。literal な名前も source 本文の証明にはなりません。' + UNKNOWN_OWNER_GATE);
       }
-    } else if (invocation.name === 'eval') {
+    } else if (invocation.name === 'eval' && !invocation.evalGitSourceUnknown) {
+      // Do not requalify the same Git source the shared parser left unknown.
       const args = invocation.args[0] && invocation.args[0].text === '--' ? invocation.args.slice(1) : invocation.args;
       const literalArgs = args.map(literalSourceWord);
       if (invocation.incomplete || literalArgs.some(word => !word)) deny('eval の executable argv が dynamic / split / glob / brace / ANSI-C source を含み、連結後の実行文字列を確定できません。' + UNKNOWN_OWNER_GATE);
@@ -6818,7 +6831,10 @@ const selectedResolverDataVerdicts = invocations.map(invocation =>
   invocation.name === 'wget' ? wgetBindResolverVerdict(invocation) : false);
 if (selectedResolverDataVerdicts.includes('FORBIDDEN')) deny('ssh-keyscan の選択address/hostlist または Wget の選択bind-address resolver DATA の同じ生成元が、禁止されたsecret filename sourceに該当します。native DNS・接続・実送信は確認していません。', 'FORBIDDEN');
 const parsedExfilVerdict = firstVerdict(invocations, parsedExfil);
-if (parsedExfilVerdict || invocations.some(dynamicNetworkShape) || invocations.some(opaqueLauncherNetwork)) {
+// Launcher boundary uncertainty also remains pending until independent Git
+// prohibitions have been checked, regardless of URL-looking operand DATA.
+const opaqueLauncherNetworkUnknown = invocations.some(opaqueLauncherNetwork);
+if (parsedExfilVerdict || invocations.some(dynamicNetworkShape)) {
   const verdict = parsedExfilVerdict || 'UNKNOWN';
   deny(verdict === 'FORBIDDEN' ?
     '読み取れた実行コマンドが、既存の禁止形式 (gist / 実行付き network client / ファイル payload・copy 等) に当たります。実送信の成立を確認したものではありません (egress guard)。必要な操作は owner に対象・内容を確認してください。' :
@@ -7089,5 +7105,16 @@ if (loggerOutboundVerdicts.some(Boolean)) {
 }
 
 if (clientExecutableIdentityUnknown) deny('対応する client / Git / shell の実行名・PATH lookup・明示 program path・必要な context を確定できません。GETやquery風の引数も、置換された実行 source の本文や副作用を証明しません。同じ program・版・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
+
+// Preserve every parser problem; only independent proven policy refusals may win.
+if (pendingParserProblems.size) deny(guard.problemMessage([...pendingParserProblems], 'egress ガード') + UNKNOWN_OWNER_GATE);
+
+if (opaqueLauncherNetworkUnknown) deny('network launcher の引数境界と実行 source を確定できません。同じ program・版・対象・操作・cwd/env/config/source を保つ対応形式がなければ' + UNKNOWN_OWNER_GATE);
+
+// A host absolute pathname cannot qualify a sudoers-selected root. Preserve
+// all earlier definite payload refusals before stopping otherwise-ALLOW work.
+if (invocations.some(invocation => invocation.policyRootUnknown)) {
+  deny('sudo policy が選ぶ実行 root / cwd と child executable source を確認できません。absolute child path や child の help/version だけでは host と同じ root の証明になりません。必要な sudo・対象・操作・policy/root 条件を保って owner に確認してください。個別操作の承認は hook 無効化の許可ではありません。', 'UNKNOWN');
+}
 
 process.exit(0);

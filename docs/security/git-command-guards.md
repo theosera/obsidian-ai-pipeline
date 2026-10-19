@@ -20,6 +20,37 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R57:CONTRACT:BEGIN -->
+
+<a id="current-guard-contract"></a>
+
+## 現在のガード契約（R57修復候補）
+
+公開基点 `c1c5bd9dcccd0a42c769f473d5328cf1b651708d` への両full reviewは正常に完了したが、CodexのP1×2・P2×2とCodeRabbitの文書Minor×4が残った。以下はその修復条件であり、この段階では新sourceの全件・同head CI・両fresh review・指摘処理を完了したと主張しない。**この固定anchorを現在の契約の入口とし、以下のR56以前のround別本文・件数・日時は当時の履歴として読む。**
+
+| 対応する境界 | 判定と確認条件 | 正常対照・停止する通常作業・出口 |
+| --- | --- | --- |
+| BusyBox内部のapplet選択 | 確認できたBusyBox実行体であっても、内部appletを別installのwget/shと同一視しない。active applet、applet個別help、余分なoperand、動的選択は、build・機能・source未資格としてUNKNOWN。 | 実行体の選択条件を満たす場合の引数なし、単独`--help`、単独`--list`、単独`--list-full`と、表示DATAを対照に保つ。普通の`busybox echo`もUNKNOWNになる。独立した同名programへの置換が同目的・同条件とは限らず、必要なapplet/buildをownerへ示す。 |
+| sudoのpolicyが選ぶroot/cwd/source | absolute childでも未検査のsudo policyが実行rootを変え得るため、実子を選ぶ呼出しにはallow側のUNKNOWNを残す。既存payload等が独立して禁止を確定できる場合のFORBIDDENは維持する。doasへsudoのCHROOT仕様を推定適用しない。 | sudoの真正な子なしquery、表示DATA、直接の関数shadowを別に保つ。普通のabsolute childやversion要求もsudo経由ではUNKNOWNになり得る。必要なsudoを外したことを代替成功とはせず、policy/root/contextの不足をownerへ示す。 |
+| 子sourceへ再解析する実PATH/FPATH条件 | policy由来の検索未資格、実際の検索条件変更、未確認のrootを別に保持し、再解析するshell/functionのscopeへ渡す。子の絶対pathだけで親の条件を消さない。 | 実PATH変更を伴う子shell内のprotected inputはUNKNOWN。変更なしの確定した禁止はFORBIDDEN。直接absolute ordinary clientの既存ALLOWを、実PATH変更だけで一律UNKNOWNへ広げない。 |
+| parserの未解決情報と独立した禁止 | parser問題を捨てず、各guardが担当する独立した確定FORBIDDENの検査後にUNKNOWNとして返す。opaque launcherのURL風operandも早期UNKNOWNで独立Git禁止を隠さない。parserが未検査とした同じevalのGit sourceは再解析によるFORBIDDENの根拠にせず、そのsourceだけをUNKNOWNに保つ。trap・alias・helperを介したGitも、専用のsource確認状態を子の再解析へ引き継ぎ、未資格のGitをtyped Git判定へ渡す前にUNKNOWNとして保留する。これは別のclientや外側の独立した禁止を一律に不明扱いするものではない。未知argvだけの入力や解釈できないfragmentを危険確定へ昇格しない。 | ordinary/DATAは保つ。未知wrapperと独立した禁止を両順序で確認する。secret-gitの秘密追加、add-allの一括追加、egressの送信を別の担当として検証し、別guardだけの停止をown-hook成功へ借用しない。 |
+
+### 一次資料と成立条件
+
+BusyBoxは固定版1.37.0の[公式source archive](https://busybox.net/downloads/busybox-1.37.0.tar.bz2)を照合した。wgetのfile POST経路は当該applet・long option・wget long option機能のbuild条件に依存する。Hook DATAでの停止と、対象install/build、認証・接続・実送信の成立を分け、native BusyBoxや送信を実証したとは扱わない。
+
+sudoは固定v1.9.17p2の[sudoers manual source](https://github.com/sudo-project/sudo/blob/v1.9.17p2/docs/sudoers.man.in)と[path選択source](https://github.com/sudo-project/sudo/blob/v1.9.17p2/plugins/sudoers/find_path.c)を照合した。CHROOT/runchrootは1.9.3以降の機能であり、今回レビューの「1.9.17導入」という説明は採用しない。deprecatedという記載も機能削除とは扱わない。absolute指定はpolicyのroot選択を無効化しない一方、command固有Defaultsと他のpolicy選択条件は区別する。installed policyの読取、sudo実行、権限変更やnative root内での実行成立は検証していない。
+
+### 元期待と新policy契約を分ける
+
+元8,696 CASEの入力・元期待とR54の654宣言は変更しない。R57の明示的なpolicy契約は、既存の11入力（R29SW19〜23・32・34・35・40・44・45）について、未検査sudo rootによるown-egress UNKNOWNを別宣言する。元ALLOWに対するFAIL、R54環境profileまでの結果、R57契約による結果を別に残す。SG/AGの元ALLOW義務を解除せず、guardの実測denyから宣言を自動生成しない。これはbackendのprogram欠落を測った調整ではなく、正常なsudo利用にも及ぶpolicy上の制限である。
+
+CIと同じ明示契約で全bankを確認する呼出しは `node .claude/hooks/tests/git-guards.test.cjs --executable-profile --r57-policy-contract`。`--r57-policy-contract`は`--executable-profile`との併用が必須で、付けない場合は従来の元期待又はR54 profileだけを評価する。新しい制限への適合と、元期待の成功を同じ数字にしない。
+
+受入では元レビュー入力、正常対照、各追加判定一つだけを外したreverse verificationを分ける。別の独立判定が止める場合は、その判定単独の必要性を証明したとは記録しない。旧全件・旧CI・旧fullの成功は、新sourceの証拠へ持ち越さない。新L3・実秘密読取・native送信の追加資格は行わない。同じ対象・操作・必要なwrapper・argv・cwd/env/config/sourceを保つ対応形がなければownerへ不足条件を示す。個別操作の承認はHook停止の承認ではない。
+
+<!-- PR191:R57:CONTRACT:END -->
+
 <!-- PR191:R56:CONTRACT:BEGIN -->
 
 <a id="r56-absolute-policy-child"></a>

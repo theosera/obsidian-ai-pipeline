@@ -96,11 +96,21 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 > `docs/threat_reports.md` / `docs/security/llm-sec-report-consumption.md` /
 > `docs/security/llm-sec-weekly-automation.md`。
 
+<!-- PR191:R57:PLAYBOOK:BEGIN -->
+
+### 現在のガード契約（R57修復候補）
+
+[現在の契約・正常対照・停止後の出口](docs/security/git-command-guards.md#current-guard-contract)を参照する。BusyBox内部appletは外部の同名clientのproofを借用しない。未検査sudo policyのrootはabsolute ordinary childでもUNKNOWNを残すが、独立した禁止はFORBIDDENを維持する。実PATH/FPATH条件は子shell/functionへ渡し、parser問題は各guardの独立した禁止を検査した後にUNKNOWNとして返す。
+
+通常のactive BusyBoxやsudo利用にも停止費用がある。真正query・表示DATA・doasとの違いを保ち、必要なsudoを削除した経路を同目的の代替とはしない。元8,696入力・元期待・R54の654宣言を保持し、sudoの11入力への新制限は別policy契約と元結果を併記する。新sourceの全件・同head CI・両fresh full・指摘処理・本文一致は別に確認し、native動作や新L3の資格を主張しない。以下のround別記述は当時の履歴である。
+
+<!-- PR191:R57:PLAYBOOK:END -->
+
 <!-- PR191:R51:PLAYBOOK:BEGIN -->
 
-### 現在のガード契約: R51（修復候補・受入未完了）
+### R51当時のガード契約（履歴・当時の受入未完了）
 
-[現在の契約・正常対照・停止後の出口](docs/security/git-command-guards.md#r51-current-contract)を優先する。[R50契約](docs/security/git-command-guards.md#r50-current-contract)と以下のR46以前の節は、当時の履歴である。R50公開head `4046a6cd83be746a5b6b430cd3138211652e7465` のfresh fullはCodexが4件、CodeRabbitが2件を返した。両reviewの実行完了は、指摘処理や修復後の受入完了を意味しない。
+R51当時は[R51当時の契約・正常対照・停止後の出口](docs/security/git-command-guards.md#r51-current-contract)を優先した。[R50契約](docs/security/git-command-guards.md#r50-current-contract)と以下のR46以前の節は、当時の履歴である。R50公開head `4046a6cd83be746a5b6b430cd3138211652e7465` のfresh fullはCodexが4件、CodeRabbitが2件を返した。両reviewの実行完了は、指摘処理や修復後の受入完了を意味しない。
 
 追跡対象の値とexport属性を分ける。直接のspecial builtinへのprefix代入は、外側shellのmode・版でexportの永続性が変わるため、非exportとは断定しない。`POSIXLY_CORRECT`のoption順序だけでなくGH metadata等のchild sourceにも同じ境界を保ち、未資格ならUNKNOWNとする。literal ordinaryなGH_HOSTの特殊prefixも停止し得る費用を契約に明記する。実際のexport解除・unset・childのenv clear、ordinaryな両mode同一policy対照は別に保つ。
 
@@ -116,7 +126,7 @@ glibc2.42 getentの既知service値の後でも真正help/usage/versionはtermin
 
 **修復作業中のsnapshot**。2026-10-19 00:15:41 JST時点、公開基点head `c3b8371b35550f01587d944c5b0d35ea75b234b6` に対する未commitのR46 candidateは修復作業中であり、この当時の最終source件数・統合全件・新公開head／同head CI／両fresh review・全指摘処理は未取得・PENDINGである。 同公開headのCodex normal review5563562682は2026-10-18 23:58:48 JST、CodeRabbit normal full5563566259は23:59:20 JSTに完了したが、23:59:45.256–23:59:52.394 JST取得の全220threadには新3件（Codex P1 4307502905・4307502909、CR Minor4307504522）が未解決で残る。
 
-[R46の現在契約・正常対照・費用と出口](docs/security/git-command-guards.md#r46-current-contract)を参照する。own Git検査はparsed commitのprogram・selected env・cwdへ結合する。既知固定installのrealpathを独立の信頼起点とし、bareはselected PATHの先頭実候補を確認、absolute既知GitはPATH shadowから独立に扱う。`env -u`／unset／`env -i`のtracked名の消失をprocess.env fallbackで取り消さず、own検査copyのsanitationをactual selected sourceの安全性証明へ流用しない。
+[R46当時の契約・正常対照・費用と出口](docs/security/git-command-guards.md#r46-current-contract)を参照する。own Git検査はparsed commitのprogram・selected env・cwdへ結合する。既知固定installのrealpathを独立の信頼起点とし、bareはselected PATHの先頭実候補を確認、absolute既知GitはPATH shadowから独立に扱う。`env -u`／unset／`env -i`のtracked名の消失をprocess.env fallbackで取り消さず、own検査copyのsanitationをactual selected sourceの安全性証明へ流用しない。
 
 検査cacheはprogram/env/cwdで分離し、Git2.54 fixed-consumer資格のbannerも同じcontextの実取得値だけに結び付ける。common alias probeは既知の絶対programへ固定し、未登録namespaceはSG自身もprobeせずUNKNOWNにする。既存EG namespace UNKNOWNをownSGの検査安全性証明にしない。未知install・動的/欠落PATH・`command -p`・未復元envは通常操作にもUNKNOWN費用を生む。
 
@@ -132,7 +142,7 @@ glibc2.42 getentの既知service値の後でも真正help/usage/versionはtermin
 
 **修復作業中・最終受入PENDINGのsnapshot**。2026-10-18 14:46:08 JST時点、公開基点head `533a48fb08e3f27c9821eb4e145c5dc683aca670` に対する未commitのR44 candidateを対象とする。同headのCodex full5561591680は14:29:13 JST、CodeRabbit full5561600706は14:33:08 JSTに正常完了したが、14:35:36.049 JST取得の全216threadは未解決4件（Codex4305869528・4305869532・4305869534、CR4305878612）。R43承認済み公開op01–09は完了、条件付きop10は未実施であり、このsnapshotでは新R44 sourceの最終件数・全件、新公開head／同headCI／両fresh reviewと全指摘処理は当時未取得・PENDINGである。
 
-[R44の現在契約・正常対照・費用と出口](docs/security/git-command-guards.md#r44-current-contract)を参照する。既存の非query object/index-capable prior-readerに対する`core.gitProxy`は順序・domain・first match・`none`を保持し、presentな`GIT_PROXY_COMMAND`（emptyを含む）がconfigをshadowする。未知のpromisor hostに残るpotential programはUNKNOWNとし、通常local readerにも費用がある。own検査copyのsanitationとactual selected DTOを分離する。
+[R44当時の契約・正常対照・費用と出口](docs/security/git-command-guards.md#r44-current-contract)を参照する。既存の非query object/index-capable prior-readerに対する`core.gitProxy`は順序・domain・first match・`none`を保持し、presentな`GIT_PROXY_COMMAND`（emptyを含む）がconfigをshadowする。未知のpromisor hostに残るpotential programはUNKNOWNとし、通常local readerにも費用がある。own検査copyのsanitationとactual selected DTOを分離する。
 
 inherited/baseline-equal `SSH_ASKPASS`の複合empty例外は、Git askpassと選択SSH programの両方がeffective emptyで、既存trusted realpath/PATH同一性を満たすown inspectionの実取得banner `git version 2.54.0`＋POSIXというfixed-consumer資格がある場合だけ。当該reader source理由だけの例外で、片方だけempty・未資格backend・changed-selector・他program・既存EG UNKNOWN・独立FORBIDDENは維持する。同bannerの独自patch全認証ではない。`core.gitProxy`のexact commit -hは従来のunsupported core UNKNOWN境界を保ち、help語だけを一般免除しない。
 
@@ -150,7 +160,7 @@ inherited/baseline-equal `SSH_ASKPASS`の複合empty例外は、Git askpassと�
 
 **実装作業中・受入PENDINGのcut**。2026-10-18 09:24:37 JSTのdocs cutは、公開基点head `5c570d221b958dc212ac13e435d980d5f3d46080` に対する未commitのR43実装作業中candidateを対象とする。同headのCodeRabbit full5560708937は08:58:21 JST、Codex full5560746096は09:11:26 JSTに正常完了した。09:14:01.793 JST取得の全212threadは未解決3件（CR4305046733、Codex4305081716・4305081722）である。新R43 sourceの最終全件、新公開head／同head CI／両fresh fullと全指摘処理はPENDINGで、件数を予測しない。
 
-[R43の現在契約・source優先順・通常費用と出口](docs/security/git-command-guards.md#r43-current-contract)を参照する。既存capability条件を満たす非queryのcommit前readerだけで、非空の`GIT_SSH_COMMAND`／`GIT_SSH`／`GIT_ASKPASS`／`SSH_ASKPASS`と設定fallbackを有限に確認する。継承／baseline同値でもsource不活性の証拠にはしない。SSH programはpointerの存在と優先順位を保ち、Git askpassのshadowでnative SSHのaskpass consumerまで消えたと扱わない。`core.sshCommand`と`credential.helper`もprobe→parse→gateまで保持する。
+[R43当時の契約・source優先順・通常費用と出口](docs/security/git-command-guards.md#r43-current-contract)を参照する。既存capability条件を満たす非queryのcommit前readerだけで、非空の`GIT_SSH_COMMAND`／`GIT_SSH`／`GIT_ASKPASS`／`SSH_ASKPASS`と設定fallbackを有限に確認する。継承／baseline同値でもsource不活性の証拠にはしない。SSH programはpointerの存在と優先順位を保ち、Git askpassのshadowでnative SSHのaskpass consumerまで消えたと扱わない。`core.sshCommand`と`credential.helper`もprobe→parse→gateまで保持する。
 
 credentialは順序・empty reset・URL subsection原綴りを保持し、targetが未確定の非空候補を非選択と推測しない。inherited variant自体／空programだけへの新UNKNOWNは加えず、changed envの既存UNKNOWN、exact inline core.askPass＋commit -hの既存UNKNOWN、独立FORBIDDENと既存EG UNKNOWNを維持する。actual selected Mapは保持し、own検査copyのprogram除去・no-lazy-fetchを実行予定readerのsource安全性へ流用しない。
 
@@ -164,7 +174,7 @@ credentialは順序・empty reset・URL subsection原綴りを保持し、target
 
 2026-10-18 07:35:30 JST snapshotは、当時の公開基点head `157c15ebddae485a05fba350dae82435a432eea6` に対する未commit candidateを対象とし、最後の全体取得07:15:05.546の209thread／未解決9（CR6＋Codex3）を保持し、後着修復後の最終sourceの全件・新head CI・fresh両reviewの受入は当時PENDINGである。
 
-[R42の現在契約・通常費用・consumer別query対照](docs/security/git-command-guards.md#r42-current-contract)を参照する。必要なsource・署名表示・run0 contextを外して同目的とせず、対応形式がなければownerへ不足条件を示す。repositoryのbranch.sort fallbackとinline configの既存UNKNOWN境界を混同せず、reflogの新operation ALLOWは追加しない。P2はsourceと非実行listの反証に基づき現行policyを維持し、公開threadの解決と分ける。
+[R42当時の契約・通常費用・consumer別query対照](docs/security/git-command-guards.md#r42-current-contract)を参照する。必要なsource・署名表示・run0 contextを外して同目的とせず、対応形式がなければownerへ不足条件を示す。repositoryのbranch.sort fallbackとinline configの既存UNKNOWN境界を混同せず、reflogの新operation ALLOWは追加しない。P2はsourceと非実行listの反証に基づき現行policyを維持し、公開threadの解決と分ける。
 
 <!-- PR191:R42:PLAYBOOK:END -->
 
@@ -218,7 +228,7 @@ R38はDNS clientの選択値、Netcat別名とbackend、Wget client認証source�
 
 <!-- PR191:R37:PLAYBOOK:BEGIN -->
 <a id="r37-playbook-contract"></a>
-[現在の有限契約・通常影響・owner出口](docs/security/git-command-guards.md#r37-current-contract)。
+[R37当時の有限契約・通常影響・owner出口](docs/security/git-command-guards.md#r37-current-contract)。
 
 **R37 guard契約（固定sourceのローカル受入済み・公開前cut）**: 基点は公開 `7b3436bc49f8736c7b465de026a2510ae0e6b0cf`。引数の役割、実行されるprogram/source、resolver/authentication/payloadの役割、値の生成元を分ける有限修復です。対応条件を満たす経路はALLOW、確認したpolicy違反はFORBIDDEN、不足するsource/argv/contextはUNKNOWNとして、後二者は既存deny wireで停止します。
 
