@@ -2284,7 +2284,14 @@ function resolveCommand(words, localFunctions = null, launcherScalarState = null
       if (base === 'exec' && !info.wrapped) info.persistsEnv = true;
       info.wrapped = true;
       info.wrapperNames.push(base);
-      (info.wrapperProgramWords ||= []).push({ name: base, word: w });
+      // A later env -i/-u affects the child, never lookup of this wrapper itself.
+      (info.wrapperProgramWords ||= []).push({ name: base, word: w,
+        environmentOperationCount: info.envOps.length, commandDefaultSearch: info.commandDefaultSearch === true });
+      const reservedTime = base === 'time' && w.text === 'time' && !w.quoted &&
+        info.wrapperNames.slice(0, -1).every(name => name === 'time');
+      // command -p changes lookup of the selected external launcher, not the
+      // inherited PATH that launcher uses when it searches for its own child.
+      if (!['command', 'builtin', 'exec'].includes(base) && !reservedTime) info.commandDefaultSearch = false;
       const r = wrapper(SCALAR_LAUNCHERS.has(base) && launcherScalarState
         ? rest.map(word => literalScalarWord(word, launcherScalarState)) : rest, info);
       if (r < 0) {
@@ -3506,6 +3513,7 @@ function inspect(cmd, options = {}) {
   const preCommitEnvName = indexInspection ? gitIndexInspectionEnvironmentName : gitPreCommitEnvironmentName;
   // Egress tracks arbitrary SendEnv values; the late pre-commit pass tracks only its selected environment.
   const trackedEnv = name => trackedValueEnvironment(name) ||
+    options.trackExecutableSearch === true && name === 'PATH' ||
     options.trackGitPreCommitEnvironment === true && preCommitEnvName(name) ||
     options.trackOutboundEnvironment === true && typeof name === 'string' && name.length > 0 && !/[=\0]/.test(name);
   const outboundScalarWord = (word, state) => {
@@ -3573,6 +3581,11 @@ function inspect(cmd, options = {}) {
     return scopeStates.get(scope);
   };
   const seedScope = (scope, env, cd, inherited) => scopeStates.set(scope, copyState({ ...emptyState(), ...inherited, env: new Set(env), cd }));
+  if (options.trackExecutableSearch === true && options.initialExecutableSearchPathPresent === true) {
+    // Presence only. Inherited PATH bytes are not a scalar/outbound DATA proof.
+    const initial = stateFor(parsed.scope);
+    initial.identitySources.set('PATH', null); initial.identityExports.set('PATH', true);
+  }
   if (options.trackOutboundEnvironment === true) {
     const initial = stateFor(parsed.scope);
     for (const name of options.initialOutboundEnvironmentNames || []) if (trackedEnv(name)) {
@@ -3758,6 +3771,13 @@ function inspect(cmd, options = {}) {
     const environmentFunctions = new Map(state.environmentFunctions);
     const environmentFunctionUnknown = new Set(state.environmentFunctionUnknown);
     let pathChanged = state.pathChanged;
+    const executableSearchAt = new Map();
+    const executableSearch = (defaultSearch = false) => ({
+      pathPresent: identitySources.has('PATH'),
+      pathChanged: pathChanged || state.searchChanged || options.initialExecutableSearchChanged === true,
+      defaultSearch,
+    });
+    executableSearchAt.set(0, executableSearch());
     const priorShellPrefixNames = new Set(), environmentCarrierValues = new Map();
     for (const op of info.envOps) {
       if (op.set) {
@@ -3794,6 +3814,7 @@ function inspect(cmd, options = {}) {
         if (imported.callee) environmentFunctions.set(imported.environment, imported.callee);
         if (imported.unknown) environmentFunctionUnknown.add(imported.environment);
       }
+      executableSearchAt.set(executableSearchAt.size, executableSearch());
     }
     const cdBefore = state.cd || info.cdLike;
     const shell = SHELLS.has(info.name) ? shellInvocation(info.args, info.name) : null;
@@ -3812,7 +3833,10 @@ function inspect(cmd, options = {}) {
       executableExpansionUnknown: info.executableExpansionUnknown,
       wrapperNames: info.wrapperNames,
       commandDefaultSearch: info.commandDefaultSearch === true,
-      wrapperProgramWords: info.wrapperProgramWords || [],
+      wrapperProgramWords: (info.wrapperProgramWords || []).map(entry => ({ ...entry,
+        executableSearch: { ...executableSearchAt.get(entry.environmentOperationCount),
+          defaultSearch: entry.commandDefaultSearch === true } })),
+      executableSearch: executableSearch(info.commandDefaultSearch === true),
       argv0Word: selectedChildArgv0Word(info, expansionState), argv0Unknown: info.argv0Unknown,
       launcherUnknown: info.launcherUnknown, launcherArgs: info.launcherArgs,
       scriptLauncherRole: info.scriptLauncher || null,

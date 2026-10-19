@@ -18,6 +18,12 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 | [docs/tool-use.md](docs/tool-use.md) | Tool Use (Function Calling) 実行レイヤー（最小権限 / Vault サンドボックス / Human-in-the-Loop 承認） |
 | [docs/security/git-command-guards.md](docs/security/git-command-guards.md) | Claude Code の Bash / Git ガード（許可する形式・fail-closed の範囲・拒否されたときの書換え） |
 
+<!-- PR191:R54:README:BEGIN -->
+
+実行体選択の契約は[R54: 実行ファイルの選択](docs/security/git-command-guards.md#r54-executable-selection)を参照する。commit前の読取や対応する送信clientを、名前だけで既知のプログラムと扱わず、継承PATHの先頭実行候補を固定installのrealpathと照合する。各wrapperとchildの検索条件を分け、環境消去・PATH欠落・未資格のdefault検索を元のPATHで補わない。独自install、欠落したclient、未解決の検索条件はUNKNOWNになり得る。通常のbuiltinと確認できたsystem/Homebrew installの対照を別に保つ。元の試験期待と環境条件付きprofileを別に記録する。以下の履歴の成功を、実行体確認を加えたsourceや別headのCI・fresh reviewの証拠へ持ち越さない。
+
+<!-- PR191:R54:README:END -->
+
 <!-- PR191:R51:README:BEGIN -->
 
 現在のガード修復候補は[R51の契約](docs/security/git-command-guards.md#r51-current-contract)を参照する。直接のspecial builtinへのprefix代入は、shellのmode・版によるexport永続性を未資格のまま非exportとは扱わない。追跡済みのGH metadata等も同じ境界に含め、ordinaryなGH_HOSTでもこの特殊prefix形式はUNKNOWNになり得る費用を明記する。getentの完全なservice値の後の真正queryを保ち、検証器では未知のdeny理由をBROKENとして失敗させる。旧8,696入力・oracleを維持し、新headの全件・CI・両fresh review・指摘処理は取得前に合格へ持ち越さない。以下は当時の履歴である。

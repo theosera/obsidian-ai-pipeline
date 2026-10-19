@@ -95,6 +95,48 @@ test('friendly-name disable leaves the independent traditional hook presence gat
   assert.match(assess('git -P status', entries, () => null).reason, /post-index-change/);
 });
 
+function inspectionBackend(cwd, environment, resolve = guard.resolveTrustedGitExecutable, runner = spawnSync) {
+  const executable = resolve({ text: 'git' }, environment, cwd);
+  const env = readers.safeInspectionEnvironment(environment);
+  if (!executable || !env) return { available: false, executable: null, banner: '' };
+  const options = { cwd, env, encoding: 'utf8', timeout: 20000 };
+  const version = runner(executable, ['--version'], options);
+  const banner = typeof version.stdout === 'string' ? version.stdout.trim() : '';
+  // This fixture's native consumer profile is Git 2.54.0, not every version
+  // meeting the separate fsmonitor floor. Other versions remain unqualified.
+  if (version.error || version.status !== 0 || !/^git version 2\.54\.0(?:[ .]|$)/.test(banner) ||
+      !readers.supportsInspectionHardening(banner)) return { available: false, executable, banner };
+  const capability = runner(executable, ['--no-lazy-fetch', '--version'], options);
+  return { available: !capability.error && capability.status === 0 &&
+    typeof capability.stdout === 'string' && capability.stdout.trim() === banner, executable, banner };
+}
+
+test('native fixture qualification stops before hardening flags on an unqualified or missing backend', () => {
+  for (const [plain, capability, available, callsExpected] of [
+    [{ status: 0, stdout: 'git version 2.43.0\n' }, null, false, 1],
+    [{ status: 0, stdout: 'git version 2.35.1\n' }, null, false, 1],
+    [{ status: null, error: { code: 'ENOENT' } }, null, false, 1],
+    [{ status: 0, stdout: 'git version 2.54.0\n' }, { status: 129 }, false, 2],
+    [{ status: 0, stdout: 'git version 2.54.0\n' }, { status: 0, stdout: 'git version 2.54.0\n' }, true, 2],
+  ]) {
+    const calls = [];
+    const result = inspectionBackend('/DUMMY/repo', {}, () => '/DUMMY/git', (exe, args, options) => {
+      calls.push({ exe, args, options }); return calls.length === 1 ? plain : capability;
+    });
+    assert.equal(result.available, available);
+    assert.equal(calls.length, callsExpected);
+    assert.deepEqual(calls[0].args, ['--version']);
+    assert.equal(calls[0].exe, '/DUMMY/git');
+    if (calls.length === 2) assert.deepEqual(calls[1].args, ['--no-lazy-fetch', '--version']);
+    assert.equal(calls[0].options.env.GIT_NO_LAZY_FETCH, '1');
+  }
+  let calls = 0;
+  assert.equal(inspectionBackend('/DUMMY/repo', {}, () => null, () => { calls++; }).available, false);
+  assert.equal(calls, 0, 'missing or untrusted selection is never started');
+  assert.equal(readers.supportsInspectionHardening('git version 2.43.0'), true,
+    'the fsmonitor floor alone does not qualify this native fixture');
+});
+
 test('owned Hook DATA wires exact review inputs, normal formats and independent hook gates', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r42-nonlog-source-'));
   try {
@@ -103,8 +145,13 @@ test('owned Hook DATA wires exact review inputs, normal formats and independent 
     const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'),
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_NO_LAZY_FETCH: '1', GIT_PAGER: 'cat', LC_ALL: 'C', CLAUDE_PROJECT_DIR: repo };
+    const backend = inspectionBackend(root, env);
+    if (!backend.available) {
+      t.skip('known Git 2.54.0 profile and --no-lazy-fetch capability did not qualify; pure groups remain active');
+      return;
+    }
     const git = (...args) => {
-      const r = spawnSync('git', ['--no-pager', '--no-lazy-fetch', '-c', 'core.hooksPath=/dev/null',
+      const r = spawnSync(backend.executable, ['--no-pager', '--no-lazy-fetch', '-c', 'core.hooksPath=/dev/null',
         '-c', 'commit.gpgSign=false', ...args], { cwd: repo, env, encoding: 'utf8', timeout: 20000 });
       assert.equal(r.error, undefined); assert.equal(r.status, 0, r.stderr);
     };

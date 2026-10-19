@@ -10,7 +10,7 @@ function productionFunction(name){
  assert.ok(a>=0&&z>a);assert.equal(production.indexOf(start,a+start.length),-1);
  return production.slice(a,z+3);
 }
-const sandbox={guard};vm.createContext(sandbox);
+const sandbox={guard,...require('./executable-role-fixture.cjs')};vm.createContext(sandbox);
 vm.runInContext('const invocationSources = new WeakMap(); this.seedSource = (invocation, source) => invocationSources.set(invocation, source);', sandbox);
 vm.runInContext(['knownWord','literalSourceWord','socketAuthenticationLiteralWord','socketAuthenticationValue','netcatAliasName','netcatAliasRole','knownInvocationContext','contextualVerdict','simpleSedScript','pipelineInput','outboundPayloadVerdict','knownCommonNetcatScanData'].map(productionFunction).join('\n')+'\nthis.role=netcatAliasRole; this.scan=knownCommonNetcatScanData;',sandbox,{timeout:1000});
 /** Parse command text as data and return the external Netcat invocation and its production backend role. */

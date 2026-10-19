@@ -80,7 +80,7 @@ jobs:
           # Keep caller configuration and credentials out of the owned fixtures.
           # XDG_CONFIG_HOME and other selector overrides are absent, rather than
           # changing the case-defined selection with an outer default.
-          env -i PATH="$node_bin:/usr/bin:/bin" HOME="$guard_home" TMPDIR="$RUNNER_TEMP" \
+          env -i PATH="$node_bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin" HOME="$guard_home" TMPDIR="$RUNNER_TEMP" \
             GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
             GIT_CONFIG_SYSTEM=/dev/null LC_ALL=C \
             bash --noprofile --norc -euo pipefail <<'GUARD_TESTS'
@@ -116,7 +116,10 @@ jobs:
           test "${#component_tests[@]}" -gt 0
           node --test "${component_tests[@]}"
           node --test .claude/hooks/tests/secret-path-parity.test.cjs
-          node .claude/hooks/tests/git-guards.test.cjs
+          # Preserve original assertion totals beside the explicit R54 selected-
+          # executable profile. Missing/unsupported selection is UNKNOWN, not
+          # evidence that the unavailable program's argv semantics were exercised.
+          node .claude/hooks/tests/git-guards.test.cjs --executable-profile
           GUARD_TESTS
 
       - name: Run injection-gate tests (python, deterministic)

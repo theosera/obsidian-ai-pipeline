@@ -24,14 +24,16 @@
  * コマンドの読み取り）で git の呼び出しごとにも見る。
  */
 let guard;
+let executableIdentity;
 try {
   guard = require('./lib/git-guard-common.cjs');
+  executableIdentity = require('./lib/executable-identity.cjs');
 } catch {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: '[判断不能] git ガードの共通の部品 (lib/git-guard-common.cjs) を読み込めませんでした (fail-closed)。必要な検査ができないため実行をブロックします。owner に対象・操作とこの不明点を確認してください。',
+      permissionDecisionReason: '[判断不能] git ガードの共通・実行体確認の部品を読み込めませんでした (fail-closed)。必要な検査ができないため実行をブロックします。owner に対象・操作とこの不明点を確認してください。',
     },
   }));
   process.exit(0);
@@ -204,6 +206,8 @@ const inheritedFunctionNames = [...new Set(Object.entries(process.env).flatMap((
   return modern ? [modern[1]] : /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && /^\(\)\s*\{/.test(value) ? [name] : [];
 }))];
 const insp = guard.inspect(cmd, {
+  trackExecutableSearch: true,
+  initialExecutableSearchPathPresent: typeof process.env.PATH === 'string',
   trackOutboundEnvironment: true,
   deferWatchSourceProblems: true,
   deferDbusRunSessionSourceProblems: true,
@@ -293,11 +297,16 @@ function shellStdinSource(invocation) {
 
 /** Downgrade evidence when executable identity or preceding context is not established by this parser. */
 function knownInvocationContext(invocation) {
-  const executable = invocation.nameWord?.text || '';
-  return !invocation.dynamicName && !invocation.launcherUnknown && !invocation.incomplete &&
+  if (invocation.dynamicName || invocation.launcherUnknown || invocation.incomplete ||
+      invocation.unknownContextBefore || invocation.cdLikeBefore || invocation.envUnknown ||
+      invocation.unsafeGroupSetup || invocation.functionCallName) return false;
+  const identity = executableIdentity.invocationExecutableIdentity(invocation, {
+    environment: process.env, cwd: baseDir,
+    builtinNames: ['true', 'false', 'test', '[', 'echo', 'printf', 'pwd', 'read', 'mapfile', 'readarray', ':'],
+  });
+  return ['builtin', 'trusted-external'].includes(identity.kind) &&
     !invocation.pathChangedBefore && !invocation.unknownContextBefore && !invocation.cdLikeBefore &&
-    !invocation.envUnknown && !invocation.unsafeGroupSetup &&
-    (!executable.includes('/') || ['/usr/bin/' + invocation.name, '/bin/' + invocation.name].includes(executable));
+    !invocation.envUnknown && !invocation.unsafeGroupSetup;
 }
 
 /** Preserve a helper's refusal while making uncertain command context explicit. */
@@ -307,12 +316,21 @@ function contextualVerdict(invocation, verdict) {
 
 /** Recognized external client identity is required even when no visible payload is selected. */
 function untrustedClientExecution(invocation, additionalClientName = null) {
+  // These operations already have independent argv/source/context guards. Only
+  // prove the selected programs here: an unknown argument list or changed cwd
+  // does not change lookup through an all-absolute PATH into arbitrary code.
+  if (['git', 'bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
+    const identity = executableIdentity.invocationExecutableIdentity({ ...invocation, incomplete: false }, {
+      environment: process.env, cwd: invocation.cdLikeBefore ? undefined : baseDir,
+    });
+    return identity.kind !== 'trusted-external';
+  }
   const clients = ['curl', 'wget', 'nc', 'ncat', 'scp', 'sftp', 'rsync', 'telnet',
     'gh', 'ssh', 'ssh-keyscan', 'openssl'];
   const additionalClient = typeof additionalClientName === 'string' && additionalClientName.length > 0 && additionalClientName === invocation.name;
   if ((!clients.includes(invocation.name) && !netcatAliasName(invocation.name) && !additionalClient) || knownInvocationContext(invocation)) return false;
   const executable = invocation.nameWord?.text || '';
-  const trustedAbsolute = ['/usr/bin/' + invocation.name, '/bin/' + invocation.name].includes(executable);
+  const trustedAbsolute = path.isAbsolute(executable);
   // PATH lookup does not select an already explicit trusted absolute program.
   // Every other context flag stays in force; no native binary/backend attestation is inferred.
   if (trustedAbsolute && invocation.pathChangedBefore &&
@@ -321,12 +339,24 @@ function untrustedClientExecution(invocation, additionalClientName = null) {
 }
 
 /** A wrapper query still executes its selected program; argv0 is not the executable pathname. */
-function untrustedUtilLinuxQueryExecution(invocation) {
+function untrustedWrapperQueryExecution(invocation) {
   const role = invocation.utilLinuxLauncherRole;
-  if (role?.mode !== 'query') return false;
-  const executable = (invocation.wrapperProgramWords || []).filter(entry => entry.name === role.launcher).at(-1)?.word;
-  if (!executable) return true;
-  return untrustedClientExecution({ ...invocation, name: role.launcher, nameWord: executable }, role.launcher);
+  const wrappers = invocation.wrapperProgramWords || [];
+  const launcher = role?.mode === 'query' ? role.launcher : invocation.nonExec ? wrappers.at(-1)?.name : null;
+  if (!launcher) return false;
+  const index = wrappers.findLastIndex(entry => entry.name === launcher);
+  const selected = wrappers[index];
+  if (!selected) return true;
+  // nonExec describes the absent child; the queried wrapper itself still runs.
+  const reservedTime = launcher === 'time' && selected.word.text === 'time' && !selected.word.quoted &&
+    wrappers.slice(0, index).every(entry => entry.name === 'time' && entry.word.text === 'time' && !entry.word.quoted);
+  const identity = executableIdentity.invocationExecutableIdentity({ ...invocation, nonExec: false, name: launcher, nameWord: selected.word,
+    executableSearch: selected.executableSearch, wrapperNames: invocation.wrapperNames.slice(0, index),
+    wrapperProgramWords: wrappers.slice(0, index), wrapped: index > 0 }, {
+    environment: process.env, cwd: invocation.cdLikeBefore ? undefined : baseDir,
+    builtinNames: ['command', 'builtin', 'exec', ...(reservedTime ? ['time'] : [])],
+  });
+  return !['builtin', 'trusted-external'].includes(identity.kind);
 }
 
 /** Stop at the same first matching invocation as the previous boolean some() checks. */
@@ -6140,6 +6170,9 @@ function sourceInspectionOptions(invocation, extra = {}) {
   const privileged = ['bash', 'sh'].includes(invocation.name) && invocation.shellPrivileged === true;
   const childShell = ['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name);
   return {
+    trackExecutableSearch: true,
+    // command -p selects this program; it does not replace the child's PATH.
+    initialExecutableSearchChanged: !!invocation.executableSearch?.pathChanged,
     trackOutboundEnvironment: true,
     deferWatchSourceProblems: true,
     deferDbusRunSessionSourceProblems: true,
@@ -6232,7 +6265,7 @@ function watchSourceVerdict(invocation) {
 }
 
 const inspectedGits = [];
-const utilLinuxQueryInvocations = [];
+const selectedWrapperQueryInvocations = [];
 const gitInvocationContexts = new Map();
 /** Classify only the evidence supported for this Git invocation, without changing its refusal. */
 function gitVerdict(g, verdict) {
@@ -6275,7 +6308,9 @@ function collectNetworkInvocations(inspection, depth = 0) {
       deny('Git difftool の extcmd・既定 tool・env/config が選ぶ外部実行 source と副作用を検査できません。helper を呼ばない対応済み diff が同目的・同条件を保てる場合に検討し、保てなければ owner に確認してください。' + UNKNOWN_OWNER_GATE);
     }
     if (gitEditorCanRun(g)) {
-      deny('Git の message / sequence editor を呼べる操作で、実際に編集を抑止する対応済み argv 条件を確認できません。既定・env/config override の editor source は内部を検査できません。同目的を保つ actual inline/file/reuse message や no-edit 形式を検討し、保てなければ owner に対象・操作・cwd/env/config/source を確認してください。個別操作の承認は hook 無効化の承認ではありません。');
+      deny('Git の message / sequence editor を呼べる操作で、実際に編集を抑止する対応済み argv 条件を確認できません。⛔ 打ち直さず owner に確認してください。\n' +
+        '既定・env/config override の editor source は内部を検査できません。\n' +
+        '対象・操作・不明点を owner に伝え、以後の判断と実行を委ねてください。個別操作の承認は、席による打ち直しや hook 無効化の許可ではありません。');
     }
     const pager = guard.grepPagerEffect(g);
     const beforeCommit = activeCommits.some(commit => !Number.isInteger(g.invocationOrder) ||
@@ -6293,7 +6328,8 @@ function collectNetworkInvocations(inspection, depth = 0) {
     if (invocation.definitionName) continue;
     // Shell redirections are outer effects, independent of a selected executable child.
     if (nativeSocketRedirection(invocation)) deny('Bash の /dev/tcp・/dev/udp redirection または socket を選びうる動的 target は未対応の network channel です。read/write/FD と秘密 filename の有無だけでは送信条件を確認できません。' + UNKNOWN_OWNER_GATE);
-    if (invocation.utilLinuxLauncherRole?.mode === 'query') utilLinuxQueryInvocations.push(invocation);
+    if (invocation.utilLinuxLauncherRole?.mode === 'query' ||
+        invocation.nonExec && invocation.wrapperProgramWords?.length) selectedWrapperQueryInvocations.push(invocation);
     if (invocation.nonExec) continue;
     // Known local functions select the separately parsed body, not the external client
     // or builtin sharing their name. Call redirections above still take effect.
@@ -6315,6 +6351,13 @@ function collectNetworkInvocations(inspection, depth = 0) {
       for (const script of invocation.splitWords) result.push(...collectNetworkInvocations(envSplitInspection(invocation, script), depth + 1));
     }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
+      const shellIdentity = executableIdentity.invocationExecutableIdentity({ ...invocation, incomplete: false }, {
+        environment: process.env, cwd: invocation.cdLikeBefore ? undefined : baseDir,
+      });
+      // Do not promote an unknown program's literal operand into executed shell
+      // code. The selected parent is retained for the deferred identity refusal;
+      // outer substitutions and independent statements remain separately parsed.
+      if (shellIdentity.kind !== 'trusted-external') continue;
       if (terminalBashQuery(invocation)) continue;
       if (invocation.shellLogin !== false) {
         deny('login shell の profile / logout source と実装ごとの startup 選択を検査できません。--noprofile だけでは logout source が無効と確認できません。目的と条件を保つ非 login の対応済み source へ書き換えられなければ' + UNKNOWN_OWNER_GATE);
@@ -6803,13 +6846,12 @@ if (selectedResolverAndEnvironmentVerdict) deny(selectedResolverAndEnvironmentVe
   'SSH の選択された BindAddress resolver DATA または telnet の export された環境 / USER DATA の生成元が、禁止された secret filename operand に当たります。native resolver / protocol・認証・実送信は確認していません。' :
   'SSH の selected BindAddress resolver DATA または telnet の selected 環境 DATA・変換・生成元・argv/context を確定できません。同目的・同条件を保つ known ordinary / 実 query / 未選択形式が可能でなければ' + UNKNOWN_OWNER_GATE, selectedResolverAndEnvironmentVerdict);
 if (invocations.some(telnetCredentialSourceVerdict)) deny('telnet の有効な自動ログインが選ぶ USER / passwd identity または明示 credential forwarding が選ぶ compiled authentication / local credential source と実行条件を検査できません。no-rc・stdin EOF は認証を無効にしません。実 query・実 no-login・未使用の同目的形式を保てなければ' + UNKNOWN_OWNER_GATE);
-// Executable replacement is independent of visible upload/DNS/stdin payloads.
-// Keep earlier confirmed payload verdicts and separately parsed function bodies unchanged.
-if (invocations.some(invocation => {
+// Collect identity uncertainty without preempting later independent Git refusals.
+const clientExecutableIdentityUnknown = invocations.some(invocation => {
   const unknown = deferSloginUnknown(invocation, untrustedClientExecution(invocation, sshClientInvocation(invocation) ? invocation.name : null) ? 'UNKNOWN' : false);
   if (unknown && netcatAliasName(invocation.name)) { deferredNetcatUnknown.add(invocation); return false; }
   return unknown;
-}) || utilLinuxQueryInvocations.some(untrustedUtilLinuxQueryExecution)) deny('認識した network / resolver client の実行名・PATH lookup・明示 program path・先行 context を確定できません。GETやquery風の引数も、置換された実行 source の本文や副作用を証明しません。同じ program・版・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
+}) || selectedWrapperQueryInvocations.some(untrustedWrapperQueryExecution);
 if (selectedResolverDataVerdicts.some(Boolean)) deny('ssh-keyscan の選択address/hostlist/stdin または Wget の選択bind-address/bind-dns-address の source・argv・活性条件・backendを確定できません。同目的・同条件のknown ordinary/実usage/未選択形式が可能でなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 // Defer only the new opaque-source UNKNOWN fallbacks until independent payload/stdin verdicts.
 if (invocations.some(rsyncDaemonProgramSource)) deny('rsync direct daemon の RSYNC_CONNECT_PROG / RSYNC_SHELL が選ぶローカル command・interpreter source と実行条件を検査できません。空の CONNECT_PROG も native の source 選択を無効にしません。local / remote-shell / query の対応済み条件以外は owner に対象・操作・cwd/env/config/source を確認してください。' + UNKNOWN_OWNER_GATE);
@@ -7045,5 +7087,7 @@ if (invocations.some(invocation => deferSloginUnknown.pending?.has(invocation)))
 if (loggerOutboundVerdicts.some(Boolean)) {
   deny('logger の選択された remote resolver / header / message / file・stdin の source、option/値/operand 境界または実行 context を確定できません。同じ log destination・入力・版/backend・cwd/env/source を保つ対応形式がなければ' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
+
+if (clientExecutableIdentityUnknown) deny('対応する client / Git / shell の実行名・PATH lookup・明示 program path・必要な context を確定できません。GETやquery風の引数も、置換された実行 source の本文や副作用を証明しません。同じ program・版・対象・cwd/env/config/source を保つ対応済み形式がなければ' + UNKNOWN_OWNER_GATE);
 
 process.exit(0);

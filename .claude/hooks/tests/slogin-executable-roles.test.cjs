@@ -4,7 +4,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const hooks=path.resolve(process.argv[2]||path.join(__dirname,'..'));
 const guard=require(path.join(hooks,'lib/git-guard-common.cjs')),production=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
 function productionFunction(name){const start='function '+name+'(',a=production.indexOf(start),z=production.indexOf('\n}\n',a);assert.ok(a>=0&&z>a);assert.equal(production.indexOf(start,a+start.length),-1);return production.slice(a,z+3);}
-const sandbox={require,UNKNOWN_OWNER_GATE:' DUMMY OWNER GATE',deny:(reason,category='UNKNOWN')=>{throw Object.assign(new Error(reason),{category});}};vm.createContext(sandbox);
+const sandbox={require,...require('./executable-role-fixture.cjs'),UNKNOWN_OWNER_GATE:' DUMMY OWNER GATE',deny:(reason,category='UNKNOWN')=>{throw Object.assign(new Error(reason),{category});}};vm.createContext(sandbox);
 const names=['knownWord','literalSourceWord','knownInvocationContext','sshClientInvocation','deferSloginUnknown','sshOperationRefusal','sshAuthenticationQuery','sshAuthenticationSource','sshCommandSources','sshOptionScalar','sshCanonicalProxySelection','sshCanonicalDomainPayload','sshJumpRawValue','sshJumpPayload','sshBindAddressPayload','sshOperation','sshConfigTokens','sshConsumedValueWord','sshForwardFields','sshForwardComponent','sshForwardPayload','sshEnvironmentPattern','sshEnvironmentPayload','sshReadsInput'];
 vm.runInContext(names.map(productionFunction).join('\n')+'\nthis.api={sshClientInvocation,deferSloginUnknown,sshOperationRefusal,sshAuthenticationQuery,sshAuthenticationSource,sshCommandSources,sshOperation,sshReadsInput,knownInvocationContext};',sandbox,{timeout:1000});
 const api=sandbox.api;

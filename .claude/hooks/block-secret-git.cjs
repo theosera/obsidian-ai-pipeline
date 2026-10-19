@@ -17,15 +17,17 @@
  */
 let guard;
 let preCommitReaders;
+let executableIdentity;
 try {
   guard = require('./lib/git-guard-common.cjs');
   preCommitReaders = require('./lib/git-precommit-readers.cjs');
+  executableIdentity = require('./lib/executable-identity.cjs');
 } catch {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: '[判断不能] git ガードの部品 (lib/git-guard-common.cjs / lib/git-precommit-readers.cjs) を読み込めませんでした (fail-closed)。secret ガードを通せないため実行をブロックします。',
+      permissionDecisionReason: '[判断不能] git ガードの共通・reader・実行体確認の部品を読み込めませんでした (fail-closed)。secret ガードを通せないため実行をブロックします。',
     },
   }));
   process.exit(0);
@@ -38,7 +40,8 @@ const isSecret = guard.isSecretPath;
 const { cmd, baseDir } = guard.readInput('secret ガード');
 if (!cmd) process.exit(0);
 
-const insp = guard.inspect(cmd);
+const insp = guard.inspect(cmd, { trackExecutableSearch: true,
+  initialExecutableSearchPathPresent: typeof process.env.PATH === 'string' });
 if (insp.problems.length) deny(guard.problemMessage(insp.problems, 'secret ガード'));
 const gits = insp.gits;
 for (const g of gits) {
@@ -138,6 +141,7 @@ const READ_ONLY_COMMANDS = new Set([
 ]);
 const READ_ONLY_PROGRAMS = new Set(['true', 'false', 'test', '[', 'echo', 'printf', 'pwd', 'cat', 'head', 'tail', 'wc', 'ls']);
 const STATE_BUILTINS = new Set(['export', 'declare', 'typeset', 'local', 'readonly', 'unset']);
+const READ_ONLY_BUILTINS = new Set([...READ_ONLY_COMMANDS].filter(name => !['cat', 'head', 'tail', 'wc', 'ls'].includes(name)));
 /**
  * Recognize simple commands whose effects before commit cannot replace the inspected index.
  * Directory/environment builtins rely on the parser's per-invocation target checks. Launchers,
@@ -150,6 +154,10 @@ function readOnlyInvocation(invocation) {
   if (invocation.dynamicName) return false;
   if (!invocation.name) return true; // assignment-only; redirections are checked separately
   if (invocation.nonExec && invocation.name === 'command') return true; // command -v / -V
+  const identity = executableIdentity.invocationExecutableIdentity(invocation, {
+    environment: process.env, cwd: baseDir, builtinNames: READ_ONLY_BUILTINS,
+  });
+  if (!['builtin', 'trusted-external'].includes(identity.kind)) return false;
   const executable = invocation.nameWord && invocation.nameWord.text;
   if (invocation.name === 'git') return true; // Git's writes and executable identity are checked separately.
   if (!executable) return false;
@@ -384,8 +392,8 @@ if (commits.length) {
   const effect = beforeCommit.find((invocation) => !readOnlyInvocation(invocation));
   if (effect) {
     deny(
-      `commit より前のコマンド（${effect.name || '動的なコマンド'}）の副作用を検査できないためブロックしました (fail-closed)。\n` +
-      'PreToolUse フックが読んだ index を、そのコマンドが commit 前に書き換えうるためです。別々のコマンドとして実行してください。',
+      `この操作に含まれる ${effect.name || '動的なコマンド'} の副作用を検査できないためブロックしました (fail-closed)。⛔ 打ち直さず owner に確認してください。\n` +
+      '対象・操作・不明点を owner に伝え、以後の判断と実行を委ねてください。個別操作の承認は、席による打ち直しや hook 無効化の許可ではありません。',
     );
   }
   const others = gits.filter((g) => g !== commits[0]);

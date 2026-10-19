@@ -2416,7 +2416,7 @@ test('R34 watch query keeps outer redirection metadata',()=>{const i=R34WATCH_on
   const r34Guard = require(process.env.R34_COMMON_SOURCE || r34Path.join(__dirname, '../lib/git-guard-common.cjs'));
   const r34Source = r34FS.readFileSync(process.env.R34_EGRESS_SOURCE || r34Path.join(__dirname, '../block-secret-egress.cjs'), 'utf8');
   const r34Take = (a, b) => { const i = r34Source.indexOf(a), j = r34Source.indexOf(b, i); r34Assert.ok(i >= 0 && j > i); return r34Source.slice(i, j); };
-  const r34Context = { require, Map, Set };
+  const r34Context = { require, Map, Set, ...require('./executable-role-fixture.cjs') };
   r34VM.runInNewContext(
     r34Take('function knownWord(word)', "/** Bash's first help/version") +
     r34Take('function knownInvocationContext(invocation)', "/** Preserve a helper's refusal") +

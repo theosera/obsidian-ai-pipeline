@@ -8,7 +8,7 @@ const hooks=process.argv[2]||path.join(__dirname,'..');
 const source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
 function extract(start,end){const a=source.indexOf(start);assert(a>=0,start);const b=source.indexOf(end,a);assert(b>a,end);return source.slice(a,b)}
 const extracted=[extract('function knownInvocationContext(','\n/** Preserve a helper'),extract('function netcatAliasName(','\nfunction netcatAliasRole('),extract('function untrustedClientExecution(','\n/** A wrapper query')].join('\n');
-const context={};
+const context={...require('./executable-role-fixture.cjs')};
 vm.runInNewContext(extracted+'\nthis.fn=untrustedClientExecution;',context);
 const unknown=name=>({name,nameWord:{text:'./DUMMY'},unknownContextBefore:true});
 const rows=[

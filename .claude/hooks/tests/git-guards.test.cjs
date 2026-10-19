@@ -17038,7 +17038,7 @@ function cleanupRepos(repos) {
 }
 
 /** Run a case through all guards, recording denials and hook execution failures. */
-function runCase(hooksDir, c, repos, stopAtFirstDeny = false) {
+function runCase(hooksDir, c, repos, stopAtFirstDeny = false, captureReasonTexts = false) {
   const fill = (s) => s.replace(/\{(clean|dirty|tracked|alias|newline|spaces|root|cherry|cherry_secret_oid|revert|revert_delete_oid)\}/g, (_m, k) => (k === 'root' ? repos.root : k === 'cherry_secret_oid' ? repos.cherrySecretOID : k === 'revert_delete_oid' ? repos.revertDeleteOID : repos.dirs[k]));
   const command = fill(c.cmd);
   const cwd = repos.dirs[c.cwd || 'clean'];
@@ -17054,6 +17054,7 @@ function runCase(hooksDir, c, repos, stopAtFirstDeny = false) {
   const denied = [];
   const broken = [];
   const reasonPrefixes = {};
+  const reasonTexts = {};
   for (const h of HOOKS) {
     const r = spawnSync(process.execPath, [path.join(hooksDir, h)], {
       input, cwd: project, env: { ...repos.env, ...fixtureEnvironment, ...(c.env || {}), CLAUDE_PROJECT_DIR: project }, encoding: 'utf8', timeout: 20000,
@@ -17065,13 +17066,15 @@ function runCase(hooksDir, c, repos, stopAtFirstDeny = false) {
     if (out && out.hookSpecificOutput && out.hookSpecificOutput.permissionDecision === 'deny') {
       denied.push(h);
       const reason = out.hookSpecificOutput.permissionDecisionReason;
+      if (captureReasonTexts) reasonTexts[h] = reason;
       reasonPrefixes[h] = typeof reason === 'string' && reason.startsWith('[禁止] ') ? '[禁止] '
         : typeof reason === 'string' && reason.startsWith('[判断不能] ') ? '[判断不能] ' : null;
       if (reasonPrefixes[h] === null) broken.push(`${h}: unrecognized deny reason prefix`);
       if (stopAtFirstDeny) break;
     }
   }
-  return { id: c.id, decision: denied.length ? 'deny' : 'allow', denied, broken, reasonPrefixes };
+  return { id: c.id, decision: denied.length ? 'deny' : 'allow', denied, broken, reasonPrefixes,
+    ...(captureReasonTexts ? { reasonTexts } : {}) };
 }
 
 /** Validate CLI options, run the fixtures, and report decisions as text or JSON. */
@@ -17084,12 +17087,20 @@ function main() {
   }
   const hooksDir = path.resolve(hi >= 0 ? argv[hi + 1] : path.join(__dirname, '..'));
   const asJson = argv.includes('--json');
+  // Optional explicit qualification profile. CASES and their original oracle
+  // remain unchanged; both original and profile assertion results are reported.
+  const profileTools = argv.includes('--executable-profile') ? require('./executable-profile-qualification.cjs') : null;
+  const selectedProfile = profileTools && profileTools.createProfile(CASES, require('./fixtures/r54-selected-executable-profile.json'));
   const repos = setupRepos();
-  let failed = 0;
+  let failed = 0, originalFailed = 0, profileAdjusted = 0, operationalReasonFailures = 0;
   const results = [];
   try {
     for (const c of CASES) {
-      const r = runCase(hooksDir, c, repos);
+      const environment = selectedProfile && { ...repos.env,
+        ...(c.fixtureEnvironment === undefined ? {} : repos.fixtureEnvironmentSets[c.fixtureEnvironment]),
+        ...(c.env || {}), CLAUDE_PROJECT_DIR: repos.dirs[c.project || 'clean'] };
+      const qualifiedBefore = selectedProfile && selectedProfile.qualify(c, environment);
+      const r = runCase(hooksDir, c, repos, false, !!selectedProfile);
       r.expect = c.expect;
       const egressPrefix = r.reasonPrefixes['block-secret-egress.cjs'];
       r.ownEG = !r.denied.includes('block-secret-egress.cjs') ? 'ALLOW' :
@@ -17105,19 +17116,40 @@ function main() {
         (!c.denyBy || r.denied.includes(c.denyBy)) &&
         (!c.allowBy || HOOKS.includes(c.allowBy) && !r.denied.includes(c.allowBy)) &&
         Object.entries(c.expectReasonPrefixes || {}).every(([hook, prefix]) => r.reasonPrefixes[hook] === prefix);
+      if (!r.ok) originalFailed++;
+      if (selectedProfile) {
+        const qualified = qualifiedBefore;
+        r.profileQualificationStable = JSON.stringify(qualified) === JSON.stringify(selectedProfile.qualify(c, environment));
+        const expected = selectedProfile.effectiveCase(c, qualified, environment);
+        r.originalOK = r.ok;
+        r.profileQualification = qualified;
+        r.profileExpected = { expect: expected.expect, expectedOwnEG: expected.expectedOwnEG,
+          expectedOwnSG: expected.expectedOwnSG, expectedOwnAG: expected.expectedOwnAG,
+          denyBy: expected.denyBy, allowBy: expected.allowBy, expectReasonPrefixes: expected.expectReasonPrefixes };
+        r.operationalReasonFailure = profileTools.infrastructureReason(r.reasonTexts);
+        if (r.operationalReasonFailure) operationalReasonFailures++;
+        r.profileOK = r.profileQualificationStable && profileTools.matchesCase(r, expected, HOOKS) && !r.operationalReasonFailure;
+        if (qualified.applies) profileAdjusted++;
+        r.ok = r.profileOK;
+      }
       if (!r.ok) failed++;
       results.push(r);
     }
   } finally {
     cleanupRepos(repos);
   }
+  if (selectedProfile && !selectedProfile.definitionsUnchanged()) throw new Error('Original CASES changed during profile execution');
   if (asJson) {
-    process.stdout.write(JSON.stringify({ hooksDir, total: results.length, failed, results }, null, 1) + '\n');
+    process.stdout.write(JSON.stringify({ hooksDir, total: results.length, failed,
+      ...(selectedProfile ? { profile: 'R54 selected executable prerequisites', originalFailed, profileAdjusted,
+        operationalReasonFailures, originalDefinitionsUnchanged: true } : {}), results }, null, 1) + '\n');
   } else {
     for (const r of results) {
-      if (!r.ok) console.log(`✗ ${r.id}: expect ${r.expect} got ${r.decision} ${r.denied.join(',')} ${r.broken.join('; ')}`);
+      if (!r.ok) console.log(`✗ ${r.id}: expect ${r.profileExpected?.expect || r.expect} got ${r.decision} ${r.denied.join(',')} ${r.broken.join('; ')}`);
     }
     console.log(`${results.length - failed}/${results.length} ok`);
+    if (selectedProfile) console.log(`Original oracle: ${results.length - originalFailed}/${results.length} pass; ` +
+      `explicit profile prerequisites active: ${profileAdjusted}; operational denial failures: ${operationalReasonFailures}`);
   }
   process.exitCode = failed ? 1 : 0;
 }

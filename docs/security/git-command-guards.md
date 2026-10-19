@@ -20,6 +20,47 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
+<!-- PR191:R54:CONTRACT:BEGIN -->
+
+<a id="r54-executable-selection"></a>
+
+## R54: inherited PATHと各実行段の選択
+
+公開基点`4ac478946e5ec4e5062ef322d84200b42a761565`へのCodex正常fullはP1を2件、P2を1件返した。以下は実行体選択に関する有限契約である。固定headの全件検証・CI・両fresh reviewの結果はPR本文で別に記録し、この説明から完了を推定しない。P1の同じ2入力は初期`df463a91`と親`0bc598d3`でもHookを通過した。inertなshadow fileを使うHook DATAでの比較で、shadowの実行、秘密のstagingや外部通信は行っていない。
+
+| 確認する境界 | 判定・守るもの | 正常対照と停止する通常作業 |
+| --- | --- | --- |
+| commit前の読取 | cat/head/tail/wc/ls等を名前だけで副作用なしとは扱わない。実際の最初の実行可能候補が独立した既知installと一致しなければ、index維持を証明できずUNKNOWN。 | 通常のsystem reader、確認できたabsolute reader、直接の対応builtinを保つ。独自readerが先に選ばれる通常作業も止まる。 |
+| 対応するclientと実行source | 既存clientのargv/payload解釈と、既存Git/shell sourceの解釈へ実行体の確認を加える。信頼外の先頭候補、欠落、検索条件不明をtrustedと同一視しない。未知の実行体は局所UNKNOWNで、別の独立したFORBIDDENを解除しない。 | system/Homebrewの確認済みclientとordinaryな引数を対照にする。未導入clientの例や独自installは、名前が既知でもこの確認を満たさない。Git/shellのこの追加gateはprogramの選択だけを扱い、cd後や未知argvを理由に通常のstatusまで一律停止しない。操作・sourceには既存の独立検査も適用する。全プログラムを新しい送信対象に加える変更ではない。 |
+| wrapper自身とchild | wrapperが検索される前のenv操作数・PATH presence・変更/default検索を保持する。inner env clear/unsetがouter wrapperの検索事実を消さない。 | inherited shadow envから、env clear後のabsolute childへ進む形もUNKNOWN。確認済みabsolute wrapperとabsolute childは、他の条件も満たす場合だけ対照にする。 |
+| builtinと外部呼出し | 対応builtinのproofは直接/対応shell lookup内に限る。envやexec等が選ぶ同名外部プログラムへ引き継がない。元command位置のtime予約語と、command等のoperandである外部timeを分ける。 | 直接printfはPATHの同名fileだけで拒否しない。外部に強制されたprintfは実行体を確認する。既存function/import/source/search mutationの停止条件は保持する。 |
+| absent/default/変更PATH | actual PATHのpresenceをopaqueに追跡し、生成値のliteral proofへ昇格させない。欠落・env clear・未資格command default検索へhook自身のPATHをfallbackしない。変更済みPATHを新たに一般対応する修復ではない。 | command queryのDATAと実行を分ける。実行のdefault検索、動的cwd/検索条件や独自installは通常目的でも停止し得る。 |
+| 実queryとliteralなshell body | help/queryでも選択されたexternal wrapper自体は実行されるため、childなしという理由で実行体確認を飛ばさない。literal bodyは親shellが確認できてから実行sourceとして扱う。 | trusted timeoutのhelpとcommandの照会は保つ。shadow timeoutのhelpはUNKNOWN、shadow bashの文字列operandもUNKNOWN。実bashが同じbodyで禁止操作を実行する場合のFORBIDDENは残す。 |
+
+固定信頼起点はPOSIXの`/usr/bin`・`/bin`・`/usr/sbin`・`/sbin`・`/usr/local/bin`・`/opt/homebrew/bin`にある、当該プログラム名のinstallから独立に得たnative realpathである。PATHで見つけた候補を信頼集合へ足さず、先頭の信頼外実行候補を飛ばさない。空/相対PATH entryは確認できたphysical cwdを使い、symlink/`..`を先に字句正規化しない。実行段のうち、`exec -c`が検索に使うshell状態とchildへ渡す空のenvironmentの区別は本修復では資格していない。bare childを元のPATHで補う許可は加えずUNKNOWNを保つ。これはlookup時に必ずPATHが消えているという実測ではなく、未対応の検索段による通常作業の費用である。
+
+これはinstallの選択に関する有限policyであり、binary内容、loader、TOCTOU、任意の既存shell hash/alias/function状態やWindows searchを資格するものではない。既存の対応source/context検査も必要である。
+
+一次根拠は[Bashのcommand search](https://www.gnu.org/software/bash/manual/html_node/Command-Search-and-Execution.html)、[GNU envのchild検索](https://www.gnu.org/s/coreutils/manual/html_node/env-invocation.html)、[POSIX commandのdefault検索](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/command.html)。今回の取得では検索cacheの一次本文を照合したが、直接ページのtimeout/403も残し、installed shell全体の実証とは分ける。
+
+P2のnative nonlog fixtureは、選んだ信頼済みGitのplain versionで既知Git2.54.0 profileを確認し、同実行体で実際の`--no-lazy-fetch --version`が成功してからsetupする。それ以外はnative groupだけSKIPし、純粋groupは実行する。別のfsmonitor版下限をこのflagの対応証明にしない。SKIPはそのbackendの成功ではなく、outer PATH欠落時の既存pure側依存も隠さない。
+
+停止後は、必要な対象・操作・argv・cwd/env/config/sourceを保ったまま確認できるinstall/呼出しへ結べる場合だけ、その対応形式を使う。absolute pathへの変更や読取とcommitの分割で目的・条件が変わる場合は自動代替にしない。結べなければ不明な選択段と条件をownerへ提示する。個別操作の了承をHook停止の了承へ読み替えない。
+
+受入では、元2入力に対するown-hook UNKNOWN、対応正常入力、wrapper/checkpointの解析、各新判定だけを外す逆検証を分ける。旧8,696入力・原oracleを保持して判定差分を説明し、正常操作の余計な停止を古い期待の一括変更で隠さない。L1のrole単体試験では実行体選択を明示fixture依存に分離し、実filesystemの選択は専用試験とHook DATAで別に確認する。新L3やnative送信の資格は追加しない。
+
+### R54の試験profileと元期待の二重表示
+
+`node .claude/hooks/tests/git-guards.test.cjs`は、従来どおり元8,696入力・oracleをそのまま評価する。新しい実行体確認のため、未導入programや未資格lookupでは元のALLOW/FORBIDDEN期待に不一致が残る。これは元期待で全件成功したことにはしない。
+
+CIは明示的な`--executable-profile`も使う。固定JSONの642 IDと各元CASEのhashに限り、実際のcase環境のPATHを独立FSで調べた欠落、または宣言した未資格lookup段について、ownEGの期待をUNKNOWNへ分ける。うち65件は真正query・childなし・sourceを含む外部wrapper自身の選択であり、実行体が存在すれば元の意味の期待を保持する。絶対`/sbin/ping`の1件だけは、既知installの実在・realpathを独立確認できた場合に、既存の秘密由来destination規則に従うFORBIDDENへの分類精密化を別に宣言する。元のUNKNOWN期待は残す。50件の試作過剰拒否はこの調整へ入れない。元CASESの値や原結果は変えず、`originalFailed`・`profileAdjusted`・`profileOK`と理由を併記する。存在する実行体、I/O不明、相対PATHや変更済み検索条件を、missing調整で通さない。profileの期待はguardの実測判定から生成しない。
+
+変更するのは限定したownEGの分類だけで、元ALLOWのSG/AG ALLOWや、別の独立FORBIDDENを保つ。実行前後でFS資格が変わった入力は、停止結果が期待形でもprofile失敗にする。`command -p ... git add -f .env`のSG FORBIDDENは追加で必須にする。部品load失敗や例外を示す理由は、UNKNOWN期待でもprofile成功へ数えない。programが確認できる場合の元semantic assertionは維持し、未資格時のUNKNOWN検証を、そのprogram本来の意味・通信・認証の実証へ読み替えない。profile自体のID/hash/PATH結合と、qualified ordinaryに常時UNKNOWNを返す不正な実装が落ちることは、独立したpure試験で確認する。
+
+この節は試験契約であり、特定headの全件profile・CI・fresh reviewの成功宣言ではない。元期待の不一致とprofileの結果、未資格の意味論・native動作は区別して記録する。
+
+<!-- PR191:R54:CONTRACT:END -->
+
 <!-- PR191:R51:CONTRACT:BEGIN -->
 
 <a id="r51-current-contract"></a>
