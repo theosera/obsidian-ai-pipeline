@@ -138,6 +138,80 @@ export async function run(): Promise<TestSuiteResult> {
   const t = new TestRunner();
   t.section('LLM weekly delivery: reconciliation races and process durability');
 
+  await t.testAsync('Gmail rewritten RFC Message-ID passes strict full-byte readback', () => fixture(async ({ store, transport }) => {
+    transport.send = async envelope => {
+      transport.sends++;
+      const sent = { ...message(envelope.record), rfcMessageId: '<CAJ61-synthetic@mail.gmail.com>' };
+      transport.messages.push(sent);
+      return { messageId: sent.messageId, threadId: sent.threadId };
+    };
+    const result = await deliverReport(store, transport, REPORT_ID);
+    assert.equal(result.status, 'sent');
+    assert.equal(result.gmail_message_id, 'edge-message-1');
+    assert.equal(result.content_sha256, sha256(MARKDOWN));
+    assert.equal(transport.sends, 1);
+    assert.equal((await reconcileDelivery(store, transport, REPORT_ID)).status, 'sent');
+    assert.equal((await deliverReport(store, transport, REPORT_ID)).status, 'sent');
+    assert.equal(transport.sends, 1);
+  }));
+
+  await t.testAsync('lost send response reconciles rewritten RFC identity after reopening without resend', () => fixture(async ({ dbPath, store, transport }) => {
+    transport.send = async envelope => {
+      transport.sends++;
+      transport.messages.push({ ...message(envelope.record), rfcMessageId: '<CAJ61-lost-response@mail.gmail.com>' });
+      throw new Error('Synthetic response lost after Gmail accepted');
+    };
+    assert.equal((await deliverReport(store, transport, REPORT_ID)).status, 'unknown');
+    assert.equal(store.required(REPORT_ID).gmail_message_id, null);
+    const reopened = new DeliveryStore(dbPath);
+    try {
+      const result = await deliverReport(reopened, transport, REPORT_ID);
+      assert.equal(result.status, 'sent');
+      assert.equal(result.gmail_message_id, 'edge-message-1');
+      assert.equal(result.attempt_count, 1);
+      assert.equal(transport.sends, 1);
+    } finally { reopened.close(); }
+  }));
+
+  await t.testAsync('multiple rewritten RFC identities for the same report remain a conflict', () => fixture(async ({ store, transport }) => {
+    transport.messages.push(
+      { ...message(store.required(REPORT_ID)), rfcMessageId: '<CAJ61-first@mail.gmail.com>' },
+      { ...message(store.required(REPORT_ID), 'edge-message-2'), rfcMessageId: '<CAJ61-second@mail.gmail.com>' },
+    );
+    const result = await deliverReport(store, transport, REPORT_ID);
+    assert.equal(result.status, 'conflict');
+    assert.equal(result.last_error, 'ambiguous_sent_messages');
+    assert.equal(transport.sends, 0);
+  }));
+
+  const mismatches: { name: string; mutate: (message: SentMessage) => void }[] = [
+    { name: 'SENT label', mutate: message => { message.sent = false; } },
+    { name: 'self sender', mutate: message => { message.from = 'other@example.test'; } },
+    { name: 'single self recipient', mutate: message => { message.to.push('other@example.test'); } },
+    { name: 'exact subject', mutate: message => { message.subject += ' changed'; } },
+    { name: 'custom report ID', mutate: message => { message.reportId = 'other-report'; } },
+    { name: 'custom SHA-256', mutate: message => { message.contentSha256 = '0'.repeat(64); } },
+    { name: 'exact original bytes', mutate: message => { message.body = Buffer.concat([message.body, Buffer.from('\n')]); } },
+    { name: 'accepted Gmail message ID', mutate: message => { message.messageId = 'different-accepted-message'; } },
+  ];
+  for (const mismatch of mismatches) {
+    await t.testAsync(`rewritten RFC identity still rejects mismatched ${mismatch.name}`, () => fixture(async ({ store, transport }) => {
+      transport.send = async envelope => {
+        transport.sends++;
+        const sent = { ...message(envelope.record), rfcMessageId: '<CAJ61-mismatch@mail.gmail.com>' };
+        mismatch.mutate(sent);
+        transport.getSent = async () => sent;
+        return { messageId: 'edge-message-1', threadId: 'edge-thread' };
+      };
+      const result = await deliverReport(store, transport, REPORT_ID);
+      assert.equal(result.status, 'conflict');
+      assert.equal(result.last_error, 'sent_message_integrity_mismatch');
+      assert.equal(result.gmail_message_id, 'edge-message-1');
+      assert.equal((await deliverReport(store, transport, REPORT_ID)).status, 'conflict');
+      assert.equal(transport.sends, 1);
+    }));
+  }
+
   await t.testAsync('already sent plus another exact sent message becomes a conflict', () => fixture(async ({ store, transport }) => {
     assert.equal((await deliverReport(store, transport, REPORT_ID)).status, 'sent');
     transport.messages.push(message(store.required(REPORT_ID), 'edge-message-2'));

@@ -41,9 +41,11 @@ function exactMessage(record: DeliveryRecord, message: SentMessage, body: Buffer
     addressesMatch = normalizeDeliveryAddress(message.from) === record.account &&
       message.to.length === 1 && normalizeDeliveryAddress(message.to[0]) === record.recipient;
   } catch { return false; }
-  const headersMatch = message.rfcMessageId === record.rfc_message_id &&
-    message.reportId === record.report_id && message.contentSha256 === record.content_sha256;
-  // Legacy messages may lack the three delivery headers. Scope is established
+  // Gmail may replace the supplied RFC Message-ID. It remains a search hint;
+  // custom identity headers plus full bytes bind the report, while callers
+  // separately enforce consistency with the accepted Gmail API message ID.
+  const headersMatch = message.reportId === record.report_id && message.contentSha256 === record.content_sha256;
+  // Legacy messages may lack the custom delivery headers. Scope is established
   // by SENT + bound From/To + exact subject + the entire immutable body.
   const legacyHeaders = allowLegacy && message.rfcMessageId !== record.rfc_message_id &&
     message.reportId === null && message.contentSha256 === null;
@@ -90,7 +92,9 @@ export async function reconcileDelivery(
     if (record.gmail_message_id !== null && match.messageId !== record.gmail_message_id) {
       return store.outcome(reportId, { status: 'conflict', errorCode: 'accepted_message_id_conflict' }, observedAt);
     }
-    return store.outcome(reportId, { status: 'sent', messageId: match.messageId, threadId: match.threadId }, observedAt);
+    return store.outcome(reportId, { status: 'sent', messageId: match.messageId, threadId: match.threadId }, observedAt, undefined, {
+      status: record.status, attemptCount: record.attempt_count, messageId: record.gmail_message_id,
+    });
   }
   if (record.status === 'sending' || record.status === 'unknown' || record.gmail_message_id !== null) {
     return store.outcome(reportId, { status: 'unknown', errorCode: 'send_not_reconciled' }, observedAt, undefined, {

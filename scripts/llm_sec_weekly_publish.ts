@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { decodeDocument, documentSha256, readDocument } from '../utils/document_integrity';
 import { parseReport } from '../threat-reports/parser';
 import { DeliveryStore, normalizeDeliveryAddress, type DeliveryRecord } from '../threat-reports/delivery_store';
-import { deliverReport, type DeliveryTransport } from '../threat-reports/delivery';
+import { deliverReport, reconcileDelivery, type DeliveryTransport } from '../threat-reports/delivery';
 import { GmailDeliveryTransport, deliveryGmailCredentialsFromEnv } from '../threat-reports/delivery_gmail';
 
 export const PUBLISH_STATE_REL = '__skills/pipeline.nosync/llm-sec-delivery';
@@ -123,9 +123,12 @@ export async function publishOutbox(vaultRoot: string, expectedAccount: string, 
       const prepared = store.prepare({ reportId: file.reportId, filePath: file.file, expectedSha256: file.hash, account });
       if (prepared.file_path !== file.file) throw new Error('Publisher canonical outbox path differs from the prepared delivery');
       await persist(root, dbPath);
-      const record = await deliverReport(store, transport, file.reportId, undefined, {
-        beforeSend: async () => { await persist(root, dbPath); },
-      });
+      const record = prepared.status === 'conflict' && prepared.last_error === 'sent_message_integrity_mismatch' &&
+        prepared.gmail_message_id !== null
+        ? await reconcileDelivery(store, transport, file.reportId)
+        : await deliverReport(store, transport, file.reportId, undefined, {
+          beforeSend: async () => { await persist(root, dbPath); },
+        });
       await persist(root, dbPath);
       results.push(record);
     }

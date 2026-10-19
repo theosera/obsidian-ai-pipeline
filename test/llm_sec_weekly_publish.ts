@@ -7,6 +7,7 @@ import { TestRunner, type TestSuiteResult } from './helpers';
 import { DeliveryStore, type DeliveryRecord } from '../threat-reports/delivery_store';
 import { type DeliveryEnvelope, type DeliveryTransport, type SentMessage } from '../threat-reports/delivery';
 import { PUBLISH_DB_REL, PUBLISH_OUTBOX_REL, parsePublishArgs, persistDeliveryLedger, publishOutbox } from '../scripts/llm_sec_weekly_publish';
+import { documentSha256 } from '../utils/document_integrity';
 
 const ACCOUNT = 'weekly@example.test';
 const REPORT_ID = 'llm-security-weekly-2026-10-19';
@@ -46,6 +47,24 @@ class FakeTransport implements DeliveryTransport {
 function readState(dbPath: string): DeliveryRecord {
   const store = new DeliveryStore(dbPath);
   try { return store.required(REPORT_ID); } finally { store.close(); }
+}
+
+function seedAcceptedConflict(dbPath: string, file: string, transport: FakeTransport, errorCode: string): DeliveryRecord {
+  const store = new DeliveryStore(dbPath);
+  try {
+    store.prepare({ reportId: REPORT_ID, filePath: file, expectedSha256: documentSha256(Buffer.from(MARKDOWN)), account: ACCOUNT });
+    const claim = store.claim(REPORT_ID, Date.now());
+    assert.ok(claim);
+    const record = store.outcome(REPORT_ID, {
+      status: 'conflict', messageId: 'test-message', threadId: 'test-thread', errorCode,
+    }, Date.now(), claim.attemptId);
+    transport.messages = [{
+      messageId: 'test-message', threadId: 'test-thread', from: ACCOUNT, to: [ACCOUNT],
+      subject: record.subject, rfcMessageId: '<gmail-rewritten@example.test>', reportId: record.report_id,
+      contentSha256: record.content_sha256, body: Buffer.from(MARKDOWN), sent: true,
+    }];
+    return record;
+  } finally { store.close(); }
 }
 
 async function fixture(fn: (fixture: { root: string; file: string; dbPath: string; transport: FakeTransport }) => Promise<void>): Promise<void> {
@@ -165,6 +184,88 @@ export async function run(): Promise<TestSuiteResult> {
     fs.appendFileSync(file, '\nChanged canonical bytes');
     await assert.rejects(publishOutbox(root, ACCOUNT, { transport, persist: async () => {} }), /identity conflict/);
     assert.equal(transport.sends, 1);
+  }));
+
+  await t.testAsync('accepted integrity mismatch reconciles rewritten Gmail identity without resending', () => fixture(async ({ root, file, dbPath, transport }) => {
+    seedAcceptedConflict(dbPath, file, transport, 'sent_message_integrity_mismatch');
+    const states: string[] = [];
+    const persist = async (): Promise<void> => { states.push(readState(dbPath).status); };
+    const [result] = await publishOutbox(root, ACCOUNT, { transport, persist });
+    assert.equal(result.status, 'sent');
+    assert.equal(result.gmail_message_id, 'test-message');
+    assert.equal(result.attempt_count, 1);
+    assert.equal(result.scan_status, 'pending');
+    assert.equal(result.ingestion_status, 'pending');
+    assert.deepEqual(states, ['conflict', 'sent']);
+    await publishOutbox(root, ACCOUNT, { transport, persist });
+    assert.equal(transport.sends, 0);
+  }));
+
+  await t.testAsync('recovery still rejects changed accepted bytes and duplicate strict matches without resending', () => fixture(async ({ root, file, dbPath, transport }) => {
+    seedAcceptedConflict(dbPath, file, transport, 'sent_message_integrity_mismatch');
+    const exact = transport.messages[0];
+    transport.messages = [{ ...exact, body: Buffer.from(`${MARKDOWN}\nchanged`) }];
+    assert.equal((await publishOutbox(root, ACCOUNT, { transport, persist: async () => {} }))[0].status, 'conflict');
+    transport.messages = [exact, { ...exact, messageId: 'second-accepted-message' }];
+    assert.equal((await publishOutbox(root, ACCOUNT, { transport, persist: async () => {} }))[0].status, 'conflict');
+    assert.equal(transport.sends, 0);
+    assert.equal(readState(dbPath).attempt_count, 1);
+  }));
+
+  for (const errorCode of ['ambiguous_sent_messages', 'sent_message_identity_conflict']) {
+    await t.testAsync(`${errorCode} stays terminal even if a later lookup could find an exact accepted message`, () => fixture(async ({ root, file, dbPath, transport }) => {
+      const record = seedAcceptedConflict(dbPath, file, transport, errorCode);
+      transport.findSent = async () => { throw new Error('Terminal conflict must not enter reconciliation'); };
+      const [result] = await publishOutbox(root, ACCOUNT, { transport, persist: async () => {} });
+      assert.equal(result.status, 'conflict');
+      assert.equal(result.last_error, errorCode);
+      assert.equal(transport.sends, 0);
+      const store = new DeliveryStore(dbPath);
+      try {
+        const result = store.outcome(REPORT_ID, { status: 'sent', messageId: record.gmail_message_id }, Date.now(), undefined, {
+          status: 'conflict', attemptCount: record.attempt_count, messageId: record.gmail_message_id,
+        });
+        assert.equal(result.status, 'conflict');
+        assert.equal(result.last_error, errorCode);
+      } finally { store.close(); }
+    }));
+  }
+
+  await t.testAsync('integrity conflict requires the same accepted ID and unchanged expected snapshot to clear', () => fixture(async ({ file, dbPath, transport }) => {
+    const record = seedAcceptedConflict(dbPath, file, transport, 'sent_message_integrity_mismatch');
+    const store = new DeliveryStore(dbPath);
+    const expected = { status: 'conflict' as const, attemptCount: record.attempt_count, messageId: record.gmail_message_id };
+    try {
+      assert.equal(store.outcome(REPORT_ID, { status: 'sent', messageId: record.gmail_message_id }, Date.now()).status, 'conflict');
+      for (const binding of [
+        { ...expected, status: 'unknown' as const }, { ...expected, attemptCount: record.attempt_count + 1 },
+        { ...expected, messageId: 'different-accepted-message' },
+      ]) {
+        assert.equal(store.outcome(REPORT_ID, { status: 'sent', messageId: record.gmail_message_id }, Date.now(), undefined, binding).status, 'conflict');
+      }
+      assert.equal(store.outcome(REPORT_ID, { status: 'sent', messageId: 'different-accepted-message' }, Date.now(), undefined, expected).status, 'conflict');
+      assert.equal(store.required(REPORT_ID).attempt_count, 1);
+      assert.equal(store.required(REPORT_ID).gmail_message_id, 'test-message');
+    } finally { store.close(); }
+  }));
+
+  await t.testAsync('integrity conflict without an accepted Gmail ID cannot enter recovery or acquire a new ID', () => fixture(async ({ root, file, dbPath, transport }) => {
+    const store = new DeliveryStore(dbPath);
+    try {
+      store.prepare({ reportId: REPORT_ID, filePath: file, expectedSha256: documentSha256(Buffer.from(MARKDOWN)), account: ACCOUNT });
+      const claim = store.claim(REPORT_ID, Date.now());
+      assert.ok(claim);
+      store.outcome(REPORT_ID, { status: 'conflict', errorCode: 'sent_message_integrity_mismatch' }, Date.now(), claim.attemptId);
+      transport.findSent = async () => { throw new Error('Unknown accepted identity must not enter recovery'); };
+      const [result] = await publishOutbox(root, ACCOUNT, { transport, persist: async () => {} });
+      assert.equal(result.status, 'conflict');
+      assert.equal(result.gmail_message_id, null);
+      assert.equal(store.outcome(REPORT_ID, { status: 'sent', messageId: 'new-message' }, Date.now(), undefined, {
+        status: 'conflict', attemptCount: 1, messageId: null,
+      }).status, 'conflict');
+      assert.equal(transport.sends, 0);
+      assert.equal(store.required(REPORT_ID).gmail_message_id, null);
+    } finally { store.close(); }
   }));
 
   await t.testAsync('real Git remote contains sending claim before simulated Gmail submission', () => fixture(async ({ root, transport }) => {

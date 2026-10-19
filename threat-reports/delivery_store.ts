@@ -221,7 +221,9 @@ export class DeliveryStore {
     return this.db.transaction(() => {
       const current = this.required(reportId);
       if (expected && (current.status !== expected.status || current.attempt_count !== expected.attemptCount || current.gmail_message_id !== expected.messageId)) return current;
-      if (current.status === 'conflict') return current;
+      if (current.status === 'conflict' && !(outcome.status === 'sent' && expected?.status === 'conflict' &&
+        current.last_error === 'sent_message_integrity_mismatch' && current.gmail_message_id !== null &&
+        outcome.messageId === current.gmail_message_id)) return current;
       // A concurrent reconciliation may already have proved delivery. Never downgrade it.
       if (current.status === 'sent' && outcome.status !== 'sent' && outcome.status !== 'conflict') return current;
       if (outcome.status === 'sent' && current.gmail_message_id !== null && outcome.messageId !== current.gmail_message_id) {
