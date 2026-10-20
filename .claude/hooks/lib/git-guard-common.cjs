@@ -69,6 +69,9 @@ function readInput(guardLabel) {
   process.on('uncaughtException', (e) => {
     deny(`${guardLabel}がコマンドを読む途中で例外が起きました（${(e && e.name) || 'Error'}）(fail-closed)。実行をブロックします。`);
   });
+  // One Hook process may inspect many selected sources after its first parse.
+  // Re-reading input must not give those sources a fresh supported-work budget.
+  if (!hookInspectionWorkBudget) hookInspectionWorkBudget = { visits: 0, sourceChars: 0 };
   let j;
   try {
     j = JSON.parse(readStdin(guardLabel) || '{}');
@@ -874,6 +877,7 @@ function parseSeq(src, start, out, depth, stopAtParen, scope, parentEffects = []
 
 /** Parse shell source without executing it, retaining errors and isolated child scopes. */
 function parseShell(src) {
+  consumeInspectionWork(0, src.length);
   const out = { cmds: [], errors: [], unsupportedSources: [], scope: { parent: null }, async: false, evaluationUnknown: false };
   parseSeq(src, 0, out, 0, false, out.scope);
   return out;
@@ -3571,10 +3575,53 @@ function resolveTrustedGitExecutable(word, environment = process.env, cwd = proc
   return null;
 }
 
+// A Hook process shares its budget across root inspections and direct source parses.
+// Standalone library inspections retain one synchronous budget per outer call.
+// Exhaustion is an incomplete inspection, never evidence that a partial result is safe.
+const MAX_INSPECTION_VISITS = 4096;
+const MAX_INSPECTION_SOURCE_CHARS = 256 * 1024;
+const INSPECTION_WORK_EXHAUSTED = Symbol('inspection work exhausted');
+const INSPECTION_WORK_PROBLEM = '解析の work budget（4096 command visits / 262144 UTF-16 source units）を超え、実行する source 全体を検査できません。必要な複雑さ・対象・操作を owner に確認してください。';
+let hookInspectionWorkBudget = null;
+let inspectionWorkBudget = null;
+function consumeInspectionWork(visits, sourceChars = 0) {
+  const budget = inspectionWorkBudget || hookInspectionWorkBudget;
+  if (!budget) return;
+  if (!budget.exhausted) {
+    budget.visits += visits;
+    budget.sourceChars += sourceChars;
+    budget.exhausted = budget.visits > MAX_INSPECTION_VISITS ||
+      budget.sourceChars > MAX_INSPECTION_SOURCE_CHARS;
+  }
+  if (!budget.exhausted) return;
+  // A Hook consumer must not discard a problem or catch an exception and allow.
+  // Emit the bounded existing UNKNOWN wire before returning any partial proof.
+  if (budget === hookInspectionWorkBudget) deny(INSPECTION_WORK_PROBLEM, 'UNKNOWN');
+  throw INSPECTION_WORK_EXHAUSTED;
+}
+
 let inspectionSerial = 0;
 
 /** Inspect executable Git invocations, associating preceding scope changes with each invocation. */
 function inspect(cmd, options = {}) {
+  if (inspectionWorkBudget) return inspectWithinBudget(cmd, options);
+  inspectionWorkBudget = hookInspectionWorkBudget || { visits: 0, sourceChars: 0 };
+  try {
+    consumeInspectionWork(0);
+    const result = inspectWithinBudget(cmd, options);
+    if (inspectionWorkBudget.exhausted) throw INSPECTION_WORK_EXHAUSTED;
+    return result;
+  } catch (error) {
+    if (error !== INSPECTION_WORK_EXHAUSTED) throw error;
+    const invocations = [];
+    return { gits: [], problems: [INSPECTION_WORK_PROBLEM],
+      cdLike: false, gitEnvNames: [], cmdCount: 0, invocations, commands: invocations, async: false };
+  } finally {
+    inspectionWorkBudget = null;
+  }
+}
+
+function inspectWithinBudget(cmd, options = {}) {
   const indexInspection = options.trackGitPreCommitEnvironment === true && options.trackGitIndexInspectionEnvironment === true;
   const preCommitEnvName = indexInspection ? gitIndexInspectionEnvironmentName : gitPreCommitEnvironmentName;
   // Egress tracks arbitrary SendEnv values; the late pre-commit pass tracks only its selected environment.
@@ -3729,6 +3776,7 @@ function inspect(cmd, options = {}) {
   };
 
   const visit = (c, info, depth) => {
+    consumeInspectionWork(1);
     if (depth > MAX_DEPTH) { res.problems.push('入れ子が深すぎる'); return; }
     const state = stateFor(c.scope);
     if (!c.definitionName && !info.incomplete) info = resolveCommand(c.words, state.functions);

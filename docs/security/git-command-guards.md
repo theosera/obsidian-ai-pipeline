@@ -22,17 +22,24 @@
 
 <a id="current-guard-contract"></a>
 
-## 現在のガード契約（R59入力上限の修復候補）
+## 現在のガード契約（R60解析量上限の修復候補）
 
 head `5a8acb4192afa25ebac1b1609c53e849349e7554` へのCodex P1は、大きな入力の同期解析がegress Hookの10秒timeoutを超える可能性を指摘した。以下は入力量に関する局所的なUNKNOWN境界であり、新sourceの全件・CI・fresh review成功や実Claude入口でのtimeout停止を確認したという主張ではない。R57までの操作別・source別の判定は引き継ぐ。
+
+head `34ee2c35b511659931cd76de46a447efd15d32fe` のfresh reviewでは、32 KiB未満でも関数本文を多数の呼出しごとに再訪問して解析量が膨らむP1が出た。R60候補は入力量の制限を残し、共有`inspect`の処理量を以下の別予算で制限する。公開reviewの完全な入力と、自作した無害な近似入力の測定は区別する。新候補の全8,696件・CI・両fresh reviewの資格は旧headから引き継がない。
 
 | 守る境界 | 対応範囲・判定 | 停止する通常作業・出口・試験 |
 | --- | --- | --- |
 | JSON入力の読取とdecode | 3本のHookが共有する入口でstdinを最大1 MiBまで読む。超過を示す次の1 byteを受け取った時点で、EOFやJSON.parseを待たずUNKNOWNのdenyを返す。読取失敗もUNKNOWN。 | コマンドが短くても、付随metadata等で入力全体が上限を超えると停止する。境界の直前・一致・超過、未完JSONと開いたstdinを別に確認する。 |
 | decoded commandの解析量 | JSON decode後のcommandはUTF-8で最大32 KiB。超過はraw正規表現やshell解析の前にUNKNOWN。ASCII・多byte文字・JSONのUnicode escapeを同じdecoded byte上限で扱う。 | 長い正常なinline本文・heredoc・複数操作も停止する。上限内で同じ目的・操作・順序・cwd/env/sourceを保てる書き方を検討し、保てなければownerへ不足条件を示す。分割で共有shell状態や原子性を変えたものを同目的の成功とはしない。別の場所へのコピーやHook無効化の許可にはしない。 |
+| 関数・子source・後段解析を含むHook全体の総量 | `readInput`で始まるHookの一起動全体でcommand visit最大4,096回、`parseShell`へ渡すsourceの累計最大262,144 UTF-16 code units。関数本文の再訪問、再帰的な子`inspect`、後段から呼ぶ別の`inspect`、直接の`parseShell`も同じ予算を使う。超過時は既存のdeny wireへ即座にUNKNOWNを返し、途中のGit・invocation情報を許可根拠にしない。 | 無害な通常関数の大量呼出し、子sourceや同じsourceの重複確認でも停止し得る。secret-gitの追加確認も同じ起動の予算に含む。小さいliteral・通常の関数・子shellを正常対照とし、独立した予算の効果とHook全体の共有範囲を分けて確認する。UTF-16の計数をUTF-8 byte上限と混同しない。 |
 | 上限内の既存判定 | 上限内の入力は従来の操作・引数・source・payload判定へ渡す。通常のliteral DATAと、各Hookが担当する禁止の理由分類を対照に保つ。 | 大きい入力は内容を確認する前にUNKNOWNとなるため、旧版でFORBIDDENだった理由もUNKNOWNへ変わり得る。元8,696入力・期待を変えず差分を記録し、追加判定を一つずつ外した比較を別に行う。 |
 
 これは入力量の制限であり、全ての構文・実行環境で10秒以内に終了するという保証ではない。同期解析は通常のJavaScript timerだけでは割り込めないため、timeoutを増やす代わりに解析前で量を制限する。[Claude Code公式のtimeout仕様](https://code.claude.com/docs/en/hooks#timeouts)では、timeout時の出力は破棄され、PreToolUseはfailure時にblockするhost設定を除いてツール呼出しを停止しない。公式の`onFailure: "block"`はv2.1.295以降の機能だが、本修復では設定を変更せず、実CLIの追加試行も行わない。Hook DATAでのdenyと、実Claude dispatch・host timeoutの資格を分ける。
+
+R60初期候補は同期的な`inspect`一回だけで予算を共有していた。独立点検では、後段の子source解析が別の`inspect`を繰り返して予算をリセットし、4,642 UTF-8 bytesの無害DATAでも実egress Hookが12秒以内に終了しない不足を確認した。全件検証を制御中断して原票を残し、後続候補では`readInput`で一度始めた予算をHook processの終了まで保持する。追加の`readInput`では予算をリセットしない。Hookの処理量不足は内容の禁止を確定する前でもUNKNOWNで停止する資源境界であり、内容の安全を判定した結果ではない。
+
+ライブラリの独立利用では、`readInput`によるHook予算を開始していなければ各root `inspect`の予算は従来どおり独立し、不足時は部分結果を破棄した型付きの解析問題を返す。その状態の単独`parseShell`は`inspect`予算の外である。一方、Hook予算開始後の直接`parseShell`も総量に含む。stdinが上限以内のままEOFを送らない場合、Nodeの起動、すべての構文形状、stdoutの障害、host側の実deadlineまでをこの変更で保証しない。未知の残余を予算内だから安全と扱わず、実入口での観測とは別欄に残す。
 
 <!-- PR191:R57:CONTRACT:BEGIN -->
 
