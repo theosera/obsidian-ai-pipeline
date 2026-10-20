@@ -79,7 +79,7 @@ function singleEdgeOff(edge) {
     inherited: ["    if (ssh?.kind === 'env' && inheritedProgram(ssh.name) || inheritedProgram('GIT_ASKPASS') || inheritedProgram('SSH_ASKPASS') && !sshAskpassShadowed(environment, config, ssh, emptySSHConsumerQualified)) return 'inherited-transport-program';", ''],
     sshConfigProbe: [String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)`, String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|gitproxy)`],
     sshConfigGate: ["    if (ssh?.kind === 'config' && ssh.value) return 'configured-ssh-command';", ''],
-    credentialProbe: [String.raw`|credential(\\..*)?\\.helper`, ''],
+    credentialProbe: [String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)|credential(\\..*)?\\.helper`, String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)`],
     credentialGate: ["    if (credentialHelperSource(config)) return 'credential-helper';", ''],
     proxyProbe: [String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand|gitproxy)`, String.raw`const CONFIG_PATTERN = '^(core\\.(fsmonitor|pager|hookspath|askpass|sshcommand)`],
     proxyGate: ["    if (gitProxySource(environment, config)) return 'git-proxy';", ''],

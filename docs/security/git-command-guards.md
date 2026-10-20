@@ -22,7 +22,66 @@
 
 <a id="current-guard-contract"></a>
 
-## 現在のガード契約（R60解析量上限の修復候補）
+## 現在のガード契約（R61修復候補）
+
+公開基点 `950eafdc756ca14544217b991254229b7da83de8` に対し、暗黙のcommand-not-found handler、`wait -p` の実効target、Git実効transport sourceと、試験subjectのsource選択を修復する候補である。局所的なUNKNOWNを使い、選択条件と正常対照を分ける。現在の固定入口はこの `current-guard-contract` anchorとし、[R60の資源境界](#r60-resource-contract)と[R57の歴史の契約](#r57-current-contract)を併せて読む。新sourceの全件・CI・両fresh reviewの完了は別の証拠で確認する。
+
+追加修復でも、確認できたpolicy違反はFORBIDDEN、実選択source・引数の役割・実行contextが不足すればUNKNOWN、対応する条件を満たした範囲だけをALLOWとする。FORBIDDENとUNKNOWNは既存のdeny wireを使い、理由の区別を保つ。無出力ALLOWを任意shell・任意programの安全認証にはしない。
+
+| 対応する境界 | 実装と照合する選択条件・判定 | 保持すべき正常対照 | 停止し得る通常作業と必要な情報 |
+| --- | --- | --- | --- |
+| 見つからないcommandから選ばれるshell handler | 通常のcommand検索で選択できなかった経路から `command_not_found_handle` が実際に選ばれる条件を扱う。選択されたhandlerのsource・scopeを既存の関数/source判定へ渡すか、選択又は本文を確認できなければ、その実行sourceをUNKNOWNとする。単にhandler名を定義したことは実行の証明にしない。 | handlerを定義しても、確認可能なordinary commandだけを実行する入力。表示DATA、未使用の関数定義、既存の明示的な関数呼出しの判定を個別に維持する。 | commandの検索結果又はhandler本文を確認できない通常のfallbackも停止し得る。必要なshell mode、検索条件、選択された関数/sourceの情報を示す。import、条件付き定義、unset等は実装が保持できる選択条件の範囲を明示する。 |
+| `wait -p` の代入先と後続proof | `-p` が消費する語をPID等の待機対象と区別する。代入先の形を検証し、未解釈の展開・添字等が代入時に評価され得る場合はUNKNOWN。代入先に関係する既存のidentity・環境・helper・PATH等のproofを、後続のsource解析を含めて無効化する。既存の一般的な値taintだけで対象別proofの処理を代用したとは扱わない。 | `-p` のない通常待機、静的scalarへの代入、`p=$!` から選ぶ通常PID待機を対照にする。`-p` の有無と代入先の語の役割、PID又はjob指定を別に確認する。 | 正常な待機でも、代入先や待機対象の語数・意味を解釈できなければ停止し得る。元のレビュー入力には `-n` がないため、危険な評価の可能性を正常終了後の結果代入だけに限定しない。実shellでの評価時点は、版を固定した無害markerの有限観測と、Hook DATAの分類を分ける。 |
+| Gitの実効transport helper | 既存のtransport operationが選んだrouteで実際に使用する設定・環境・remoteを確認する。CLIで明示したselectorだけでなく、適用contextで取得した実効設定の選択と優先を保持する。activeな未検査helper又は必要な設定contextが不足すればUNKNOWN。既存policyに独立して当たるsource/payloadのFORBIDDENは維持する。 | qualifiedな設定不在を確認できる通常push、設定を読むgetter、当該transport helperを使わないstatus、表示DATA。設定名があるだけで別operationまで同じ実行sourceにしない。 | 通常のremote操作も、実際に選ばれるhelper・route・config scopeを確認できなければ停止し得る。cwd/project、適用する設定と環境、remote/URL/rewrite、対象operationを保持して確認する。設定不在の確認済みと、読取不能・切詰め・未解釈の設定を分ける。 |
+| 修復sourceと試験が読むsourceの一致 | 対象module、fixture、VMで評価するsourceの各loaderが、指定したsubject sourceを実際に読むことを確認する。要求pathと実読取path・bytes/hashを残す。独立したdriver/oracleをsubjectへ自動的に付け替えない。 | 同じ実装bytesで選択sourceだけを変えた対照、対象fixture/source一つだけを変えた感度対照。試験の実行元と製品の実行sourceを別に記録する。 | 選択したsourceの一部だけが旧copyを読む場合、試験合格を候補全体の証拠にしない。各必要loader edgeを一つずつ外した比較と、目的assertionの成立を別に確認する。これはHookの新しいruntime禁止範囲を追加するものではない。 |
+
+### 選択条件と追加の停止費用
+
+command-not-found handlerは、定義済みの関数が失敗lookupから選ばれ得る場合、そのcallback sourceをUNKNOWNとする。未知の外部commandが本当に存在しないことや、任意backendでhandlerが起動することを推測しない。未変更の検索で成功する既知builtin、実際の未引用 `[[` 構文、表示query、slashを持つ保存された単語、外側の `builtin` / `exec` の失敗境界は区別する。importされた未使用handlerは成功builtinを止めない。解除のALLOW根拠はトップレベルの無条件の明示 `unset -f` と確認できる既知の非readonly定義に限定し、条件付き解除やreadonly属性を解除成功の証明にしない。通常のfallback commandも、lookup/sourceが未資格なら停止する。
+
+`wait`は`-n` / `-f` / 値を取る`-p`、attached/bundled形式、`--`と実helpを区別する。消費値の語数が不明なら、後続の静的なtargetでその不明を消さない。実効targetの初期unsetと後続の結果代入の可能性を考慮し、targetに関するvalue、環境、helper、PATH、promptの古いproofを残さない。静的な数値と証明できない添字や未解釈targetはUNKNOWN。通常の `p=$!; wait "$p"` は直近の無条件assignment-onlyと一つのquoted operandに限ったPID種類情報を使う。他consumerへPID値を架空のliteralとして与えない。途中command、同じcommand内の後勝ちwrite/append/index、compound initializer、readonly/nameref、条件付き代入、遅延writerではこの種類情報を失効する。任意の動的job/PIDリストの完全解析を約束しない。
+
+実効transport確認の新しいconsumer集合は `clone` / `fetch` / `fetch-pack` / `pull` / `push` / `ls-remote`。実queryは除外する。遅い段階でactual environmentを別のmetadata laneへ読み、primary outbound parseの不明な値をliteralへ昇格しない。primaryと順序・command/argv・context形状が一致しない再解析はUNKNOWN。既存の独立したFORBIDDEN/UNKNOWNを処理した後にだけ新判定を適用する。
+
+限定getterはtrusted Git / cwdと、実効source選択に関わるglobals / env / configの優先・順序を保持する。選択に無関係とkey・消費値の境界から証明した有限のmetadataだけを、inspection専用copyから省く。対象は `color.ui`、HTTP header/user-agent、push-option、remoteのpush refspecであり、送信値が安全だという証明にはしない。remote refspec値を省く場合もremote名の存在を無害なinspection専用refspecで保持し、default remote候補を消さない。同じ環境変数をhelperの `--config-env` が参照する場合、その実値の確認義務は残す。元のsource / provenance / primary parseと先行する拒否は変更せず、未知key・root・include・route・helper・loader・traceを非選択DATAとして除外しない。このcopyでSSH/proxy/remote-vcs/custom protocol、HTTP(S)/FTPのcredential/askpass、local/file routeの非標準pack programを、activeなoperation/routeに従って確認する。未検査helper bodyはUNKNOWN。SSHで送るremote側pack DATAをローカル実行sourceと混同しない。credential URL scopeを証明できない候補はUNKNOWNを残す。標準の認証helperを使う通常のremote操作も、このsource資格不足で止まり得る。getter/status/DATA、実際に未使用のroute、設定不在、proxyの実empty/none disable、credential resetを別の正常対照として保持する。
+
+`push`の複数pushURLと`fetch`の最初のURL、実default remoteとbranch選択、`fetch --all`の対応した除外設定、URL rewriteの選択を保持する。曖昧なrewriteや未対応contextを推測しない。cloneは呼出し元のlocal/worktree設定を新repoへ誤適用せず、system/global/commandを扱う。将来のconditional include、明示template root、clone固有config/templateは未検査sourceとしてUNKNOWN。compiled default template内容、新repo初期化後のすべてのsource、remote/submodule/http-fetch/http-push等の別operationはこの新laneで資格されたとは扱わない。既存guardの担当と、単に未資格の境界を区別する。env-split又は合成helperから再構成した子contextも、この新laneで証明できなければUNKNOWNとなり、通常の対応形にも停止費用がある。
+
+native getterのcacheは実行先・cwd・sanitize後の実環境全体・globalsの順序で束縛する。一Hook内で最大12 query、spawn時間の計測累計2,000 ms、各queryは残り予算以内かつ最大1,000 ms、stdoutは65,536 Bに制限する。不足や取得不能はUNKNOWN。これはHook全体の絶対deadlineや、設定の競合更新を防ぐtransactionではない。R60の解析量予算は別途共有する。
+
+### 対応済みの書き方とownerへの出口
+
+停止理由が選択条件の不足なら、同じ目的・対象・操作・操作順・必要なwrapper・argv・cwd/env/config/sourceを保ち、現在対応している静的scalar、選択を確認できる直接呼出し、確認可能な設定context等で表現できるかを確認する。対応形が見つかった場合も、必要なfallbackや待機の意味、remote routeを変えていないことを確認する。正常対照に使う書き方が、すべての停止を自動的に解除するものではない。
+
+同じ条件を保てる形がなければ、停止したguard、FORBIDDEN又はUNKNOWNの理由、未解釈のsource/target/context、必要な操作をownerへ示す。個別操作の了承とHook停止の了承は別である。必要なwrapperの削除、別場所へのコピー、Hookの無効化、設定の除去を自動的な代替経路にはしない。実秘密を返答や試験資料へ貼らない。
+
+### 既存の資源境界と各guardの担当
+
+R59/R60の上限は変更しない。共有入力はJSON全体 **1 MiB**、decode後commandは **UTF-8で32 KiB**。`readInput`で始まるHookの一起動全体は **command visit 4,096回** と **source累計262,144 UTF-16 code units** を上限とし、関数・子sourceの再訪問、後段の追加`inspect`、直接の`parseShell`でも同じ予算を消費する。不足時は部分結果を許可根拠にせず即座にUNKNOWN。UTF-8 byte上限とUTF-16の累計を同じ単位にしない。長い通常の本文・heredoc、多数の関数呼出し、重複確認も停止し得る費用と、独立library利用の例外・実時間保証の限界は[引き継ぐR60契約](#r60-resource-contract)に残す。
+
+secret-gitとadd-allは設定の `Bash(git *)` 条件に当たる入口、egressはBash全体という既存のdispatch条件を保つ。別guardが止めたことを、目的のguard自身が止めた証拠へ借用しない。追加修復は設定変更や新しい実Claude入口試行を伴うという契約ではない。
+
+### R61候補の必要試験と終了条件
+
+1. 元レビューの3入力を一字も変えず、同じstdin/cwd/project/env/fixture条件で旧固定sourceと候補へ渡す。Hookへの入力DATAとしての分類と、shell/Gitの実動作成立を分ける。元入力・独自variant・正常対照を同じIDへ混ぜない。
+2. handlerの未使用定義、`wait`の `-p` なし・静的scalar・通常PID、設定不在の通常push・config getter・inactive statusを対にする。handlerの選択条件、`wait -p` のtarget役割と後続proof、Gitのoperation/route/config選択をL1 metadataでも確かめる。途中候補で正常対照が停止した結果は原票を残し、期待値を変更して合格にしない。
+3. 修復後のdeny・ALLOW・理由prefix・brokenを目的のguardごとに確認する。追加した判定又は情報の引継ぎedgeを一つだけ外し、対応入力で効果が失われるかを測る。別の独立判定が止めた場合は、そのedge単独の必要性が証明されたとは記録しない。複数の保護をまとめて外した比較を単独判定の証拠にはしない。
+4. 必要なmodule/fixture/VM sourceの実読取identityを確認する。選択source試験と、元の入力bank・独立driver/oracleとの比較は役割を分ける。旧8,696入力と既存のpolicy/profile契約を保持し、差分を説明する。追加試験の成功件数は新sourceで確定するまで記載しない。
+5. 最後にpushする同じheadで必須CI成功、未解決review thread 0、CodexとCodeRabbitのfresh full review正常完了と指摘処理、公開本文の事実一致を別に確認する。旧headのlocal・CI・review成功を新headへ持ち越さない。merge判断と実行はownerに残す。
+
+### 実証範囲と残す限界
+
+元の全件検証で生じた28 FAILは、inspectionが無関係な引数・metadataまで要求して通常対照を止めた修復途中の記録として保持する。その原票を消したり期待値を変えたりせず、projection修復後の同一入力比較・全件受入を別の固定sourceで確認する。
+
+`950eafd` と旧比較sourceへの有限Hook DATA観測では、元レビュー3入力と正常6入力の分類が保存されている。この旧sourceの観測はR61修復の成功ではない。通常PID待機等の追加対照と元exact入力の停止は新sourceで確認し、全件・CIとは別に記録する。固定source、要求subject、実読取source、版・backend、fixture、stdin/cwd/project/envと測定時刻を一組で残す。
+
+Gitのfixtureに置いたhelperは存在・選択の確認用であり、nativeに実行できる権限・認証・通信を実証したものではない。handlerのshell実装・mode・import条件、`wait`のnative評価時点、Gitのnative launchability・接続・送信は、Hook DATAと混同しない。任意のshell、任意の外部program、すべての暗黙callbackやtransport routeを網羅した保証へ拡張しない。未確認の設定やsourceを対象外という名前で安全へ昇格せず、実装が止める範囲と未確認の範囲を記録する。
+
+R61の版差の限定観測では、Bash 5.3.15で無害なhandler/配列target markerと初期unsetを確認し、Bash 3.2.57では当handler選択・wait-p対応を確認できなかった。全installed shellへの一般化ではない。Git選択規則は[2.54.0公式設定資料](https://git-scm.com/docs/git-config/2.54.0)と同tagのconsumer sourceへ照合した。Hook DATAはnative helperの起動可能性・認証・通信成功や、実Claude dispatchの新資格を示さない。
+
+<a id="r60-resource-contract"></a>
+
+## R60の解析量上限契約（引き継ぐ資源境界）
 
 head `5a8acb4192afa25ebac1b1609c53e849349e7554` へのCodex P1は、大きな入力の同期解析がegress Hookの10秒timeoutを超える可能性を指摘した。以下は入力量に関する局所的なUNKNOWN境界であり、新sourceの全件・CI・fresh review成功や実Claude入口でのtimeout停止を確認したという主張ではない。R57までの操作別・source別の判定は引き継ぐ。
 
@@ -45,9 +104,9 @@ R60初期候補は同期的な`inspect`一回だけで予算を共有してい�
 
 <a id="r57-current-contract"></a>
 
-## R57のガード契約（R59へ引き継ぐ既存境界）
+## R57の歴史の契約（後続へ引き継ぐ既存境界）
 
-公開基点 `c1c5bd9dcccd0a42c769f473d5328cf1b651708d` への両full reviewは正常に完了したが、CodexのP1×2・P2×2とCodeRabbitの文書Minor×4が残った。以下はその修復条件であり、この段階では新sourceの全件・同head CI・両fresh review・指摘処理を完了したと主張しない。**この固定anchorを現在の契約の入口とし、以下のR56以前のround別本文・件数・日時は当時の履歴として読む。**
+公開基点 `c1c5bd9dcccd0a42c769f473d5328cf1b651708d` への両full reviewは正常に完了したが、CodexのP1×2・P2×2とCodeRabbitの文書Minor×4が残った。以下はその修復条件であり、この段階では新sourceの全件・同head CI・両fresh review・指摘処理を完了したと主張しない。**この `r57-current-contract` anchorはR57時点の歴史の契約として保持する。現在の契約への固定入口は [`current-guard-contract`](#current-guard-contract) とし、R57本文と以下のR56以前のround別本文・件数・日時は当時の履歴として読む。**
 
 | 対応する境界 | 判定と確認条件 | 正常対照・停止する通常作業・出口 |
 | --- | --- | --- |

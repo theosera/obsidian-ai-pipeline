@@ -6,6 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
@@ -26,7 +27,7 @@ test('internal alias config observation suppresses inherited and global diagnost
     assert.ok(fs.statSync(trace).size > 0);
     assert.ok(fs.statSync(trace2).size > 0);
     fs.unlinkSync(trace); fs.unlinkSync(trace2);
-    const common = path.resolve(__dirname, '../lib/git-guard-common.cjs');
+    const common = path.join(hooks, 'lib/git-guard-common.cjs');
     const script = `const guard=require(${JSON.stringify(common)});const known=guard.aliasProblem({sub:'r40dummy',cdirs:[]},process.cwd());const absent=guard.aliasProblem({sub:'r40absent',cdirs:[]},process.cwd());console.log(JSON.stringify({knownRejected:typeof known==='string',absentAllowed:absent===null}));`;
     const checked = spawnSync(process.execPath, ['-e', script], { cwd: root, env, encoding: 'utf8', timeout: 10000 });
     assert.ifError(checked.error);

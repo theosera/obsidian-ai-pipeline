@@ -1,7 +1,9 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const guard = require('../lib/git-guard-common.cjs');
+const path = require('node:path');
+const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
+const guard = require(path.join(hooks, 'lib/git-guard-common.cjs'));
 const word = text => ({ text, raw: JSON.stringify(text), quoted: true, dynamic: false, dynamicMaySplit: false });
 const inherited = { GIT_DIR: '/DUMMY/base/.git', HOME: '/DUMMY/home', PATH: '/usr/bin:/bin', GIT_PAGER: 'cat' };
 function inspect(command, values = inherited) {

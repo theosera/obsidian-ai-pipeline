@@ -25,9 +25,11 @@
  */
 let guard;
 let executableIdentity;
+let gitTransportReaders;
 try {
   guard = require('./lib/git-guard-common.cjs');
   executableIdentity = require('./lib/executable-identity.cjs');
+  gitTransportReaders = require('./lib/git-precommit-readers.cjs');
 } catch {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
@@ -411,73 +413,7 @@ function remoteCopyAddressRole(name, value) {
  * Locate the push repository without mistaking a refspec (`HEAD:main`) for scp.
  * Skip option values and honor --repo, including attached values and abbreviations.
  */
-function pushRepository(words) {
-  let positional;
-  let explicit;
-  let afterDD = false;
-  let indeterminate = false;
-  const payloadWords = [];
-  const refspecWords = [];
-  let deleteRefs = false;
-  let selectedBuiltinRefs = false;
-  let exclusiveBuiltinRefs = false;
-  const commandSourceWords = [];
-  const valueOpts = ['repo', 'receive-pack', 'exec', 'recurse-submodules', 'push-option'];
-  const flagOpts = ['all', 'mirror', 'delete', 'tags', 'follow-tags', 'dry-run', 'porcelain', 'force',
-    'force-if-includes', 'prune', 'thin', 'atomic', 'verify', 'set-upstream', 'quiet', 'verbose',
-    'ipv4', 'ipv6', 'progress'];
-  const optionalOpts = ['signed', 'force-with-lease'];
-  let argvUnknown = false;
-  for (let k = 0; k < words.length; k++) {
-    const w = words[k];
-    const t = w.text;
-    if (!positional && w.dynamic && w.dynamicMaySplit !== false) indeterminate = true;
-    if (!afterDD && t === '--') { afterDD = true; continue; }
-    if (!afterDD && t.startsWith('--')) {
-      if (['--all', '--mirror', '--tags'].includes(t)) selectedBuiltinRefs = true;
-      if (['--all', '--mirror'].includes(t)) exclusiveBuiltinRefs = true;
-      if ('delete'.startsWith(t.slice(2)) && t.length > 2) deleteRefs = true;
-      const eq = t.indexOf('=');
-      const name = t.slice(2, eq < 0 ? undefined : eq);
-      const matches = valueOpts.filter((option) => option.startsWith(name));
-      if (matches.length === 1) {
-        const value = eq < 0 ? words[++k] : { ...w, text: t.slice(eq + 1) };
-        if (!value) indeterminate = true;
-        if (!positional && eq < 0 && value && value.dynamic && value.dynamicMaySplit !== false) indeterminate = true;
-        if (matches[0] === 'repo') explicit = value;
-        if (matches[0] === 'push-option') payloadWords.push(value);
-        if (['receive-pack', 'exec'].includes(matches[0])) commandSourceWords.push(value);
-      } else {
-        const positive = name.startsWith('no-') ? name.slice(3) : name;
-        const registered = [...flagOpts, ...optionalOpts];
-        const flags = registered.includes(positive) ? [positive] : registered.filter(option => option.startsWith(positive));
-        if (flags.length !== 1 || eq >= 0 && !optionalOpts.includes(flags[0]) || w.dynamic) argvUnknown = true;
-        if (!positional && w.dynamic) indeterminate = true;
-      }
-      continue;
-    }
-    if (!afterDD && t.startsWith('-')) {
-      if (!/^-[vqnfu46d]+$/.test(t) && !/^-[vqnfu46d]*o/.test(t)) argvUnknown = true;
-      if (/^-[vqnfu46d]+$/.test(t) && t.includes('d')) deleteRefs = true;
-      // -o と、前に値を取らない short option を束ねた形 (`-vo value`)。
-      if (/^-[vqdnfu46]*o/.test(t)) {
-        if (/^-[vqdnfu46]*o$/.test(t)) {
-          const value = words[++k];
-          payloadWords.push(value);
-          if (!value) indeterminate = true;
-          if (!positional && value && value.dynamic && value.dynamicMaySplit !== false) indeterminate = true;
-        } else payloadWords.push({ ...w, text: t.slice(t.indexOf('o') + 1) });
-      } else if (!positional && w.dynamic) indeterminate = true;
-      continue;
-    }
-    if (!afterDD && !positional && w.dynamic) indeterminate = true;
-    if (!positional) positional = w;
-    else refspecWords.push(w);
-  }
-  // --repo は位置引数の repository が無い時だけ使われる。
-  return { repository: positional || explicit, indeterminate, payloadWords, refspecWords, deleteRefs,
-    selectedBuiltinRefs, exclusiveBuiltinRefs, commandSourceWords, argvUnknown };
-}
+const pushRepository = guard.gitPushRepository;
 
 /** Preserve the existing destination/transport uncertainty for every push payload decision. */
 function unknownPushDestination(g, push = pushRepository(g.args)) {
@@ -6272,6 +6208,48 @@ function watchSourceVerdict(invocation) {
 const inspectedGits = [];
 const selectedWrapperQueryInvocations = [];
 const gitInvocationContexts = new Map();
+// This lazy lane is for effective Git configuration reads only. Its actual env
+// values never enter primary outbound proofs or replace any prior refusal.
+const transportEnvironmentDescriptors = new WeakMap();
+function transportMetadataOptions(parent, initialPositionals) {
+  const options = {
+    trackExecutableSearch: true, trackGitPreCommitEnvironment: true,
+    initialExecutableSearchPathPresent: parent ? !!parent.executableSearch?.pathPresent : typeof process.env.PATH === 'string',
+    initialExecutableSearchChanged: !!parent?.executableSearch?.pathChanged,
+    initialPathContextChanged: !!parent?.pathChangedBefore,
+    initialPolicyRootUnknown: !!parent?.policyRootUnknown,
+    initialGitSourceContextUnknown: parent?.gitSourceContextUnknown === true,
+    initialGitPreCommitEnvironmentSources: parent ? parent.gitPreCommitEnvironmentSources : gitTransportReaders.environmentSources(process.env),
+    initialGitPreCommitEnvironmentUnknown: !!parent?.gitPreCommitEnvironmentUnknown,
+    initialFunctionSourceNames: parent ? parent.exportedFunctionNames || [] : inheritedFunctionNames,
+    initialExportedFunctionNames: parent ? parent.exportedFunctionNames || [] : inheritedFunctionNames,
+    initialExportedFunctionUnknown: !!parent?.exportedFunctionUnknown,
+    deferWatchSourceProblems: true, deferDbusRunSessionSourceProblems: true,
+    deferSystemdRunSourceProblems: true, deferRun0SourceProblems: true,
+    deferShadowGroupSourceProblems: true, deferCapshSourceProblems: true,
+    deferStartStopDaemonSourceProblems: true, deferParallelSourceProblems: true,
+    deferUtilLinuxSourceProblems: true, deferHyphenFunctionSourceProblems: true,
+    deferFunctionUnsetSourceProblems: true, initialPositionals,
+  };
+  return options;
+}
+function transportMetadataInvocation(invocation) {
+  const descriptor = transportEnvironmentDescriptors.get(invocation);
+  if (!descriptor || descriptor.unsupported) return null;
+  if (!descriptor.done) {
+    descriptor.done = true;
+    const parent = descriptor.parent ? transportMetadataInvocation(descriptor.parent) : null;
+    if (descriptor.parent && !parent) return null;
+    const options = transportMetadataOptions(parent, descriptor.script?.initialPositionals);
+    const parsed = descriptor.script?.mediated ? guard.inspectMediatedSource(descriptor.script, options) : guard.inspect(descriptor.source, options);
+    const shape = item => JSON.stringify([item.order, item.name, item.args.map(word => [word.raw, word.text]), item.unknownContextBefore, item.pathChangedBefore]);
+    if (parsed.problems.length || parsed.invocations.length !== descriptor.primary.invocations.length ||
+        parsed.invocations.some((item, i) => shape(item) !== shape(descriptor.primary.invocations[i]))) return null;
+    descriptor.metadata = parsed;
+  }
+  return descriptor.metadata?.invocations.find(item => item.order === invocation.order) || null;
+}
+const inspectEffectiveGitTransport = gitTransportReaders.createTransportInspector();
 /** Classify only the evidence supported for this Git invocation, without changing its refusal. */
 function gitVerdict(g, verdict) {
   const invocation = gitInvocationContexts.get(g);
@@ -6282,7 +6260,10 @@ function gitVerdict(g, verdict) {
 let hyphenFunctionSourceUnknown = false;
 let functionUnsetSourceUnknown = false;
 /** Recursively collect executable invocations and selected scripts, denying prohibited or uninspectable sources. */
-function collectNetworkInvocations(inspection, depth = 0) {
+function collectNetworkInvocations(inspection, depth = 0, transportDescriptor = null) {
+  const descriptor = transportDescriptor || { source: cmd, parent: null };
+  descriptor.primary = inspection;
+  for (const invocation of inspection.invocations) transportEnvironmentDescriptors.set(invocation, descriptor);
   if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   for (const problem of inspection.problems) pendingParserProblems.add(problem);
   for (const invocation of inspection.invocations) invocationSources.set(invocation, inspection.invocations);
@@ -6360,7 +6341,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
     if (gitCommand) scripts.push(...credentialHelperSources(gitCommand));
     scripts.push(...sshCommandSources(invocation));
     if (invocation.splitString) {
-      for (const script of invocation.splitWords) result.push(...collectNetworkInvocations(envSplitInspection(invocation, script), depth + 1));
+      for (const script of invocation.splitWords) result.push(...collectNetworkInvocations(envSplitInspection(invocation, script), depth + 1, { unsupported: true }));
     }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
       const shellIdentity = executableIdentity.invocationExecutableIdentity({ ...invocation, incomplete: false }, {
@@ -6444,7 +6425,7 @@ function collectNetworkInvocations(inspection, depth = 0) {
         g.configs.push(...script.gitContext.configs.filter((config) => destinationConfig(config.split('=')[0])));
         g.configEnvs.push(...script.gitContext.configEnvs);
       }
-      result.push(...collectNetworkInvocations(nested, depth + 1));
+      result.push(...collectNetworkInvocations(nested, depth + 1, { source: literal.text, parent: invocation, script, unsupported: !!script.gitContext }));
     }
   }
   return result;
@@ -7115,6 +7096,17 @@ if (opaqueLauncherNetworkUnknown) deny('network launcher の引数境界と実�
 // all earlier definite payload refusals before stopping otherwise-ALLOW work.
 if (invocations.some(invocation => invocation.policyRootUnknown)) {
   deny('sudo policy が選ぶ実行 root / cwd と child executable source を確認できません。absolute child path や child の help/version だけでは host と同じ root の証明になりません。必要な sudo・対象・操作・policy/root 条件を保って owner に確認してください。個別操作の承認は hook 無効化の許可ではありません。', 'UNKNOWN');
+}
+
+// The effective-config edge follows every independent payload/source refusal.
+// Only active transport consumers spend the late parse / bounded getter budget.
+for (const g of inspectedGits) {
+  if (!guard.gitTransportClientRole(g)) continue;
+  const primaryInvocation = gitInvocationContexts.get(g);
+  const metadataInvocation = transportMetadataInvocation(primaryInvocation);
+  const verdict = metadataInvocation ? inspectEffectiveGitTransport(g, metadataInvocation, baseDir) :
+    { category: 'UNKNOWN', reason: 'Git transport と同じ source / cwd / environment 条件を再構成できません。' };
+  if (verdict) deny(verdict.reason + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
 process.exit(0);

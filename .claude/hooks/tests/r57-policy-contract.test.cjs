@@ -9,8 +9,8 @@ let childAttempts = 0;
 for (const name of ['execFileSync', 'spawnSync', 'execFile', 'spawn', 'execSync', 'exec', 'fork']) cp[name] = () => { childAttempts++; throw Error('pure policy test must not start a child'); };
 const { CASES } = require(path.join(hooks, 'tests/git-guards.test.cjs'));
 const profile = require(path.join(hooks, 'tests/executable-profile-qualification.cjs'));
-const { createPolicyContract } = require('./r57-policy-contract.cjs');
-const ledger = require('./fixtures/r57-policy-contract.json');
+const { createPolicyContract } = require(path.join(hooks, 'tests/r57-policy-contract.cjs'));
+const ledger = require(path.join(hooks, 'tests/fixtures/r57-policy-contract.json'));
 const backendBytes = fs.readFileSync(path.join(hooks, 'tests/fixtures/r54-selected-executable-profile.json'));
 const hash = x => crypto.createHash('sha256').update(typeof x === 'string' || Buffer.isBuffer(x) ? x : JSON.stringify(x)).digest('hex');
 const json = x => JSON.stringify(x), clone = x => JSON.parse(json(x));
@@ -82,7 +82,7 @@ test('declaration drift, extra IDs, old expectation edits and changed R54 bytes 
 });
 
 function syntheticMain({ asText = false, fault = null, noExecutableProfile = false } = {}) {
-  const source = fs.readFileSync(path.join(__dirname, 'git-guards.test.cjs'), 'utf8');
+  const source = fs.readFileSync(path.join(hooks, 'tests/git-guards.test.cjs'), 'utf8');
   const start = source.indexOf('function main() {'), end = source.indexOf('\n}\n', start);
   assert.ok(start >= 0 && end > start);
   const cases = [...declared, ordinary], policy = selected(), output = [], lines = [];

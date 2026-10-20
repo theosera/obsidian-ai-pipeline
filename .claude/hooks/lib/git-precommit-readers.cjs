@@ -786,3 +786,318 @@ module.exports = { environmentSources, operationRole, targetGlobals, readerConte
   probeConfig, selectedHelper, assessReader, inspectionArgs, readInspectionGit, supportsInspectionHardening,
   safeInspectionEnvironment, loaderEnvironmentUnknown, indexHookSource, configuredPostIndex, signatureFormatActive };
 module.exports.commitInspectionContext = commitInspectionContext;
+
+
+// Transport has a separate, late inspection lane. Actual environment values
+// here must never become outbound literal proofs in the primary shell parse.
+const TRANSPORT_PATTERN = '^(core\\.(sshcommand|gitproxy|askpass)|credential(\\..*)?\\.helper|remote\\..*|url\\..*\\.(insteadof|pushinsteadof)|remote\\.pushdefault|branch\\..*\\.(remote|pushremote)|includeif\\..*\\.path|init\\.templatedir)$';
+/** Finite DATA-only families: this is not the complement of the helper pattern. */
+function transportInspectionDataKey(key) {
+  if (typeof key !== 'string' || /[\0\r\n]/.test(key)) return null;
+  if (/^remote\..+\.push$/i.test(key)) return 'remote-name';
+  return /^(?:color\.ui|push\.pushoption|http(?:\..+)?\.(?:extraheader|useragent))$/i.test(key) ? 'omit' : null;
+}
+const TRANSPORT_REMOTE_NAME_PLACEHOLDER = 'refs/heads/DUMMY:refs/heads/DUMMY';
+/** Project only the getter copy; actual source words and primary proofs stay opaque. */
+function transportInspectionEnvironment(invocation, baseline = process.env) {
+  if (invocation.gitPreCommitEnvironmentUnknown || !Array.isArray(invocation.gitPreCommitEnvironmentSources)) return null;
+  const sourceWords = new Map(), selected = new Map(), elisions = [];
+  const env = Object.fromEntries(Object.entries(baseline).filter(([name]) => !guard.gitPreCommitEnvironmentName(name)));
+  for (const source of invocation.gitPreCommitEnvironmentSources) {
+    if (!guard.gitPreCommitEnvironmentName(source.name) || sourceWords.has(source.name)) return null;
+    sourceWords.set(source.name, source.word);
+  }
+  for (const [name, word] of sourceWords) {
+    if (/^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(name)) continue;
+    const value = literal(word);
+    if (name === 'GIT_HTTP_USER_AGENT') {
+      // A retained --config-env source can still refer to this actual word.
+      if (value !== null && !value.includes('\0')) selected.set(name, value);
+      elisions.push({ source: 'environment', name, action: 'omit-nonselector-data' });
+      continue;
+    }
+    if (value === null || value.includes('\0')) return null;
+    selected.set(name, value); env[name] = value;
+  }
+  const rawCount = selected.get('GIT_CONFIG_COUNT');
+  if (rawCount !== undefined && rawCount !== '' && (!/^\d+$/.test(rawCount) || Number(rawCount) > 32)) return null;
+  const count = rawCount === undefined || rawCount === '' ? 0 : Number(rawCount), retained = [];
+  for (let i = 0; i < count; i++) {
+    const key = literal(sourceWords.get('GIT_CONFIG_KEY_' + i));
+    if (key === null || !key || /[\0\r\n]/.test(key)) return null;
+    const data = transportInspectionDataKey(key), word = sourceWords.get('GIT_CONFIG_VALUE_' + i);
+    const value = literal(word);
+    if (data === 'omit') {
+      elisions.push({ source: 'numbered-config', index: i, key, action: 'omit-nonselector-data' });
+    } else if (data === 'remote-name') {
+      // The inspector's implicit-remote selection also consumes name presence.
+      retained.push([key, TRANSPORT_REMOTE_NAME_PLACEHOLDER]);
+      elisions.push({ source: 'numbered-config', index: i, key, action: 'preserve-remote-name-only' });
+    } else {
+      if (value === null || value.includes('\0')) return null;
+      retained.push([key, value]);
+    }
+    // These remain actual values, never the projected placeholder. Cross-key
+    // config-env references resolve against sourceWords, even after elision.
+    selected.set('GIT_CONFIG_KEY_' + i, key);
+    if (value !== null && !value.includes('\0')) selected.set('GIT_CONFIG_VALUE_' + i, value);
+  }
+  for (const [name] of sourceWords) {
+    const match = /^GIT_CONFIG_(?:KEY|VALUE)_(\d+)$/.exec(name);
+    if (match && Number(match[1]) >= count) elisions.push({ source: 'environment', name, action: 'omit-outside-selected-count' });
+  }
+  if (rawCount !== undefined) env.GIT_CONFIG_COUNT = String(retained.length);
+  for (let i = 0; i < retained.length; i++) {
+    env['GIT_CONFIG_KEY_' + i] = retained[i][0]; env['GIT_CONFIG_VALUE_' + i] = retained[i][1];
+  }
+  return { env, selected, sourceWords, elisions };
+}
+function transportGlobals(g, invocation, actual) {
+  const words = invocation.args.slice(0, invocation.args.length - g.args.length - 1), result = [], elisions = [];
+  const targets = new Set(['-C', '--git-dir', '--work-tree', '--namespace']);
+  const flags = new Set(['--bare', '--no-replace-objects', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs']);
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]; if (!singleDataWord(word)) return null;
+    const value = literal(word) ?? word.text;
+    if (typeof value !== 'string') return null;
+    if (['--no-pager', '-P', '--paginate', '-p'].includes(value) && literal(word) !== null) continue;
+    const eq = value.indexOf('='), name = eq < 0 ? value : value.slice(0, eq);
+    if (targets.has(name)) {
+      const next = eq < 0 ? literal(words[++i]) : literal(word)?.slice(eq + 1);
+      if (next === null || next === undefined || next.includes('\0')) return null;
+      result.push(name, next);
+    } else if (name === '-c' || name === '--config-env' || value.startsWith('-c') && value.length > 2) {
+      const attached = value.startsWith('-c') && value.length > 2;
+      const settingWord = attached || eq >= 0 ? word : words[++i];
+      if (!singleDataWord(settingWord)) return null;
+      const text = literal(settingWord) ?? settingWord.text;
+      if (typeof text !== 'string') return null;
+      let setting = attached ? text.slice(2) : eq < 0 ? text : text.slice(eq + 1);
+      const split = setting.indexOf('='), key = setting.slice(0, split < 0 ? undefined : split);
+      if (!key || /[\0\r\n]/.test(key)) return null;
+      if (name === '--config-env' && split < 1) return null;
+      const data = transportInspectionDataKey(key);
+      if (data) {
+        elisions.push({ source: name === '--config-env' ? 'config-env' : 'inline-config', key,
+          action: data === 'remote-name' ? 'preserve-remote-name-only' : 'omit-nonselector-data' });
+        if (data === 'remote-name') result.push('-c', key + '=' + TRANSPORT_REMOTE_NAME_PLACEHOLDER);
+        continue;
+      }
+      // Every other key/value and its order remain exact. An unknown key or
+      // selector value is not discarded just because the getter pattern omits it.
+      if (literal(settingWord) === null || setting.includes('\0')) return null;
+      if (name === '--config-env') {
+        if (split < 1) return null;
+        const variable = setting.slice(split + 1);
+        const prefix = (g.configSelections || []).findLast(selection => selection.mode === 'env' && selection.text === setting && selection.prefixSourceKnown);
+        const known = actual.sourceWords.has(variable) ? literal(actual.sourceWords.get(variable)) : literal(prefix?.word);
+        if (known === null || known.includes('\0')) return null;
+        setting = key + '=' + known;
+      }
+      result.push('-c', setting);
+    } else if (flags.has(value) && literal(word) !== null) result.push(value);
+    else return null;
+  }
+  return { globals: result, elisions };
+}
+function transportInspectionContext(g, invocation, baseDir, deps = {}) {
+  if (!invocation || invocation.unknownContextBefore || invocation.pathChangedBefore || g.unknownContextBefore || g.cdLikeBefore) return null;
+  const actual = transportInspectionEnvironment(invocation, deps.environment || process.env);
+  if (!actual || actual.selected.has('GIT_CONFIG')) return null;
+  const callee = literal(invocation.nameWord), cdirs = g.cdirs === undefined ? [] : g.cdirs;
+  if (!callee || callee === 'git' && invocation.commandDefaultSearch === true || !directoryGlobals(cdirs)) return null;
+  const executable = guard.resolveTrustedGitExecutable({ text: callee }, actual.env, baseDir);
+  const env = safeInspectionEnvironment(actual.env, deps.platform);
+  if (!executable || !env) return null;
+  const projected = transportGlobals(g, invocation, actual);
+  return projected ? { executable, env, cwd: baseDir, cdirs: [...cdirs], globals: projected.globals, selected: actual.selected,
+    inspectionProjection: [...actual.elisions, ...projected.elisions] } : null;
+}
+function parseTransportConfig(output) {
+  const bytes = Buffer.isBuffer(output) ? output : Buffer.from(output || '', 'utf8');
+  if (bytes.length > 65536) return null;
+  const text = bytes.toString('utf8');
+  if (!Buffer.from(text).equals(bytes) || text && !text.endsWith('\0')) return null;
+  const fields = text ? text.slice(0, -1).split('\0') : [], records = [];
+  if (fields.length % 2) return null;
+  for (let i = 0; i < fields.length; i += 2) {
+    const scope = fields[i], lf = fields[i + 1].indexOf('\n');
+    if (!['system', 'global', 'local', 'worktree', 'command'].includes(scope) || lf < 1) return null;
+    const key = fields[i + 1].slice(0, lf), value = fields[i + 1].slice(lf + 1);
+    if (!new RegExp(TRANSPORT_PATTERN, 'i').test(key)) return null;
+    records.push({ scope, key, value });
+  }
+  return records;
+}
+function transportRoute(value) {
+  if (typeof value !== 'string' || /[\0\r\n]/.test(value)) return null;
+  if (/^[A-Za-z0-9][A-Za-z0-9+.-]*::/.test(value)) return { kind: 'helper' };
+  if (/^(?:ssh|git\+ssh|ssh\+git):\/\//.test(value) || /^[^/:\s]+@[^/:\s]+:/.test(value) || /^[^/:\s]+:[^/]/.test(value) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return { kind: 'ssh' };
+  const git = /^git:\/\/([^/]+)\//.exec(value);
+  if (git) {
+    const authority = git[1];
+    if (/[\s%@?#\\]/.test(value) || !/^(?:[A-Za-z0-9._-]+(?::[0-9]*)?|\[[0-9A-Fa-f:.]+\](?::[0-9]*)?)$/.test(authority)) return null;
+    return { kind: 'git', host: authority };
+  }
+  if (/^(?:https?|ftps?):\/\//.test(value)) return { kind: 'auth' };
+  if (/^file:\/\//.test(value) || /^(?:\/|\.\.?\/)/.test(value) || !value.includes(':') || value.includes('/') && value.indexOf('/') < value.indexOf(':')) return { kind: 'other' };
+  return null;
+}
+/** One hook-scoped cache and cumulative native-query budget; not a whole-hook I/O deadline. */
+function createTransportInspector(deps = {}) {
+  const spawn = deps.spawn || spawnSync, now = deps.now || Date.now;
+  const cache = new Map(), versions = new Map(), routes = new Map(), branches = new Map(); let queries = 0, elapsed = 0;
+  const query = (context, args, allowed = [0]) => {
+    if (queries >= 12 || elapsed >= 2000) return null;
+    const start = now(); queries++;
+    const result = spawn(context.executable, [...context.globals, '--no-pager', '--no-lazy-fetch', ...args], {
+      cwd: context.cwd, env: { ...context.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: Math.max(1, Math.min(1000, 2000 - elapsed)), maxBuffer: 65536,
+    });
+    elapsed += Math.max(0, now() - start);
+    if (result.error || result.signal || !allowed.includes(result.status)) return null;
+    const bytes = Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout || '');
+    if (bytes.length > 65536 || !Buffer.from(bytes.toString('utf8')).equals(bytes)) return null;
+    return { status: result.status, text: bytes.toString('utf8') };
+  };
+  const inspect = (g, invocation, baseDir) => {
+    const role = guard.gitTransportClientRole(g); if (!role) return null;
+    if (role.argvUnknown) return unknown('Git transport の argv / repository 選択を確定できません。');
+    const context = transportInspectionContext(g, invocation, baseDir, deps);
+    if (!context) return unknown('Git transport と同じ executable / cwd / env / config 条件を確認できません。');
+    const key = inspectionContextKey(context.executable, context.env, context.cwd, context.globals);
+    let config = cache.get(key);
+    if (config === undefined) {
+      if (!versions.has(key)) {
+        const banner = query(context, ['--version']);
+        versions.set(key, !!banner && supportsInspectionHardening(banner.text));
+      }
+      if (!versions.get(key)) { cache.set(key, null); config = null; }
+      else {
+        const read = query(context, ['config', '--includes', '--show-scope', '--null', '--get-regexp', TRANSPORT_PATTERN], [0, 1]);
+        config = read && (read.status === 0 ? parseTransportConfig(read.text) : read.text === '' ? [] : null);
+        cache.set(key, config);
+      }
+    }
+    if (!config) return unknown('Git transport の実効設定を安全な限定 getter で確認できません。');
+    const selected = context.selected;
+    if (g.sub === 'clone') {
+      // clone does not RUN_SETUP in the caller's repository. Do not apply its
+      // local/worktree helper values to the newly initialized target.
+      config = config.filter(record => ['system', 'global', 'command'].includes(record.scope));
+      if (config.some(record => /^includeif\./i.test(record.key)) || selected.has('GIT_TEMPLATE_DIR') ||
+          config.some(record => record.key.toLowerCase() === 'init.templatedir') ||
+          role.values.some(value => value.option === 'config') ||
+          g.args.some(word => /^--(?:template|config)(?:=|$)/.test(literal(word) || ''))) {
+        return unknown('Git clone の新 repository / conditional include / template / clone config source を確認できません。');
+      }
+    }
+    const last = name => config.filter(r => r.key.toLowerCase() === name).at(-1)?.value;
+    // Presence wins, including an empty selector; empty SSH command is not a source-free proof.
+    const ssh = selected.has('GIT_SSH_COMMAND') ? selected.get('GIT_SSH_COMMAND') : last('core.sshcommand') ?? (selected.has('GIT_SSH') ? selected.get('GIT_SSH') : undefined);
+    const proxies = config.filter(r => r.key.toLowerCase() === 'core.gitproxy').map(r => r.value);
+    const proxyEnvironment = selected.has('GIT_PROXY_COMMAND') ? selected.get('GIT_PROXY_COMMAND') : undefined;
+    const authentication = new Map(config.map(record => [record.key.toLowerCase(), record.value]));
+    Object.defineProperty(authentication, 'credentialHelperRecords', { value: config.flatMap(record => {
+      const match = /^credential(?:\.(.*))?\.helper$/i.exec(record.key);
+      return match ? [{ ...record, subsection: match[1] ?? null }] : [];
+    }) });
+    const credentials = credentialHelperSource(authentication);
+    const askpass = selected.has('GIT_ASKPASS') ? selected.get('GIT_ASKPASS') : authentication.has('core.askpass') ? authentication.get('core.askpass') : selected.get('SSH_ASKPASS');
+    const pack = new Map();
+    for (const record of config) {
+      const match = /^remote\.(.*)\.(uploadpack|receivepack)$/i.exec(record.key);
+      if (match && !pack.has(match[1] + '\0' + match[2].toLowerCase())) pack.set(match[1] + '\0' + match[2].toLowerCase(), record.value);
+    }
+    const foreign = new Map();
+    for (const record of config) { const match = /^remote\.(.*)\.vcs$/i.exec(record.key); if (match) foreign.set(match[1], record.value); }
+    const customRoute = value => typeof value === 'string' && (/^[A-Za-z0-9][A-Za-z0-9+.-]*::/.test(value) || /^[a-z][a-z0-9+.-]*:\/\//i.test(value) && !/^(?:https?|ftps?|ssh|git\+ssh|ssh\+git|git|file):\/\//.test(value));
+    const configuredCustomRoute = config.some(record => /^(?:remote\..*\.(?:url|pushurl)|url\..*\.(?:insteadof|pushinsteadof))$/i.test(record.key) &&
+      (customRoute(record.value) || /^url\.(.*)\.(?:insteadof|pushinsteadof)$/i.exec(record.key)?.slice(1, 2).some(customRoute)));
+    const hasSources = ssh !== undefined || proxyEnvironment !== undefined && proxyEnvironment !== '' || proxies.length || foreign.size || pack.size || credentials || askpass !== undefined && askpass !== '' || configuredCustomRoute || customRoute(literal(role.repositoryWord));
+    if (!hasSources) return null; // no configured source to select; do not require a destination for source-free work
+    let repository = role.repositoryWord ? literal(role.repositoryWord) : null;
+    if (role.repositoryWord && repository === null) return unknown('Git transport の repository 生成元を確定できません。');
+    const remoteNames = [...new Set(config.flatMap(record => /^remote\.(.*)\.[^.]+$/i.exec(record.key)?.slice(1, 2) || []))];
+    const allFetch = g.sub === 'fetch' && g.args.some(word => literal(word) === '--all');
+    if (repository === null && g.sub !== 'clone' && !allFetch) {
+      if (!branches.has(key)) {
+        const branchResult = query(context, ['symbolic-ref', '--quiet', '--short', 'HEAD'], [0, 1]);
+        branches.set(key, branchResult?.status === 0 && /^[^\r\n\0]+\n$/.test(branchResult.text) ? branchResult.text.slice(0, -1) : null);
+      }
+      const branch = branches.get(key);
+      const branchSetting = suffix => branch === null ? undefined : config.filter(r => r.key === 'branch.' + branch + '.' + suffix).at(-1)?.value;
+      repository = g.sub === 'push' ? branchSetting('pushremote') ?? last('remote.pushdefault') ?? branchSetting('remote') : branchSetting('remote');
+      repository ??= remoteNames.length === 1 ? remoteNames[0] : 'origin';
+    }
+    const skip = new Map();
+    for (const record of allFetch ? config : []) {
+      const match = /^remote\.(.*)\.(?:skipdefaultupdate|skipfetchall)$/i.exec(record.key);
+      if (!match) continue;
+      if (!/^(?:|true|yes|on|1|false|no|off|0)$/i.test(record.value)) return unknown('Git transport の fetch-all 除外設定を確定できません。');
+      skip.set(match[1], !FALSE.test(record.value));
+    }
+    const repositories = allFetch ? remoteNames.filter(name => !skip.get(name)) : [repository];
+    if (!repositories.length) return null;
+    const urls = [], localPackSources = [];
+    const rewrite = (value, push) => {
+      const records = config.flatMap(r => {
+        const m = /^url\.(.*)\.(insteadof|pushinsteadof)$/i.exec(r.key);
+        return m && (push ? m[2].toLowerCase() === 'pushinsteadof' : m[2].toLowerCase() === 'insteadof') && value.startsWith(r.value) ? [{ base: m[1], prefix: r.value }] : [];
+      }).sort((a, b) => b.prefix.length - a.prefix.length);
+      if (!records.length) return value;
+      if (records.some(r => r.prefix.length === records[0].prefix.length && r.base !== records[0].base)) return null;
+      return records[0].base + value.slice(records[0].prefix.length);
+    };
+    for (const destination of repositories) {
+      if (typeof destination !== 'string' || !destination || /[\r\n\0]/.test(destination)) return unknown('Git transport の実効 destination 選択を確定できません。');
+      if (g.sub !== 'clone' && foreign.has(destination)) return unknown('Git transport の remote helper の実行 source を検査できません。');
+      const packKind = g.sub === 'push' ? 'receivepack' : 'uploadpack';
+      const configuredPack = pack.get(destination + '\0' + packKind);
+      if (configuredPack !== undefined && configuredPack !== 'git-' + (g.sub === 'push' ? 'receive-pack' : 'upload-pack')) localPackSources.push(destination);
+      const routeKey = JSON.stringify([key, g.sub === 'push', destination]);
+      let resolved = routes.get(routeKey);
+      if (g.sub !== 'clone' && !destination.startsWith('-') && resolved === undefined) {
+        resolved = query(context, ['remote', 'get-url', ...(g.sub === 'push' ? ['--push'] : []), '--all', destination], [0, 2]);
+        routes.set(routeKey, resolved);
+      }
+      if (g.sub !== 'clone' && resolved?.status === 0 && resolved.text.endsWith('\n') && !resolved.text.includes('\0') && !resolved.text.includes('\r')) {
+        const selectedURLs = resolved.text.slice(0, -1).split('\n');
+        urls.push(...(g.sub === 'push' ? selectedURLs : selectedURLs.slice(0, 1)).map(url => ({ url, localPack: localPackSources.includes(destination) })));
+      } else {
+        if (g.sub !== 'clone' && remoteNames.includes(destination)) return unknown('Git transport の named remote URL 選択を確認できません。');
+        const pushed = g.sub === 'push' ? rewrite(destination, true) : destination;
+        if (pushed === null) return unknown('Git transport の URL rewrite の選択が一意ではありません。');
+        const rewritten = pushed !== destination ? pushed : rewrite(destination, false);
+        if (rewritten === null) return unknown('Git transport の URL rewrite の選択が一意ではありません。');
+        urls.push({ url: rewritten, localPack: localPackSources.includes(destination) });
+      }
+    }
+    for (const entry of urls) {
+      const route = transportRoute(entry.url);
+      if (!route || route.kind === 'helper') return unknown('Git transport の effective protocol / helper 選択を確認できません。');
+      if (route.kind === 'other' && entry.localPack) return unknown('Git transport が選ぶ local pack program の source / 副作用を検査できません。');
+      if (route.kind === 'auth' && (credentials || askpass !== undefined && askpass !== '')) return unknown('Git transport の credential / askpass helper の source / URL scope / 副作用を検査できません。');
+      if (route.kind === 'ssh' && ssh !== undefined) return unknown('Git transport が実効 SSH helper の source / 副作用を検査できません。');
+      if (route.kind === 'git') {
+        if (proxyEnvironment !== undefined) { if (proxyEnvironment !== '') return unknown('Git transport が実効 proxy helper の source / 副作用を検査できません。'); }
+        else for (const proxy of proxies) {
+          const split = proxy.indexOf(' for '), program = split < 0 ? proxy : proxy.slice(0, split), suffix = split < 0 ? null : proxy.slice(split + 5);
+          if (suffix !== null && !(route.host === suffix || route.host.endsWith('.' + suffix))) continue;
+          if (program !== 'none' && program !== '') return unknown('Git transport が実効 proxy helper の source / 副作用を検査できません。');
+          break;
+        }
+      }
+    }
+    return null;
+  };
+  inspect.stats = () => ({ queries, elapsedMs: elapsed, cachedContexts: cache.size });
+  return inspect;
+}
+module.exports.transportInspectionContext = transportInspectionContext;
+module.exports.parseTransportConfig = parseTransportConfig;
+module.exports.transportRoute = transportRoute;
+module.exports.createTransportInspector = createTransportInspector;
+
+module.exports.transportInspectionDataKey = transportInspectionDataKey;
+module.exports.transportInspectionEnvironment = transportInspectionEnvironment;

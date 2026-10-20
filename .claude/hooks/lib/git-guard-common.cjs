@@ -2575,6 +2575,17 @@ function functionExportSelection(name, args) {
 }
 // POSIX モードでは prefix の代入が、通常のコマンドと違い special builtin の後にも残る。
 const SPECIAL_BUILTINS = new Set([':', '.', 'break', 'continue', 'eval', 'exit', 'export', 'readonly', 'return', 'set', 'shift', 'times', 'trap', 'unset']);
+// A deliberately explicit Bash builtin inventory, used only to prove that a
+// defined command-not-found callback is not selected by a successful lookup.
+// Mutated lookup/disabled builtins are not certified by this inventory.
+const COMMAND_NOT_FOUND_INACTIVE_BUILTINS = new Set([
+  ...SPECIAL_BUILTINS, '[', 'alias', 'bg', 'bind', 'builtin', 'caller', 'cd', 'command',
+  'compgen', 'complete', 'compopt', 'declare', 'dirs', 'disown', 'echo', 'enable',
+  'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let',
+  'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray',
+  'shopt', 'source', 'suspend', 'test', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias',
+  'wait',
+]);
 const COMMAND_SEARCH_MUTATORS = new Set(['alias', 'unalias', 'hash', 'rehash', 'enable', 'autoload', 'functions']);
 
 // commit や add と同じコマンドの git に付けてよい `-c` / `--config-env` の鍵（短い allowlist）。
@@ -2958,6 +2969,73 @@ function readEnvironmentTargets(args) {
   return { targets, unknown: targets.some((word) => word.dynamic) };
 }
 
+/** wait -p first unsets, then may assign its effective target; PID operands are DATA. */
+function waitAssignmentTarget(args, pidNames = new Set()) {
+  let targetWord = null;
+  const wordAt = word => typeof word?.literalValue === 'string' && word.dynamicMaySplit === false
+    ? { ...word, text: word.literalValue, dynamic: false } : word;
+  for (let k = 0; k < args.length; k++) {
+    const word = wordAt(args[k]);
+    // This narrow kind proof is not a literal value: $! (or a directly saved
+    // $!) is empty/decimal and cannot become an option. Only one quoted word
+    // in the PID operand region uses it; -p target consumption never does.
+    const pidReference = word?.dynamic === true && word.dynamicMaySplit === false && typeof word.literalValue !== 'string' && /^"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"$/.exec(word.raw || '');
+    if ((word?.dynamic === true && word.dynamicMaySplit === false && typeof word.literalValue !== 'string' && word.raw === '"$!"') ||
+        (pidReference && pidNames.has(pidReference[1] || pidReference[2]))) break;
+    if (!word || word.dynamic || word.ansiCUnknown || word.globExpanded || word.braceExpanded || word.tildeExpanded) {
+      return { targetWord, unknown: true, terminal: false };
+    }
+    const text = word.text;
+    if (text === '--help') return { targetWord: null, unknown: false, terminal: true };
+    if (text === '--' || !text.startsWith('-') || text === '-') break;
+    if (text.startsWith('--')) return { targetWord, unknown: true, terminal: false };
+    for (let j = 1; j < text.length; j++) {
+      if (text[j] === 'f' || text[j] === 'n') continue;
+      if (text[j] !== 'p') return { targetWord, unknown: true, terminal: false };
+      const value = j + 1 < text.length ? { ...word, text: text.slice(j + 1), literalValue: undefined } : wordAt(args[++k]);
+      if (!value) return { targetWord: null, unknown: true, terminal: false };
+      // A consumed value can split into an option terminator / PID operand,
+      // so a later literal -p is not necessarily still in the option region.
+      // A proven quoted single word may safely be superseded by the last -p.
+      if (value.ansiCUnknown || value.dynamicMaySplit === true || value.globExpanded ||
+          value.braceExpanded || value.tildeExpanded || value.dynamic && value.dynamicMaySplit !== false) {
+        return { targetWord: value, unknown: true, terminal: false };
+      }
+      targetWord = value; // Bash consumes only the last -p value after option parsing.
+      break;
+    }
+  }
+  return { targetWord, unknown: false, terminal: false };
+}
+
+/** The outer shell's failed lookup, not an arbitrary child's execvp, selects this callback. */
+function commandNotFoundSelection(info, state, reservedTime) {
+  if (!state.functions.has('command_not_found_handle') || (!info.name && !info.dynamicName)) return null;
+  const slashLookup = word => word?.dynamicMaySplit === false && !word.ansiCUnknown &&
+    !word.globExpanded && !word.braceExpanded && !word.tildeExpanded && word.text.includes('/');
+  const wrappers = info.wrapperProgramWords || [];
+  for (const entry of wrappers) {
+    const word = entry.word;
+    if (entry.name === 'time' && reservedTime) continue;
+    if (word?.text === entry.name && ['command', 'builtin', 'exec'].includes(entry.name) && !state.searchChanged) {
+      if (entry.name === 'builtin' || entry.name === 'exec') return null;
+      if (info.nonExec) return null; // command -v/-V queries do not run the named command.
+      continue;
+    }
+    // An absolute outer launcher has no Bash PATH lookup; a bare one is unproved.
+    return slashLookup(word) ? null : { mode: 'unproved-outer-lookup', commandWord: word };
+  }
+  if (info.nonExec) return null;
+  const word = info.nameWord;
+  // [[ is syntax only in its actual unquoted reserved-word position. Quoted,
+  // escaped and command-mediated lookalikes remain failed-lookup candidates.
+  if ((!info.wrapped || reservedTime) && word?.raw === '[[' && !word.quoted && !word.dynamic) return null;
+  if (slashLookup(word)) return null;
+  if (!info.dynamicName && !state.searchChanged && word?.text === info.name &&
+      COMMAND_NOT_FOUND_INACTIVE_BUILTINS.has(info.name)) return null;
+  return { mode: 'unproved-command-lookup', commandWord: word };
+}
+
 /** Delayed code which can assign shell values invalidates proofs made before registration. */
 function sourceChangesValues(inner) {
   return inner.invocations.some((entry) => {
@@ -2965,6 +3043,10 @@ function sourceChangesValues(inner) {
     if (entry.name === 'printf') {
       const effect = printfValueEffect(entry.args);
       return !!effect.targetWord || effect.unknownFormat;
+    }
+    if (entry.name === 'wait') {
+      const effect = waitAssignmentTarget(entry.args);
+      return effect.unknown || !!effect.targetWord;
     }
     return ['set', 'read', 'readarray', 'mapfile', 'getopts', 'declare', 'typeset', 'local', 'readonly', 'unset', 'let'].includes(entry.name);
   });
@@ -2986,6 +3068,11 @@ function sourceTraceEffects(inner) {
     if (entry.name === 'printf' && printfValueEffect(entry.args).targetWord?.text === 'PS4') effects.prompt = true;
     if (entry.name === 'read' && readEnvironmentTargets(entry.args).targets.some(word => word.text === 'PS4')) effects.prompt = true;
     if (entry.name === 'getopts' && entry.args[1]?.text === 'PS4') effects.prompt = true;
+    if (entry.name === 'wait') {
+      const effect = waitAssignmentTarget(entry.args);
+      if (effect.unknown || effect.targetWord &&
+          (effect.targetWord.dynamic || /^PS4(?:\[|$)/.test(effect.targetWord.text))) effects.prompt = true;
+    }
     if (entry.name === 'set' && xtraceSet(entry.args, false) !== false) effects.trace = true;
     if (entry.name === 'shopt' && promptvarsSet(entry.args, false) !== false) effects.promptvars = true;
   }
@@ -3328,6 +3415,76 @@ function gitHttpMetadataGlobalBoundary(g) {
   }));
 }
 
+/** Shared push role/arity contract; outbound and late transport consumers use the same parser. */
+function gitPushRepository(words) {
+  let positional;
+  let explicit;
+  let afterDD = false;
+  let indeterminate = false;
+  const payloadWords = [];
+  const refspecWords = [];
+  const refspecRoles = [];
+  let deleteRefs = false;
+  let selectedBuiltinRefs = false;
+  let exclusiveBuiltinRefs = false;
+  const commandSourceWords = [];
+  const valueOpts = ['repo', 'receive-pack', 'exec', 'recurse-submodules', 'push-option'];
+  const flagOpts = ['all', 'mirror', 'delete', 'tags', 'follow-tags', 'dry-run', 'porcelain', 'force',
+    'force-if-includes', 'prune', 'thin', 'atomic', 'verify', 'set-upstream', 'quiet', 'verbose',
+    'ipv4', 'ipv6', 'progress'];
+  const optionalOpts = ['signed', 'force-with-lease'];
+  let argvUnknown = false;
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    const t = w.text;
+    if (!positional && w.dynamic && w.dynamicMaySplit !== false) indeterminate = true;
+    if (!afterDD && t === '--') { afterDD = true; continue; }
+    if (!afterDD && t.startsWith('--')) {
+      if (['--all', '--mirror', '--tags'].includes(t)) selectedBuiltinRefs = true;
+      if (['--all', '--mirror'].includes(t)) exclusiveBuiltinRefs = true;
+      if ('delete'.startsWith(t.slice(2)) && t.length > 2) deleteRefs = true;
+      const eq = t.indexOf('=');
+      const name = t.slice(2, eq < 0 ? undefined : eq);
+      const matches = valueOpts.filter((option) => option.startsWith(name));
+      if (matches.length === 1) {
+        const value = eq < 0 ? words[++k] : { ...w, text: t.slice(eq + 1) };
+        if (!value) indeterminate = true;
+        if (!positional && eq < 0 && value && value.dynamic && value.dynamicMaySplit !== false) indeterminate = true;
+        if (matches[0] === 'repo') explicit = value;
+        if (matches[0] === 'push-option') payloadWords.push(value);
+        if (['receive-pack', 'exec'].includes(matches[0])) commandSourceWords.push(value);
+      } else {
+        const positive = name.startsWith('no-') ? name.slice(3) : name;
+        const registered = [...flagOpts, ...optionalOpts];
+        const flags = registered.includes(positive) ? [positive] : registered.filter(option => option.startsWith(positive));
+        if (flags.length !== 1 || eq >= 0 && !optionalOpts.includes(flags[0]) || w.dynamic) argvUnknown = true;
+        if (!positional && w.dynamic) indeterminate = true;
+      }
+      continue;
+    }
+    if (!afterDD && t.startsWith('-')) {
+      if (!/^-[vqnfu46d]+$/.test(t) && !/^-[vqnfu46d]*o/.test(t)) argvUnknown = true;
+      if (/^-[vqnfu46d]+$/.test(t) && t.includes('d')) deleteRefs = true;
+      // -o と、前に値を取らない short option を束ねた形 (`-vo value`)。
+      if (/^-[vqdnfu46]*o/.test(t)) {
+        if (/^-[vqdnfu46]*o$/.test(t)) {
+          const value = words[++k];
+          payloadWords.push(value);
+          if (!value) indeterminate = true;
+          if (!positional && value && value.dynamic && value.dynamicMaySplit !== false) indeterminate = true;
+        } else payloadWords.push({ ...w, text: t.slice(t.indexOf('o') + 1) });
+      } else if (!positional && w.dynamic) indeterminate = true;
+      continue;
+    }
+    if (!afterDD && !positional && w.dynamic) indeterminate = true;
+    if (!positional) positional = w;
+    else { refspecWords.push(w); refspecRoles.push({ word: w, afterDD }); }
+  }
+  // --repo は位置引数の repository が無い時だけ使われる。
+  return { repository: positional || explicit, indeterminate, payloadWords, refspecWords, deleteRefs,
+    selectedBuiltinRefs, exclusiveBuiltinRefs, commandSourceWords, argvUnknown, refspecRoles };
+}
+
 /** Preserve actual HTTP operation/query selection independently of configured input families. */
 function gitHttpClientRole(g) {
   if (gitHttpMetadataGlobalBoundary(g)) g = { ...g, dynamicOpt: false };
@@ -3346,11 +3503,29 @@ function gitHttpClientRole(g) {
   return { repositoryWord, argvUnknown: parsed.unknown, mode: 'potential-http-client', values: parsed.values, operands: parsed.operands };
 }
 
-/** Explicit transport selectors are executable sources, selected only by an active client role. */
-function gitTransportSourceRole(g) {
+/** Select active transport clients independently of any explicit helper source. */
+function gitTransportClientRole(g) {
   if (!['clone', 'fetch', 'fetch-pack', 'pull', 'push', 'ls-remote'].includes(g.sub)) return null;
+  if (g.gitNamespaceInferred || g.terminal || g.helpKind === 'manual') return null;
+  // Only the existing pull parser proves a real stdout usage before transport;
+  // consumed option values and unresolved option callbacks are not query DATA.
+  if (g.sub === 'pull' && gitOperationRole(g)?.terminal) return null;
   let client;
-  if (g.sub === 'fetch-pack') {
+  if (g.sub === 'push') {
+    const scalar = word => typeof word.literalValue === 'string' && word.dynamicMaySplit === false &&
+      !word.ansiCUnknown && !word.globExpanded && !word.braceExpanded && !word.tildeExpanded ?
+      { ...word, text: word.literalValue, dynamic: false } : word;
+    const push = gitPushRepository(g.args.map(scalar));
+    const boundary = word => word && word.dynamicMaySplit === false && !word.ansiCUnknown &&
+      !word.globExpanded && !word.braceExpanded && !word.tildeExpanded;
+    // A generated suffix of HEAD:/main is refspec DATA. An unresolved first
+    // byte can still introduce a post-repository option/source selector.
+    const refspecUnknown = push.refspecRoles.some(({ word, afterDD }) => !boundary(word) ||
+      !afterDD && word.dynamic && (word.text.startsWith(DYN) || word.text.startsWith('-')));
+    client = { repositoryWord: push.repository, values: [], operands: push.repository ? [push.repository, ...push.refspecWords] : [],
+      argvUnknown: Boolean(g.incomplete || g.dynamicOpt && !gitHttpMetadataGlobalBoundary(g) ||
+        push.indeterminate || push.argvUnknown || refspecUnknown), mode: 'potential-transport-client', push };
+  } else if (g.sub === 'fetch-pack') {
     if (g.gitNamespaceInferred || g.terminal || g.helpKind === 'manual') return null;
     const valueNames = ['upload-pack', 'exec', 'depth', 'shallow-since', 'shallow-exclude', 'filter'];
     const argumentText = word => typeof word.literalValue === 'string' && word.dynamicMaySplit === false ? word.literalValue : word.text;
@@ -3375,6 +3550,13 @@ function gitTransportSourceRole(g) {
     client = { repositoryWord: parsed.operands[0], argvUnknown: parsed.unknown || !parsed.operands.length,
       mode: 'potential-transport-client', values: parsed.values, operands: parsed.operands };
   } else client = gitHttpClientRole(g);
+  if (!client) return null;
+  return client;
+}
+
+/** Explicit transport selectors are executable sources, selected only by an active client role. */
+function gitTransportSourceRole(g) {
+  const client = gitTransportClientRole(g);
   if (!client) return null;
   const settings = (g.configSelections || []).flatMap((selection, order) => {
     const eq = selection.text.indexOf('='), key = selection.text.slice(0, eq < 0 ? undefined : eq).toLowerCase();
@@ -3684,9 +3866,9 @@ function inspectWithinBudget(cmd, options = {}) {
 
   // スコープの状態は最初のコマンドを訪れた時に親から写す。置換とサブシェルの変更は親へ戻さない。
   const scopeStates = new Map();
-  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: options.initialPathContextChanged === true, unqualifiedSearch: false, policyRootUnknown: options.initialPolicyRootUnknown === true, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown ||
+  const emptyState = () => ({ env: new Set(), helperEnv: new Set(), functions: new Map(), waitPidNames: new Set(), waitPidUnsafeNames: new Set(), waitPidSourceUnknown: false, commandNotFoundReadonly: false, functionAutoExport: false, exportedFunctions: new Set(), exportedFunctionUnknown: false, environmentFunctions: new Map(), environmentFunctionUnknown: new Set(), localNames: new Set(), cd: false, pathChanged: options.initialPathContextChanged === true, unqualifiedSearch: false, policyRootUnknown: options.initialPolicyRootUnknown === true, searchChanged: false, unknownContext: false, gitShadowed: false, positionals: null, positionalsTainted: false, values: new Map(), integers: new Set(), associatives: new Set(), valuesTainted: false, loopBindings: new Map(), pathProofs: new Set(), outboundEnvironmentUnknown: !!options.initialOutboundEnvironmentUnknown ||
     options.trackGitPreCommitEnvironment === true && !!options.initialGitPreCommitEnvironmentUnknown, identitySources: new Map([['PS4', { text: '+ ', dynamic: false }]]), identityExports: new Map([['PS4', false]]), promptRefNames: new Set(), xtrace: false, promptvars: true, localShellOptions: false });
-  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports), promptRefNames: new Set(s.promptRefNames) });
+  const copyState = (s) => ({ ...s, env: new Set(s.env), helperEnv: new Set(s.helperEnv), functions: new Map(s.functions), waitPidNames: new Set(s.waitPidNames), waitPidUnsafeNames: new Set(s.waitPidUnsafeNames), exportedFunctions: new Set(s.exportedFunctions), environmentFunctions: new Map(s.environmentFunctions), environmentFunctionUnknown: new Set(s.environmentFunctionUnknown), localNames: new Set(s.localNames), values: new Map(s.values), integers: new Set(s.integers), associatives: new Set(s.associatives), loopBindings: new Map(s.loopBindings), pathProofs: new Set(s.pathProofs), identitySources: new Map(s.identitySources), identityExports: new Map(s.identityExports), promptRefNames: new Set(s.promptRefNames) });
   const stateFor = (scope) => {
     if (!scopeStates.has(scope)) {
       scopeStates.set(scope, scope && scope.parent ? copyState(stateFor(scope.parent)) : emptyState());
@@ -3779,6 +3961,8 @@ function inspectWithinBudget(cmd, options = {}) {
     consumeInspectionWork(1);
     if (depth > MAX_DEPTH) { res.problems.push('入れ子が深すぎる'); return; }
     const state = stateFor(c.scope);
+    const immediateWaitPidNames = new Set(state.waitPidNames);
+    state.waitPidNames.clear(); // A kind proof lasts only until the next visited command.
     if (!c.definitionName && !info.incomplete) info = resolveCommand(c.words, state.functions);
     for (const [frame, name] of state.loopBindings) if (!(c.effects || []).includes(frame)) {
       state.values.set(name, null); state.loopBindings.delete(frame); state.pathProofs.delete(name);
@@ -3828,6 +4012,14 @@ function inspectWithinBudget(cmd, options = {}) {
       if (!info.name && !info.dynamicName && !info.wrapped && assignment) rememberValue(expansionState, assignment, conditional);
     }
     if (c.arrayInitializer) {
+      // The parser emits a compound initializer after its leading name= word.
+      // Its elements are DATA, but they replace that parent's scalar/array value;
+      // the temporary empty scalar and saved-$! kind are no longer proofs.
+      const owner = stateFor(c.scope.parent || c.scope);
+      owner.waitPidNames.delete(c.arrayInitializer);
+      owner.values.set(c.arrayInitializer, null);
+      owner.pathProofs.delete(c.arrayInitializer);
+      for (const key of owner.values.keys()) if (key.startsWith(c.arrayInitializer + '[')) owner.values.set(key, null);
       for (const word of c.words) {
         const indexed = /^\[([^\]]*)\]=(.*)$/s.exec(word.text);
         if (indexed && !state.associatives.has(c.arrayInitializer) && !numericArithmetic(indexed[1], state)) {
@@ -4112,6 +4304,12 @@ function inspectWithinBudget(cmd, options = {}) {
         for (const [name, definition] of after.functions) state.functions.set(name, definition);
         for (const name of after.exportedFunctions) state.exportedFunctions.add(name);
         state.exportedFunctionUnknown ||= after.exportedFunctionUnknown;
+        state.commandNotFoundReadonly ||= after.commandNotFoundReadonly;
+        state.waitPidSourceUnknown ||= after.waitPidSourceUnknown;
+        for (const name of after.waitPidUnsafeNames) state.waitPidUnsafeNames.add(name);
+        // A body walk is not a reachability proof: return/control flow can
+        // prevent a syntactically visited unset. Never certify caller removal
+        // solely from a function body's absent callback state.
         state.functionAutoExport = after.functionAutoExport;
         state.xtrace = after.localShellOptions && state.xtrace !== after.xtrace ? null : after.xtrace;
         state.promptvars = after.promptvars;
@@ -4136,6 +4334,12 @@ function inspectWithinBudget(cmd, options = {}) {
       }
       return;
     }
+    const commandNotFound = commandNotFoundSelection(info, state, reservedTime);
+    if (commandNotFound) {
+      invocation.commandNotFoundRole = commandNotFound;
+      invocation.commandNotFoundSourceUnknown = true;
+      res.problems.push('command_not_found_handle が failed command lookup で選択され得るため、callback の実行条件・source を確認できない');
+    }
     const persistentValues = (!info.name && !info.dynamicName && !info.wrapped) ||
       info.persistsEnv || (builtin && (SPECIAL_BUILTINS.has(info.name) || EXPORT_LIKE.has(info.name)));
     const declaration = builtin && EXPORT_LIKE.has(info.name);
@@ -4145,12 +4349,31 @@ function inspectWithinBudget(cmd, options = {}) {
     if (builtin && c.scope.functionBody && info.name === 'local' && info.args.some(word => !word.dynamic && word.text === '-')) {
       state.localShellOptions = true; // Bash versions differ; an altered trace mode is not a restoration proof.
     }
+    // A readonly function can survive unset -f. Keep this attribute sticky;
+    // neither conditional declaration nor a later definition proves its removal.
+    if (builtin && !info.nonExec && ['readonly', 'declare', 'typeset'].includes(info.name)) {
+      const opts = declarationOptions(info.args);
+      const has = flag => opts.some(option => option[0] === '-' && option.slice(1).includes(flag));
+      const operands = info.args.slice(opts.length).filter(word => word.text !== '--');
+      if (has('f') && !has('p') && (info.name === 'readonly' || has('r')) &&
+          operands.some(word => word.dynamic || word.text === 'command_not_found_handle')) {
+        state.commandNotFoundReadonly = true;
+      }
+    }
     if ((builtin || reservedTime) && !info.nonExec && info.name === 'unset' && info.nameWord?.text === 'unset') {
       const selection = functionUnsetSelection(invocation.args);
+      let functionScope = c.scope;
+      while (functionScope && !functionScope.functionBody) functionScope = functionScope.parent;
       if (!selection.variablesOnly) {
         const affected = selection.unknown ? [...state.functions.keys()] : selection.names;
         for (const name of affected) if (state.functions.has(name)) {
-          state.functions.set(name, { ...sourcePlaceholder(name), functionUnsetSourceUnknown: true });
+          const explicitFunctions = info.args.some(word => !word.dynamic && word.text === '-f') &&
+            info.args.filter(word => !word.dynamic && word.text.startsWith('-') && word.text !== '--').every(word => word.text === '-f');
+          const definition = state.functions.get(name);
+          if (name === 'command_not_found_handle' && !functionScope && explicitFunctions && !selection.unknown && !conditional &&
+              !state.searchChanged && !state.commandNotFoundReadonly && definition.functionBody && !definition.functionConditional) {
+            state.functions.delete(name);
+          } else state.functions.set(name, { ...sourcePlaceholder(name), functionUnsetSourceUnknown: true });
         }
       }
     }
@@ -4168,6 +4391,18 @@ function inspectWithinBudget(cmd, options = {}) {
     }
     const integerDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*i[A-Za-z]*$/.test(option));
     const associativeDeclaration = !declarationQuery && declOptions.some((option) => /^-[A-Za-z]*A[A-Za-z]*$/.test(option));
+    if (builtin && !info.nonExec && !declarationQuery && ['readonly', 'declare', 'typeset', 'local'].includes(info.name)) {
+      const opts = declarationOptions(info.args);
+      const has = flag => opts.some(option => option[0] === '-' && option.slice(1).includes(flag));
+      if (!has('f') && !has('F') && (info.name === 'readonly' || has('r') || has('n'))) {
+        const words = info.args.slice(opts.length).filter(word => word.text !== '--');
+        if (has('n') || words.some(word => word.dynamic)) state.waitPidSourceUnknown = true;
+        for (const word of words) {
+          const name = /^([A-Za-z_][A-Za-z0-9_]*)(?:=|$)/.exec(word.text)?.[1];
+          if (name) state.waitPidUnsafeNames.add(name);
+        }
+      }
+    }
     const indexReferenceNames = new Set();
     if (builtin && !declarationQuery && ['declare', 'typeset', 'local'].includes(info.name) &&
         declOptions.some((option) => /^-[A-Za-z]*n[A-Za-z]*$/.test(option))) {
@@ -4200,10 +4435,20 @@ function inspectWithinBudget(cmd, options = {}) {
       .concat(declaration && !declarationQuery ? info.args : []);
     for (const word of valueWords) {
       const assignment = scalarAssignment(word);
+      // Assignment lists are ordered. A later write/append/index update in the
+      // same simple command cannot retain an earlier saved-$! kind proof.
+      if (assignment) state.waitPidNames.delete(assignment.name);
+      else if (word.dynamic) state.waitPidNames.clear();
       const prefix = info.assignRaws.includes(word.raw) && !info.args.includes(word);
       const valueConditional = conditional || (!!info.name && prefix);
       const canRemember = prefix ? ((!info.name && !info.dynamicName && !info.wrapped) || info.persistsEnv ||
         (builtin && SPECIAL_BUILTINS.has(info.name))) : persistentValues;
+      if (assignment && canRemember && !valueConditional && !info.name && !info.wrapped &&
+          !assignment.append && assignment.index === undefined &&
+          !state.waitPidSourceUnknown && !state.waitPidUnsafeNames.has(assignment.name) &&
+          (word.raw === assignment.name + '=$!' || word.raw === assignment.name + '="$!"')) {
+        state.waitPidNames.add(assignment.name);
+      }
       if (assignment && canRemember && state.promptRefNames.has(assignment.name)) state.identitySources.set('PS4', null);
       if (assignment && canRemember && trackedEnv(assignment.name)) {
         const prior = state.identityExports.get(assignment.name) ?? false;
@@ -4347,6 +4592,40 @@ function inspectWithinBudget(cmd, options = {}) {
         state.values.set(target[1], null);
         if (info.name === 'unset') state.associatives.delete(target[1]);
         for (const key of state.values.keys()) if (key.startsWith(target[1] + '[')) state.values.set(key, null);
+      }
+    }
+    if (builtin && !info.nonExec && info.name === 'wait') {
+      const effect = waitAssignmentTarget(invocation.args, immediateWaitPidNames);
+      invocation.waitAssignmentRole = effect;
+      const word = effect.targetWord;
+      const target = word && !word.dynamic && !word.ansiCUnknown && !word.globExpanded &&
+        !word.braceExpanded && !word.tildeExpanded && /^([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?$/.exec(word.text);
+      if (effect.unknown || word && !target) {
+        res.problems.push('wait -p の option/代入先が不明で、初期 unset と配列の添字が評価する source を検査できない');
+        state.valuesTainted = true;
+        state.pathProofs.clear();
+        for (const name of state.identitySources.keys()) state.identitySources.set(name, null);
+        for (const root of CONFIG_ROOT_ENV) state.env.add(root);
+        for (const name of HELPER_SOURCE_ENV) state.helperEnv.add(name);
+        state.pathChanged = true;
+        state.outboundEnvironmentUnknown = true;
+      }
+      if (target) {
+        if (target[2] !== undefined && !numericArithmetic(target[2], state)) {
+          res.problems.push('wait -p が初期 unset / 代入で評価する配列の添字を静的な数値と確かめられない');
+        }
+        const name = target[1];
+        // wait -p unsets before waiting, including a later invalid-child error.
+        // The old value/export/context proof cannot survive by assuming a reap.
+        if (state.promptRefNames.has(name)) state.identitySources.set('PS4', null);
+        if (trackedEnv(name)) state.identitySources.set(name, null);
+        if (name === 'PS4') state.identitySources.set(name, null);
+        state.values.set(name, null);
+        state.pathProofs.delete(name);
+        if (affectsGitEnvironment(name)) state.env.add(name);
+        if (HELPER_SOURCE_ENV.has(name)) state.helperEnv.add(name);
+        if (name === 'PATH' || name === 'FPATH') state.pathChanged = true;
+        for (const key of state.values.keys()) if (key.startsWith(name + '[')) state.values.set(key, null);
       }
     }
     if (builtin && info.name === 'printf') {
@@ -4515,7 +4794,7 @@ function inspectWithinBudget(cmd, options = {}) {
             (!state.identitySources.get('PS4') || /[$`]/.test(state.identitySources.get('PS4').text))) {
           res.problems.push('registered trap が変更する PS4/xtrace/promptvars の callback state と後続の prompt source を検査できない');
         }
-        if (sourceChangesValues(inner)) state.valuesTainted = true;
+        if (sourceChangesValues(inner)) { state.valuesTainted = true; state.waitPidSourceUnknown = true; state.waitPidNames.clear(); }
         if (inner.invocations.some((entry) =>
           (entry.name === 'set' && positionalSet(entry.args)) ||
           (entry.name === 'shift' && (!entry.args[0] || entry.args[0].dynamic || entry.args[0].text !== '0')))) state.positionalsTainted = true;
@@ -4528,7 +4807,7 @@ function inspectWithinBudget(cmd, options = {}) {
       for (const script of alias.scripts) {
         const inner = inspectMediatedSource(script, { sourceDepth, deferWatchSourceProblems: options.deferWatchSourceProblems === true, deferParallelSourceProblems: options.deferParallelSourceProblems === true, deferDbusRunSessionSourceProblems: options.deferDbusRunSessionSourceProblems === true });
         if (inner.problems.length) res.problems.push(`alias の値を検査できない（${inner.problems[0]}）`);
-        if (sourceChangesValues(inner)) state.valuesTainted = true;
+        if (sourceChangesValues(inner)) { state.valuesTainted = true; state.waitPidSourceUnknown = true; state.waitPidNames.clear(); }
       }
       if (alias.scripts.length || alias.unknown) state.searchChanged = true;
       return;
@@ -5700,7 +5979,7 @@ module.exports = {
   gitOperationRole,
   gitHttpCookieRole,
   gitHttpMetadataRole,
-  gitTransportSourceRole,
+  gitPushRepository, gitTransportClientRole, gitTransportSourceRole,
   parseAddArgs,
   isSecretPath,
   readOnlyGitMode,

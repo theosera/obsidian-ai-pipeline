@@ -20,9 +20,11 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 
 <!-- PR191:R57:README:BEGIN -->
 
-R60修復候補は、R59の共有入力上限（JSON全体1 MiB・decoded commandのUTF-8 32 KiB）に加え、Hookの一起動全体にcommand visit 4,096回と、解析へ渡すsource累計262,144 UTF-16 code unitsの上限を置く。関数呼出し・子sourceの再帰に加え、後段から繰り返す解析や直接のshell解析も同じ予算を消費し、超過は部分的な解析結果を許可に使わず即座にUNKNOWNで停止する。長い正常な本文・heredoc、多数の通常関数呼出し、重複する確認も対象となる。同じ目的・順序・cwd/env/sourceを保てる対応形がなければownerへ不足条件を確認する。[上限・正常対照・既知の限界](docs/security/git-command-guards.md#current-guard-contract)を参照する。これらの上限は全構文の実行時間保証ではなく、新sourceの全件・CI・fresh reviewも別に確認する。
+[R61追加修復の契約](docs/security/git-command-guards.md#current-guard-contract)は、見つからないcommandで実選択されるhandler、`wait -p`の代入先と後続proof、Gitのactive operation/routeで選ぶ実効helperを扱う。選択条件・正常対照・停止費用を示し、新sourceの全件・同head CI・fresh reviewの完了は別に確認する。未使用のhandler、通常scalar/PID待機、設定getter・inactive status等の正常対照を維持できるかを確認する。実選択source・代入先・設定contextを確認できなければUNKNOWNとして理由を示す。
 
-[現在のガード契約](docs/security/git-command-guards.md#current-guard-contract)を参照する。R57修復候補ではBusyBox内部appletの未資格、sudo policyが選ぶroot、子sourceの実PATH/FPATH条件、parser問題と独立FORBIDDENの優先を分ける。普通のactive BusyBoxやabsolute childを選ぶsudoもUNKNOWNになり得る費用とownerへの出口を契約に示す。元8,696入力・oracleとR54の654宣言を保持し、sudoの新11制限は明示policy契約として元結果と別に記録する。新sourceの全件・CI・両fresh reviewと指摘処理は別の受入条件である。以下のround別記述は当時の履歴である。
+R59/R60の共有入力上限（JSON全体1 MiB・decoded commandのUTF-8 32 KiB）と、Hookの一起動全体のcommand visit 4,096回・source累計262,144 UTF-16 code unitsを引き継ぐ。後段の追加解析・直接のshell解析も同じ予算を使い、超過は部分結果を許可根拠にせず即座にUNKNOWN。長い通常本文・heredoc・多数の関数呼出しも止まり得る。同じ目的・対象・操作・順序・cwd/env/config/sourceを保てる対応形がなければownerへ不足条件を示す。[R60の資源境界と限界](docs/security/git-command-guards.md#r60-resource-contract)を参照する。
+
+現在の入口は `current-guard-contract` に固定し、[R57の契約](docs/security/git-command-guards.md#r57-current-contract)と以下のround別本文・件数・日時は当時の履歴として読む。元8,696入力・oracleと既存profile/policy契約を保ち、新sourceの全件・同head CI・両fresh reviewと指摘処理・公開本文一致は別に確認する。merge判断はownerに残す。
 
 <!-- PR191:R57:README:END -->
 

@@ -14,7 +14,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
-const { isSecretPath } = require('../lib/git-guard-common.cjs');
+const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
+const { isSecretPath } = require(path.join(hooks, 'lib/git-guard-common.cjs'));
 
 // Resolve the installed Git before fixture PATH stubs are introduced. Retain
 // usable tool paths while isolating Git configuration from the user's account.
@@ -41,7 +42,7 @@ const unavailableCallerLocales = callerLocaleCandidates.filter(locale => locale 
 
 
 const scriptPath = process.env.SECRET_PATH_PARITY_SCRIPT_SOURCE ||
-  path.resolve(__dirname, '../../skills/vault-ops/scripts/safe-vault-push-perm.sh');
+  path.resolve(hooks, '../skills/vault-ops/scripts/safe-vault-push-perm.sh');
 const source = fs.readFileSync(scriptPath, 'utf8');
 function assignment(name, optional = false) {
   const matches = [...source.matchAll(new RegExp(`^  ${name}=(.*)$`, 'gm'))];

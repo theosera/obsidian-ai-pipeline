@@ -73,9 +73,11 @@ cat .env  # → permission denied (deny rule に該当)
 
 <!-- PR191:R57:CLAUDE-README:BEGIN -->
 
-R60修復候補はR59の入力上限（JSON全体1 MiB・decode済みcommandのUTF-8 32 KiB）を維持し、Hookの一起動全体でcommand visit 4,096回とsource累計262,144 UTF-16 code unitsを上限にする。関数・子sourceを含む再帰、後段の追加解析、直接のshell解析で予算を共有し、不足時は部分結果を許可に使わず即座にUNKNOWNで停止する。長い正常な本文・heredoc、多数の通常関数呼出し、同じsourceの重複確認も止まり得る。同じ目的・操作順序・cwd/env/sourceを保つ対応形がなければownerへ確認する。[境界・正常対照・既知の限界](../docs/security/git-command-guards.md#current-guard-contract)を参照する。設定変更、新L3、全構文の時間保証は含まない。
+[現在の契約への固定入口](../docs/security/git-command-guards.md#current-guard-contract)に、R61修復候補を置く。見つからないcommandで実選択されるhandler、`wait -p`のtarget検証と後続proofの無効化、Gitのactive operation/routeで選ぶ実効helperが対象である。選択条件・正常対照・停止費用・受入条件を示す。新sourceの全件・同head CI/reviewの完了は別に確認する。未使用handler、通常scalar/PID待機、qualifiedな設定不在、getter/inactive statusの正常対照を保持できるかを検証する。
 
-[現在のガード契約](../docs/security/git-command-guards.md#current-guard-contract)を入口とする。R57修復候補はBusyBoxの内部source、sudo policyのroot、子sourceへ渡す実PATH条件、parser問題と独立FORBIDDENの優先を扱う。通常のactive appletやsudoのabsolute ordinary childもUNKNOWNになり得る。真正query・表示DATA・各guardの担当を保ち、必要なwrapperを外すことを同目的の代替にしない。元8,696期待とR54宣言を保持し、新sudo制限の11入力を別policy契約に記録する。新headの受入は全件・CI・両fresh reviewと指摘処理で別に確認する。以下のround別記述は履歴である。
+共有入力のJSON全体1 MiB・decoded commandのUTF-8 32 KiBと、Hookの一起動全体のcommand visit 4,096回・source累計262,144 UTF-16 code unitsを引き継ぐ。関数・子source、後段の追加解析、直接のshell解析も同じ予算を使い、不足時は部分結果を許可に使わず即座にUNKNOWN。長い正常な本文・heredoc、多数の関数呼出し、重複確認も止まり得る。[R60の境界・正常対照・既知の限界](../docs/security/git-command-guards.md#r60-resource-contract)を参照する。
+
+同じ目的・対象・操作・順序・必要なwrapper・argv・cwd/env/config/sourceを保てる対応形がなければownerへ不足条件を示す。設定変更・新L3の資格を含めない。[R57の歴史の契約](../docs/security/git-command-guards.md#r57-current-contract)と以下のround別記述は当時の履歴である。元入力・元期待・既存profile/policy契約を保持し、新sourceの全件・同head CI・両fresh review・指摘処理・本文一致を別に確認する。
 
 <!-- PR191:R57:CLAUDE-README:END -->
 

@@ -98,13 +98,13 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 
 <!-- PR191:R57:PLAYBOOK:BEGIN -->
 
-### 現在のガード契約（R60解析量上限の修復候補）
+### 現在のガード契約（R61修復候補）
 
-3本のHookは共有入口でJSON全体を1 MiB、decoded commandをUTF-8で32 KiBまでに制限する。R60候補はさらにHookの一起動全体をcommand visit 4,096回・source累計262,144 UTF-16 code unitsまでとし、関数・子sourceの再帰、後段の追加解析、直接のshell解析で予算を共有する。不足時は部分解析結果を許可に使わず即座にUNKNOWNで停止する。長い正常なinline本文・heredoc、多数の通常関数呼出し、同じsourceの重複確認も対象。同じ目的・操作・順序・cwd/env/sourceを保つ対応形がなければownerへ不足条件を示し、分割による状態や原子性の変更、別場所へのコピー、Hook無効化を自動代替にしない。上限は全構文の時間保証ではなく、実CLIの追加資格も含まない。
+[現在の契約・正常対照・停止後の出口](docs/security/git-command-guards.md#current-guard-contract)を固定入口とする。R61は、見つからないcommandで実選択されるhandler、`wait -p`のtarget検証と対象に関係する後続proofの無効化、Gitのactive operation/routeで選ぶ実効helperを確認する意図である。未検査の実行source・代入先・設定contextはUNKNOWNとして不足点を示す。未使用handler、通常scalar/PID待機、qualifiedな設定不在、config getter・inactive status等の正常対照を保持できることを受入条件にする。新sourceの全件・同head CI/review完了は別に確認する。
 
-[現在の契約・正常対照・停止後の出口](docs/security/git-command-guards.md#current-guard-contract)を参照する。BusyBox内部appletは外部の同名clientのproofを借用しない。未検査sudo policyのrootはabsolute ordinary childでもUNKNOWNを残すが、独立した禁止はFORBIDDENを維持する。実PATH/FPATH条件は子shell/functionへ渡し、parser問題は各guardの独立した禁止を検査した後にUNKNOWNとして返す。
+3本のHookの共有入口はJSON全体1 MiB、decoded commandのUTF-8 32 KiBを上限とする。R60から、Hookの一起動全体でcommand visit 4,096回・source累計262,144 UTF-16 code unitsを上限にし、関数・子sourceの再訪問、後段の追加解析、直接のshell解析でも予算を共有する。不足時は部分結果を許可に使わず即座にUNKNOWN。長い通常本文・heredoc、多数の関数呼出し、重複確認も停止し得る。UTF-8とUTF-16の単位・独立library利用・実時間保証の限界は[R60の資源境界](docs/security/git-command-guards.md#r60-resource-contract)に残す。
 
-通常のactive BusyBoxやsudo利用にも停止費用がある。真正query・表示DATA・doasとの違いを保ち、必要なsudoを削除した経路を同目的の代替とはしない。元8,696入力・元期待・R54の654宣言を保持し、sudoの11入力への新制限は別policy契約と元結果を併記する。新sourceの全件・同head CI・両fresh full・指摘処理・本文一致は別に確認し、native動作や新L3の資格を主張しない。以下のround別記述は当時の履歴である。
+同じ目的・対象・操作・順序・必要なwrapper・argv・cwd/env/config/sourceを保てる対応形がなければownerへ不足条件を示す。分割による状態/原子性の変更、別場所へのコピー、Hook無効化を自動代替にしない。元8,696入力・元期待・既存profile/policy契約を保持し、新sourceの全件・同head CI・両fresh full・指摘処理・本文一致を別に確認する。実秘密・native送信・新L3の資格を主張しない。[R57の契約](docs/security/git-command-guards.md#r57-current-contract)と以下のround別記述は当時の履歴である。merge判断はownerに残す。
 
 <!-- PR191:R57:PLAYBOOK:END -->
 

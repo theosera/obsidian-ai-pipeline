@@ -3,7 +3,9 @@
 // Pure source/operation contracts: no Git child, fixture, network, or native command.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const readers = require('../lib/git-precommit-readers.cjs');
+const path = require('node:path');
+const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
+const readers = require(path.join(hooks, 'lib/git-precommit-readers.cjs'));
 
 const w = text => ({ text, literalValue: text, dynamic: false, dynamicMaySplit: false });
 const dynamic = () => ({ text: '$DUMMY', dynamic: true, dynamicMaySplit: false });

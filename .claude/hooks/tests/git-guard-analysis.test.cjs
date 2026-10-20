@@ -8,7 +8,8 @@
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { inspect, parseShell, parseCommitArgs, parseAddArgs, isSecretPath, grepPagerEffect, parseGitObjectRoute, parseMergeMessageArgs } = require('../lib/git-guard-common.cjs');
+const selectedHooksRoot = require('node:path').resolve(process.argv[2] || require('node:path').join(__dirname, '..'));
+const { inspect, parseShell, parseCommitArgs, parseAddArgs, isSecretPath, grepPagerEffect, parseGitObjectRoute, parseMergeMessageArgs } = require(require('node:path').join(selectedHooksRoot, 'lib/git-guard-common.cjs'));
 
 /** Obtain the single supported Git invocation without selecting a fallback or guessing its target. */
 function singleGit(source) {
@@ -583,7 +584,7 @@ test('editor capability consumes commit and merge argv values before recognizing
 });
 
 test('coproc reserved source stops while quoted/help/initializer DATA retains its role', () => {
-  const { parseShell } = require('../lib/git-guard-common.cjs');
+  const { parseShell } = require(require('node:path').join(selectedHooksRoot, 'lib/git-guard-common.cjs'));
   for (const source of ['coproc printf DUMMY', 'coproc job { printf DUMMY; }',
     '! coproc printf DUMMY', 'co\\\nproc printf DUMMY', 'printf %s "$(coproc printf DUMMY)"']) {
     assert.deepEqual(parseShell(source).unsupportedSources.map(x => x.kind), ['coproc']);
@@ -627,7 +628,7 @@ test('unresolved named array and scalar executables stop while proven positional
 });
 
 test('hash-object distinguishes database writes, terminal help and consumed or terminated DATA', () => {
-  const { gitObjectInputDecision } = require('../lib/git-guard-common.cjs');
+  const { gitObjectInputDecision } = require(require('node:path').join(selectedHooksRoot, 'lib/git-guard-common.cjs'));
   for (const [source, mode, writesObject] of [
     ['git hash-object -t commit -w public.commit', 'write', true],
     ['git hash-object -wtblob a.txt', 'write', true],
@@ -649,7 +650,7 @@ test('hash-object distinguishes database writes, terminal help and consumed or t
 });
 
 test('pre-commit config metadata checks keys rather than values and exempts supported display and identity settings or stdout usage', () => {
-  const { preCommitConfigKey } = require('../lib/git-guard-common.cjs');
+  const { preCommitConfigKey } = require(require('node:path').join(selectedHooksRoot, 'lib/git-guard-common.cjs'));
   assert.equal(preCommitConfigKey(singleGit('git -c color.ui=false status')), null);
   assert.equal(preCommitConfigKey(singleGit('git -c core.quotePath=false status')), null);
   assert.equal(preCommitConfigKey(singleGit('git -c advice.statusHints=false status')), null);
@@ -803,7 +804,7 @@ test('R15 function export metadata follows function calls, repeated child scopes
 });
 
 test('R15 imported function source placeholders fail on selection before wrapper handling and keep unused DATA distinct', () => {
-  const { inspectMediatedSource } = require('../lib/git-guard-common.cjs');
+  const { inspectMediatedSource } = require(require('node:path').join(selectedHooksRoot, 'lib/git-guard-common.cjs'));
   const mediated = inspectMediatedSource('env ordinary', { initialFunctionSourceNames: ['env'], initialExportedFunctionNames: ['env'] });
   assert.equal(mediated.invocations[0].functionCallName, 'env');
   assert.ok(mediated.problems.length);
@@ -1865,8 +1866,8 @@ test('R33 selected SSL backend environment remains a named source distinct from 
 
 
 {
-const src=require('node:fs').readFileSync(process.env.R33_RP04_EGRESS_SOURCE || require('node:path').join(__dirname,'..','block-secret-egress.cjs'),'utf8');
-const g=require(process.env.R33_RP04_COMMON_SOURCE || require('node:path').join(__dirname,'..','lib','git-guard-common.cjs'));
+const src=require('node:fs').readFileSync(process.env.R33_RP04_EGRESS_SOURCE || require('node:path').join(selectedHooksRoot,'block-secret-egress.cjs'),'utf8');
+const g=require(process.env.R33_RP04_COMMON_SOURCE || require('node:path').join(selectedHooksRoot,'lib','git-guard-common.cjs'));
 const take=(a,b)=>src.slice(src.indexOf(a),src.indexOf(b,src.indexOf(a)));
 const code=take('function knownWord(word)','/** Bash\'s first help/version')+take('function rsyncPoptConfigRole(invocation)','function rsyncRemoteHelper(invocation)')+';globalThis.role=rsyncPoptConfigRole;';const ctx={};require('node:vm').runInNewContext(code,ctx);const role=ctx.role;
 const view=s=>g.inspect(s,{trackOutboundEnvironment:true,initialOutboundEnvironmentNames:[]});
@@ -1892,7 +1893,7 @@ test('final caller is after every original deny and before final allow',()=>{con
 {
 'use strict';
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),test=require('node:test');
-const hooks=require('node:path').resolve(__dirname,'..'),source=fs.readFileSync(hooks+'/block-secret-egress.cjs','utf8'),common=require(hooks+'/lib/git-guard-common.cjs');
+const hooks=selectedHooksRoot,source=fs.readFileSync(hooks+'/block-secret-egress.cjs','utf8'),common=require(hooks+'/lib/git-guard-common.cjs');
 function part(a,b){const i=source.indexOf(a),j=source.indexOf(b,i+a.length);assert.ok(i>=0&&j>i);assert.equal(source.indexOf(a,i+1),-1);return source.slice(i,j);}
 const extracted=part('function knownWord(word) {',"/** Bash's first help/version")+'\n'+part('function socketAuthenticationLiteralWord(word) {','/** Apple nc56');
 const api=vm.runInNewContext(extracted+'\n;({socketAuthenticationRole,ncatAclDnsVerdict,ncatLuaSourceVerdict})',{guard:common,outboundPayloadVerdict:(i,words)=>words.some(w=>!w||w.raw?.includes('R34_UNPROVEN'))?'UNKNOWN':words.some(w=>w.dynamic)?'FORBIDDEN':false});
@@ -2413,8 +2414,8 @@ test('R34 watch query keeps outer redirection metadata',()=>{const i=R34WATCH_on
 {
   const r34Test = require('node:test'), r34Assert = require('node:assert/strict');
   const r34FS = require('node:fs'), r34Path = require('node:path'), r34VM = require('node:vm');
-  const r34Guard = require(process.env.R34_COMMON_SOURCE || r34Path.join(__dirname, '../lib/git-guard-common.cjs'));
-  const r34Source = r34FS.readFileSync(process.env.R34_EGRESS_SOURCE || r34Path.join(__dirname, '../block-secret-egress.cjs'), 'utf8');
+  const r34Guard = require(process.env.R34_COMMON_SOURCE || r34Path.join(selectedHooksRoot, 'lib/git-guard-common.cjs'));
+  const r34Source = r34FS.readFileSync(process.env.R34_EGRESS_SOURCE || r34Path.join(selectedHooksRoot, 'block-secret-egress.cjs'), 'utf8');
   const r34Take = (a, b) => { const i = r34Source.indexOf(a), j = r34Source.indexOf(b, i); r34Assert.ok(i >= 0 && j > i); return r34Source.slice(i, j); };
   const r34Context = { require, Map, Set, ...require('./executable-role-fixture.cjs') };
   r34VM.runInNewContext(
@@ -2568,7 +2569,7 @@ test('R34 watch query keeps outer redirection metadata',()=>{const i=R34WATCH_on
 // R35 selected curl resolver / implicit IPFS route contracts. Source strings are DATA only.
 {
   const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-  const hooks = process.env.R35_HOOKS || path.resolve(__dirname, '..');
+  const hooks = process.env.R35_HOOKS || selectedHooksRoot;
   const source = fs.readFileSync(path.join(hooks, 'block-secret-egress.cjs'), 'utf8');
   const common = require(path.join(hooks, 'lib/git-guard-common.cjs'));
   const part = (a, b) => { const start = source.indexOf(a); assert.notEqual(start, -1); const end = source.indexOf(b, start); assert.ok(end > start); return source.slice(start, end); };
@@ -3282,7 +3283,7 @@ test('R36 inline proof repair does not grant unknown, invalid or generated calle
 'use strict';
 // Commands are parser DATA. This fragment does not run OpenSSL, a Hook or a network client.
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),test=require('node:test'),assert=require('node:assert/strict');
-const hooks=process.argv[2]||path.join(__dirname,'..'),guard=require(path.join(hooks,'lib/git-guard-common.cjs')),source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
+const hooks=selectedHooksRoot,guard=require(path.join(hooks,'lib/git-guard-common.cjs')),source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
 const helpers=source.slice(source.indexOf('function knownWord(word)'),source.indexOf('/** Bash\'s first help/version'));
 assert.ok(source.indexOf('function knownWord(word)')>=0 && source.indexOf("/** Bash's first help/version")>source.indexOf('function knownWord(word)'));
 const selected=source.slice(source.indexOf('/** R36 bounded OpenSSL/LibreSSL'),source.indexOf('function networkInvocation(invocation)'));
@@ -3428,7 +3429,7 @@ test('R37 exact installed setarch aliases keep source and query contracts',()=>{
 test('R37 printed DATA and real local function preserve external distinction',()=>{assert.equal(r37Last("printf '%s' 'flock --help'").name,'printf');const a=inspect('flock() { printf ordinary; }; flock /tmp/x');assert.deepEqual(a.problems,[]);const calls=a.invocations.filter(i=>i.definitionName===null);assert.ok(calls.some(i=>i.name==='flock'&&!i.wrapperNames.includes('flock')&&!i.nonExec));assert.ok(calls.some(i=>i.name==='printf'));});
 
 test('R37 client lookup identity retains PATH and explicit-program context', () => {
-  const common = require('../lib/git-guard-common.cjs');
+  const common = require(require('node:path').join(selectedHooksRoot, 'lib/git-guard-common.cjs'));
   const cases = [
     ["PATH=/tmp c''url -q https://example.invalid", 'curl', true, false],
     ["c''url -q https://example.invalid", 'curl', false, false],
@@ -3445,7 +3446,7 @@ test('R37 client lookup identity retains PATH and explicit-program context', () 
 });
 
 test('R37 wrapper query retains actual program source independently of argv0', () => {
-  const wrapperGuard = require('../lib/git-guard-common.cjs');
+  const wrapperGuard = require(require('node:path').join(selectedHooksRoot, 'lib/git-guard-common.cjs'));
   for (const [command, program, argv0] of [
     ['setarch --help', 'setarch', 'setarch'],
     ['/tmp/setarch --help', '/tmp/setarch', '/tmp/setarch'],
@@ -3496,7 +3497,7 @@ test('R37HF printed hyphen syntax remains DATA',()=>{
 'use strict';
 // Parser DATA only; no ssh-keyscan/Wget, Hook, resolver, native client or network execution.
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),test=require('node:test'),assert=require('node:assert/strict');
-const hooks=process.argv[2]||path.join(__dirname,'..'),guard=require(path.join(hooks,'lib/git-guard-common.cjs')),source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
+const hooks=selectedHooksRoot,guard=require(path.join(hooks,'lib/git-guard-common.cjs')),source=fs.readFileSync(path.join(hooks,'block-secret-egress.cjs'),'utf8');
 const between=(a,b)=>{const i=source.indexOf(a),j=source.indexOf(b,i+a.length);assert.ok(i>=0&&j>i);return source.slice(i,j)};
 const code=between('function knownWord(word)',"/** Bash's first help/version")+'\n'+between('function quotedAttachedOptionValue(','function arrayReaderCallback(')+'\n'+between('const WGET_VALUE_LONG =','/** Prove config/helper option roles')+'\n'+between('function wgetValueWord(','/** These existing parsed option combinations')+'\n'+between('/** OpenSSH 9.6p1: only address fields','function networkInvocation(')+'\n'+between('function wgetInvalidBodyOptions(','/** Wget defaults to implicit credential-file');
 const sandbox={};vm.runInNewContext(code+'\nthis.scan=sshKeyscanResolverRole;this.address=sshKeyscanAddressWord;this.wget=wgetPayloadRole;this.invalid=wgetInvalidBodyOptions;',sandbox,{timeout:1000});
@@ -3579,7 +3580,7 @@ test('R37FU tilde-generated function target is opaque while variable-only stays 
 // It does not execute the guard, grant permissions, inspect native DNS, or depend on a private namespace.
 function r38DnsRoleFor(source) {
   const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-  const code = fs.readFileSync(path.join(__dirname, '../block-secret-egress.cjs'), 'utf8');
+  const code = fs.readFileSync(path.join(selectedHooksRoot, 'block-secret-egress.cjs'), 'utf8');
   const literals = code.slice(code.indexOf('function knownWord(word)'), code.indexOf('/** Bash\'s first help/version'));
   const start = code.indexOf('// R38_DIRECT_DNS_ROLE_START'), end = code.indexOf('// R38_DIRECT_DNS_ROLE_END');
   assert.ok(start >= 0 && end > start && literals.includes('function literalSourceWord'));
