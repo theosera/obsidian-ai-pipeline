@@ -98,7 +98,9 @@ LLM セキュリティ週次レポート本文は **untrusted external input**�
 
 <!-- PR191:R57:PLAYBOOK:BEGIN -->
 
-### 現在のガード契約（R57修復候補）
+### 現在のガード契約（R59入力上限の修復候補）
+
+3本のHookは共有入口でJSON全体を1 MiB、decoded commandをUTF-8で32 KiBまでに制限し、超過を解析前のUNKNOWNとして停止する。長い正常なinline本文・heredocも対象。同じ目的・操作・順序・cwd/env/sourceを保つ対応形がなければownerへ不足条件を示し、分割による状態や原子性の変更、別場所へのコピー、Hook無効化を自動代替にしない。上限は全構文の時間保証ではなく、実CLIの追加資格も含まない。
 
 [現在の契約・正常対照・停止後の出口](docs/security/git-command-guards.md#current-guard-contract)を参照する。BusyBox内部appletは外部の同名clientのproofを借用しない。未検査sudo policyのrootはabsolute ordinary childでもUNKNOWNを残すが、独立した禁止はFORBIDDENを維持する。実PATH/FPATH条件は子shell/functionへ渡し、parser問題は各guardの独立した禁止を検査した後にUNKNOWNとして返す。
 

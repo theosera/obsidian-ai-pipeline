@@ -15,9 +15,30 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-/** Read the hook payload; an unreadable stdin is treated as an empty payload. */
-function readStdin() {
-  try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
+// Finite input volume is a prerequisite for inspection, not a safety verdict.
+// Enforce it before JSON.parse, raw backstops, or the synchronous shell parser.
+const MAX_HOOK_INPUT_BYTES = 1024 * 1024;
+const MAX_HOOK_COMMAND_BYTES = 32 * 1024;
+
+/** Read at most the supported JSON envelope plus one byte, without waiting for EOF after overflow. */
+function readStdin(guardLabel) {
+  const chunks = [];
+  const chunk = Buffer.allocUnsafe(16 * 1024);
+  let total = 0;
+  try {
+    for (;;) {
+      const count = fs.readSync(0, chunk, 0, Math.min(chunk.length, MAX_HOOK_INPUT_BYTES + 1 - total), null);
+      if (count === 0) break;
+      total += count;
+      if (total > MAX_HOOK_INPUT_BYTES) {
+        deny(`${guardLabel}の入力 JSON が検査上限 1 MiB を超えます。解析時間を確保できないため停止します。同じ目的・操作・順序・cwd/env/source を保つ対応済みの小さい入力にできなければ owner に不足条件を確認してください。`, 'UNKNOWN');
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, count)));
+    }
+  } catch {
+    deny(`${guardLabel}の入力 JSON を読み取れませんでした。検査できないため実行をブロックします (fail-closed)。`, 'UNKNOWN');
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
 }
 
 /** Emit an explicit policy/unknown reason on the existing deny wire, bounded and flushed before exit. */
@@ -50,7 +71,7 @@ function readInput(guardLabel) {
   });
   let j;
   try {
-    j = JSON.parse(readStdin() || '{}');
+    j = JSON.parse(readStdin(guardLabel) || '{}');
   } catch {
     deny(`hook 入力を解釈できませんでした (fail-closed)。${guardLabel}を通せないため実行をブロックします。`);
   }
@@ -60,6 +81,11 @@ function readInput(guardLabel) {
     deny(`hook 入力が JSON のオブジェクトではありません (fail-closed)。${guardLabel}を通せないため実行をブロックします。`);
   }
   const cmd = (j && j.tool_input && typeof j.tool_input.command === 'string') ? j.tool_input.command : '';
+  // A UTF-16 length fast path avoids scanning an obviously oversized decoded command.
+  // Count UTF-8 as well: multibyte text must not enlarge the supported byte budget.
+  if (cmd.length > MAX_HOOK_COMMAND_BYTES || Buffer.byteLength(cmd, 'utf8') > MAX_HOOK_COMMAND_BYTES) {
+    deny(`${guardLabel}のコマンドが検査上限 32 KiB (UTF-8) を超えます。解析時間を確保できないため停止します。通常の長い本文・heredoc も対象です。同じ目的・操作・順序・cwd/env/source を保つ対応形式がなければ owner に確認してください。hook の無効化や別経路の実行を許可するものではありません。`, 'UNKNOWN');
+  }
   const inputCwd = (j && typeof j.cwd === 'string' && j.cwd !== '') ? j.cwd : null;
   const baseDir = inputCwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   return { cmd, baseDir };

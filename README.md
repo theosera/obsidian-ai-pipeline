@@ -20,6 +20,8 @@ OneTab からエクスポートした URL リストを読み込み、Web ペー�
 
 <!-- PR191:R57:README:BEGIN -->
 
+R59修復候補では、3本のHookの共有入口でJSON全体を1 MiB、decoded commandをUTF-8で32 KiBまでに制限する。超過は解析前にUNKNOWNで停止し、長い正常な本文・heredocも対象となる。同じ目的・順序・cwd/env/sourceを保てる対応形がなければownerへ不足条件を確認する。[入力上限と正常対照](docs/security/git-command-guards.md#current-guard-contract)を参照する。入力量の上限は全構文の実行時間保証ではなく、新sourceの全件・CI・fresh reviewも別に確認する。
+
 [現在のガード契約](docs/security/git-command-guards.md#current-guard-contract)を参照する。R57修復候補ではBusyBox内部appletの未資格、sudo policyが選ぶroot、子sourceの実PATH/FPATH条件、parser問題と独立FORBIDDENの優先を分ける。普通のactive BusyBoxやabsolute childを選ぶsudoもUNKNOWNになり得る費用とownerへの出口を契約に示す。元8,696入力・oracleとR54の654宣言を保持し、sudoの新11制限は明示policy契約として元結果と別に記録する。新sourceの全件・CI・両fresh reviewと指摘処理は別の受入条件である。以下のround別記述は当時の履歴である。
 
 <!-- PR191:R57:README:END -->

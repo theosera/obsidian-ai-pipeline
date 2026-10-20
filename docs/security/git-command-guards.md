@@ -20,11 +20,25 @@
 
 許可時の hook の無出力は、入力全体の安全認証でも owner の承認でもない。範囲外の処理に停止が出なかった場合も、保護済みとは記録しない。
 
-<!-- PR191:R57:CONTRACT:BEGIN -->
-
 <a id="current-guard-contract"></a>
 
-## 現在のガード契約（R57修復候補）
+## 現在のガード契約（R59入力上限の修復候補）
+
+head `5a8acb4192afa25ebac1b1609c53e849349e7554` へのCodex P1は、大きな入力の同期解析がegress Hookの10秒timeoutを超える可能性を指摘した。以下は入力量に関する局所的なUNKNOWN境界であり、新sourceの全件・CI・fresh review成功や実Claude入口でのtimeout停止を確認したという主張ではない。R57までの操作別・source別の判定は引き継ぐ。
+
+| 守る境界 | 対応範囲・判定 | 停止する通常作業・出口・試験 |
+| --- | --- | --- |
+| JSON入力の読取とdecode | 3本のHookが共有する入口でstdinを最大1 MiBまで読む。超過を示す次の1 byteを受け取った時点で、EOFやJSON.parseを待たずUNKNOWNのdenyを返す。読取失敗もUNKNOWN。 | コマンドが短くても、付随metadata等で入力全体が上限を超えると停止する。境界の直前・一致・超過、未完JSONと開いたstdinを別に確認する。 |
+| decoded commandの解析量 | JSON decode後のcommandはUTF-8で最大32 KiB。超過はraw正規表現やshell解析の前にUNKNOWN。ASCII・多byte文字・JSONのUnicode escapeを同じdecoded byte上限で扱う。 | 長い正常なinline本文・heredoc・複数操作も停止する。上限内で同じ目的・操作・順序・cwd/env/sourceを保てる書き方を検討し、保てなければownerへ不足条件を示す。分割で共有shell状態や原子性を変えたものを同目的の成功とはしない。別の場所へのコピーやHook無効化の許可にはしない。 |
+| 上限内の既存判定 | 上限内の入力は従来の操作・引数・source・payload判定へ渡す。通常のliteral DATAと、各Hookが担当する禁止の理由分類を対照に保つ。 | 大きい入力は内容を確認する前にUNKNOWNとなるため、旧版でFORBIDDENだった理由もUNKNOWNへ変わり得る。元8,696入力・期待を変えず差分を記録し、追加判定を一つずつ外した比較を別に行う。 |
+
+これは入力量の制限であり、全ての構文・実行環境で10秒以内に終了するという保証ではない。同期解析は通常のJavaScript timerだけでは割り込めないため、timeoutを増やす代わりに解析前で量を制限する。[Claude Code公式のtimeout仕様](https://code.claude.com/docs/en/hooks#timeouts)では、timeout時の出力は破棄され、PreToolUseはfailure時にblockするhost設定を除いてツール呼出しを停止しない。公式の`onFailure: "block"`はv2.1.295以降の機能だが、本修復では設定を変更せず、実CLIの追加試行も行わない。Hook DATAでのdenyと、実Claude dispatch・host timeoutの資格を分ける。
+
+<!-- PR191:R57:CONTRACT:BEGIN -->
+
+<a id="r57-current-contract"></a>
+
+## R57のガード契約（R59へ引き継ぐ既存境界）
 
 公開基点 `c1c5bd9dcccd0a42c769f473d5328cf1b651708d` への両full reviewは正常に完了したが、CodexのP1×2・P2×2とCodeRabbitの文書Minor×4が残った。以下はその修復条件であり、この段階では新sourceの全件・同head CI・両fresh review・指摘処理を完了したと主張しない。**この固定anchorを現在の契約の入口とし、以下のR56以前のround別本文・件数・日時は当時の履歴として読む。**
 
