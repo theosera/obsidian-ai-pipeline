@@ -67,7 +67,7 @@ Git/Vault filename判定で例外にするのは**final basenameの `.env.exampl
 | 未追跡 `.threat_reports.json` が rebase を阻む | 「remote が track 済 ∧ local が未追跡」のときだけ CI 版を正として **repo 外** (`~/.claude/vault-ops/backups/`) へ退避 | なし |
 | CI push が human push と競合 | CI 側も fetch→rebase→push ×4 (llm-sec-weekly.yml)。両 writer の戦略を rebase に統一 | rebase 衝突のみ loud-fail → 次 run が UPSERT 冪等で自己修復 |
 | iCloud による `.git` 破損 | wrapper 起動時に検知 (ref 名の空白 / packed-refs 異常 / `*.icloud` placeholder) して**修復せず停止** | 検知時 (ref 削除は破壊的操作)。復旧の正典 = vault 管理ノート「iCloud による git 破損」節 |
-| vault へ secret を commit しかける | staged を SECRET_RE で検査し該当だけ unstage | **常に停止 (唯一の必須ハード停止 = セキュリティ境界)** |
+| vault へ secret を commit しかける | staged filename を `SECRET_ERE` と `secret_template_scan_path` で検査し、確定した該当名だけ unstage (原本・境界は「Secret-pattern 同期 SLA」参照) | **常に停止 (唯一の必須ハード停止 = セキュリティ境界)** |
 
 ## 構成ファイル
 
@@ -191,7 +191,8 @@ LF 名は本文の非秘密性に関係なく読取境界で停止し、何も u
 - `.githooks/pre-push` 自体が iCloud に evict される (`*.icloud` placeholder 化) と git は
   hook 無しとして進む。根治は `.git`/hook の iCloud 分離 = handover #17 (保留、月 1 回以上
   再発したら着手)。
-- secret ゲートは **ファイル名ベース** (block-secret-git.cjs と同水準)。内容ベース検知は
+- secret ゲートは **ファイル名ベース**。共通判定の原本は `.claude/hooks/lib/git-guard-common.cjs` の
+  `SECRET_PATH_RE` / `isSecretPath` で、shell 側の対応と限界は上記 SLA を参照する。内容ベース検知は
   gitleaks 系統 (SLA 参照) の守備範囲。
 
 ## テスト
