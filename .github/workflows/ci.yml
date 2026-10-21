@@ -42,6 +42,88 @@ jobs:
         # malformed manifests before they slip into main (see PR #23 post-mortem).
         run: python3 .github/scripts/check-package-json-duplicates.py
 
+      - name: Provision pinned Git consumer for guard fixtures
+        timeout-minutes: 20
+        # The unchanged full bank includes allow-side consumer proofs pinned to
+        # Git 2.54.0. Runner-image Git versions are not interchangeable evidence.
+        # Install only in this ephemeral runner; no native transport is tested.
+        run: |
+          git_build="$(mktemp -d "$RUNNER_TEMP/git-guard-build.XXXXXX")"
+          trap 'rm -rf "$git_build"' EXIT
+          archive="$git_build/git-2.54.0.tar.xz"
+          curl --disable --fail --silent --show-error --location --proto '=https' \
+            https://www.kernel.org/pub/software/scm/git/git-2.54.0.tar.xz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            f689162364c10de79ef89aa8dbf48731eb057e34edbbd20aca510ce0154681a3 \
+            "$archive" | sha256sum --check --strict
+          tar -xJf "$archive" -C "$git_build"
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential libcurl4-openssl-dev libexpat1-dev libssl-dev \
+            zlib1g-dev perl python3
+          # The same prefix/features apply to compilation and installation.
+          # Preserve CLI helper/transport consumers; omit only GUI and localization.
+          git_make_args=(prefix=/usr NO_TCLTK=YesPlease NO_GETTEXT=YesPlease)
+          make -C "$git_build/git-2.54.0" -j2 "${git_make_args[@]}" all
+          sudo make -C "$git_build/git-2.54.0" "${git_make_args[@]}" install
+          /usr/bin/git --no-lazy-fetch --version
+
+      - name: Run complete Git guard suite (components, filename parity, full L2 bank)
+        timeout-minutes: 60
+        # Command strings in the L2 bank are Hook JSON DATA. Native Git creates
+        # disposable DUMMY fixtures; this does not exercise native transport or L3.
+        run: |
+          guard_home="$(mktemp -d "$RUNNER_TEMP/git-guard-home.XXXXXX")"
+          trap 'rm -rf "$guard_home"' EXIT
+          node_bin="$(dirname "$(command -v node)")"
+          # Keep caller configuration and credentials out of the owned fixtures.
+          # XDG_CONFIG_HOME and other selector overrides are absent, rather than
+          # changing the case-defined selection with an outer default.
+          env -i PATH="$node_bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin" HOME="$guard_home" TMPDIR="$RUNNER_TEMP" \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_SYSTEM=/dev/null LC_ALL=C \
+            bash --noprofile --norc -euo pipefail <<'GUARD_TESTS'
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { spawnSync } = require('node:child_process');
+          const guard = require('./.claude/hooks/lib/git-guard-common.cjs');
+          const readers = require('./.claude/hooks/lib/git-precommit-readers.cjs');
+          const git = guard.resolveTrustedGitExecutable({ text: 'git' }, process.env, process.cwd());
+          if (!git) throw new Error('CI needs Git in an independently trusted installation');
+          if (git !== fs.realpathSync('/usr/bin/git') || git !== fs.realpathSync('/bin/git')) {
+            throw new Error('Bare Git and the absolute fixture paths must select the same pinned installation');
+          }
+          const version = spawnSync(git, ['--no-lazy-fetch', '--version'], {
+            cwd: process.cwd(), env: process.env, encoding: 'utf8',
+          });
+          if (version.error || version.status !== 0 || version.stdout.trim() !== 'git version 2.54.0' ||
+              !readers.supportsInspectionHardening(version.stdout)) {
+            throw new Error('CI needs Git 2.54.0, actual --no-lazy-fetch support, and the separate fsmonitor floor: ' +
+              (version.error?.message || version.stderr || version.stdout));
+          }
+          console.log(JSON.stringify({ node: process.version, git, version: version.stdout.trim() }));
+          NODE
+          # Discover every component test; the standalone full-bank runner and
+          # filename parity retain their documented, separate invocation modes.
+          component_tests=()
+          for test_file in .claude/hooks/tests/*.test.cjs; do
+            case "$test_file" in
+              */git-guards.test.cjs|*/secret-path-parity.test.cjs) ;;
+              *) component_tests+=("$test_file") ;;
+            esac
+          done
+          test "${#component_tests[@]}" -gt 0
+          node --test "${component_tests[@]}"
+          node --test .claude/hooks/tests/secret-path-parity.test.cjs
+          # Preserve original assertion totals beside the explicit R54 selected-
+          # executable profile. Missing/unsupported selection is UNKNOWN, not
+          # evidence that the unavailable program's argv semantics were exercised.
+          # R57 separately records eleven new sudo policy-root restrictions;
+          # preserve original and pre-policy results, distinct from backend absence.
+          node .claude/hooks/tests/git-guards.test.cjs --executable-profile --r57-policy-contract
+          GUARD_TESTS
+
       - name: Run injection-gate tests (python, deterministic)
         # L1 (scan-threat-report.py) + L3 (gate_decision.py) の決定論回帰。
         # stdlib のみで pnpm install 不要のため依存インストールより先に走らせる。

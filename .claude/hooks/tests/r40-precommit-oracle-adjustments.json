@@ -1,0 +1,1355 @@
+{
+  "schema": "R40_VERSIONED_PRECOMMIT_ORACLE_ADJUSTMENTS_V1",
+  "baselineCount": 8586,
+  "baselineDefinitionsJSONSHA256": "ca889710ee94567674bc411cb3f7d87c8206eb304e1c5eef699188113b95247a",
+  "runtimeModuleSHA256": "c7fb90994ab81cf937820a4101ce409b9594a4b8719f4908a24cd052fa9b776b",
+  "publicParentHead": "d0d4f6f070078195f1e6e7df824a4a2b325ec667",
+  "decision": "UNKNOWN means uninspected execution/config source or unsupported argument mode. Invalid arguments are not proof of dangerous helper execution.",
+  "originalCommandsStdinCwdProjectEnvAndNonOracleFieldsUnchanged": true,
+  "original48FailureEvidencePreserved": true,
+  "original8586DefinitionBankPreserved": true,
+  "normalCounterparts": [
+    "R40PC-NO-PAGER-CLEAN",
+    "R40PC-KNOWN-CAT-PAGER",
+    "R40PC-KNOWN-EMPTY-PAGER",
+    "R7SG38-R40-TRUE-NOPAGER-CONTROL",
+    "R11SG41-R40-TRUE-NOPAGER-CONTROL",
+    "R11SG40",
+    "R40PC-GREP-QUIET-BUNDLE",
+    "R40PC-GREP-NUMERIC-CONTROL",
+    "R40PC-GREP-NODASH-EXPRESSION-NOPAGER"
+  ],
+  "reasonClasses": {
+    "DEFAULT_PAGER_UNINSPECTED": {
+      "count": 41,
+      "condition": "Same-command reader before commit can select default pager whose executable and effects are uninspected; lack of TTY dispatch proof is not proof of nonselection.",
+      "ordinaryCost": "Previously allowed ordinary reader-and-commit compound can stop UNKNOWN.",
+      "exit": "Keep operation, target and execution context; split reader and commit for a new staged scan only when equivalent, otherwise ask owner. Explicit no-pager or known cat/empty are separate supported controls, not an automatic equivalent to a required pager."
+    },
+    "COMMAND_CONFIG_ROOT_UNINSPECTED": {
+      "count": 2,
+      "condition": "Command changes HOME to a source root not equal to inherited observed root; inspection does not open an arbitrary command-selected config tree.",
+      "ordinaryCost": "Even a normal getter or stdout query before commit can stop UNKNOWN.",
+      "exit": "Retain the needed HOME/config context; split only if equivalent and re-scan commit, or ask owner. Do not silently remove needed configuration."
+    },
+    "UNSUPPORTED_GREP_ARGV": {
+      "count": 2,
+      "condition": "Pinned Git rejects the original numeric context value or the unseparated dash path before default pager setup. These invalid argument modes are conservatively unmodelled; no dangerous runtime action is claimed.",
+      "ordinaryCost": "The original invalid form now stops UNKNOWN. It is not a previously valid ordinary search.",
+      "exit": "Use a valid numeric context value or an explicit path separator only when that represents the intended operation; retain target, source and other required settings, otherwise ask owner."
+    }
+  },
+  "adjustments": [
+    {
+      "id": "SC17",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "SC17",
+        "expect": "allow",
+        "cmd": "git branch --list \"feature*\" && git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "9f78bcd22239c531973d85a481fd682dae15990a1846110a60ffbc16b326c800",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "SC17",
+        "expect": "deny",
+        "cmd": "git branch --list \"feature*\" && git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "9ee2fb8f257260cd328e454ce9961e02939ada488958bd20c3bcc10745462eb0"
+    },
+    {
+      "id": "SC31",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "SC31",
+        "expect": "allow",
+        "cmd": "git branch --contains && git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "21afb87dae8c021fa7029e991f42a035f831b8ad02577bd36678d9de60ae4372",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "SC31",
+        "expect": "deny",
+        "cmd": "git branch --contains && git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "3519e171d0fb498cb799db908ea891f70deb9850f17f227402d6c2a90f8f7d5b"
+    },
+    {
+      "id": "SC37",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "SC37",
+        "expect": "allow",
+        "cmd": "git branch --format \"$FMT\" --list && git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "89ffcd1eaf71e0ac2443ebc0ee4f32575cf643638ee5936f58df1f0ddfe26a48",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "SC37",
+        "expect": "deny",
+        "cmd": "git branch --format \"$FMT\" --list && git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "4ae35ec046dd33009bf9ecbda9f41e66946e79a3f0d08e61079a7e2e8e92212e"
+    },
+    {
+      "id": "R7SG14",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG14",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --no-ext-diff; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "15207b9e1b6a496144f13ed3b71ce317c4b0112e4bf1b078315af499779d5b58",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG14",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --no-ext-diff; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "834194d2a372d2e08ec0669c89b2abd616ae1264fad1b8bf25c25b6961617407"
+    },
+    {
+      "id": "R7SG16",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG16",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "7e99cfe5c07524a196903472d0f8abc42fbe3bec2c4cf0b4787d1885f516a818",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG16",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "6caa18a07b0c7f358d1120f45d693d74949f01e58702fe5efda15ad708cf736f"
+    },
+    {
+      "id": "R7SG24",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG24",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --ext-diff --no-ext-diff; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "8b7ae688a76681ea35fc922ce387292bccc45c4d4f7a1348cbf51b635d28eee0",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG24",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --ext-diff --no-ext-diff; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "560b5c504fd8f286bf8e8fe617cea3b5f52412376ccff5f40cd85b682d8c35a9"
+    },
+    {
+      "id": "R7SG31",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG31",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --grep \"--ext-diff\" -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "fbee0254173c2df53a89e45557c3f6e72b438d74c5ae645060f0941606f24cc3",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG31",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --grep \"--ext-diff\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "fd73dab6769c8b273092f1cdac342fe9401cb2126e3da8d0f99ab7afb70c8f40"
+    },
+    {
+      "id": "R7SG32",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG32",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"--ext-diff\" -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "cd41d6c774ad8195e86936f91b3cbea119c31973fddbfb6fde1c4459a3490345",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG32",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"--ext-diff\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "685c7cfc3328e1685df8fe94bb7cfee4bc2e5d19022e714b0f79e3edf0f043fa"
+    },
+    {
+      "id": "R7SG33",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG33",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"--no-ext-diff\" -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "0fb5690b0c6e6732bc021d7d8463ca2935ec43119e0378943ac57df64d71333c",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG33",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"--no-ext-diff\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "cffd0bfc2a3f2bccb788e62c3c6d07c92fe0819e6ad07b2503f0a1868e487b68"
+    },
+    {
+      "id": "R7SG35",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG35",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff -G \"--no-ext-diff\" --no-ext-diff; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "92de1358f5d7e8bb55ef208bbc39145af503e1f41fad5fd955b8b6fb5a51dc6f",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG35",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff -G \"--no-ext-diff\" --no-ext-diff; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "71329d62b1223459b4c7ac4857bd95c9c4f98cca66513f786066cbc947a1db89"
+    },
+    {
+      "id": "R7SG36",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG36",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --no-ext-diff -S \"--ext-diff\"; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "c36b2418b1e85f84edc97c5d24ef6c1b73df1c973aa2b0937118730d2814e919",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG36",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --no-ext-diff -S \"--ext-diff\"; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "d9d06c20986df850cbf1980ac93d19cbfb9bdea9106899b17f7df3fddb280a31"
+    },
+    {
+      "id": "R7SG37",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG37",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log -G \"$PATTERN\" -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "ab42eecec287cf1953a7fa73d7ba490bf7e42b8e039a647079081a4c90d89dfe",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG37",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log -G \"$PATTERN\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "d042e5baccc7b92cdec6a8e382ab04d70e9c49f07a8179296bca0a1db23b5da4"
+    },
+    {
+      "id": "R7SG38",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG38",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log -G\"$PATTERN\" -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "c5b9a3e91c69e541d12fd6bf09aad85ba1e5ecb752e4b3046df1d3c53231adfa",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG38",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log -G\"$PATTERN\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "b992e780897bce9e191f9790c6de56749215d031aa911da72aa00ac19af91d1e"
+    },
+    {
+      "id": "R7SG40",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG40",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"$FORMAT\" -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "8b6213d990d070fe051cbf61c767e5079834cc8156b132dc17f9de37ef1ec319",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG40",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"$FORMAT\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "95c3c5458ce9f3ad5e062f952fdc5f6a097f86c6cc8a53f261e34c0f06fc768e"
+    },
+    {
+      "id": "R7SG42",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG42",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --src-prefix \"--no-ext-diff\" --no-ext-diff; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "9ee423bac080e047670b3176ad24c9a12a5c795469428253b65cb1aa5b8e6bda",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG42",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --src-prefix \"--no-ext-diff\" --no-ext-diff; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "706533ab5e098b2f10daa697d476499cbb94e6b256e8b32a6c29a8a00a9c7ccd"
+    },
+    {
+      "id": "R7SG43",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG43",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --color --no-ext-diff; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "4e251d18f9c220912c59f97f09199e768d5ba73df46539483d19206eb958247f",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG43",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git diff --color --no-ext-diff; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "0f1b22bb92ba4d87db93ab4d3d836f6ffd56d32be33b3d593b4ac9e0515d07d4"
+    },
+    {
+      "id": "R7SG47",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG47",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"format:--ext-diff\" -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "c44f03f286ceba2cde3a519b973a7a3b21d6a5a160c170bf4cde3f844546d81d",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG47",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"format:--ext-diff\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "58cb08cf7e44e592b0db6358569333872e6ad3a3ded6bdd30ae1ac1db38a2796"
+    },
+    {
+      "id": "R7SG48",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R7SG48",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"format:--no-ext-diff\" -1; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "3af48c096fdd9178587efd09e8be0bda3b502901facdb2cf08fc1eb2e711c0c9",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG48",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"format:--no-ext-diff\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "884edcbf0d050976c331da6cc4426d4a1e434febbf556193cd01c79e62ec6b73"
+    },
+    {
+      "id": "R10P082",
+      "reasonClass": "COMMAND_CONFIG_ROOT_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R10P082",
+        "expect": "allow",
+        "cmd": "HOME=/tmp/evil git config --get user.name; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "4a28f97759e5e96284354a85ecb06bfa93fd1e2fa48c8998d65301c25c5674a4",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R10P082",
+        "expect": "deny",
+        "cmd": "HOME=/tmp/evil git config --get user.name; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "70c84770bf5f2273f38213be7b405c8d4d42508b0b80aa030c797ebfdaef1b98"
+    },
+    {
+      "id": "R10P084",
+      "reasonClass": "COMMAND_CONFIG_ROOT_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R10P084",
+        "expect": "allow",
+        "cmd": "HOME=/tmp/evil git diff -h; git commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "a0ec23b946658ba505c3f987debad05c8adc601b546a650090d467935e67466e",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R10P084",
+        "expect": "deny",
+        "cmd": "HOME=/tmp/evil git diff -h; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "8691443790b52bb2395c9632705935ef257651347bc7c5f4f5b8e0e88d111948"
+    },
+    {
+      "id": "R11SG25",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG25",
+        "cmd": "git grep needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "4bf780afb3c7d30035bed7934c46fdedd4a5dbafb837368a5c4e8c6ec3def5e4",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG25",
+        "cmd": "git grep needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "fef7f05fedc810a31bcdcaef5529fffb4c9e371c8082be3c9842ea7c557849a0"
+    },
+    {
+      "id": "R11SG26",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG26",
+        "cmd": "git grep -e \"-O/tmp/helper\" -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "7f0da29b36b475627868d42d6cbb8c4ffb034a355ac0d705cc9560ea97e595e6",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG26",
+        "cmd": "git grep -e \"-O/tmp/helper\" -- a.txt; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "1560daa2037058048ebdae9c711dde6d1c2feb86a00b99f194e41bdf109404ff"
+    },
+    {
+      "id": "R11SG27",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG27",
+        "cmd": "git grep -e --open-files-in-pager -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "d89e478beea09e4284fa1aae949d45a1604e08a065e2b9c17a5865cd26715a52",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG27",
+        "cmd": "git grep -e --open-files-in-pager -- a.txt; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "ec0fcc559d04e377f8e1c2ef9f3e4befc0fcb560c818ba17ee69283b12049569"
+    },
+    {
+      "id": "R11SG28",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG28",
+        "cmd": "git grep -f --open-files-in-pager -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "0ee43a9d2850faaf36e0555b0cc6c1c1937705685fea785b7de4dee64c0320dc",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG28",
+        "cmd": "git grep -f --open-files-in-pager -- a.txt; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "905d82be389d1d2e405912638dfebeba518f809c18460eb94c08788f7b27cb13"
+    },
+    {
+      "id": "R11SG29",
+      "reasonClass": "UNSUPPORTED_GREP_ARGV",
+      "beforeDefinition": {
+        "id": "R11SG29",
+        "cmd": "git grep --context --open-files-in-pager needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "6ee451fa0f7c20ddf5b37bd6058d771dab9a962233b200366d7b824c230e5404",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG29",
+        "cmd": "git grep --context --open-files-in-pager needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "318ac39cb29ae6594ea8b20bcbb4839ef7d487828cb0f7f702ac860e5c99aefb"
+    },
+    {
+      "id": "R11SG30",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG30",
+        "cmd": "git grep -e needle -- --open-files-in-pager; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "fe54884c33acc08d78c633d74bc26521b875306169ddb693a71a20ced5b4cca2",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG30",
+        "cmd": "git grep -e needle -- --open-files-in-pager; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "707b61698c6fcfa25bb566ea936ab8169964d37b9942c955a87ed634129fa098"
+    },
+    {
+      "id": "R11SG31",
+      "reasonClass": "UNSUPPORTED_GREP_ARGV",
+      "beforeDefinition": {
+        "id": "R11SG31",
+        "cmd": "git grep needle -O/tmp/helper; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "228e33d38728be1f9bc97173bab18611705492804a1911ce7efc7e8951ada8f7",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG31",
+        "cmd": "git grep needle -O/tmp/helper; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "c59e68048dc71831e5b5930f0f8fc0b4cc898e6e7a9c4632343fc4c9461d9d81"
+    },
+    {
+      "id": "R11SG32",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG32",
+        "cmd": "git grep -O/tmp/helper --no-open-files-in-pager needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "bf4318553a63ede6663d92657a6ce169886dfcc3e7d5c4e520be2dcc6b3857fe",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG32",
+        "cmd": "git grep -O/tmp/helper --no-open-files-in-pager needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "bce02ef89ce6a8dfa481993ba2fed78e332badfa2adebe06f3fcca4bcbe29a85"
+    },
+    {
+      "id": "R11SG33",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG33",
+        "cmd": "git grep -O/tmp/helper --no-open-files needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "ad5b0cbc4ebbec4eb6d2586e113ce2b8ccf41e360d6bc48c66385e9dd681aefa",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG33",
+        "cmd": "git grep -O/tmp/helper --no-open-files needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "7fef636a1635200ea4e971e9f6a2a7f18593307460e6b5160b580bcb9788f258"
+    },
+    {
+      "id": "R11SG39",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG39",
+        "cmd": "git grep -h needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "cacef758e826723e7dfa95bbe9c01c95105720ca8b15af03825a40f7cca24fda",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG39",
+        "cmd": "git grep -h needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "47b3056fd5c290276e33d6a7b1d305b9260b6eead879a49a6c40c039187cbd09"
+    },
+    {
+      "id": "R11SG41",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG41",
+        "cmd": "git grep -e \"$PAT\" -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "2cd50f639aff455e3d663110d6f0833d22e045b9fb72aae20bc5ae344730b420",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG41",
+        "cmd": "git grep -e \"$PAT\" -- a.txt; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "937e7594344489a305210c58f5c39b6e58a0d054bcc8b73aae991013085c4d36"
+    },
+    {
+      "id": "R11SG42",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG42",
+        "cmd": "git grep -eprefix\"$PAT\" -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "fb4e79f18112853b7494c5cb2a81d772324121271eeaa059e73824360badb0d0",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG42",
+        "cmd": "git grep -eprefix\"$PAT\" -- a.txt; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "65719fdb8e37e5d7519854a690db44e414b85e8897f7e82a776ede91566fd40a"
+    },
+    {
+      "id": "R11SG43",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG43",
+        "cmd": "git grep \"prefix$PAT\"; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "0afe8e0ac8e179b9abfc3d6e74980bcf450597db11a11d2f83e936c60cb64479",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG43",
+        "cmd": "git grep \"prefix$PAT\"; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "195e2edd8913d603b7d88340918818389b4a8662f0c2b450cd41f69756660284"
+    },
+    {
+      "id": "R11SG44",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG44",
+        "cmd": "git grep -O\"$PAGER\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "3b2bf80d7eb0e0e61d501d3dfb955f40531a469d82cfcc893097c1056a663341",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG44",
+        "cmd": "git grep -O\"$PAGER\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "61765a79e9db6a930eba586995df780aa2939e9aa70234e9d73a159096131bcf"
+    },
+    {
+      "id": "R11SG45",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG45",
+        "cmd": "git grep --open-files-in-pager=\"$PAGER\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "a417e1fa95f17059bda7acb0827a9ec5c9d0a530060e6565af078562540b3465",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG45",
+        "cmd": "git grep --open-files-in-pager=\"$PAGER\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "1ba0f7542ab52fa2d40a3c0d04e2516becab3abe6a237a36682685800e91fcc9"
+    },
+    {
+      "id": "R11SG46",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG46",
+        "cmd": "git grep -O/tmp/helper -eprefix\"$PAT\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "0fb551176ebeba0aac1190a12979a33959db5d53cb3a0cf7496a22dcd75efa08",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG46",
+        "cmd": "git grep -O/tmp/helper -eprefix\"$PAT\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "32b3bb4e871c20f53a8c5442e56710ef7bb1f398cbdb5c6f4f0a95c3a052da9b"
+    },
+    {
+      "id": "R11SG47",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG47",
+        "cmd": "git grep -1n needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "49ce5b02a60535a5e0ccdb7272ce24b23a45d527b92c276bad4f8713cda7acef",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG47",
+        "cmd": "git grep -1n needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "aa436e3cfb771b2bfff7dc42f8a7f5a8dd0dbb2a5b469cd999c0a49286c318be"
+    },
+    {
+      "id": "R11SG48",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG48",
+        "cmd": "git grep \"(\" -e needle \")\" -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "a8851334190fce2ddb273739eba4234c44c5411607412d517fdcc3f2185d214f",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG48",
+        "cmd": "git grep \"(\" -e needle \")\" -- a.txt; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "e92c97576a9c5ac495e6a73f986991c8e8586d971a8762943effa4e99c530d5a"
+    },
+    {
+      "id": "R11SG49",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG49",
+        "cmd": "git grep --debug -e needle -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "175732eb57e2bcb5e578228307f204d16970e00a1784c1b6e177d04e2de975a9",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG49",
+        "cmd": "git grep --debug -e needle -- a.txt; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "4925398ee1252a24ed415c7b5048d5b06c439b69ecfa5553b275c67d817cb3ca"
+    },
+    {
+      "id": "R11SG55",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG55",
+        "cmd": "git grep --max-count 1 --after-context 2 --before-context 3 --threads 1 needle; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "0722d408e8a388d88113af202b12bb64be956a0021f0803a249c4273d3dcb65b",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG55",
+        "cmd": "git grep --max-count 1 --after-context 2 --before-context 3 --threads 1 needle; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "e55c9effe315eb27b53eddf3ade9ac9e5086306ebb71049b57da434b438859ac"
+    },
+    {
+      "id": "R11SG58",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG58",
+        "cmd": "git grep '[a-z]*'; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "a01c077f41c6082707fccaf82727e459c650ba7b10dc4e91fe7cc8b650583406",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG58",
+        "cmd": "git grep '[a-z]*'; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "b23d43f53731f3ffee8bc8a8e4505001ea6ad53e9712ea4c60642ff57dd2dcdf"
+    },
+    {
+      "id": "R11SG59",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11SG59",
+        "cmd": "git grep -e '[a-z]*'; git commit -m x",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "e1aa05595479461c8292edf75d82c46104ee4f18767fcb6876a35733a38a4726",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11SG59",
+        "cmd": "git grep -e '[a-z]*'; git commit -m x",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "9ee170fe35e3ba793c4eca47e8523205e135a97140db3ea3e98ec1e5fdbffdcf"
+    },
+    {
+      "id": "R11OBJ62",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11OBJ62",
+        "expect": "allow",
+        "cmd": "g''it grep needle; g''it commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "dcee622a340cfc79ec5a23c8dbb45d7dc5219e2e623f58e002863c3c89894a7c",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11OBJ62",
+        "expect": "deny",
+        "cmd": "g''it grep needle; g''it commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "b94a1ad1f59267f0703f2cae56df61fb39323e0512429067938dcc5a9130a2a5"
+    },
+    {
+      "id": "R11OBJ63",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R11OBJ63",
+        "expect": "allow",
+        "cmd": "g''it grep -e '-O/tmp/dummy-pager' needle; g''it commit -m x"
+      },
+      "beforeDefinitionJSONSHA256": "5f4a8d5d3528deb66d59389ddbefe9fe8cdd85030e2ca2f2f550396ec816a753",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R11OBJ63",
+        "expect": "deny",
+        "cmd": "g''it grep -e '-O/tmp/dummy-pager' needle; g''it commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "82a31fb3087da60249cea41b0d4f708ae074c37398aee9641833b38e3d2637b1"
+    },
+    {
+      "id": "R13SG054",
+      "reasonClass": "DEFAULT_PAGER_UNINSPECTED",
+      "beforeDefinition": {
+        "id": "R13SG054",
+        "cmd": "git diff --no-ext-diff; git commit -m m",
+        "expect": "allow"
+      },
+      "beforeDefinitionJSONSHA256": "a9332bbcbf6e54ad7af670210acf7d1d1beb8e3d7738efab538856b86c095072",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R13SG054",
+        "cmd": "git diff --no-ext-diff; git commit -m m",
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "23c5427ff729d6e93bfd585d349da07e0e9afadb4b89c3bd86273b2fc8f70131"
+    }
+  ],
+  "rejectedPriorProposalJSONSHA256": "98bc1037ac89439aa114bc01f4fb83dfdbe32a9277297504396568a25a6bc3e8",
+  "correctedPriorProposalFindings": [
+    "R11SG40: valid quiet restores original ALLOW",
+    "R11SG29: invalid numeric value is unsupported mode, not default-pager activation",
+    "R11SG31: invalid dash path is unsupported mode, not default-pager activation"
+  ]
+}
