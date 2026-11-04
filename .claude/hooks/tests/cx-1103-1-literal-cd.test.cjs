@@ -1,7 +1,7 @@
 'use strict';
 
 // Only the Hook entrypoint is executed. Every shell/client command below is
-// stdin DATA; the named gh installation is a finite filesystem identity model.
+// stdin DATA; named gh/curl installations are a finite filesystem identity model.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -30,13 +30,17 @@ test('CX-1103-1 leading literal absolute cd uses only its qualified destination'
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cx-1103-1-literal-cd-'));
   const T = path.join(root, 'T'), U = path.join(root, 'U'), home = path.join(root, 'home');
   const UShadow = path.join(root, 'U-shadow'), TAlias = path.join(root, 'T-symlink');
+  const protectedDir = path.join(root, 'secrets'), protectedWordParent = path.join(root, 'word-only');
+  const protectedWordOnly = path.join(protectedWordParent, 'secrets'), protectedRealOnly = path.join(root, 'ordinary-link');
   const spaced = path.join(T, 'a b'), noSearch = path.join(root, 'no-search');
   const ordinaryFile = path.join(root, 'ordinary-file'), missing = path.join(root, 'missing');
   const UGit = path.join(root, 'U-git-config'), marker = path.join(root, 'unexpected-native-child');
   let hookCalls = 0;
   try {
-    for (const dir of [T, U, UShadow, home, spaced, noSearch, UGit, path.join(UGit, '.git')]) fs.mkdirSync(dir);
+    for (const dir of [T, U, UShadow, home, spaced, noSearch, UGit, path.join(UGit, '.git'), protectedDir, protectedWordParent]) fs.mkdirSync(dir);
     fs.symlinkSync(T, TAlias, 'dir');
+    fs.symlinkSync(U, protectedWordOnly, 'dir');
+    fs.symlinkSync(protectedDir, protectedRealOnly, 'dir');
     fs.writeFileSync(ordinaryFile, 'DUMMY ordinary file\n');
     fs.chmodSync(noSearch, 0o600);
     fs.writeFileSync(path.join(UGit, '.git/config'), '[core]\n\tsshCommand = /DUMMY/transport\n');
@@ -46,10 +50,10 @@ test('CX-1103-1 leading literal absolute cd uses only its qualified destination'
     fs.writeFileSync(preload, `
 'use strict';
 const fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path');
-const installed=new Set(['/usr/bin/gh']);
+const installed=new Set(['/usr/bin/gh','/usr/bin/curl']);
 const anchors=new Set(['/usr/bin','/bin','/usr/sbin','/sbin','/usr/local/bin','/opt/homebrew/bin']);
-const selected=file=>typeof file==='string' && path.basename(file)==='gh' && anchors.has(path.dirname(file));
-const missing=()=>{throw Object.assign(Error('CX-1103-1 modeled absent named gh installation'),{code:'ENOENT'});};
+const selected=file=>typeof file==='string' && ['gh','curl'].includes(path.basename(file)) && anchors.has(path.dirname(file));
+const missing=()=>{throw Object.assign(Error('CX-1103-1 modeled absent named gh/curl installation'),{code:'ENOENT'});};
 const stat=fs.statSync,access=fs.accessSync,real=fs.realpathSync,native=fs.realpathSync.native;
 fs.statSync=function(file,...args){if(selected(file))return installed.has(file)?{isFile:()=>true,isDirectory:()=>false}:missing();return stat.call(this,file,...args);};
 fs.accessSync=function(file,...args){if(selected(file))return installed.has(file)?undefined:missing();return access.call(this,file,...args);};
@@ -70,6 +74,11 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
     assert.equal(guard.inspect(prefix(U) + gh).invocations.find(entry => entry.name === 'gh').cdLikeBefore, true,
       'egress qualification must not redefine the shared cdLikeBefore contract');
     assert.equal(guard.inspect(gh).invocations.find(entry => entry.name === 'gh').cdLikeBefore, false);
+    assert.equal(guard.isSecretPath(protectedDir), true, 'direct synthetic target selects both protected-path guards');
+    assert.equal(guard.isSecretPath(protectedWordOnly), true, 'word-only synthetic link selects the lexical guard');
+    assert.equal(guard.isSecretPath(fs.realpathSync.native(protectedWordOnly)), false, 'word-only physical target stays ordinary');
+    assert.equal(guard.isSecretPath(protectedRealOnly), false, 'real-only synthetic link word stays ordinary');
+    assert.equal(guard.isSecretPath(fs.realpathSync.native(protectedRealOnly)), true, 'real-only physical target selects the physical guard');
     const cases = [
       { id: 'control-no-cd', command: gh, expected: 'ALLOW' },
       { id: 'allow-1-same-cwd', command: prefix(T) + gh, positive: true },
@@ -138,7 +147,15 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
       { id: 'control-15-child-shell', command: prefix(U) + 'bash -c ' + q(gh), expected: 'ALLOW' },
       { id: 'deny-15-child-shell-own-cd', command: prefix(U) + 'bash -c ' + q(prefix(T) + gh) },
       { id: 'deny-16-gh-internal-git', command: prefix(U) + 'gh pr create --repo o/r --head topic --title ordinary --body ordinary' },
+      { id: 'deny-cwd-protection-direct', command: prefix(protectedDir) + gh, cwdProtectionCase: true },
+      { id: 'deny-cwd-protection-word-only', command: prefix(protectedWordOnly) + gh, cwdProtectionCase: true },
+      { id: 'deny-cwd-protection-real-only', command: prefix(protectedRealOnly) + gh, cwdProtectionCase: true },
+      { id: 'deny-cwd-protection-non-gh', command: prefix(U) + 'curl -q https://example.com', cwdProtectionCase: true },
+      { id: 'control-cwd-protection-curl-no-cd', command: 'curl -q https://example.com', expected: 'ALLOW', cwdProtectionCase: true },
     ];
+    assert.equal(cases.filter(entry => !entry.cwdProtectionCase).length, 69, 'retain all original focused inputs');
+    assert.equal(cases.filter(entry => !entry.cwdProtectionCase && entry.positive).length, 13, 'retain all original positive assertions');
+    assert.equal(cases.filter(entry => entry.cwdProtectionCase).length, 5, 'only the requested cwd-protection inputs are added');
     for (const entry of cases) await t.test(entry.id, () => {
       const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: entry.command }, cwd: T });
       const result = spawnSync(process.execPath, ['--require', preload, path.join(hooks, EG)], {
@@ -147,6 +164,7 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
       hookCalls++;
       const verdict = observe(result);
       t.diagnostic(JSON.stringify({ id: entry.id, command: entry.command, baseline,
+        ...(entry.cwdProtectionCase ? { cwdProtectionCase: true } : {}),
         verdict, status: result.status, signal: result.signal, errorCode: result.error?.code || null,
         stdout: result.stdout, stderr: result.stderr }));
       assert.notEqual(verdict, 'BROKEN', 'Hook output must retain its complete verdict contract');
@@ -157,8 +175,9 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
     });
     assert.deepEqual(sourcePins(), sourceBefore, 'runtime source must stay fixed during the focused cut');
     t.diagnostic(JSON.stringify({ hookCalls, sourcePins: sourceBefore, baseline,
+      retainedOriginalCases: 69, retainedOriginalPositiveCases: 13, cwdProtectionCases: 5,
       nativeAttempts: 0, proposedCommandsExecuted: 0,
-      fixtureScope: 'owned synthetic directories and finite named gh identity model; native gh behavior unqualified' }));
+      fixtureScope: 'owned synthetic directories and finite named gh/curl identity model; native backend behavior unqualified' }));
   } finally {
     if (fs.existsSync(noSearch)) fs.chmodSync(noSearch, 0o700);
     fs.rmSync(root, { recursive: true, force: true });

@@ -288,6 +288,7 @@ function leadingLiteralCdContext() {
       target.tildeExpanded || !path.isAbsolute(target.text) || target.text.startsWith('//')) return null;
   // Check components before realpath: normalizing first would erase this refusal.
   if (target.text.split('/').some(part => part === '.' || part === '..')) return null;
+  if (guard.isSecretPath(target.text)) return null;
   // The first cd must execute in the parent and gate its successor on success.
   // A downstream pipeline is independent of this first command's effects.
   if (parsed.errors.length || parsed.unsupportedSources.length || parsed.async || parsed.evaluationUnknown ||
@@ -322,13 +323,14 @@ function leadingLiteralCdContext() {
     }
     inputCwd = fs.realpathSync.native(baseDir);
   } catch { return null; }
+  if (guard.isSecretPath(cwd)) return null;
   return { cwd, inputCwd };
 }
 const leadingCdContext = leadingLiteralCdContext();
 if (leadingCdContext) {
   const rootScope = insp.invocations[0]?.scope;
   for (const invocation of insp.invocations.slice(1)) {
-    if (invocation.scope === rootScope && !invocation.cdLikeHere &&
+    if (invocation.name === 'gh' && invocation.scope === rootScope && !invocation.cdLikeHere &&
         !invocation.functionCallName && !invocation.definitionName &&
         !['git', 'bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
       invocation.egressLiteralCdCwd = leadingCdContext.cwd;
