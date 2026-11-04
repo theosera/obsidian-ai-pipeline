@@ -52,6 +52,14 @@ const mutations = [
       'allow-extra-wrapper-same-env', 'allow-extra-wrapper-different-env',
       'allow-extra-symlink-same-realpath', 'allow-extra-relative-PATH-destination'],
     from: 'ALLOW', to: 'UNKNOWN',
+    rootBindingTransitions: Object.fromEntries([
+      'control-root-binding-relative-home-same-realpath',
+      'control-root-binding-relative-xdg-same-realpath',
+      'control-root-binding-xdg-data-same-realpath',
+      'control-root-binding-no-selected-root-same-realpath',
+      'control-root-binding-absolute-xdg-relative-home',
+      'control-root-binding-posix-appdata', 'control-root-binding-unset-xdg-data',
+    ].map(id => [id, { from: 'ALLOW', to: 'UNKNOWN' }])),
   },
   {
     id: 'without-whole-input-directory-count', before: countGuard, after: '',
@@ -68,6 +76,12 @@ const mutations = [
     expected: ['deny-12-missing', 'deny-12-file', 'deny-12-no-search'], from: 'UNKNOWN', to: 'ALLOW',
     extraTransitions: { 'allow-extra-symlink-same-realpath': { from: 'ALLOW', to: 'UNKNOWN' } },
     cwdProtectionTransitions: { 'deny-cwd-protection-real-only': { from: 'UNKNOWN', to: 'ALLOW' } },
+    rootBindingTransitions: Object.fromEntries([
+      'control-root-binding-relative-home-same-realpath',
+      'control-root-binding-relative-xdg-same-realpath',
+      'control-root-binding-xdg-data-same-realpath',
+      'control-root-binding-no-selected-root-same-realpath',
+    ].map(id => [id, { from: 'ALLOW', to: 'UNKNOWN' }])),
   },
   {
     id: 'without-control-and-effect-qualification', before: controlGuard, after: '',
@@ -104,6 +118,13 @@ const mutations = [
     id: 'without-protected-cd-realpath', before: '  if (guard.isSecretPath(cwd)) return null;', after: '',
     expected: ['deny-cwd-protection-real-only'], from: 'UNKNOWN', to: 'ALLOW',
   },
+  {
+    id: 'without-inherited-config-root-binding',
+    before: '        !ghCdInheritedConfigRootUnknown(invocation) &&\n', after: '',
+    expected: ['deny-root-binding-relative-home', 'deny-root-binding-relative-xdg',
+      'deny-root-binding-xdg-data', 'deny-root-binding-no-selected-root',
+      'deny-root-binding-empty-xdg-relative-home'], from: 'UNKNOWN', to: 'ALLOW',
+  },
 ];
 
 test('CX-1103-1 each removed guard independently breaks its focused assertions', async t => {
@@ -115,7 +136,7 @@ test('CX-1103-1 each removed guard independently breaks its focused assertions',
   const sourcePins = pins();
   const source = originals.get(EG).toString('utf8');
   let totalHookCalls = 0;
-  let originalSubsetHookCalls = 0, cwdProtectionHookCalls = 0;
+  let originalSubsetHookCalls = 0, cwdProtectionHookCalls = 0, rootBindingHookCalls = 0;
   try {
     const run = (id, alteredSource, expectedStatus) => {
       const trial = path.join(root, id);
@@ -148,13 +169,18 @@ test('CX-1103-1 each removed guard independently breaks its focused assertions',
         }
         if (row.hookCalls) summary = row;
       }
-      const originalRows = new Map([...rows].filter(([, row]) => row.cwdProtectionCase !== true));
+      const originalRows = new Map([...rows].filter(([, row]) => row.cwdProtectionCase !== true && row.rootBindingCase !== true));
       const cwdProtectionRows = new Map([...rows].filter(([, row]) => row.cwdProtectionCase === true));
+      const rootBindingRows = new Map([...rows].filter(([, row]) => row.rootBindingCase === true));
       assert.equal(originalRows.size, 69, id + ': every unchanged original focused input must run');
       assert.equal([...originalRows.keys()].filter(key => key.startsWith('allow-')).length, 13,
         id + ': retain all original positive cases');
       assert.equal(cwdProtectionRows.size, 5, id + ': exactly the requested cwd-protection inputs must run');
-      assert.equal(rows.size, 74, id + ': every focused input must run');
+      assert.equal(originalRows.size + cwdProtectionRows.size, 74, id + ': every previous focused input must run');
+      assert.equal(rootBindingRows.size, 22, id + ': exactly the requested config-root inputs must run');
+      assert.equal(rows.size, 96, id + ': every focused input must run');
+      for (const row of rootBindingRows.values()) assert.notEqual(row.cwdProtectionCase, true,
+        id + ': config-root inputs must stay separate from cwd-protection inputs');
       assert.ok(summary, id + ': focused source/native summary is required');
       assert.equal(summary.nativeAttempts, 0, id + ': no selected/native program may execute or be attempted');
       assert.equal(summary.proposedCommandsExecuted, 0);
@@ -162,11 +188,14 @@ test('CX-1103-1 each removed guard independently breaks its focused assertions',
       assert.equal(summary.retainedOriginalCases, 69, id + ': focused summary must retain the original corpus');
       assert.equal(summary.retainedOriginalPositiveCases, 13, id + ': focused summary must retain positive obligations');
       assert.equal(summary.cwdProtectionCases, 5, id + ': focused summary must bind the five added inputs');
+      assert.equal(summary.retainedPreviousCases, 74, id + ': focused summary must retain all prior definitions and expectations');
+      assert.equal(summary.rootBindingCases, 22, id + ': focused summary must bind the config-root inputs');
       assert.equal(summary.sourcePins[EG], digest(alteredSource), id + ': observed Hook must bind the mutation');
       totalHookCalls += summary.hookCalls;
       originalSubsetHookCalls += originalRows.size;
       cwdProtectionHookCalls += cwdProtectionRows.size;
-      return { rows, originalRows, cwdProtectionRows, summary };
+      rootBindingHookCalls += rootBindingRows.size;
+      return { rows, originalRows, cwdProtectionRows, rootBindingRows, summary };
     };
     const reference = run('unchanged-reference', source, 0);
     for (const mutation of mutations) await t.test(mutation.id, () => {
@@ -180,6 +209,8 @@ test('CX-1103-1 each removed guard independently breaks its focused assertions',
         assert.ok(original, mutation.id + ': unchanged corpus id');
         assert.equal(row.cwdProtectionCase, original.cwdProtectionCase,
           mutation.id + ': original/additional corpus membership must stay fixed');
+        assert.equal(row.rootBindingCase, original.rootBindingCase,
+          mutation.id + ': config-root corpus membership must stay fixed');
         // Commands contain each owned fixture's fresh root path; compare the
         // fixed case id and verdict rather than unrelated randomized pathname bytes.
         if (row.verdict !== original.verdict) changed.push(id);
@@ -187,14 +218,18 @@ test('CX-1103-1 each removed guard independently breaks its focused assertions',
       const transitions = new Map(mutation.expected.map(id => [id, { from: mutation.from, to: mutation.to }]));
       for (const [id, transition] of Object.entries(mutation.extraTransitions || {})) transitions.set(id, transition);
       for (const [id, transition] of Object.entries(mutation.cwdProtectionTransitions || {})) transitions.set(id, transition);
+      for (const [id, transition] of Object.entries(mutation.rootBindingTransitions || {})) transitions.set(id, transition);
       assert.deepEqual(changed.sort(), [...transitions.keys()].sort(),
         mutation.id + ': only this removed guard may explain red focused assertions');
       const changedOriginalCases = changed.filter(id => reference.originalRows.has(id));
       const changedCwdProtectionCases = changed.filter(id => reference.cwdProtectionRows.has(id));
+      const changedRootBindingCases = changed.filter(id => reference.rootBindingRows.has(id));
       assert.deepEqual(changedOriginalCases, [...transitions.keys()].filter(id => reference.originalRows.has(id)).sort(),
         mutation.id + ': the original 69-input expectations must remain unchanged');
       assert.deepEqual(changedCwdProtectionCases, [...transitions.keys()].filter(id => reference.cwdProtectionRows.has(id)).sort(),
         mutation.id + ': additional transitions must stay separate from the original expectations');
+      assert.deepEqual(changedRootBindingCases, [...transitions.keys()].filter(id => reference.rootBindingRows.has(id)).sort(),
+        mutation.id + ': config-root transitions must stay separate from all previous expectations');
       for (const [id, transition] of transitions) {
         assert.equal(reference.rows.get(id).verdict, transition.from, id + ': qualified reference');
         const row = observed.rows.get(id);
@@ -207,26 +242,40 @@ test('CX-1103-1 each removed guard independently breaks its focused assertions',
         referenceSHA256: sourcePins[EG], changedCases: changed, from: mutation.from, to: mutation.to,
         extraTransitions: mutation.extraTransitions || {},
         cwdProtectionTransitions: mutation.cwdProtectionTransitions || {}, changedOriginalCases, changedCwdProtectionCases,
+        rootBindingTransitions: mutation.rootBindingTransitions || {}, changedRootBindingCases,
         hookCalls: observed.summary.hookCalls, nativeAttempts: 0, broken: 0 }));
       if (mutation.id === 'without-control-and-effect-qualification') {
         assert.equal(mutations.indexOf(mutation), 4, 'retain the original five mutations in their original order');
         assert.equal(originalSubsetHookCalls, 414, 'the original five mutations must retain all 414 original Hook inputs');
-        assert.equal(totalHookCalls, 444, 'reference and the first five mutations must each run all 74 inputs');
+        assert.equal(originalSubsetHookCalls + cwdProtectionHookCalls, 444, 'reference and the first five mutations must retain all 74 prior inputs');
+        assert.equal(totalHookCalls, 576, 'reference and the first five mutations must each run all 96 inputs');
       }
       if (mutation.id === 'without-leading-cd-syntax') {
         assert.equal(mutations.indexOf(mutation), 7, 'retain all prior eight mutations in their original order');
         assert.equal(originalSubsetHookCalls, 621, 'the prior eight mutations must retain all 621 original Hook inputs');
-        assert.equal(totalHookCalls, 666, 'reference and the prior eight mutations must each run all 74 inputs');
+        assert.equal(originalSubsetHookCalls + cwdProtectionHookCalls, 666, 'reference and the prior eight mutations must retain all 74 prior inputs');
+        assert.equal(totalHookCalls, 864, 'reference and the prior eight mutations must each run all 96 inputs');
+      }
+      if (mutation.id === 'without-protected-cd-realpath') {
+        assert.equal(mutations.indexOf(mutation), 10, 'retain all eleven previous mutations in their original order');
+        assert.equal(originalSubsetHookCalls, 828, 'the previous eleven mutations must retain all original inputs');
+        assert.equal(cwdProtectionHookCalls, 60, 'the previous eleven mutations must retain all cwd-protection inputs');
+        assert.equal(originalSubsetHookCalls + cwdProtectionHookCalls, 888, 'retain the previous eleven-mutation 74-input checkpoint');
+        assert.equal(totalHookCalls, 1152, 'reference and the previous eleven mutations must each run all 96 inputs');
       }
     });
-    assert.equal(mutations.length, 11, 'retain all prior eight mutations and exactly three cwd-protection guards');
-    assert.equal(originalSubsetHookCalls, 828, 'reference and all eleven mutations must execute the unchanged 69 inputs');
-    assert.equal(cwdProtectionHookCalls, 60, 'reference and all eleven mutations must execute the five added inputs');
-    assert.equal(totalHookCalls, 888, 'reference and all eleven mutations must execute all 74 inputs');
+    assert.equal(mutations.length, 12, 'retain all eleven previous mutations and exactly one config-root guard');
+    assert.equal(originalSubsetHookCalls, 897, 'reference and all twelve mutations must execute the unchanged 69 inputs');
+    assert.equal(cwdProtectionHookCalls, 65, 'reference and all twelve mutations must execute the five unchanged cwd-protection inputs');
+    assert.equal(originalSubsetHookCalls + cwdProtectionHookCalls, 962, 'reference and all twelve mutations must execute the unchanged 74-input corpus');
+    assert.equal(rootBindingHookCalls, 286, 'reference and all twelve mutations must execute exactly the 22 config-root inputs');
+    assert.equal(totalHookCalls, 1248, 'reference and all twelve mutations must execute all 96 inputs');
     assert.deepEqual(pins(), sourcePins, 'candidate source must stay fixed across inverse qualification');
-    t.diagnostic(JSON.stringify({ guards: mutations.length, sourcePins, totalHookCalls, originalSubsetHookCalls, cwdProtectionHookCalls,
+    t.diagnostic(JSON.stringify({ guards: mutations.length, sourcePins, totalHookCalls, originalSubsetHookCalls, cwdProtectionHookCalls, rootBindingHookCalls,
       retainedOriginalGuards: 5, retainedOriginalHookCalls: 414, additionalGuards: 3,
       retainedPriorGuards: 8, retainedPriorSubsetHookCalls: 621,
-      nativeAttempts: 0, broken: 0, scope: 'original 69 inputs retained plus five synthetic cwd-protection inputs; exact one-guard mutations only' }));
+      retainedPreviousGuards: 11, retainedPreviousSubsetHookCalls: 888,
+      previousCorpusHookCalls: originalSubsetHookCalls + cwdProtectionHookCalls,
+      nativeAttempts: 0, broken: 0, scope: 'previous 74 inputs retained plus 22 synthetic config-root inputs; exact one-guard mutations only' }));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

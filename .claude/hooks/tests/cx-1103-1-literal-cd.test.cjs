@@ -152,10 +152,34 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
       { id: 'deny-cwd-protection-real-only', command: prefix(protectedRealOnly) + gh, cwdProtectionCase: true },
       { id: 'deny-cwd-protection-non-gh', command: prefix(U) + 'curl -q https://example.com', cwdProtectionCase: true },
       { id: 'control-cwd-protection-curl-no-cd', command: 'curl -q https://example.com', expected: 'ALLOW', cwdProtectionCase: true },
+      { id: 'deny-root-binding-relative-home', command: prefix(U) + gh, extraEnv: { HOME: '.' }, rootBindingCase: true },
+      { id: 'deny-root-binding-relative-xdg', command: prefix(U) + gh, extraEnv: { XDG_CONFIG_HOME: '.' }, rootBindingCase: true },
+      { id: 'deny-root-binding-xdg-data', command: prefix(U) + gh, extraEnv: { XDG_DATA_HOME: '.' }, rootBindingCase: true },
+      { id: 'deny-root-binding-no-selected-root', command: prefix(U) + gh, extraEnv: { HOME: '', XDG_CONFIG_HOME: '' }, rootBindingCase: true },
+      { id: 'deny-root-binding-empty-xdg-relative-home', command: prefix(U) + gh, extraEnv: { HOME: '.', XDG_CONFIG_HOME: '' }, rootBindingCase: true },
+      ...[
+        ['relative-home', { HOME: '.' }],
+        ['relative-xdg', { XDG_CONFIG_HOME: '.' }],
+        ['xdg-data', { XDG_DATA_HOME: '.' }],
+        ['no-selected-root', { HOME: '', XDG_CONFIG_HOME: '' }],
+      ].flatMap(([name, extraEnv]) => [
+        { id: 'control-root-binding-' + name + '-same-realpath', command: prefix(TAlias) + gh, extraEnv, expected: 'ALLOW', rootBindingCase: true },
+        { id: 'control-root-binding-' + name + '-no-cd', command: gh, extraEnv, expected: 'ALLOW', rootBindingCase: true },
+      ]),
+      ...[['relative', '.'], ['empty', ''], ['absolute', home]].flatMap(([name, value]) => [
+        { id: 'control-root-binding-gh-config-' + name + '-different-cwd', command: prefix(U) + gh, extraEnv: { GH_CONFIG_DIR: value }, expected: 'UNKNOWN', rootBindingCase: true },
+        { id: 'control-root-binding-gh-config-' + name + '-no-cd', command: gh, extraEnv: { GH_CONFIG_DIR: value }, expected: 'UNKNOWN', rootBindingCase: true },
+      ]),
+      { id: 'control-root-binding-absolute-xdg-relative-home', command: prefix(U) + gh, extraEnv: { XDG_CONFIG_HOME: home, HOME: '.' }, expected: 'ALLOW', rootBindingCase: true },
+      { id: 'control-root-binding-posix-appdata', command: prefix(U) + gh, extraEnv: { AppData: '.' }, expected: 'ALLOW', rootBindingCase: true },
+      { id: 'control-root-binding-unset-xdg-data', command: prefix(U) + 'env -u XDG_DATA_HOME ' + gh, extraEnv: { XDG_DATA_HOME: '.' }, expected: 'ALLOW', rootBindingCase: true },
     ];
-    assert.equal(cases.filter(entry => !entry.cwdProtectionCase).length, 69, 'retain all original focused inputs');
-    assert.equal(cases.filter(entry => !entry.cwdProtectionCase && entry.positive).length, 13, 'retain all original positive assertions');
+    assert.equal(cases.filter(entry => !entry.cwdProtectionCase && !entry.rootBindingCase).length, 69, 'retain all original focused inputs');
+    assert.equal(cases.filter(entry => !entry.cwdProtectionCase && !entry.rootBindingCase && entry.positive).length, 13, 'retain all original positive assertions');
     assert.equal(cases.filter(entry => entry.cwdProtectionCase).length, 5, 'only the requested cwd-protection inputs are added');
+    assert.equal(cases.filter(entry => !entry.rootBindingCase).length, 74, 'retain all previous focused definitions and expectations');
+    assert.equal(cases.filter(entry => entry.rootBindingCase).length, 22, 'only the requested config-root binding inputs are added');
+    assert.equal(cases.length, 96, 'all three focused groups must run');
     for (const entry of cases) await t.test(entry.id, () => {
       const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: entry.command }, cwd: T });
       const result = spawnSync(process.execPath, ['--require', preload, path.join(hooks, EG)], {
@@ -165,6 +189,7 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
       const verdict = observe(result);
       t.diagnostic(JSON.stringify({ id: entry.id, command: entry.command, baseline,
         ...(entry.cwdProtectionCase ? { cwdProtectionCase: true } : {}),
+        ...(entry.rootBindingCase ? { rootBindingCase: true } : {}),
         verdict, status: result.status, signal: result.signal, errorCode: result.error?.code || null,
         stdout: result.stdout, stderr: result.stderr }));
       assert.notEqual(verdict, 'BROKEN', 'Hook output must retain its complete verdict contract');
@@ -176,6 +201,7 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
     assert.deepEqual(sourcePins(), sourceBefore, 'runtime source must stay fixed during the focused cut');
     t.diagnostic(JSON.stringify({ hookCalls, sourcePins: sourceBefore, baseline,
       retainedOriginalCases: 69, retainedOriginalPositiveCases: 13, cwdProtectionCases: 5,
+      retainedPreviousCases: 74, rootBindingCases: 22,
       nativeAttempts: 0, proposedCommandsExecuted: 0,
       fixtureScope: 'owned synthetic directories and finite named gh/curl identity model; native backend behavior unqualified' }));
   } finally {
