@@ -30,17 +30,22 @@ test('CX-1103-1 leading literal absolute cd uses only its qualified destination'
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cx-1103-1-literal-cd-'));
   const T = path.join(root, 'T'), U = path.join(root, 'U'), home = path.join(root, 'home');
   const UShadow = path.join(root, 'U-shadow'), TAlias = path.join(root, 'T-symlink');
+  const UAlias = path.join(root, 'U-symlink'), loop = path.join(root, 'loop');
   const protectedDir = path.join(root, 'secrets'), protectedWordParent = path.join(root, 'word-only');
   const protectedWordOnly = path.join(protectedWordParent, 'secrets'), protectedRealOnly = path.join(root, 'ordinary-link');
+  const sameWordParent = path.join(root, 'same-word-only'), sameProtectedWord = path.join(sameWordParent, 'secrets');
   const spaced = path.join(T, 'a b'), noSearch = path.join(root, 'no-search');
   const ordinaryFile = path.join(root, 'ordinary-file'), missing = path.join(root, 'missing');
   const UGit = path.join(root, 'U-git-config'), marker = path.join(root, 'unexpected-native-child');
   let hookCalls = 0;
   try {
-    for (const dir of [T, U, UShadow, home, spaced, noSearch, UGit, path.join(UGit, '.git'), protectedDir, protectedWordParent]) fs.mkdirSync(dir);
+    for (const dir of [T, U, UShadow, home, spaced, noSearch, UGit, path.join(UGit, '.git'), protectedDir, protectedWordParent, sameWordParent]) fs.mkdirSync(dir);
     fs.symlinkSync(T, TAlias, 'dir');
+    fs.symlinkSync(U, UAlias, 'dir');
+    fs.symlinkSync('loop', loop, 'dir');
     fs.symlinkSync(U, protectedWordOnly, 'dir');
     fs.symlinkSync(protectedDir, protectedRealOnly, 'dir');
+    fs.symlinkSync(T, sameProtectedWord, 'dir');
     fs.writeFileSync(ordinaryFile, 'DUMMY ordinary file\n');
     fs.chmodSync(noSearch, 0o600);
     fs.writeFileSync(path.join(UGit, '.git/config'), '[core]\n\tsshCommand = /DUMMY/transport\n');
@@ -79,6 +84,16 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
     assert.equal(guard.isSecretPath(fs.realpathSync.native(protectedWordOnly)), false, 'word-only physical target stays ordinary');
     assert.equal(guard.isSecretPath(protectedRealOnly), false, 'real-only synthetic link word stays ordinary');
     assert.equal(guard.isSecretPath(fs.realpathSync.native(protectedRealOnly)), true, 'real-only physical target selects the physical guard');
+    assert.equal(guard.isSecretPath(sameProtectedWord), true, 'same-directory word witness selects only the lexical guard');
+    assert.equal(fs.realpathSync.native(sameProtectedWord), fs.realpathSync.native(T));
+    assert.equal(guard.isSecretPath(fs.realpathSync.native(sameProtectedWord)), false);
+    const differentCwdIds = new Set([
+      'allow-2-different-cwd', 'allow-4-quoted-space', 'allow-5-semicolon-after-grep',
+      'allow-extra-wrapper-different-command', 'allow-extra-wrapper-different-exec',
+      'allow-extra-wrapper-different-env', 'allow-extra-relative-PATH-destination',
+      'control-root-binding-absolute-xdg-relative-home', 'control-root-binding-posix-appdata',
+      'control-root-binding-unset-xdg-data',
+    ]);
     const cases = [
       { id: 'control-no-cd', command: gh, expected: 'ALLOW' },
       { id: 'allow-1-same-cwd', command: prefix(T) + gh, positive: true },
@@ -152,56 +167,102 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
       { id: 'deny-cwd-protection-real-only', command: prefix(protectedRealOnly) + gh, cwdProtectionCase: true },
       { id: 'deny-cwd-protection-non-gh', command: prefix(U) + 'curl -q https://example.com', cwdProtectionCase: true },
       { id: 'control-cwd-protection-curl-no-cd', command: 'curl -q https://example.com', expected: 'ALLOW', cwdProtectionCase: true },
-      { id: 'deny-root-binding-relative-home', command: prefix(U) + gh, extraEnv: { HOME: '.' }, rootBindingCase: true },
-      { id: 'deny-root-binding-relative-xdg', command: prefix(U) + gh, extraEnv: { XDG_CONFIG_HOME: '.' }, rootBindingCase: true },
-      { id: 'deny-root-binding-xdg-data', command: prefix(U) + gh, extraEnv: { XDG_DATA_HOME: '.' }, rootBindingCase: true },
-      { id: 'deny-root-binding-no-selected-root', command: prefix(U) + gh, extraEnv: { HOME: '', XDG_CONFIG_HOME: '' }, rootBindingCase: true },
-      { id: 'deny-root-binding-empty-xdg-relative-home', command: prefix(U) + gh, extraEnv: { HOME: '.', XDG_CONFIG_HOME: '' }, rootBindingCase: true },
+      { id: 'deny-root-binding-relative-home', command: prefix(U) + gh, extraEnv: { HOME: '.' }, contextControlCase: true },
+      { id: 'deny-root-binding-relative-xdg', command: prefix(U) + gh, extraEnv: { XDG_CONFIG_HOME: '.' }, contextControlCase: true },
+      { id: 'deny-root-binding-xdg-data', command: prefix(U) + gh, extraEnv: { XDG_DATA_HOME: '.' }, contextControlCase: true },
+      { id: 'deny-root-binding-no-selected-root', command: prefix(U) + gh, extraEnv: { HOME: '', XDG_CONFIG_HOME: '' }, contextControlCase: true },
+      { id: 'deny-root-binding-empty-xdg-relative-home', command: prefix(U) + gh, extraEnv: { HOME: '.', XDG_CONFIG_HOME: '' }, contextControlCase: true },
       ...[
         ['relative-home', { HOME: '.' }],
         ['relative-xdg', { XDG_CONFIG_HOME: '.' }],
         ['xdg-data', { XDG_DATA_HOME: '.' }],
         ['no-selected-root', { HOME: '', XDG_CONFIG_HOME: '' }],
       ].flatMap(([name, extraEnv]) => [
-        { id: 'control-root-binding-' + name + '-same-realpath', command: prefix(TAlias) + gh, extraEnv, expected: 'ALLOW', rootBindingCase: true },
-        { id: 'control-root-binding-' + name + '-no-cd', command: gh, extraEnv, expected: 'ALLOW', rootBindingCase: true },
+        { id: 'control-root-binding-' + name + '-same-realpath', command: prefix(TAlias) + gh, extraEnv, expected: 'ALLOW', contextControlCase: true },
+        { id: 'control-root-binding-' + name + '-no-cd', command: gh, extraEnv, expected: 'ALLOW', contextControlCase: true },
       ]),
       ...[['relative', '.'], ['empty', ''], ['absolute', home]].flatMap(([name, value]) => [
-        { id: 'control-root-binding-gh-config-' + name + '-different-cwd', command: prefix(U) + gh, extraEnv: { GH_CONFIG_DIR: value }, expected: 'UNKNOWN', rootBindingCase: true },
-        { id: 'control-root-binding-gh-config-' + name + '-no-cd', command: gh, extraEnv: { GH_CONFIG_DIR: value }, expected: 'UNKNOWN', rootBindingCase: true },
+        { id: 'control-root-binding-gh-config-' + name + '-different-cwd', command: prefix(U) + gh, extraEnv: { GH_CONFIG_DIR: value }, expected: 'UNKNOWN', contextControlCase: true },
+        { id: 'control-root-binding-gh-config-' + name + '-no-cd', command: gh, extraEnv: { GH_CONFIG_DIR: value }, expected: 'UNKNOWN', contextControlCase: true },
       ]),
-      { id: 'control-root-binding-absolute-xdg-relative-home', command: prefix(U) + gh, extraEnv: { XDG_CONFIG_HOME: home, HOME: '.' }, expected: 'ALLOW', rootBindingCase: true },
-      { id: 'control-root-binding-posix-appdata', command: prefix(U) + gh, extraEnv: { AppData: '.' }, expected: 'ALLOW', rootBindingCase: true },
-      { id: 'control-root-binding-unset-xdg-data', command: prefix(U) + 'env -u XDG_DATA_HOME ' + gh, extraEnv: { XDG_DATA_HOME: '.' }, expected: 'ALLOW', rootBindingCase: true },
+      { id: 'control-root-binding-absolute-xdg-relative-home', command: prefix(U) + gh, extraEnv: { XDG_CONFIG_HOME: home, HOME: '.' }, expected: 'ALLOW', contextControlCase: true },
+      { id: 'control-root-binding-posix-appdata', command: prefix(U) + gh, extraEnv: { AppData: '.' }, expected: 'ALLOW', contextControlCase: true },
+      { id: 'control-root-binding-unset-xdg-data', command: prefix(U) + 'env -u XDG_DATA_HOME ' + gh, extraEnv: { XDG_DATA_HOME: '.' }, expected: 'ALLOW', contextControlCase: true },
+      { id: 'allow-same-dir-spaced-input', command: 'cd "' + spaced + '" && ' + gh, cwd: spaced, expected: 'ALLOW', sameDirScopeCase: true },
+      { id: 'deny-same-dir-relative-self', command: "cd '.' && " + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-relative-sibling', command: "cd '../U' && " + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-relative-missing', command: "cd 'missing' && " + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-absolute-loop', command: prefix(loop) + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-relative-loop', command: "cd '../loop' && " + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-different-symlink', command: prefix(UAlias) + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-two-same-cd', command: prefix(T) + prefix(T) + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-two-mixed-cd', command: prefix(T) + prefix(U) + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-dot-component', command: prefix(T + '/.') + gh, sameDirScopeCase: true },
+      { id: 'deny-same-dir-gh-config', command: prefix(T) + gh, extraEnv: { GH_CONFIG_DIR: '.' }, sameDirScopeCase: true },
+      { id: 'deny-same-dir-path-shadow', command: prefix(T) + gh, extraEnv: { PATH: '.:/usr/bin:/bin' }, sameDirScopeCase: true },
+      { id: 'forbid-same-dir-issue-body-file', command: prefix(T) + 'gh issue create --repo o/r --title ordinary --body-file ordinary.txt', expected: 'FORBIDDEN', sameDirScopeCase: true },
+      { id: 'deny-same-dir-non-gh', command: prefix(T) + 'curl -q https://example.com', sameDirScopeCase: true },
+      { id: 'deny-same-dir-relative-gh-pager', command: prefix(T) + gh, extraEnv: { GH_PAGER: './relative-helper' }, sameDirScopeCase: true },
+      { id: 'control-same-dir-child-shell', command: prefix(T) + 'bash -c ' + q(gh), expected: 'ALLOW', sameDirScopeCase: true },
+      { id: 'control-same-dir-two-cd-child-shell', command: prefix(T) + prefix(T) + 'bash -c ' + q(gh), expected: 'ALLOW', sameDirScopeCase: true },
+      { id: 'control-same-dir-physical-cd-child-shell', command: 'cd -P ' + q(T) + ' && bash -c ' + q(gh), expected: 'ALLOW', sameDirScopeCase: true },
+      { id: 'deny-same-dir-control-witness', command: cd(T) + ' | ' + gh, sameDirGuardTarget: T, sameDirGuardWitnessCase: true },
+      { id: 'deny-same-dir-alias-witness', command: prefix(T) + gh + '; alias cd=:', sameDirGuardTarget: T, sameDirGuardWitnessCase: true },
+      { id: 'deny-same-dir-syntax-witness', command: 'builtin ' + prefix(T) + gh, sameDirGuardTarget: T, sameDirGuardWitnessCase: true },
+      { id: 'deny-same-dir-word-witness', command: prefix(sameProtectedWord) + gh, sameDirGuardTarget: sameProtectedWord, sameDirGuardWitnessCase: true },
+      { id: 'deny-same-dir-realpath-witness', command: prefix(protectedRealOnly) + gh, cwd: protectedDir, sameDirGuardTarget: protectedRealOnly, sameDirGuardWitnessCase: true },
     ];
-    assert.equal(cases.filter(entry => !entry.cwdProtectionCase && !entry.rootBindingCase).length, 69, 'retain all original focused inputs');
-    assert.equal(cases.filter(entry => !entry.cwdProtectionCase && !entry.rootBindingCase && entry.positive).length, 13, 'retain all original positive assertions');
+    // The owner narrowed only cwd lending. Keep historical case definitions and
+    // explicitly pin the ten previously allowed different-cwd inputs to UNKNOWN.
+    for (const entry of cases) if (differentCwdIds.has(entry.id)) {
+      entry.differentCwdCase = true;
+      entry.expected = 'UNKNOWN';
+    }
+    assert.equal(cases.filter(entry => !entry.cwdProtectionCase && !entry.contextControlCase && !entry.sameDirScopeCase && !entry.sameDirGuardWitnessCase).length, 69, 'retain all original focused inputs');
+    assert.equal(cases.filter(entry => entry.positive).length, 13, 'retain all historical positive case identities');
+    assert.equal(cases.filter(entry => entry.positive && !entry.differentCwdCase).length, 6, 'retain all six original same-directory ALLOW assertions');
+    assert.equal(cases.filter(entry => entry.positive && entry.differentCwdCase).length, 7, 'explicitly narrow seven historical positives to UNKNOWN');
+    assert.equal(cases.filter(entry => entry.differentCwdCase).length, 10, 'only the ten named previous expectations are narrowed');
     assert.equal(cases.filter(entry => entry.cwdProtectionCase).length, 5, 'only the requested cwd-protection inputs are added');
-    assert.equal(cases.filter(entry => !entry.rootBindingCase).length, 74, 'retain all previous focused definitions and expectations');
-    assert.equal(cases.filter(entry => entry.rootBindingCase).length, 22, 'only the requested config-root binding inputs are added');
-    assert.equal(cases.length, 96, 'all three focused groups must run');
+    assert.equal(cases.filter(entry => !entry.contextControlCase && !entry.sameDirScopeCase && !entry.sameDirGuardWitnessCase).length, 74, 'retain all previous focused definitions');
+    assert.equal(cases.filter(entry => entry.contextControlCase).length, 22, 'only the requested inherited-context controls are added');
+    assert.equal(cases.filter(entry => !entry.sameDirScopeCase && !entry.sameDirGuardWitnessCase).length, 96, 'retain every prior focused case');
+    assert.equal(cases.filter(entry => entry.sameDirScopeCase).length, 18, 'remove only the two named unpublished shell controls');
+    assert.equal(cases.filter(entry => !entry.sameDirGuardWitnessCase).length, 114, 'retain all fifth-snapshot inputs except the two named controls');
+    assert.equal(cases.filter(entry => entry.sameDirGuardWitnessCase).length, 5, 'add only the five same-directory guard witnesses');
+    assert.equal(cases.length, 119, 'every focused group must run');
     for (const entry of cases) await t.test(entry.id, () => {
-      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: entry.command }, cwd: T });
+      const inputCwd = entry.cwd || T;
+      if (entry.sameDirGuardWitnessCase) assert.equal(fs.realpathSync.native(entry.sameDirGuardTarget), fs.realpathSync.native(inputCwd),
+        'every new guard witness must target the same physical directory as its payload cwd');
+      const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command: entry.command }, cwd: inputCwd });
       const result = spawnSync(process.execPath, ['--require', preload, path.join(hooks, EG)], {
-        cwd: T, env: { ...environment, ...entry.extraEnv }, input, encoding: 'utf8', timeout: 20000,
+        cwd: inputCwd, env: { ...environment, ...entry.extraEnv }, input, encoding: 'utf8', timeout: 20000,
       });
       hookCalls++;
       const verdict = observe(result);
       t.diagnostic(JSON.stringify({ id: entry.id, command: entry.command, baseline,
         ...(entry.cwdProtectionCase ? { cwdProtectionCase: true } : {}),
-        ...(entry.rootBindingCase ? { rootBindingCase: true } : {}),
+        ...(entry.contextControlCase ? { contextControlCase: true } : {}),
+        ...(entry.sameDirScopeCase ? { sameDirScopeCase: true } : {}),
+        ...(entry.sameDirGuardWitnessCase ? { sameDirGuardWitnessCase: true } : {}),
+        ...(entry.sameDirGuardWitnessCase ? { sameDirGuardSameRealpath: true } : {}),
+        ...(entry.differentCwdCase ? { differentCwdCase: true } : {}),
         verdict, status: result.status, signal: result.signal, errorCode: result.error?.code || null,
         stdout: result.stdout, stderr: result.stderr }));
       assert.notEqual(verdict, 'BROKEN', 'Hook output must retain its complete verdict contract');
       assert.equal(fs.existsSync(marker), false, 'no proposed/native command may execute or be attempted');
-      if (entry.positive) assert.equal(verdict, baseline ? 'UNKNOWN' : 'ALLOW');
-      else if (entry.expected) assert.equal(verdict, entry.expected);
+      if (entry.expected) assert.equal(verdict, entry.expected);
+      else if (entry.positive) assert.equal(verdict, baseline ? 'UNKNOWN' : 'ALLOW');
       else assert.equal(verdict, 'UNKNOWN');
     });
     assert.deepEqual(sourcePins(), sourceBefore, 'runtime source must stay fixed during the focused cut');
     t.diagnostic(JSON.stringify({ hookCalls, sourcePins: sourceBefore, baseline,
       retainedOriginalCases: 69, retainedOriginalPositiveCases: 13, cwdProtectionCases: 5,
-      retainedPreviousCases: 74, rootBindingCases: 22,
+      retainedPreviousCases: 74, contextControlCases: 22,
+      previousScopeCases: 96, sameDirScopeCases: 18, fifthSnapshotCases: 114, sameDirGuardWitnessCases: 5, changedDifferentCwdCases: 10,
+      retainedSameDirPositiveCases: 6, narrowedDifferentCwdPositiveCases: 7,
+      ownedFixtureRoot: root,
       nativeAttempts: 0, proposedCommandsExecuted: 0,
       fixtureScope: 'owned synthetic directories and finite named gh/curl identity model; native backend behavior unqualified' }));
   } finally {

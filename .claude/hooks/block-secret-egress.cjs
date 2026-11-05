@@ -323,6 +323,7 @@ function leadingLiteralCdContext() {
     }
     inputCwd = fs.realpathSync.native(baseDir);
   } catch { return null; }
+  if (cwd !== inputCwd) return null;
   if (guard.isSecretPath(cwd)) return null;
   return { cwd, inputCwd };
 }
@@ -331,44 +332,11 @@ if (leadingCdContext) {
   const rootScope = insp.invocations[0]?.scope;
   for (const invocation of insp.invocations.slice(1)) {
     if (invocation.name === 'gh' && invocation.scope === rootScope && !invocation.cdLikeHere &&
-        !ghCdInheritedConfigRootUnknown(invocation) &&
         !invocation.functionCallName && !invocation.definitionName &&
         !['git', 'bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
       invocation.egressLiteralCdCwd = leadingCdContext.cwd;
     }
   }
-}
-
-/** An inherited default root must keep its binding when lending a different cwd. */
-function ghCdInheritedConfigRootUnknown(invocation) {
-  if (invocation.name !== 'gh' || leadingCdContext.cwd === leadingCdContext.inputCwd) return false;
-  // Match the existing GH source precedence; a non-default source keeps its
-  // existing verdict, including present (even opaque/empty) GH_CONFIG_DIR.
-  const sources = invocation.ghHelperEnvironmentSources || [];
-  const names = ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME', ...(process.platform === 'win32' ? ['AppData'] : []), 'HOME'];
-  const root = names.map(name => sources.find(source => source.name === name))
-    .find(source => source && literalSourceWord(source.word)?.text !== '');
-  if (root && !root.word?.defaultGhConfigRoot) return false;
-  // This named root is outside initialGhSources/defaultGhConfigRoot. Its
-  // invocation-local presence is not evidence that an absolute default wins.
-  if ((invocation.outboundEnvironmentSources || []).some(source => source.name === 'XDG_DATA_HOME')) return true;
-  if (!root) return true;
-  // The marker deliberately omits inherited bytes: qualify the selected
-  // original value rather than treating the marker itself as a pathname.
-  const value = process.env[root.name];
-  return typeof value !== 'string' || value === '' || !path.isAbsolute(value);
-}
-
-/** A different repository context must not silently select Git inside gh. */
-function ghCdContextUnknown(invocation) {
-  if (invocation.name !== 'gh' || !invocation.egressLiteralCdCwd ||
-      leadingCdContext.cwd === leadingCdContext.inputCwd) return false;
-  const role = ghCommandRoles(invocation);
-  // Only the requested explicit-repository read is qualified here. The arity
-  // table is not a Git-free proof for every other official operation.
-  return role.unknown || role.sourceUnknown || role.operation !== 'repo view' ||
-    role.operands.length !== 1 || !literalSourceWord(role.operands[0]) ||
-    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(role.operands[0].text);
 }
 
 /** Require a static word before treating an existing refusal as a confirmed prohibited form. */
@@ -409,7 +377,6 @@ function knownInvocationContext(invocation) {
   const cdCwd = invocation.egressLiteralCdCwd;
   if (invocation.dynamicName || invocation.launcherUnknown || invocation.incomplete ||
       invocation.unknownContextBefore || invocation.cdLikeBefore && !cdCwd || invocation.envUnknown ||
-      cdCwd && ghCdContextUnknown(invocation) ||
       invocation.unsafeGroupSetup || invocation.functionCallName) return false;
   const identity = executableIdentity.invocationExecutableIdentity(invocation, {
     environment: process.env, cwd: cdCwd || baseDir,
