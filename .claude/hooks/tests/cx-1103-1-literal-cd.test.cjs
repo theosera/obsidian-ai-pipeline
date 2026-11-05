@@ -27,7 +27,7 @@ function observe(result) {
 
 test('CX-1103-1 leading literal absolute cd uses only its qualified destination', async t => {
   if (process.platform === 'win32') { t.skip('POSIX filesystem identity model does not qualify Windows'); return; }
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cx-1103-1-literal-cd-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'cx-1103-1-literal-cd-')));
   const T = path.join(root, 'T'), U = path.join(root, 'U'), home = path.join(root, 'home');
   const UShadow = path.join(root, 'U-shadow'), TAlias = path.join(root, 'T-symlink');
   const UAlias = path.join(root, 'U-symlink'), loop = path.join(root, 'loop');
