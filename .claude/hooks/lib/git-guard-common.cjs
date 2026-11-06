@@ -4169,6 +4169,7 @@ function inspectWithinBudget(cmd, options = {}) {
       definitionName: c.definitionName,
       functionBodyUnknown: !!c.functionBodyUnknown || !!c.functionBody?.unknown,
       assignments: info.assigns, gitEnvNames: [...env], cdLikeBefore: cdBefore,
+      cdLikeHere: !!info.cdLike, // Additional cwd change selected by this invocation's wrappers.
       helperEnvNames: [...helperEnv],
       helperEnvUnknownNames: [...helperEnvUnknown],
       outboundEnvironmentSources: options.trackOutboundEnvironment === true ? [...identitySources].map(([name, word]) => ({ name,
