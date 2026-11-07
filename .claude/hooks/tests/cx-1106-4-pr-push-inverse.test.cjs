@@ -27,7 +27,7 @@ test('CX-1106-4 single-guard removals independently turn the focused contract re
   ];
   let hookCases = 0, red = 0;
   try {
-    const reference = fixture.run(hooks);
+    const reference = fixture.run(hooks, { legacyOnly: true });
     assert.equal(reference.cases, 41);
     assert.equal(reference.broken, 0); assert.deepEqual(reference.failed, []);
     assert.equal(reference.sourcesUnchanged, true);
@@ -42,7 +42,7 @@ test('CX-1106-4 single-guard removals independently turn the focused contract re
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, selected ? source.replace(before, after) : source);
       }
-      const result = fixture.run(trial);
+      const result = fixture.run(trial, { legacyOnly: true });
       hookCases += result.cases;
       assert.equal(result.broken, 0, 'red evidence requires complete Hook output');
       assert.equal(result.nativeExecutions + result.unexpectedAttempts + result.settingsAccesses, 0);
@@ -69,5 +69,102 @@ test('CX-1106-4 single-guard removals independently turn the focused contract re
     t.diagnostic(JSON.stringify({ mutations: mutations.length, red, hookCases,
       referenceCases: reference.cases, nativeExecutions: 0, unexpectedAttempts: 0,
       settingsAccesses: 0, sourcePinsStable: true }));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('CX-1107-4 additive guard removal turns its synthetic witnesses red', t => {
+  const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cx-1107-4-inverse-'));
+  const sources = Object.fromEntries(fixture.FILES.map(file => [file, fs.readFileSync(path.join(hooks, file), 'utf8')]));
+  try {
+    const before = '      if (!hookAbsent) {';
+    assert.equal(sources[READERS].split(before).length - 1, 1, 'exact additive mutation anchor');
+    for (const [relative, source] of Object.entries(sources)) {
+      const target = path.join(root, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, relative === READERS ? source.replace(before, '      if (false) {') : source);
+    }
+    const reference = fixture.run(hooks), trial = fixture.run(root);
+    assert.deepEqual(reference.failed, []);
+    assert.equal(reference.cases, 48); assert.equal(trial.cases, 48);
+    for (const result of [reference, trial]) {
+      assert.equal(result.broken + result.nativeExecutions + result.unexpectedAttempts + result.settingsAccesses, 0);
+      assert.equal(result.sourcesUnchanged, true);
+    }
+    const witnesses = ['H01', 'H02', 'H06', 'H07'];
+    assert.deepEqual(trial.failed, witnesses, 'only additive source witnesses change');
+    for (const id of witnesses) {
+      assert.equal(reference.results.find(row => row.id === id).category, 'UNKNOWN');
+      assert.equal(trial.results.find(row => row.id === id).category, 'ALLOW');
+    }
+    t.diagnostic(JSON.stringify({ addedConditions: 1, mutations: 1, red: 1, witnesses: witnesses.length,
+      hookCases: reference.cases + trial.cases, retainedCasesUnchanged: reference.retainedCases }));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('CX-1107-4 extended guard removals independently turn their witnesses red', t => {
+  const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cx-1107-4-extended-inverse-'));
+  const sources = Object.fromEntries(fixture.FILES.map(file => [file, fs.readFileSync(path.join(hooks, file), 'utf8')]));
+  const mutations = [
+    ['if (!hookConfig || hookConfig.status !== 1 || hookConfig.text !== \'\') {', 'if (false) {',
+      ['J05', 'J06', 'J07', 'J08', 'J09', 'J10', 'J11', 'J17']],
+    ['if (!hookAbsent) {', "if (!hookAbsent && name !== 'reference-transaction') {", ['J01', 'J02', 'J18']],
+    ['if (!directoryAbsent) {', 'if (false) {', ['J13', 'J15', 'J16']],
+  ];
+  let red = 0, hookCases = 0;
+  try {
+    const reference = fixture.run(hooks, { extended: true });
+    assert.equal(reference.cases, 69); assert.deepEqual(reference.failed, []);
+    hookCases += reference.cases;
+    for (const [index, [before, after, witnesses]] of mutations.entries()) {
+      assert.equal(sources[READERS].split(before).length - 1, 1, 'exact extended mutation anchor');
+      const trial = path.join(root, String(index));
+      for (const [relative, source] of Object.entries(sources)) {
+        const target = path.join(trial, relative);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, relative === READERS ? source.replace(before, after) : source);
+      }
+      const result = fixture.run(trial, { extended: true });
+      hookCases += result.cases;
+      assert.equal(result.broken + result.nativeExecutions + result.unexpectedAttempts + result.settingsAccesses, 0);
+      assert.equal(result.sourcesUnchanged, true);
+      assert.deepEqual(result.failed, witnesses, 'only the selected extended witnesses change');
+      for (const id of witnesses) {
+        assert.equal(reference.results.find(row => row.id === id).category, 'UNKNOWN');
+        assert.equal(result.results.find(row => row.id === id).category, 'ALLOW');
+      }
+      assert.deepEqual(result.results.slice(0, reference.previousCases), reference.results.slice(0, reference.previousCases));
+      red++;
+    }
+    assert.equal(red, 3); assert.equal(hookCases, 276);
+    t.diagnostic(JSON.stringify({ addedConditions: mutations.length, red, hookCases,
+      previousCasesUnchanged: reference.previousCases, sourcePinsStable: reference.sourcesUnchanged }));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('CX-1107-4 selected source identity has an independent inverse witness', t => {
+  const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cx-1107-4-identity-inverse-'));
+  const sources = Object.fromEntries(fixture.FILES.map(file => [file, fs.readFileSync(path.join(hooks, file), 'utf8')]));
+  try {
+    const before = 'hookPath = selectedHook.text.slice(0, -1);';
+    assert.equal(sources[READERS].split(before).length - 1, 1);
+    for (const [relative, source] of Object.entries(sources)) {
+      const target = path.join(root, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, relative === READERS ? source.replace(before,
+        'hookPath = path.resolve(selectedHook.text.slice(0, -1));') : source);
+    }
+    const reference = fixture.run(hooks, { extended: true }), trial = fixture.run(root, { extended: true });
+    assert.deepEqual(reference.failed, []); assert.deepEqual(trial.failed, ['J21']);
+    for (const result of [reference, trial]) {
+      assert.equal(result.broken + result.nativeExecutions + result.unexpectedAttempts + result.settingsAccesses, 0);
+      assert.equal(result.sourcesUnchanged, true);
+    }
+    assert.deepEqual(trial.results.slice(0, reference.previousCases), reference.results.slice(0, reference.previousCases));
+    assert.equal(trial.results.find(row => row.id === 'J21').sourceIdentityDifferences, 1);
+    t.diagnostic(JSON.stringify({ mutations: 1, red: 1, hookCases: reference.cases + trial.cases,
+      previousCasesUnchanged: reference.previousCases, sourcePinsStable: true }));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

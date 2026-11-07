@@ -999,6 +999,55 @@ function createTransportInspector(deps = {}) {
       if (!source || source.text !== 'refs/heads/' + branch + '\n') {
         return unknown('Git push の限定許可に必要な枝を確認できません。');
       }
+      const hookConfig = query(context,
+        ['config', '--includes', '--show-scope', '--null', '--get-regexp', '^hook\\.'], [0, 1]);
+      if (!hookConfig || hookConfig.status !== 1 || hookConfig.text !== '') {
+        return unknown('Git push の限定許可に必要な source 条件を確認できません。');
+      }
+      const checkedHooks = new Set(), hookDirectories = new Set();
+      for (const name of ['pre-push', 'reference-transaction']) {
+        const selectedHook = query(context,
+          ['rev-parse', '--path-format=absolute', '--git-path', 'hooks/' + name]);
+        let hookAbsent = false, hookPath = null;
+        if (process.platform !== 'win32' && selectedHook?.text.endsWith('\n') &&
+            !/[\r\n\0]/.test(selectedHook.text.slice(0, -1)) && path.isAbsolute(selectedHook.text.slice(0, -1))) {
+          hookPath = selectedHook.text.slice(0, -1);
+          hookDirectories.add(path.dirname(hookPath));
+          try { fs.accessSync(hookPath, fs.constants.X_OK); }
+          catch (error) { hookAbsent = ['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code); }
+        }
+        if (!hookAbsent) {
+          return unknown('Git push の限定許可に必要な source 条件を確認できません。');
+        }
+        if (hookPath) checkedHooks.add(hookPath);
+      }
+      for (const directory of hookDirectories) {
+        let directoryAbsent = true;
+        try {
+          const entries = fs.readdirSync(directory, { encoding: 'buffer' });
+          for (const bytes of entries) {
+            const name = bytes.toString('utf8');
+            if (!Buffer.from(name).equals(bytes)) { directoryAbsent = false; break; }
+            if (name.endsWith('.sample')) continue;
+            const file = directory + (directory.endsWith(path.sep) ? '' : path.sep) + name;
+            if (checkedHooks.has(file)) continue;
+            try { if (fs.statSync(file).isDirectory()) continue; }
+            catch (error) {
+              if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue;
+              throw error;
+            }
+            try {
+              fs.accessSync(file, fs.constants.X_OK);
+              directoryAbsent = false; break;
+            } catch (error) {
+              if (!['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code)) throw error;
+            }
+          }
+        } catch (error) { directoryAbsent = ['ENOENT', 'ENOTDIR'].includes(error.code); }
+        if (!directoryAbsent) {
+          return unknown('Git push の限定許可に必要な source 条件を確認できません。');
+        }
+      }
     }
     const selected = context.selected;
     if (g.sub === 'clone') {
