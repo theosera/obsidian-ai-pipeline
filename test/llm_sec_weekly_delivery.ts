@@ -341,7 +341,7 @@ export async function run(): Promise<TestSuiteResult> {
         };
         const result = await processMessage('gmail-thread-1', message, 1, vault, false,
           () => ({ verdict, detail: 'Synthetic deterministic fixture' }), ACCOUNT);
-        assert.equal(result.status, verdict === 'blocked' ? 'quarantined' : 'ingested', result.reason);
+        assert.equal(result.status, verdict === 'blocked' ? 'quarantined' : 'ingested', result.reason ?? 'no reason given');
         const row = store.required(REPORT_ID);
         assert.equal(row.status, 'sent');
         assert.equal(row.scan_status, verdict);
