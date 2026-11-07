@@ -960,7 +960,7 @@ function createTransportInspector(deps = {}) {
     if (bytes.length > 65536 || !Buffer.from(bytes.toString('utf8')).equals(bytes)) return null;
     return { status: result.status, text: bytes.toString('utf8') };
   };
-  const inspect = (g, invocation, baseDir) => {
+  const inspect = (g, invocation, baseDir, requirements = {}) => {
     const role = guard.gitTransportClientRole(g); if (!role) return null;
     if (role.argvUnknown) return unknown('Git transport の argv / repository 選択を確定できません。');
     const context = transportInspectionContext(g, invocation, baseDir, deps);
@@ -980,6 +980,26 @@ function createTransportInspector(deps = {}) {
       }
     }
     if (!config) return unknown('Git transport の実効設定を安全な限定 getter で確認できません。');
+    if (requirements.requiredPushURL) {
+      const scopedPushConfig = config.some(record => {
+        const match = /^remote\.(.*)\.push$/i.exec(record.key);
+        return match?.[1] === 'origin';
+      });
+      if (scopedPushConfig) {
+        return unknown('Git push の限定許可に必要な宛先の枝を確認できません。');
+      }
+      const operationConfig = query(context, ['config', '--includes', '--show-scope', '--null', '--get-regexp', '^(push\\.|submodule\\.)'], [0, 1]);
+      if (g.sub !== 'push' || config.some(record => record.key.toLowerCase() === 'remote.origin.mirror') ||
+          !operationConfig || operationConfig.status !== 1 || operationConfig.text !== '') {
+        return unknown('Git push の限定許可に必要な操作条件を確認できません。');
+      }
+      const branch = requirements.requiredPushBranch;
+      const source = typeof branch === 'string' ? query(context,
+        ['rev-parse', '--symbolic-full-name', '--verify', '--end-of-options', branch]) : null;
+      if (!source || source.text !== 'refs/heads/' + branch + '\n') {
+        return unknown('Git push の限定許可に必要な枝を確認できません。');
+      }
+    }
     const selected = context.selected;
     if (g.sub === 'clone') {
       // clone does not RUN_SETUP in the caller's repository. Do not apply its
@@ -1015,7 +1035,7 @@ function createTransportInspector(deps = {}) {
     const configuredCustomRoute = config.some(record => /^(?:remote\..*\.(?:url|pushurl)|url\..*\.(?:insteadof|pushinsteadof))$/i.test(record.key) &&
       (customRoute(record.value) || /^url\.(.*)\.(?:insteadof|pushinsteadof)$/i.exec(record.key)?.slice(1, 2).some(customRoute)));
     const hasSources = ssh !== undefined || proxyEnvironment !== undefined && proxyEnvironment !== '' || proxies.length || foreign.size || pack.size || credentials || askpass !== undefined && askpass !== '' || configuredCustomRoute || customRoute(literal(role.repositoryWord));
-    if (!hasSources) return null; // no configured source to select; do not require a destination for source-free work
+    if (!hasSources && !requirements.requiredPushURL) return null; // Preserve ordinary source-free work; a scoped exception also proves its destination.
     let repository = role.repositoryWord ? literal(role.repositoryWord) : null;
     if (role.repositoryWord && repository === null) return unknown('Git transport の repository 生成元を確定できません。');
     const remoteNames = [...new Set(config.flatMap(record => /^remote\.(.*)\.[^.]+$/i.exec(record.key)?.slice(1, 2) || []))];
@@ -1072,6 +1092,10 @@ function createTransportInspector(deps = {}) {
         if (rewritten === null) return unknown('Git transport の URL rewrite の選択が一意ではありません。');
         urls.push({ url: rewritten, localPack: localPackSources.includes(destination) });
       }
+    }
+    if (requirements.requiredPushURL && (g.sub !== 'push' || !urls.length ||
+        urls.some(entry => entry.url !== requirements.requiredPushURL))) {
+      return unknown('Git push の限定許可に必要な宛先を確認できません。');
     }
     for (const entry of urls) {
       const route = transportRoute(entry.url);
