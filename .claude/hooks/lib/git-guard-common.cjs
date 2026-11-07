@@ -5513,7 +5513,19 @@ const SECRET_PATH_RE = [
 // .env.example だけは許可（テンプレート）。
 const secretTemplateAllowed = (p) => /(^|\/)\.env\.example$/i.test(p);
 /** Exempt only the final template basename; protected ancestor components still match. */
-const isSecretPath = (p) => !!p && SECRET_PATH_RE.some((re) => re.test(secretTemplateAllowed(p) ? p.slice(0, -'.env.example'.length) : p));
+const isSecretPath = (p) => {
+  // Preserve coercion, evaluation order and exceptions for non-string callers.
+  if (typeof p !== 'string') {
+    return !!p && SECRET_PATH_RE.some((re) => re.test(secretTemplateAllowed(p) ? p.slice(0, -'.env.example'.length) : p));
+  }
+  if (!p) return false;
+  const scanPath = secretTemplateAllowed(p) ? p.slice(0, -'.env.example'.length) : p;
+  const basename = scanPath.slice(scanPath.lastIndexOf('/') + 1);
+  // Search the final component once; every remaining rule scans linearly.
+  const tokenBasename = /token/i.test(basename) && /\.json$/i.test(basename);
+  return SECRET_PATH_RE.some((re) => re.source === String.raw`[^/]*token[^/]*\.json$`
+    ? tokenBasename : re.test(scanPath));
+};
 
 const ADD_SHORT_FLAGS = new Set('nvip efuNA'.replace(/ /g, ''));
 const ADD_LONG = {
