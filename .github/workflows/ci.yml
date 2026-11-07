@@ -20,7 +20,7 @@ concurrency:
 jobs:
   pipeline:
     name: Pipeline (root) - test & typecheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # 一時固定: ubuntu-latest (26.04) で R39SLOGIN の 20 件が EG の判断不能になる件の切り分け。直したら ubuntu-latest に戻す
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
