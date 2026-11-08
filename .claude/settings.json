@@ -80,20 +80,23 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-secret-git.cjs\"",
             "if": "Bash(git *)",
-            "timeout": 15,
+            "timeout": 30,
+            "onFailure": "block",
             "statusMessage": "secret commit ガード"
           },
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-git-add-all.cjs\"",
             "if": "Bash(git *)",
-            "timeout": 10,
+            "timeout": 30,
+            "onFailure": "block",
             "statusMessage": "git add -A / --no-verify ガード"
           },
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-secret-egress.cjs\"",
-            "timeout": 10,
+            "timeout": 30,
+            "onFailure": "block",
             "statusMessage": "secret egress ガード"
           }
         ]
