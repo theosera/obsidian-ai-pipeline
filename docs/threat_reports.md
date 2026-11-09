@@ -80,6 +80,11 @@ desync・巻き戻りする (経緯は本書の WAL 注記 / PR #112)。DB を�
 Gmail Connector を使った送信タスクを ChatGPT に登録する。本リポ側は以下の
 契約に従ったメールしか受け付けない (frontmatter 検証で reject):
 
+保存 Markdown と SHA-256 を固定して配送結果を管理する場合は、任意の発行者 CLI
+[`llm-sec-weekly-delivery.md`](./security/llm-sec-weekly-delivery.md) を使う。
+送信専用 credential と明示した私有台帳で実行し、既存受信ジョブや `/sec-mode` は
+送信しない。CLI の追加だけでは既存 ChatGPT scheduled task の呼出先は変更されない。
+
 ### 件名
 
 ```

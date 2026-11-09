@@ -1,0 +1,1199 @@
+[
+  {
+    "id": "R40PC-REVIEW-EXACT",
+    "cmd": "git diff; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Exact original review command. DUMMY local driver selected; no proposed command or real staging helper is executed.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-DRIVER-SELECTED",
+    "cmd": "git -P diff; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-DRIVER-STANDALONE",
+    "cmd": "git -P diff",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-DRIVER-AFTER-COMMIT",
+    "cmd": "git commit -m x; git -P diff",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-DRIVER-DISABLED",
+    "cmd": "git -P diff --no-ext-diff --no-textconv; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-TEXTCONV-SELECTED",
+    "cmd": "git -P diff; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-TEXTCONV-STANDALONE",
+    "cmd": "git -P diff",
+    "cwd": "r40pctextconv",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-TEXTCONV-AFTER-COMMIT",
+    "cmd": "git commit -m x; git -P diff",
+    "cwd": "r40pctextconv",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-TEXTCONV-DISABLED",
+    "cmd": "git -P diff --no-ext-diff --no-textconv; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-FSMON-SELECTED",
+    "cmd": "git -P diff; git commit -m x",
+    "cwd": "r40pcmonitor",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-FSMON-STANDALONE",
+    "cmd": "git -P diff",
+    "cwd": "r40pcmonitor",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-FSMON-AFTER-COMMIT",
+    "cmd": "git commit -m x; git -P diff",
+    "cwd": "r40pcmonitor",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-FSMON-DISABLED",
+    "cmd": "git -P diff --no-ext-diff --no-textconv; git commit -m x",
+    "cwd": "r40pcmonitor",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-PAGER-SELECTED",
+    "cmd": "git -P diff; git commit -m x",
+    "cwd": "r40pcpager",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-PAGER-STANDALONE",
+    "cmd": "git -P diff",
+    "cwd": "r40pcpager",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-PAGER-AFTER-COMMIT",
+    "cmd": "git commit -m x; git -P diff",
+    "cwd": "r40pcpager",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-PAGER-DISABLED",
+    "cmd": "git -P diff --no-ext-diff --no-textconv; git commit -m x",
+    "cwd": "r40pcpager",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-NO-PAGER-CLEAN",
+    "cmd": "git -P diff; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-DEFAULT-PAGER-UNKNOWN",
+    "cmd": "git diff; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-KNOWN-CAT-PAGER",
+    "cmd": "git diff; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "env": {
+      "GIT_PAGER": "cat"
+    }
+  },
+  {
+    "id": "R40PC-KNOWN-EMPTY-PAGER",
+    "cmd": "git diff; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "env": {
+      "GIT_PAGER": ""
+    }
+  },
+  {
+    "id": "R40PC-UNUSED-DRIVER-STATUS",
+    "cmd": "git status; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-UNUSED-DRIVER-GETTER",
+    "cmd": "git config --get diff.r40dummy.command; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-UNUSED-TEXTCONV-STATUS",
+    "cmd": "git status; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-EXPLICIT-PAGER",
+    "cmd": "git diff; git commit -m x",
+    "cwd": "r40pcpager",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-STATUS-PAGER-ACTIVE",
+    "cmd": "git status; git commit -m x",
+    "cwd": "r40pcpagerstatus",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-STATUS-PAGER-DISABLED",
+    "cmd": "git -P status; git commit -m x",
+    "cwd": "r40pcpagerstatus",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-FSMON-FALSE",
+    "cmd": "git -P status; git commit -m x",
+    "cwd": "r40pcdisabled",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-FSMON-STATUS",
+    "cmd": "git status; git commit -m x",
+    "cwd": "r40pcmonitor",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-FSMON-LS-FILES",
+    "cmd": "git -P ls-files; git commit -m x",
+    "cwd": "r40pcmonitor",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-FSMON-CHECK-ATTR",
+    "cmd": "git -P check-attr diff -- a.txt; git commit -m x",
+    "cwd": "r40pcmonitor",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-FSMON-CHECK-IGNORE",
+    "cmd": "git -P check-ignore -- a.txt; git commit -m x",
+    "cwd": "r40pcmonitor",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-FSMON-LOG",
+    "cmd": "git -P log -1; git commit -m x",
+    "cwd": "r40pcmonitor",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-BLAME-TEXTCONV",
+    "cmd": "git -P blame a.txt; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-BLAME-TEXTCONV-DISABLED",
+    "cmd": "git -P blame --no-textconv a.txt; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-GREP-TEXTCONV",
+    "cmd": "git -P grep --textconv DUMMY; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-GREP-TEXTCONV-INACTIVE",
+    "cmd": "git -P grep DUMMY; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-CAT-FILE-TEXTCONV",
+    "cmd": "git -P cat-file --textconv HEAD:a.txt; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-CAT-FILE-FILTERS",
+    "cmd": "git -P cat-file --filters HEAD:a.txt; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-CAT-FILE-UNKNOWN-MODE",
+    "cmd": "git -P cat-file --unsupported HEAD:a.txt; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-ACTUAL-STDOUT-QUERY",
+    "cmd": "git diff -h; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-QUERY-FORCED-PAGER",
+    "cmd": "git -p diff -h; git commit -m x",
+    "cwd": "r40pcpager",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-VERSION-QUERY",
+    "cmd": "git --version; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-DRIVER-LAST-DISABLE",
+    "cmd": "git -P diff --ext-diff --no-ext-diff; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-DRIVER-LAST-ENABLE",
+    "cmd": "git -P diff --no-ext-diff --ext-diff; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-OPTION-LOOKING-PATTERN",
+    "cmd": "git -P diff -G --no-ext-diff; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-AFTER-END-DATA",
+    "cmd": "git -P diff --no-ext-diff -- --ext-diff; git commit -m x",
+    "cwd": "r40pcdriver",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-UNRELATED-SUBSHELL",
+    "cmd": "(git -P status); git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-F-PRIORITY-DIRTY",
+    "cmd": "git diff; git commit -m x",
+    "cwd": "dirty",
+    "expect": "deny",
+    "expectedOwnSG": "FORBIDDEN",
+    "scope": "Late reader UNKNOWN must not mask existing staged-secret FORBIDDEN.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[禁止] "
+    }
+  },
+  {
+    "id": "R40PC-F-PRIORITY-LITERAL",
+    "cmd": "git diff; git add .env; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "FORBIDDEN",
+    "scope": "Literal secret add remains an earlier independent FORBIDDEN.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[禁止] "
+    }
+  },
+  {
+    "id": "R40PC-PRINTED-DATA",
+    "cmd": "printf '%s' 'git diff; git commit -m x'",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-ORDINARY-GETTER",
+    "cmd": "git config --get user.name; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-ORDINARY-STATUS",
+    "cmd": "git status; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-READER-ABSOLUTE-CWD",
+    "cmd": "git -C {root}/r40pcdriver -P diff; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-READER-CWD-DISABLED",
+    "cmd": "git -C {root}/r40pcdriver -P diff --no-ext-diff --no-textconv; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-DISPLAY-CONFIG",
+    "cmd": "git -c color.ui=never status; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only."
+  },
+  {
+    "id": "R40PC-DYNAMIC-OPTION",
+    "cmd": "git -P diff \"$DUMMY_OPTION\"; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-LOCAL-OUTPUT-MODE",
+    "cmd": "git -P diff --output=ordinary.patch; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Prior Git reader selected source; command remains Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-COMMAND-DEFAULT-SEARCH",
+    "cmd": "command -p git -P diff; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Actual search selection or diagnostic source; Hook DATA only, never execute this command.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-COMMAND-ORDINARY-SEARCH",
+    "cmd": "command git -P diff; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Actual search selection or diagnostic source; Hook DATA only, never execute this command."
+  },
+  {
+    "id": "R40PC-COMMAND-END-ORDINARY",
+    "cmd": "command -- git -P diff; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Actual search selection or diagnostic source; Hook DATA only, never execute this command."
+  },
+  {
+    "id": "R40PC-COMMAND-NAME-QUERY",
+    "cmd": "command -pv git; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Actual search selection or diagnostic source; Hook DATA only, never execute this command."
+  },
+  {
+    "id": "R40PC-TRACE-FILE-SOURCE",
+    "cmd": "GIT_TRACE=/DUMMY/trace-output git -P status; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Actual search selection or diagnostic source; Hook DATA only, never execute this command.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-TRACE2-SOURCE",
+    "cmd": "GIT_TRACE2_EVENT=/DUMMY/trace-output git -P status; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Actual search selection or diagnostic source; Hook DATA only, never execute this command.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-TRACE-EXPLICIT-OFF",
+    "cmd": "GIT_TRACE=0 GIT_TRACE2_EVENT=0 git -P status; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Actual search selection or diagnostic source; Hook DATA only, never execute this command."
+  },
+  {
+    "id": "R40PC-UNPROVEN-GIT-ENV",
+    "cmd": "GIT_UNVERIFIED_ROLE=DUMMY git -P status; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Actual search selection or diagnostic source; Hook DATA only, never execute this command.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-TRACE-QUERY-ACTIVE",
+    "cmd": "GIT_TRACE=/DUMMY/trace-output git --version; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Selected startup diagnostics and grep STOP_AT_NON_OPTION boundary; proposed command is DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-TRACE-QUERY-OFF",
+    "cmd": "GIT_TRACE=0 GIT_TRACE2_EVENT=0 git --version; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Selected startup diagnostics and grep STOP_AT_NON_OPTION boundary; proposed command is DATA only."
+  },
+  {
+    "id": "R40PC-GREP-POST-PATTERN-DATA",
+    "cmd": "git -P grep --textconv DUMMY a.txt --no-textconv; git commit -m x",
+    "cwd": "r40pctextconv",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Selected startup diagnostics and grep STOP_AT_NON_OPTION boundary; proposed command is DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R7SG38-R40-TRUE-NOPAGER-CONTROL",
+    "expect": "allow",
+    "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git -P log -G\"$PATTERN\" -1; git commit -m x",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R7SG38",
+      "originalDefinition": {
+        "id": "R7SG38",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log -G\"$PATTERN\" -1; git commit -m x"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R7SG40-R40-TRUE-NOPAGER-CONTROL",
+    "expect": "allow",
+    "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git -P log --format=\"$FORMAT\" -1; git commit -m x",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R7SG40",
+      "originalDefinition": {
+        "id": "R7SG40",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"$FORMAT\" -1; git commit -m x"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R11SG41-R40-TRUE-NOPAGER-CONTROL",
+    "cmd": "git -P grep -e \"$PAT\" -- a.txt; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R11SG41",
+      "originalDefinition": {
+        "id": "R11SG41",
+        "cmd": "git grep -e \"$PAT\" -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R11SG42-R40-TRUE-NOPAGER-CONTROL",
+    "cmd": "git -P grep -eprefix\"$PAT\" -- a.txt; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R11SG42",
+      "originalDefinition": {
+        "id": "R11SG42",
+        "cmd": "git grep -eprefix\"$PAT\" -- a.txt; git commit -m x",
+        "expect": "allow"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R11SG43-R40-TRUE-NOPAGER-CONTROL",
+    "cmd": "git -P grep \"prefix$PAT\"; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R11SG43",
+      "originalDefinition": {
+        "id": "R11SG43",
+        "cmd": "git grep \"prefix$PAT\"; git commit -m x",
+        "expect": "allow"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R11SG44-R40-TRUE-NOPAGER-CONTROL",
+    "cmd": "git -P grep -O\"$PAGER\" --no-open-files-in-pager needle; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R11SG44",
+      "originalDefinition": {
+        "id": "R11SG44",
+        "cmd": "git grep -O\"$PAGER\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "allow"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R11SG45-R40-TRUE-NOPAGER-CONTROL",
+    "cmd": "git -P grep --open-files-in-pager=\"$PAGER\" --no-open-files-in-pager needle; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R11SG45",
+      "originalDefinition": {
+        "id": "R11SG45",
+        "cmd": "git grep --open-files-in-pager=\"$PAGER\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "allow"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R11SG46-R40-TRUE-NOPAGER-CONTROL",
+    "cmd": "git -P grep -O/tmp/helper -eprefix\"$PAT\" --no-open-files-in-pager needle; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R11SG46",
+      "originalDefinition": {
+        "id": "R11SG46",
+        "cmd": "git grep -O/tmp/helper -eprefix\"$PAT\" --no-open-files-in-pager needle; git commit -m x",
+        "expect": "allow"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R11SG33-R40-TRUE-NOPAGER-CONTROL",
+    "cmd": "git -P grep -O/tmp/helper --no-open-files needle; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R11SG33",
+      "originalDefinition": {
+        "id": "R11SG33",
+        "cmd": "git grep -O/tmp/helper --no-open-files needle; git commit -m x",
+        "expect": "allow"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R11SG37-R40-TRUE-NOPAGER-CONTROL",
+    "cmd": "git -P grep -O/tmp/helper --help; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "lineage": {
+      "originalID": "R11SG37",
+      "originalDefinition": {
+        "id": "R11SG37",
+        "cmd": "git grep -O/tmp/helper --help; git commit -m x",
+        "expect": "allow"
+      },
+      "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R40-QUERY-PERCMD-CAT",
+    "cwd": "r40pcpager",
+    "cmd": "git -c pager.commit=cat commit -h; git commit -m x",
+    "expectedOwnSG": "ALLOW",
+    "expect": "allow",
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R40-QUERY-FORCED-SKIPS-PERCMD",
+    "cwd": "r40pcpager",
+    "cmd": "git -p -c pager.commit=cat commit -h; git commit -m x",
+    "expectedOwnSG": "UNKNOWN",
+    "expect": "deny",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R40-LOG-EMPTY-ATTACHMENT-BOUNDARY",
+    "cwd": "r40pctextconv",
+    "cmd": "git -P log -G\"$PATTERN\" --no-textconv; git commit -m x",
+    "expectedOwnSG": "UNKNOWN",
+    "expect": "deny",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R40-QUERY-UNPROVED-FILE-SOURCE",
+    "cmd": "git -c include.path=/DUMMY/not-opened commit -h; git commit -m x",
+    "expectedOwnSG": "UNKNOWN",
+    "expect": "deny",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R40-F-PRIORITY-RETAINED",
+    "cwd": "dirty",
+    "cmd": "git diff; git commit -m x",
+    "expectedOwnSG": "FORBIDDEN",
+    "expect": "deny",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[禁止] "
+    },
+    "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+  },
+  {
+    "id": "R40PC-QUERY-CONFIGURED-PAGER",
+    "cmd": "git commit -h; git commit -m x",
+    "cwd": "r40pcpagerquery",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-QUERY-TRUE-NOPAGER",
+    "cmd": "git -P commit -h; git commit -m x",
+    "cwd": "r40pcpagerquery",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed."
+  },
+  {
+    "id": "R40PC-FORCED-DIFF-CORE-PAGER",
+    "cmd": "git -p diff; git commit -m x",
+    "cwd": "r40pcforced",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-FORCED-DIFF-ENV-CAT",
+    "cmd": "git -p diff; git commit -m x",
+    "cwd": "r40pcforced",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed.",
+    "env": {
+      "GIT_PAGER": "cat"
+    }
+  },
+  {
+    "id": "R40PC-FORCED-QUERY-CORE-PAGER",
+    "cmd": "git -p commit -h; git commit -m x",
+    "cwd": "r40pcforced",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-NONFORCED-QUERY-CMD-CAT",
+    "cmd": "git commit -h; git commit -m x",
+    "cwd": "r40pcforced",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed."
+  },
+  {
+    "id": "R40PC-EARLY-CONDITIONAL-TRACE",
+    "cmd": "git -P status; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed.",
+    "fixtureEnvironment": "r40earlytrace",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-EARLY-CONDITIONAL-TRACE-OFF",
+    "cmd": "git -P status; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed.",
+    "fixtureEnvironment": "r40earlytrace",
+    "env": {
+      "GIT_TRACE2": "0",
+      "GIT_TRACE2_EVENT": "false",
+      "GIT_TRACE2_PERF": "0"
+    }
+  },
+  {
+    "id": "R40PC-CONDITIONAL-PAGER-UNPROVED",
+    "cmd": "git status; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed.",
+    "fixtureEnvironment": "r40earlytrace",
+    "env": {
+      "GIT_TRACE2": "0",
+      "GIT_TRACE2_EVENT": "false",
+      "GIT_TRACE2_PERF": "0"
+    },
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-CONDITIONAL-PAGER-ENV-CAT",
+    "cmd": "git status; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "R40 source-selection boundary. Hook DATA only; no proposed command is executed.",
+    "fixtureEnvironment": "r40earlytrace",
+    "env": {
+      "GIT_TRACE2": "0",
+      "GIT_TRACE2_EVENT": "false",
+      "GIT_TRACE2_PERF": "0",
+      "GIT_PAGER": "cat"
+    }
+  },
+  {
+    "id": "R40-GREP-USAGE-BUNDLED-FILE",
+    "cmd": "git -P grep -nf /DUMMY/not-opened --help; git commit -m x",
+    "expectedOwnSG": "UNKNOWN",
+    "expect": "deny",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    },
+    "scope": "Grep usage prefix arity: fixed source DATA only; consumed arguments and real file callbacks remain distinct."
+  },
+  {
+    "id": "R40-GREP-USAGE-FILE",
+    "cmd": "git -P grep -f /DUMMY/not-opened --help; git commit -m x",
+    "expectedOwnSG": "UNKNOWN",
+    "expect": "deny",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    },
+    "scope": "Grep usage prefix arity: fixed source DATA only; consumed arguments and real file callbacks remain distinct."
+  },
+  {
+    "id": "R40-GREP-USAGE-E-DATA",
+    "cmd": "git -P grep -e '-f' --help; git commit -m x",
+    "expectedOwnSG": "ALLOW",
+    "expect": "allow",
+    "scope": "Grep usage prefix arity: fixed source DATA only; consumed arguments and real file callbacks remain distinct."
+  },
+  {
+    "id": "R40-GREP-USAGE-BUNDLED-E-DATA",
+    "cmd": "git -P grep -ne '-f' --help; git commit -m x",
+    "expectedOwnSG": "ALLOW",
+    "expect": "allow",
+    "scope": "Grep usage prefix arity: fixed source DATA only; consumed arguments and real file callbacks remain distinct."
+  },
+  {
+    "id": "R40-F-PRIORITY-GREP-ARITY",
+    "cwd": "dirty",
+    "cmd": "git diff; git commit -m x",
+    "expectedOwnSG": "FORBIDDEN",
+    "expect": "deny",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[禁止] "
+    },
+    "scope": "Grep usage prefix arity: fixed source DATA only; consumed arguments and real file callbacks remain distinct."
+  },
+  {
+    "id": "R40PC-CONDITIONAL-VERSION-UNFORCED",
+    "cmd": "git version; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "fixtureEnvironment": "r40earlytrace",
+    "env": {
+      "GIT_TRACE2": "0",
+      "GIT_TRACE2_EVENT": "false",
+      "GIT_TRACE2_PERF": "0"
+    },
+    "scope": "Version skips per-command pager setup unless explicitly forced. Early Trace2 remains independently disabled by the original environment."
+  },
+  {
+    "id": "R40PC-CONDITIONAL-VERSION-FORCED",
+    "cmd": "git -p version; git commit -m x",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "fixtureEnvironment": "r40earlytrace",
+    "env": {
+      "GIT_TRACE2": "0",
+      "GIT_TRACE2_EVENT": "false",
+      "GIT_TRACE2_PERF": "0"
+    },
+    "scope": "Version skips per-command pager setup unless explicitly forced. Early Trace2 remains independently disabled by the original environment.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-GREP-QUIET-BUNDLE",
+    "cmd": "git grep -qe needle -- a.txt; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Finite quiet/pager and invalid numeric argument boundaries; Hook DATA only."
+  },
+  {
+    "id": "R40PC-GREP-QUIET-CONSUMED-DATA",
+    "cmd": "git grep -e --quiet needle; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Finite quiet/pager and invalid numeric argument boundaries; Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-GREP-QUIET-PATH-DATA",
+    "cmd": "git grep -- needle --quiet; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Finite quiet/pager and invalid numeric argument boundaries; Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-GREP-QUIET-CONFIGURED-PAGER",
+    "cmd": "git grep --quiet needle; git commit -m x",
+    "cwd": "r40pcpagergrep",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Finite quiet/pager and invalid numeric argument boundaries; Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-GREP-QUIET-FORCED-PAGER",
+    "cmd": "git -p grep --quiet needle; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Finite quiet/pager and invalid numeric argument boundaries; Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-GREP-QUIET-RESET",
+    "cmd": "git grep --quiet --no-quiet needle; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Finite quiet/pager and invalid numeric argument boundaries; Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-GREP-INVALID-NUMERIC-ROLE",
+    "cmd": "git -P grep --context --open-files-in-pager needle; git commit -m x",
+    "cwd": "clean",
+    "expect": "deny",
+    "expectedOwnSG": "UNKNOWN",
+    "scope": "Finite quiet/pager and invalid numeric argument boundaries; Hook DATA only.",
+    "denyBy": "block-secret-git.cjs",
+    "expectReasonPrefixes": {
+      "block-secret-git.cjs": "[判断不能] "
+    }
+  },
+  {
+    "id": "R40PC-GREP-NUMERIC-CONTROL",
+    "cmd": "git -P grep --context 1 needle; git commit -m x",
+    "cwd": "clean",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Finite quiet/pager and invalid numeric argument boundaries; Hook DATA only."
+  },
+  {
+    "id": "R40PC-GREP-NODASH-EXPRESSION-NOPAGER",
+    "cmd": "git -P grep \"(\" -e needle \")\" -- a.txt; git commit -m x",
+    "expect": "allow",
+    "expectedOwnSG": "ALLOW",
+    "scope": "Actual Git NODASH expression options stay separate from bare pattern and dash path DATA. New normal counterpart; original R11SG48 is unchanged."
+  }
+]

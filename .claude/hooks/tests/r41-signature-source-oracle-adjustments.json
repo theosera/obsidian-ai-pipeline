@@ -1,0 +1,69 @@
+{
+  "schema": "R41_VERSIONED_SIGNATURE_SOURCE_ORACLE_V1",
+  "publicParentHead": "2f8e3c62b285073b0714a6fd39325d6fa72938af",
+  "baselineCount": 8696,
+  "baselineDefinitionsJSONSHA256": "8a29fc91004f79d3c36caca6ef5659068bf0f0d204e939a3038afac27f3adfca",
+  "reason": "Unresolved selected pretty format may request a signature verifier. Git -P disables the pager only; it is not proof that a verifier is inactive.",
+  "ordinaryCost": "A previously allowed reader-before-commit with an unresolved format stops UNKNOWN. The original command and environment are retained; this is an explicit compatibility change, not an original-oracle pass.",
+  "supportedAlternative": "Use a known non-signature format when it fulfills the intended operation; otherwise retain the operation and ask owner. Do not remove a needed signature query or change configuration silently.",
+  "officialSources": [
+    "https://git-scm.com/docs/pretty-formats",
+    "https://git-scm.com/docs/git#Documentation/git.txt--P"
+  ],
+  "originalFailureEvidence": {
+    "path": "/private/tmp/pr191-r41-full-prior8696-v1/full-comparison-results.json",
+    "sha256": "9240a38fc985ae4dd352319f4aa330d0f1007029566f65a47a76889d5df14a99",
+    "result": "8695 PASS / 1 FAIL / broken0; original result and expectations preserved"
+  },
+  "adjustments": [
+    {
+      "id": "R7SG40-R40-TRUE-NOPAGER-CONTROL",
+      "beforeDefinition": {
+        "id": "R7SG40-R40-TRUE-NOPAGER-CONTROL",
+        "expect": "allow",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git -P log --format=\"$FORMAT\" -1; git commit -m x",
+        "expectedOwnSG": "ALLOW",
+        "lineage": {
+          "originalID": "R7SG40",
+          "originalDefinition": {
+            "id": "R7SG40",
+            "expect": "allow",
+            "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"$FORMAT\" -1; git commit -m x"
+          },
+          "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+        },
+        "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained."
+      },
+      "beforeDefinitionJSONSHA256": "639639e6f2df22da07935d13edc4779bcb06542d1b34d0ee2003579e51f97896",
+      "setFields": {
+        "expect": "deny",
+        "expectedOwnSG": "UNKNOWN",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinition": {
+        "id": "R7SG40-R40-TRUE-NOPAGER-CONTROL",
+        "expect": "deny",
+        "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git -P log --format=\"$FORMAT\" -1; git commit -m x",
+        "expectedOwnSG": "UNKNOWN",
+        "lineage": {
+          "originalID": "R7SG40",
+          "originalDefinition": {
+            "id": "R7SG40",
+            "expect": "allow",
+            "cmd": "GIT_EXTERNAL_DIFF=/tmp/helper git log --format=\"$FORMAT\" -1; git commit -m x"
+          },
+          "purpose": "Distinct normal control with real -P; original input/oracle remains unchanged."
+        },
+        "scope": "Finite refinement counterpart; command remains Hook DATA. Existing inputs and their original oracles are retained.",
+        "denyBy": "block-secret-git.cjs",
+        "expectReasonPrefixes": {
+          "block-secret-git.cjs": "[判断不能] "
+        }
+      },
+      "afterDefinitionJSONSHA256": "b148027421da1bf256b515c0326aa1192a10afe25c56054a0d0fd9dc52ac19bb"
+    }
+  ]
+}
