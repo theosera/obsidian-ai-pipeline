@@ -5232,7 +5232,7 @@ function commitInlineValue(carrier, value, attached, prefixLength) {
 
 /** Identify commit-time staging and pathspecs while accepting single-word dynamic option values. */
 function parseCommitArgs(words) {
-  const r = { all: false, patch: false, fromFile: false, noVerify: false, terminal: false, dynamic: false, unknown: [], pathspecs: [],
+  const r = { all: false, patch: false, only: false, fromFile: false, noVerify: false, terminal: false, dynamic: false, unknown: [], pathspecs: [],
     messageFiles: [], inlineMessageWords: [], inlineObjectWords: [], messageFileUnknown: false, messageFileSelectionUnknown: false, editorMayRun: true, signingSelected: false };
   const identityWords = new Map();
   const trailerWords = [];
@@ -5292,6 +5292,13 @@ function parseCommitArgs(words) {
       if (['no-file', 'no-template', 'no-message', 'no-reedit-message', 'no-reuse-message'].includes(full)) sourceOverride = true;
       if (full === 'all') r.all = true;
       if (full === 'patch' || full === 'interactive') r.patch = true;
+      // --only (also implied by reword fixups) may commit a tree other than the
+      // inspected index even without a pathspec. Do not exempt index deletions.
+      if (full === 'only') r.only = true;
+      if (full === 'fixup') {
+        const value = eq < 0 ? words[k + 1] : { ...w, text: t.slice(eq + 1) };
+        if (!value || value.dynamic || value.text.startsWith('reword:')) r.only = true;
+      }
       if (full === 'pathspec-from-file') r.fromFile = true;
       if (full === 'no-verify') r.noVerify = true;
       if (full === 'gpg-sign' || full === 'no-gpg-sign') r.signingSelected = full === 'gpg-sign';
@@ -5351,6 +5358,7 @@ function parseCommitArgs(words) {
         if (COMMIT_SHORT_ATTACHED.has(ch)) { if (ch === 'S') r.signingSelected = true; break; }
         if (ch === 'a') r.all = true;
         if (ch === 'p') r.patch = true;
+        if (ch === 'o') r.only = true;
         if (ch === 'n') r.noVerify = true;
         if (ch === 'e') editorSelection = true;
         if (!COMMIT_SHORT_FLAGS.has(ch)) { r.unknown.push(t); break; }
