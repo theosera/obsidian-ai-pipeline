@@ -492,23 +492,33 @@ for (const g of commits) {
   const inspectCwd = context.cwd + (context.cdirs.length ? ' (Git -C 引数を保持)' : '');
   let staged = '';
   try {
-    staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', '-z'], {
+    // Only an index-based commit proves these deletions. A directory pathspec
+    // can reintroduce an untracked local secret; --only can reuse the HEAD tree.
+    staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', ...(!ca.pathspecs.length && !ca.only ? ['--diff-filter=d'] : []), '-z'], {
       ...context,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
+    if (typeof staged !== 'string' || (staged !== '' &&
+        (!staged.endsWith('\0') || staged.slice(0, -1).split('\0').some(name => name === '')))) {
+      throw new Error('incomplete staged filename inspection');
+    }
   } catch {
     // 検査できないときは通さない（存在しない `-C` 先などで検査を無効化させない）。
     deny(
       `staged ファイルの検査に失敗しました (対象: ${inspectCwd})。\n` +
       '検査できない状態で commit を通すと staged secret を見逃すためブロックしました (fail-closed)。',
+      'UNKNOWN',
     );
   }
   const bad = staged.split('\0').filter(isSecret);
   if (bad.length) {
     deny(
       `staged に secret-looking file が含まれています: ${bad.join(', ')}\n` +
-      'CLAUDE.md が commit を禁止するファイル名に当たります。`git restore --staged <file>` で外してから commit してください。',
+      'CLAUDE.md が commit を禁止するファイル名に当たります。' +
+      (ca.pathspecs.length || ca.only
+        ? 'pathspec / --only は index の削除を記録するとは限りません。追跡解除は通常の index を使う commit で検査してください。'
+        : '上記の追加・変更等を staged から外してください。追跡解除のための削除は取り消さないでください。'),
       'FORBIDDEN',
     );
   }
@@ -622,27 +632,37 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
   // an actual parsed commit using its validated selected context.
   if (commits.length) {
   const context = commitInspectionContext(commits[0]);
+  const ca = guard.parseCommitArgs(commits[0].args);
   const inspectCwd = context.cwd + (context.cdirs.length ? ' (Git -C 引数を保持)' : '');
   let staged = '';
   try {
-    staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', '-z'], {
+    // Keep the legacy backstop consistent without skipping any later checks.
+    staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', ...(!ca.pathspecs.length && !ca.only ? ['--diff-filter=d'] : []), '-z'], {
       ...context,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
+    if (typeof staged !== 'string' || (staged !== '' &&
+        (!staged.endsWith('\0') || staged.slice(0, -1).split('\0').some(name => name === '')))) {
+      throw new Error('incomplete staged filename inspection');
+    }
   } catch {
     // 従来は staged='' として素通ししていた（fail-open）。存在しない `-C` 先を指すだけで
     // 検査を無効化できてしまうため、検査できないときは通さない。
     deny(
       `staged ファイルの検査に失敗しました (対象: ${inspectCwd})。\n` +
       '検査できない状態で commit を通すと staged secret を見逃すためブロックしました (fail-closed)。',
+      'UNKNOWN',
     );
   }
   const bad = staged.split('\0').filter(isSecret);
   if (bad.length) {
     deny(
       `staged に secret-looking file が含まれています: ${bad.join(', ')}\n` +
-      (commits.length ? '実行対象の commit の index が禁止ファイル名を含みます。対象を staged から外してください。'
+      (commits.length ? '実行対象の commit の検査で禁止ファイル名が見つかりました。' +
+        (ca.pathspecs.length || ca.only
+          ? 'pathspec / --only は index の削除を記録するとは限りません。追跡解除は通常の index を使う commit で検査してください。'
+          : '上記の追加・変更等を staged から外し、追跡解除のための削除は取り消さないでください。')
         : '旧文字列判定の commit 候補と index の禁止名が一致しましたが、実際の commit 対象か確定できないため停止します。'),
       commits.length ? 'FORBIDDEN' : 'UNKNOWN',
     );
