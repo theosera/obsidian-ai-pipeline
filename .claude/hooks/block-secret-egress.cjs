@@ -6326,6 +6326,26 @@ function transportMetadataInvocation(invocation) {
   return descriptor.metadata?.invocations.find(item => item.order === invocation.order) || null;
 }
 const inspectEffectiveGitTransport = gitTransportReaders.createTransportInspector();
+/** Qualify only the requested push lane; every earlier source/payload check stays independent. */
+function claudePushCdProjection(g, invocation) {
+  if (!leadingCdContext || !g.cdLikeBefore || g.sub !== 'push' || !invocation ||
+      insp.invocations.length !== 2 || invocation !== insp.invocations[1] ||
+      invocation.name !== 'git' || invocation.wrapped || invocation.cdLikeHere ||
+      invocation.unknownContextBefore || invocation.unsafeGroupSetup || invocation.functionCallName ||
+      invocation.definitionName || invocation.envUnknown || invocation.pathChangedBefore ||
+      g.incomplete || g.dynamicOpt || g.gitDir || g.workTree || g.cdirs.length ||
+      g.configs.length || g.configEnvs.length || g.pathspecFlags.length) return null;
+  const words = g.args.map(literalSourceWord);
+  if (words.some(word => !word)) return null;
+  const args = words.map(word => word.text);
+  if (['-u', '--set-upstream'].includes(args[0])) args.shift();
+  if (args.length !== 2 || args[0] !== 'origin') return null;
+  const branch = args[1];
+  if (!branch.startsWith('claude/') || branch.length === 7 ||
+      /[\x00-\x20\x7f~^:?*\[\\]/.test(branch) || branch.includes('..') || branch.includes('@{') ||
+      branch.endsWith('.') || branch.split('/').some(part => !part || part.startsWith('.') || part.endsWith('.lock'))) return null;
+  return { git: { ...g, cdLikeBefore: false }, branch };
+}
 /** Classify only the evidence supported for this Git invocation, without changing its refusal. */
 function gitVerdict(g, verdict) {
   const invocation = gitInvocationContexts.get(g);
@@ -7180,7 +7200,9 @@ for (const g of inspectedGits) {
   if (!guard.gitTransportClientRole(g)) continue;
   const primaryInvocation = gitInvocationContexts.get(g);
   const metadataInvocation = transportMetadataInvocation(primaryInvocation);
-  const verdict = metadataInvocation ? inspectEffectiveGitTransport(g, metadataInvocation, baseDir) :
+  const projection = claudePushCdProjection(g, primaryInvocation);
+  const verdict = metadataInvocation ? inspectEffectiveGitTransport(projection?.git || g, metadataInvocation, baseDir,
+    projection ? { requiredPushURL: 'https://github.com/theosera/obsidian-ai-pipeline.git', requiredPushBranch: projection.branch } : undefined) :
     { category: 'UNKNOWN', reason: 'Git transport と同じ source / cwd / environment 条件を再構成できません。' };
   if (verdict) deny(verdict.reason + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
