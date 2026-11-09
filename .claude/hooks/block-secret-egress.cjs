@@ -264,6 +264,81 @@ const URL_ARG_RE = /^(https?:\/\/|ssh:\/\/|git:\/\/|git@)/;
 // Git は最初の `:` より前に `/` が無い宛先を scp 形と読む。`./a:b` はローカル。
 const SCP_ARG_RE = /^[^/:]+:/;
 const REMOTE_URL_KEY_RE = /^remote\..+\.(?:url|pushurl)$/i;
+/** Keep the lexical and parsed bare-cd boundary together for independent qualification. */
+function leadingCdSyntax(first = null) {
+  return /^\s*cd(?=\s)/.test(cmd) &&
+    (first === null || first.words.length === 2 && first.words[0].raw === 'cd');
+}
+/** Qualify only a leading, successful builtin cd; shared cdLikeBefore stays untouched. */
+function leadingLiteralCdContext() {
+  if (!leadingCdSyntax()) return null;
+  if (inheritedFunctionNames.includes('cd') || insp.invocations.some(invocation => invocation.name === 'alias')) return null;
+  // Child/interpreted sources can contain another cd outside this root parse.
+  // Keep their existing lane; do not lend root cwd proof across such a source.
+  if (insp.invocations.some(invocation => invocation.shellScripts.length || invocation.shellReadsStdin || invocation.trapScripts.length ||
+      invocation.name === 'eval')) return null;
+  let parsed;
+  try { parsed = guard.parseShell(cmd); } catch { return null; }
+  const first = parsed.cmds[0];
+  if (!first || !leadingCdSyntax(first)) return null;
+  // Syntax qualification never changes which directory command is selected.
+  if (insp.invocations[0]?.name !== 'cd') return null;
+  const target = first.words.at(-1); // The qualified bare form has exactly two words.
+  if (!knownWord(target) || target.dynamicMaySplit || target.globExpanded || target.braceExpanded ||
+      target.tildeExpanded || !path.isAbsolute(target.text) || target.text.startsWith('//')) return null;
+  // Check components before realpath: normalizing first would erase this refusal.
+  if (target.text.split('/').some(part => part === '.' || part === '..')) return null;
+  if (guard.isSecretPath(target.text)) return null;
+  // The first cd must execute in the parent and gate its successor on success.
+  // A downstream pipeline is independent of this first command's effects.
+  if (parsed.errors.length || parsed.unsupportedSources.length || parsed.async || parsed.evaluationUnknown ||
+      first.scope !== parsed.scope || first.effects.length !== 1 ||
+      first.effects.some(effect => effect.pipeline || effect.conditional || effect.unsafeSetup) ||
+      first.redirs.length || first.heredocBodies.length || first.definitionName ||
+      !/^\s*$/.test(cmd.slice(0, first.words[0].start)) ||
+      !/^[ \t\r\n]*&&/.test(cmd.slice(target.start + target.raw.length))) return null;
+  // Count the whole input before lending any cwd proof, including later cd and
+  // unused function bodies. A later change invalidates even an earlier client.
+  const directoryCommands = source => source.cmds.reduce((count, command) => count +
+    (['cd', 'pushd', 'popd'].includes(command.words[0]?.text) ? 1 : 0) +
+    (command.functionBody ? directoryCommands(command.functionBody) : 0), 0);
+  // The qualified leading cd contributes to both counts; max === 1 therefore
+  // retains the same whole-input boundary, including retained function bodies.
+  if (Math.max(directoryCommands(parsed),
+      insp.invocations.filter(invocation => ['cd', 'pushd', 'popd'].includes(invocation.name)).length) !== 1) return null;
+  // This finite proof covers top-level commands, not a group, function, alias
+  // or interpreter body. Wrapper-selected cwd changes stay invocation-local.
+  if (parsed.cmds.some(command => command.scope !== parsed.scope || command.effects.length !== 1 ||
+      command.definitionName || command.functionBody || command.functionBodyUnknown)) return null;
+  let cwd, inputCwd;
+  try {
+    cwd = fs.realpathSync.native(target.text);
+    if (!fs.statSync(cwd).isDirectory()) return null;
+    fs.accessSync(target.text, fs.constants.X_OK);
+    // Retain the mode-bit check even when the Hook is run by a privileged test
+    // actor: a directory with no search bits is not qualified by that actor.
+    for (let directory = cwd;; directory = path.dirname(directory)) {
+      if (!(fs.statSync(directory).mode & 0o111)) return null;
+      if (directory === path.dirname(directory)) break;
+    }
+    inputCwd = fs.realpathSync.native(baseDir);
+  } catch { return null; }
+  if (cwd !== inputCwd) return null;
+  if (guard.isSecretPath(cwd)) return null;
+  return { cwd, inputCwd };
+}
+const leadingCdContext = leadingLiteralCdContext();
+if (leadingCdContext) {
+  const rootScope = insp.invocations[0]?.scope;
+  for (const invocation of insp.invocations.slice(1)) {
+    if (invocation.name === 'gh' && invocation.scope === rootScope && !invocation.cdLikeHere &&
+        !invocation.functionCallName && !invocation.definitionName &&
+        !['git', 'bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish'].includes(invocation.name)) {
+      invocation.egressLiteralCdCwd = leadingCdContext.cwd;
+    }
+  }
+}
+
 /** Require a static word before treating an existing refusal as a confirmed prohibited form. */
 function knownWord(word) {
   return Boolean(word && !word.dynamic && !word.ansiCUnknown && !word.text.includes('\0'));
@@ -299,15 +374,16 @@ function shellStdinSource(invocation) {
 
 /** Downgrade evidence when executable identity or preceding context is not established by this parser. */
 function knownInvocationContext(invocation) {
+  const cdCwd = invocation.egressLiteralCdCwd;
   if (invocation.dynamicName || invocation.launcherUnknown || invocation.incomplete ||
-      invocation.unknownContextBefore || invocation.cdLikeBefore || invocation.envUnknown ||
+      invocation.unknownContextBefore || invocation.cdLikeBefore && !cdCwd || invocation.envUnknown ||
       invocation.unsafeGroupSetup || invocation.functionCallName) return false;
   const identity = executableIdentity.invocationExecutableIdentity(invocation, {
-    environment: process.env, cwd: baseDir,
+    environment: process.env, cwd: cdCwd || baseDir,
     builtinNames: ['true', 'false', 'test', '[', 'echo', 'printf', 'pwd', 'read', 'mapfile', 'readarray', ':'],
   });
   return ['builtin', 'trusted-external'].includes(identity.kind) &&
-    !invocation.pathChangedBefore && !invocation.unknownContextBefore && !invocation.cdLikeBefore &&
+    !invocation.pathChangedBefore && !invocation.unknownContextBefore && (!invocation.cdLikeBefore || !!cdCwd) &&
     !invocation.envUnknown && !invocation.unsafeGroupSetup;
 }
 
@@ -6250,6 +6326,26 @@ function transportMetadataInvocation(invocation) {
   return descriptor.metadata?.invocations.find(item => item.order === invocation.order) || null;
 }
 const inspectEffectiveGitTransport = gitTransportReaders.createTransportInspector();
+/** Qualify only the requested push lane; every earlier source/payload check stays independent. */
+function claudePushCdProjection(g, invocation) {
+  if (!leadingCdContext || !g.cdLikeBefore || g.sub !== 'push' || !invocation ||
+      insp.invocations.length !== 2 || invocation !== insp.invocations[1] ||
+      invocation.name !== 'git' || invocation.wrapped || invocation.cdLikeHere ||
+      invocation.unknownContextBefore || invocation.unsafeGroupSetup || invocation.functionCallName ||
+      invocation.definitionName || invocation.envUnknown || invocation.pathChangedBefore ||
+      g.incomplete || g.dynamicOpt || g.gitDir || g.workTree || g.cdirs.length ||
+      g.configs.length || g.configEnvs.length || g.pathspecFlags.length) return null;
+  const words = g.args.map(literalSourceWord);
+  if (words.some(word => !word)) return null;
+  const args = words.map(word => word.text);
+  if (['-u', '--set-upstream'].includes(args[0])) args.shift();
+  if (args.length !== 2 || args[0] !== 'origin') return null;
+  const branch = args[1];
+  if (!branch.startsWith('claude/') || branch.length === 7 ||
+      /[\x00-\x20\x7f~^:?*\[\\]/.test(branch) || branch.includes('..') || branch.includes('@{') ||
+      branch.endsWith('.') || branch.split('/').some(part => !part || part.startsWith('.') || part.endsWith('.lock'))) return null;
+  return { git: { ...g, cdLikeBefore: false }, branch };
+}
 /** Classify only the evidence supported for this Git invocation, without changing its refusal. */
 function gitVerdict(g, verdict) {
   const invocation = gitInvocationContexts.get(g);
@@ -7104,7 +7200,9 @@ for (const g of inspectedGits) {
   if (!guard.gitTransportClientRole(g)) continue;
   const primaryInvocation = gitInvocationContexts.get(g);
   const metadataInvocation = transportMetadataInvocation(primaryInvocation);
-  const verdict = metadataInvocation ? inspectEffectiveGitTransport(g, metadataInvocation, baseDir) :
+  const projection = claudePushCdProjection(g, primaryInvocation);
+  const verdict = metadataInvocation ? inspectEffectiveGitTransport(projection?.git || g, metadataInvocation, baseDir,
+    projection ? { requiredPushURL: 'https://github.com/theosera/obsidian-ai-pipeline.git', requiredPushBranch: projection.branch } : undefined) :
     { category: 'UNKNOWN', reason: 'Git transport と同じ source / cwd / environment 条件を再構成できません。' };
   if (verdict) deny(verdict.reason + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
