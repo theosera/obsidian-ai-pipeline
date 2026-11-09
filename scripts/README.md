@@ -14,7 +14,7 @@
 
 ## 実行非推奨である理由
 
-- 依存関係 (`scripts/package.json` / `scripts/package-lock.json`) はリポジトリルートの pnpm 管理とは独立しており、更新されていません
+- 依存関係 (`scripts/package.json` / `scripts/package-lock.json`) はリポジトリルートの pnpm 管理とは独立しています。通常の版の更新はしませんが、Dependabot のセキュリティ警告を直す更新だけは取り込みます (2026-11-09 から)。そのため一部の版は TypeScript 化の前の当時の版より新しくなっています。CI と週次の取込はこの依存をインストールしません
 - セキュリティ修正 (`ensureSafePath` 7フェーズ化、VAULT_ROOT の設定ファイル化、`--dry-run` など) は一切反映されていません
 - ハードコードされたパスや旧バージョンの API キー取扱が残っている可能性があります
 
