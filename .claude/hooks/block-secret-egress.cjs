@@ -3516,6 +3516,70 @@ function ghRequestHostWords(role) {
   return entries;
 }
 
+// Additional authentication permission is deliberately smaller than the builtin
+// arity inventory. New operations/options are not admitted by that inventory.
+const GH_READ_AUTH_ALLOWLIST = new Map([
+  ['pr list', ['repo app assignee author base head jq json label limit search state template', 'draft', 'none']],
+  ['pr view', ['repo jq json template', 'comments', 'number']],
+  ['pr diff', ['repo color exclude', 'name-only patch', 'number']],
+  ['pr checks', ['repo interval jq json template', 'fail-fast required watch', 'number']],
+  ['pr status', ['repo jq json template', 'conflict-status', 'none']],
+  ['issue list', ['repo app assignee author jq json label limit mention milestone search state template type', '', 'none']],
+  ['issue view', ['repo jq json template', 'comments', 'number']],
+  ['issue status', ['repo jq json template', '', 'none']],
+  ['run list', ['repo branch commit created event jq json limit status template user workflow', 'all', 'none']],
+  ['run view', ['repo attempt job jq json template', 'exit-status log log-failed verbose', 'number']],
+  ['run watch', ['repo interval', 'compact exit-status', 'number']],
+  ['repo list', ['jq json language limit template topic visibility', 'archived fork no-archived source', 'owner']],
+  ['repo view', ['branch jq json template', '', 'repository']],
+  ['api', ['hostname method jq template', 'include silent', 'endpoint']],
+]);
+
+/** Admit opaque authentication only for a positively qualified GitHub read. */
+function ghReadAuthenticationAllowed(invocation, role) {
+  const entry = GH_READ_AUTH_ALLOWLIST.get(role.operation);
+  if (!entry || role.terminal || role.unknown || role.sourceUnknown || invocation.outboundEnvironmentUnknown) return false;
+  // Qualify a single root command from its original source, with no preceding
+  // shell state change, wrapper, redirection or alternate execution source.
+  if (insp.invocations.length !== 1 || insp.invocations[0] !== invocation || invocation.scope?.parent ||
+      invocation.wrapped || invocation.redirs.length || invocation.nonExec || invocation.definitionName || invocation.functionCallName) return false;
+  const words = invocation.words, nameIndex = words.indexOf(invocation.nameWord);
+  if (nameIndex < 0 || words.slice(0, nameIndex).some(word => literalSourceWord(word)?.text !== 'GH_HOST=github.com')) return false;
+  let end = 0;
+  for (const word of words) {
+    if (!/^\s*$/.test(cmd.slice(end, word.start))) return false;
+    end = word.start + word.raw.length;
+  }
+  if (!/^\s*$/.test(cmd.slice(end))) return false;
+  const [valueNames, flagNames, operandKind] = entry;
+  const values = new Set(valueNames.split(' ').filter(Boolean)), flags = new Set(flagNames.split(' ').filter(Boolean));
+  if (role.values.some(value => !values.has(value.option) || !literalSourceWord(value.word)) ||
+      [...role.flags.keys()].some(name => !flags.has(name))) return false;
+  const selected = name => role.values.filter(value => value.option === name).map(value => literalSourceWord(value.word).text);
+  const operands = role.operands.map(literalSourceWord), metadata = role.metadata.map(literalSourceWord);
+  if (operands.some(word => !word) || metadata.some(word => !word)) return false;
+  const repository = text => /^(?:github\.com\/)?[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(text) && !text.endsWith('/.') && !text.endsWith('/..');
+  if (role.operation === 'api') {
+    const hostnames = selected('hostname'), methods = selected('method');
+    if (metadata.length || hostnames.length !== 1 || hostnames[0] !== 'github.com' ||
+        methods.length > 1 || methods.some(method => method !== 'GET')) return false;
+    if (operands.length !== 1 || !/^\/?[A-Za-z0-9][A-Za-z0-9_./?=&+-]*$/.test(operands[0].text) ||
+        operands[0].text.includes('//') || /(?:^|\/)\.\.(?:\/|$)/.test(operands[0].text)) return false;
+    return true;
+  }
+  const host = (invocation.ghEnvironmentSources || []).find(source => source.name === 'GH_HOST');
+  if (literalSourceWord(host?.word)?.text !== 'github.com') return false;
+  const repositories = metadata.map(word => word.text).concat(selected('repo'));
+  if (repositories.some(text => !repository(text))) return false;
+  if (['pr', 'issue', 'run'].includes(role.operation.split(' ')[0]) && repositories.length !== 1) return false;
+  if (role.operation.startsWith('repo ') && repositories.length) return false;
+  if (operandKind === 'none') return operands.length === 0;
+  if (operandKind === 'number') return operands.length === 1 && /^[1-9][0-9]*$/.test(operands[0].text);
+  if (operandKind === 'owner') return operands.length <= 1 && operands.every(word => /^[A-Za-z0-9_-]+$/.test(word.text));
+  if (operandKind === 'repository') return operands.length === 1 && repository(operands[0].text);
+  return false;
+}
+
 /** Retain the exported token selected by the actual request host, not every token-shaped name. */
 function ghAuthenticationVerdict(invocation) {
   if (invocation.name !== 'gh') return false;
@@ -3617,6 +3681,10 @@ function ghAuthenticationVerdict(invocation) {
     const word = env.get(name), literal = literalSourceWord(word);
     if (literal?.text === '') continue;
     if (literal) break; // First known nonempty value suppresses the lower-priority token.
+    // An inherited opaque public token may authenticate a qualified read. Keep
+    // all command-scope source proofs and the original fallback for other uses.
+    if (word === null && Object.prototype.hasOwnProperty.call(process.env, name) && family[0] === 'GH_TOKEN' &&
+        requestHosts.every(value => value === 'github.com') && !hostUnknown && ghReadAuthenticationAllowed(invocation, role)) break;
     if (requestHosts.some(value => !value) || hostUnknown) { unknown = true; break; }
     return outboundPayloadVerdict(invocation, [word]);
   }
