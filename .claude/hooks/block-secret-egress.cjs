@@ -3535,6 +3535,101 @@ const GH_READ_AUTH_ALLOWLIST = new Map([
   ['api', ['hostname method jq template', 'include silent', 'endpoint']],
 ]);
 
+/** Read only a bounded mapping subset; unsupported configuration is unproved. */
+function ghReadConfigMapping(text) {
+  if (/[\0\t\uFEFF\uFFFD]/.test(text)) return null;
+  const lines = text.split(/\r?\n/).filter(line => line.trim() && !line.trimStart().startsWith('#'));
+  const tokens = [];
+  for (const line of lines) {
+    const match = /^( *)([A-Za-z0-9_.-]+):(?: +(.*))?$/.exec(line.trimEnd());
+    if (!match) return null;
+    tokens.push({ indent: match[1].length, key: match[2], raw: match[3] });
+  }
+  const scalar = raw => {
+    if (/^'(?:[^']|'')*'$/.test(raw)) return raw.slice(1, -1).replace(/''/g, "'");
+    if (raw.startsWith('"')) {
+      const value = JSON.parse(raw);
+      if (typeof value !== 'string') throw Error('unproved configuration');
+      return value;
+    }
+    if (!/^[A-Za-z0-9_./@+-]+$/.test(raw)) throw Error('unproved configuration');
+    return raw;
+  };
+  let cursor = 0;
+  const block = indent => {
+    const result = new Map();
+    while (cursor < tokens.length && tokens[cursor].indent >= indent) {
+      const token = tokens[cursor++];
+      if (token.indent !== indent || result.has(token.key)) throw Error('unproved configuration');
+      const nested = cursor < tokens.length && tokens[cursor].indent > indent;
+      if (nested && token.raw !== undefined) throw Error('unproved configuration');
+      result.set(token.key, nested ? block(tokens[cursor].indent) : token.raw === undefined ? '' : scalar(token.raw));
+    }
+    return result;
+  };
+  try { return block(0); } catch { return null; }
+}
+
+/** Inspect both selected files without invoking gh or loading configuration code. */
+function ghReadConfiguration() {
+  const env = process.env;
+  const root = env.GH_CONFIG_DIR || (env.XDG_CONFIG_HOME ? path.join(env.XDG_CONFIG_HOME, 'gh') :
+    process.platform === 'win32' && env.AppData ? path.join(env.AppData, 'GitHub CLI') :
+      env.HOME ? path.join(env.HOME, '.config', 'gh') : null);
+  if (!root || !path.isAbsolute(root)) return null;
+  const maps = [];
+  for (const name of ['config.yml', 'hosts.yml']) {
+    let fd;
+    try {
+      fd = fs.openSync(path.join(root, name), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+      const before = fs.fstatSync(fd);
+      if (!before.isFile() || before.size > 1024 * 1024) return null;
+      const buffer = Buffer.alloc(before.size + 1);
+      let length = 0, count;
+      while (length < buffer.length && (count = fs.readSync(fd, buffer, length, buffer.length - length, null))) length += count;
+      const after = fs.fstatSync(fd);
+      if (length !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) return null;
+      const map = ghReadConfigMapping(buffer.subarray(0, length).toString('utf8'));
+      if (!map) return null;
+      maps.push(map);
+    } catch (error) {
+      if (fd !== undefined || error.code !== 'ENOENT') return null;
+      maps.push(new Map());
+    } finally {
+      if (fd !== undefined) try { fs.closeSync(fd); } catch { return null; }
+    }
+  }
+  const scopes = [];
+  for (const map of maps) {
+    scopes.push(map);
+    for (const parent of [map, map.get('hosts')]) {
+      if (parent instanceof Map && parent.has('github.com')) {
+        const host = parent.get('github.com');
+        if (!(host instanceof Map)) return null;
+        scopes.push(host);
+      }
+    }
+  }
+  return scopes;
+}
+
+function ghReadPagerAllowed(scopes) {
+  if (['GH_FORCE_TTY', 'CLICOLOR_FORCE', 'FORCE_COLOR'].some(name => process.env[name])) return false;
+  const safe = value => typeof value === 'string' && ['', 'cat'].includes(value);
+  if (Object.prototype.hasOwnProperty.call(process.env, 'GH_PAGER')) return safe(process.env.GH_PAGER);
+  const configured = scopes.filter(scope => scope.has('pager')).map(scope => scope.get('pager'));
+  if (configured.some(value => !safe(value))) return false;
+  if (configured.length && configured.every(value => value === 'cat')) return true;
+  return process.env.PAGER === undefined || safe(process.env.PAGER);
+}
+
+function ghReadDestinationAllowed(scopes) {
+  const routing = ['GH_API_HOST', 'GH_HTTP_UNIX_SOCKET', 'GH_HTTP_PROXY',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
+  if (routing.some(name => process.env[name])) return false;
+  return scopes.every(scope => ['api_host', 'http_unix_socket'].every(name => !scope.has(name) || scope.get(name) === ''));
+}
+
 /** Admit opaque authentication only for a positively qualified GitHub read. */
 function ghReadAuthenticationAllowed(invocation, role) {
   const entry = GH_READ_AUTH_ALLOWLIST.get(role.operation);
@@ -3551,6 +3646,8 @@ function ghReadAuthenticationAllowed(invocation, role) {
     end = word.start + word.raw.length;
   }
   if (!/^\s*$/.test(cmd.slice(end))) return false;
+  const configuration = ghReadConfiguration();
+  if (!configuration || !ghReadPagerAllowed(configuration) || !ghReadDestinationAllowed(configuration)) return false;
   const [valueNames, flagNames, operandKind] = entry;
   const values = new Set(valueNames.split(' ').filter(Boolean)), flags = new Set(flagNames.split(' ').filter(Boolean));
   if (role.values.some(value => !values.has(value.option) || !literalSourceWord(value.word)) ||

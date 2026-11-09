@@ -114,6 +114,8 @@ const stop=()=>{fs.appendFileSync(${JSON.stringify(marker)},'attempt\\n');throw 
 for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSync','fork'])cp[name]=stop;
 for(const name of ['node:http','node:https']){const m=require(name);m.request=stop;m.get=stop;}
 const net=require('node:net');net.connect=stop;net.createConnection=stop;global.fetch=stop;
+const open=fs.openSync;
+fs.openSync=function(f,...a){if(f===process.env.CX1109_UNREADABLE)throw Object.assign(Error('DUMMY'),{code:'EACCES'});return open.call(this,f,...a);};
 `);
   const environment = { PATH: '/usr/bin:/bin', HOME: home, TMPDIR: root, LC_ALL: 'C', CLAUDE_PROJECT_DIR: cwd,
     GH_TOKEN: 'DUMMY_SYNTHETIC_AUTH', GH_ENTERPRISE_TOKEN: 'DUMMY_SYNTHETIC_AUTH', GIT_CONFIG_NOSYSTEM: '1',
@@ -126,9 +128,53 @@ const net=require('node:net');net.connect=stop;net.createConnection=stop;global.
       encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024,
     }));
   };
+  const configurationCases = [];
+  const addConfigurationCase = (name, kind, rootKind, file, scope, key, value, options = {}) => {
+    configurationCases.push({ name, kind, rootKind, file, scope, key, value, ...options });
+  };
+  for (const rootKind of ['default', 'xdg', 'override']) for (const file of ['config', 'hosts']) {
+    for (const scope of ['global', 'host']) {
+      addConfigurationCase(`pager-file-${rootKind}-${file}-${scope}`, 'pager', rootKind, file, scope, 'pager', 'DUMMY');
+      for (const [index, key] of ['api_host', 'http_unix_socket'].entries())
+        addConfigurationCase(`destination-file-${rootKind}-${file}-${scope}-${index + 1}`, 'destination', rootKind, file, scope, key, 'DUMMY');
+      if (rootKind !== 'override') for (const [index, value] of ["''", 'cat', '"cat"'].entries())
+        addConfigurationCase(`accepted-file-${rootKind}-${file}-${scope}-${index + 1}`, 'accepted', rootKind, file, scope, 'pager', value);
+    }
+    for (const mode of ['unproved', 'unreadable', 'unavailable'])
+      addConfigurationCase(`configuration-${rootKind}-${file}-${mode}`, 'configuration', rootKind, file, 'global', 'pager', "''", { mode });
+  }
+  for (const [index, key] of ['GH_PAGER', 'PAGER', 'GH_FORCE_TTY', 'CLICOLOR_FORCE', 'FORCE_COLOR'].entries())
+    configurationCases.push({ name: `pager-environment-${index + 1}`, kind: 'pager', environment: { [key]: 'DUMMY' } });
+  for (const [index, key] of ['GH_API_HOST', 'GH_HTTP_UNIX_SOCKET', 'GH_HTTP_PROXY',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'].entries())
+    configurationCases.push({ name: `destination-environment-${index + 1}`, kind: 'destination', environment: { [key]: 'DUMMY' } });
+  for (const [index, key] of ['GH_PAGER', 'PAGER'].entries()) for (const [variant, value] of ['', 'cat'].entries())
+    configurationCases.push({ name: `accepted-environment-${index + 1}-${variant + 1}`, kind: 'accepted', environment: { [key]: value } });
+  addConfigurationCase('accepted-selection', 'accepted', 'default', 'config', 'global', 'pager', 'DUMMY', { environment: { GH_PAGER: 'cat' } });
+  configurationCases.push({ name: 'configuration-location', kind: 'configuration', environment: { HOME: undefined } });
+  const runConfiguration = (directory, fixture) => {
+    const selectedHome = path.join(root, fixture.name, 'home');
+    fs.mkdirSync(selectedHome, { recursive: true });
+    const env = { HOME: selectedHome, ...fixture.environment };
+    if (fixture.file) {
+      const config = fixture.rootKind === 'default' ? path.join(selectedHome, '.config', 'gh') : path.join(root, fixture.name, 'DUMMY');
+      if (fixture.rootKind === 'xdg') env.XDG_CONFIG_HOME = config;
+      if (fixture.rootKind === 'override') env.GH_CONFIG_DIR = config;
+      const selectedConfig = fixture.rootKind === 'xdg' ? path.join(config, 'gh') : config;
+      fs.mkdirSync(selectedConfig, { recursive: true });
+      const selectedFile = path.join(selectedConfig, fixture.file + '.yml');
+      const content = fixture.scope === 'host' ? `github.com:\n  ${fixture.key}: ${fixture.value}\n` : `${fixture.key}: ${fixture.value}\n`;
+      if (fixture.mode === 'unavailable') fs.mkdirSync(selectedFile);
+      else fs.writeFileSync(selectedFile, fixture.mode === 'unproved' ? 'DUMMY\n' : content);
+      if (fixture.mode === 'unreadable') env.CX1109_UNREADABLE = selectedFile;
+    }
+    return run(directory, [fixture.name, gh('pr list -R o/r'), env]);
+  };
   try {
     for (const fixture of type1) await t.test('type1-' + fixture[0], () => assert.equal(run(hooks, fixture), baseline ? 'DENY' : 'ALLOW'));
     for (const fixture of type2) await t.test('type2-' + fixture[0], () => assert.equal(run(hooks, fixture), 'DENY'));
+    for (const fixture of configurationCases) await t.test('type3-' + fixture.name, () =>
+      assert.equal(runConfiguration(hooks, fixture), fixture.kind === 'accepted' && !baseline ? 'ALLOW' : 'DENY'));
     if (inverse && !baseline) {
       const source = fs.readFileSync(path.join(hooks, EG), 'utf8');
       const disabled = source.replace('const entry = GH_READ_AUTH_ALLOWLIST.get(role.operation);', 'const entry = undefined;');
@@ -162,6 +208,18 @@ const net=require('node:net');net.connect=stop;net.createConnection=stop;global.
         assert.ok(fixture);
         const verdict = run(directory, fixture);
         assert.equal(verdict, 'ALLOW', 'removing this guard must contradict the type2 denial');
+        assert.throws(() => assert.equal(verdict, 'DENY'), assert.AssertionError);
+      });
+      for (const kind of ['pager', 'destination']) await t.test('inverse-check-' + kind, () => {
+        const before = `!ghRead${kind === 'pager' ? 'Pager' : 'Destination'}Allowed(configuration)`;
+        assert.equal(source.split(before).length, 2, 'mutation anchor is unique');
+        const directory = path.join(root, 'without-check-' + kind);
+        fs.mkdirSync(directory); fs.cpSync(path.join(hooks, 'lib'), path.join(directory, 'lib'), { recursive: true });
+        fs.writeFileSync(path.join(directory, EG), source.replace(before, 'false'));
+        const fixture = configurationCases.find(entry => entry.kind === kind && entry.rootKind === 'default' && entry.file === 'config' && entry.scope === 'global');
+        assert.ok(fixture);
+        const verdict = runConfiguration(directory, { ...fixture, name: 'inverse-check-' + kind });
+        assert.equal(verdict, 'ALLOW', 'removing only this check must contradict its denial');
         assert.throws(() => assert.equal(verdict, 'DENY'), assert.AssertionError);
       });
     }
