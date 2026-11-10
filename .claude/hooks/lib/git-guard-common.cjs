@@ -5535,6 +5535,106 @@ const isSecretPath = (p) => {
     ? tokenBasename : re.test(scanPath));
 };
 
+/** Egress-only adapter; the public lexical predicate retains callback semantics. */
+function isSecretOperandPath(value, context = undefined) {
+  if (context === undefined) return isSecretPath(value);
+  const verdict = secretPathVerdict(value, context);
+  if (verdict === 'UNKNOWN') {
+    if (typeof context?.onUnknown !== 'function') throw new Error('unresolved operand context');
+    context.onUnknown();
+  }
+  return verdict === 'FORBIDDEN';
+}
+
+/** Preserve the lexical inventory and distinguish missing proof from a match. */
+function secretPathVerdict(value, context) {
+  if (isSecretPath(value)) return 'FORBIDDEN';
+  const selected = normalizeSecretOperand(value, context);
+  if (!selected) return 'UNKNOWN';
+  if (isSecretPath(selected[1])) return 'FORBIDDEN';
+  // Compatibility/case aliases are not a filesystem equivalence proof.
+  if (selected.some(candidate => isSecretPath(candidate.normalize('NFKC')
+    .toLowerCase().replace(/\u017f/g, 's')))) return 'UNKNOWN';
+  return false;
+}
+
+/** Observe path components in filesystem order, including an absent final entry.
+ * A second observation detects changes during inspection, but cannot bind a
+ * later native consumer to these observations. Do not cache this proof.
+ */
+function normalizeSecretOperand(value, context) {
+  if (process.platform === 'win32' || typeof value !== 'string' || !value ||
+      value.includes('\0') || typeof context?.cwd !== 'string' ||
+      !path.isAbsolute(context.cwd) || context.cwd.includes('\0')) return null;
+  let raw = path.isAbsolute(value) ? value : context.cwd + path.sep + value;
+  if (context.gitPathspec) {
+    // Git's filename consumer collapses components before inspecting entries.
+    // Resolve cwd first; it is an existing directory, not a pathspec prefix.
+    try {
+      const directory = fs.realpathSync.native(context.cwd);
+      if (!fs.statSync(directory).isDirectory()) return null;
+      raw = path.resolve(directory, value);
+    } catch { return null; }
+  }
+  if (raw.startsWith('//')) return null;
+  const parts = raw.split('/').filter(Boolean);
+  if (parts.length > 256) return null;
+  const observations = [];
+  const identity = stat => [stat.dev, stat.ino, stat.mode, stat.ctimeNs, stat.mtimeNs].join(':');
+  const observe = file => {
+    const before = fs.lstatSync(file, { bigint: true });
+    const physical = fs.realpathSync.native(file);
+    const after = fs.lstatSync(file, { bigint: true });
+    if (identity(before) !== identity(after)) throw new Error('unstable path');
+    const target = fs.statSync(physical, { bigint: true });
+    observations.push({ file, identity: identity(after), physical, target: identity(target) });
+    return physical;
+  };
+  try {
+    let current = observe('/');
+    let absent = null;
+    for (let index = 0; index < parts.length; index++) {
+      const directory = fs.statSync(current);
+      if (!directory.isDirectory() || !(directory.mode & 0o111)) return null;
+      fs.accessSync(current, fs.constants.X_OK);
+      const part = parts[index];
+      if (part === '.') continue;
+      if (part === '..') { current = path.dirname(current); continue; }
+      const candidate = current + (current === '/' ? '' : '/') + part;
+      try {
+        // Index writers select a final symlink entry rather than its contents.
+        if (context.gitPathspec && index === parts.length - 1 && !value.endsWith('/')) {
+          const entry = fs.lstatSync(candidate, { bigint: true });
+          if (entry.isSymbolicLink()) {
+            observations.push({ file: candidate, identity: identity(entry), physical: null });
+            current = candidate;
+            continue;
+          }
+        }
+        current = observe(candidate);
+      }
+      catch (error) {
+        // A dangling link is an existing entry, never an absent new leaf.
+        if (error.code !== 'ENOENT' || index !== parts.length - 1 || raw.endsWith('/')) return null;
+        try { fs.lstatSync(candidate); return null; }
+        catch (missing) { if (missing.code !== 'ENOENT') return null; }
+        absent = candidate;
+        current = candidate;
+      }
+    }
+    for (const entry of observations) {
+      if (identity(fs.lstatSync(entry.file, { bigint: true })) !== entry.identity ||
+          entry.physical !== null && (fs.realpathSync.native(entry.file) !== entry.physical ||
+          identity(fs.statSync(entry.physical, { bigint: true })) !== entry.target)) return null;
+    }
+    if (absent) {
+      try { fs.lstatSync(absent); return null; }
+      catch (missing) { if (missing.code !== 'ENOENT') return null; }
+    }
+    return [raw, current];
+  } catch { return null; }
+}
+
 const ADD_SHORT_FLAGS = new Set('nvip efuNA'.replace(/ /g, ''));
 const ADD_LONG = {
   'dry-run': 'f', verbose: 'f', interactive: 'f', patch: 'f', 'auto-advance': 'f', edit: 'f',
@@ -5970,6 +6070,20 @@ function gitObjectInputDecision(g) {
   return null;
 }
 
+/** Add filesystem proof only after the unchanged public decision accepts its source. */
+function gitObjectInputDecisionWithContext(g, context = undefined) {
+  const previous = gitObjectInputDecision(g);
+  if (previous || context === undefined) return previous;
+  const parsed = g.sub === 'commit' ? parseCommitArgs(g.args)
+    : g.sub === 'merge' ? parseMergeMessageArgs(g.args) : null;
+  if (!parsed || !Array.isArray(parsed.messageFiles)) return null;
+  const verdicts = parsed.messageFiles.filter(source => !source.unknown && typeof source.word?.text === 'string')
+    .map(source => secretPathVerdict(source.word.text, context));
+  if (verdicts.includes('FORBIDDEN')) return { category: 'FORBIDDEN', reason: 'Git message の file operand が守る対象に解決されました。' };
+  if (verdicts.includes('UNKNOWN')) return { category: 'UNKNOWN', reason: 'Git message の file operand の対象を確認できません。' };
+  return null;
+}
+
 module.exports = {
   DYN,
   deny,
@@ -5987,6 +6101,7 @@ module.exports = {
   parseMergeMessageArgs,
   parseGitObjectRoute,
   gitObjectInputDecision,
+  gitObjectInputDecisionWithContext,
   preCommitConfigKey,
   gitPreCommitEnvironmentName,
   gitIndexInspectionEnvironmentName,
@@ -6003,6 +6118,8 @@ module.exports = {
   gitPushRepository, gitTransportClientRole, gitTransportSourceRole,
   parseAddArgs,
   isSecretPath,
+  isSecretOperandPath,
+  secretPathVerdict,
   readOnlyGitMode,
   READ_ONLY_SUBS,
 };
