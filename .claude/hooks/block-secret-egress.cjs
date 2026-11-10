@@ -339,6 +339,55 @@ if (leadingCdContext) {
   }
 }
 
+/** Path proof only; never lends executable, environment, or Git context proof. */
+function leadingOperandDirectory() {
+  if (!leadingCdSyntax() || inheritedFunctionNames.includes('cd') ||
+      insp.invocations.some(invocation => invocation.name === 'alias' || invocation.name === 'eval' ||
+        invocation.shellScripts.length || invocation.shellReadsStdin || invocation.trapScripts.length)) return null;
+  let parsed;
+  try { parsed = guard.parseShell(cmd); } catch { return null; }
+  const first = parsed.cmds[0], target = first?.words.at(-1);
+  if (!first || !leadingCdSyntax(first) || insp.invocations[0]?.name !== 'cd' ||
+      !literalSourceWord(target) || !path.isAbsolute(target.text) || target.text.startsWith('//') ||
+      target.text.split('/').some(part => part === '.' || part === '..') ||
+      parsed.errors.length || parsed.unsupportedSources.length || parsed.async || parsed.evaluationUnknown ||
+      first.scope !== parsed.scope || first.effects.length !== 1 ||
+      first.effects.some(effect => effect.pipeline || effect.conditional || effect.unsafeSetup) ||
+      first.redirs.length || first.heredocBodies.length || first.definitionName ||
+      !/^\s*$/.test(cmd.slice(0, first.words[0].start)) ||
+      !/^[ \t\r\n]*&&/.test(cmd.slice(target.start + target.raw.length))) return null;
+  if (parsed.cmds.some(command => command.scope !== parsed.scope || command.effects.length !== 1 ||
+      command.definitionName || command.functionBody || command.functionBodyUnknown) ||
+      insp.invocations.filter(invocation => ['cd', 'pushd', 'popd'].includes(invocation.name)).length !== 1) return null;
+  try {
+    if (!fs.statSync(target.text).isDirectory()) return null;
+    fs.accessSync(target.text, fs.constants.X_OK);
+  } catch { return null; }
+  return { cwd: target.text, scope: insp.invocations[0].scope };
+}
+const operandDirectory = leadingOperandDirectory();
+
+/** Carry the operand's cwd into the shared policy; absent proof remains closed. */
+const unresolvedOperandPaths = new Set();
+function operandPathContext(invocation, git = null) {
+  let cwd = null;
+  if (invocation && !invocation.cdLikeHere && !invocation.unknownContextBefore &&
+      !invocation.unsafeGroupSetup && !invocation.functionCallName && !invocation.incomplete &&
+      !invocation.policyRootUnknown && !invocation.gitSourceContextUnknown) {
+    if (!invocation.cdLikeBefore) cwd = invocation.egressParentOperandContext
+      ? invocation.egressParentOperandContext.cwd : baseDir;
+    else if (operandDirectory && insp.invocations.includes(invocation) &&
+        invocation.scope === operandDirectory.scope) cwd = operandDirectory.cwd;
+  }
+  if (git?.cdirs.length) {
+    const first = git.cdirs.find(value => value !== '');
+    if (typeof first === 'string' && path.isAbsolute(first)) cwd = guard.gitFilesystemDir('/', git.cdirs);
+    else if (cwd) cwd = guard.gitFilesystemDir(cwd, git.cdirs);
+  }
+  return { cwd, absoluteOperand: true, gitPathspec: !!git && ['add', 'stage', 'update-index'].includes(git.sub),
+    onUnknown: () => unresolvedOperandPaths.add(invocation) };
+}
+
 /** Require a static word before treating an existing refusal as a confirmed prohibited form. */
 function knownWord(word) {
   return Boolean(word && !word.dynamic && !word.ansiCUnknown && !word.text.includes('\0'));
@@ -1255,14 +1304,14 @@ function gitOperationVerdict(g, invocation) {
     const verdict = outboundPayloadVerdict(invocation, words.filter(source => !source.uncertainSelection).map(source => source.word)) ||
       (outboundPayloadVerdict(invocation, words.filter(source => source.uncertainSelection).map(source => source.word)) ? 'UNKNOWN' : false);
     if (verdict) return role.unknown ? 'UNKNOWN' : verdict;
-    if (!role.unknown && role.messageFiles.some(word => literalSourceWord(word) && guard.isSecretPath(literalSourceWord(word).text))) return 'FORBIDDEN';
+    if (!role.unknown && role.messageFiles.some(word => literalSourceWord(word) && guard.isSecretOperandPath(literalSourceWord(word).text, g.egressOperandContext))) return 'FORBIDDEN';
     return 'UNKNOWN';
   }
   if (role.kind === 'index-file-input') {
     if (role.unknown) return 'UNKNOWN';
     if (role.flags.includes('add') && role.operands.length && !role.values.length &&
         role.operands.every(word => literalSourceWord(word))) {
-      return role.operands.some(word => guard.isSecretPath(literalSourceWord(word).text)) ? 'FORBIDDEN' : false;
+      return role.operands.some(word => guard.isSecretOperandPath(literalSourceWord(word).text, g.egressOperandContext)) ? 'FORBIDDEN' : false;
     }
   }
   return 'UNKNOWN';
@@ -2482,7 +2531,7 @@ function wgetInputListState(invocation, role) {
     return { verdict: remote ? outboundPayloadVerdict(invocation, [input]) || 'UNKNOWN' : 'UNKNOWN', inactive: false, body: null };
   }
   if (literal.text === '/dev/null') return { verdict: false, inactive: true, body: '' };
-  if (literal.text !== '-') return { verdict: guard.isSecretPath(literal.text) && !role.forceHtml ? 'FORBIDDEN' : 'UNKNOWN', inactive: false, body: null };
+  if (literal.text !== '-') return { verdict: guard.isSecretOperandPath(literal.text, invocation.egressOperandContext) && !role.forceHtml ? 'FORBIDDEN' : 'UNKNOWN', inactive: false, body: null };
   const source = shellStdinSource(invocation);
   const nullInput = invocation.redirs.length === 1 && !invocation.heredocBodies.length &&
     invocation.redirs[0].fdKnown && [null, '0'].includes(invocation.redirs[0].fd) &&
@@ -2701,7 +2750,7 @@ function rsyncDaemonCredentialVerdict(invocation) {
     const file = literalSourceWord(passwordFile);
     if (!file) return 'UNKNOWN';
     if (file.text === '-') return stdinPayloadVerdict(invocation, invocationSources.get(invocation) || []);
-    return guard.isSecretPath(file.text) ? 'FORBIDDEN' : false;
+    return guard.isSecretOperandPath(file.text, invocation.egressOperandContext) ? 'FORBIDDEN' : false;
   }
   if (invocation.outboundEnvironmentUnknown) return 'UNKNOWN';
   return outboundPayloadVerdict(invocation, [environment.get('RSYNC_PASSWORD')]);
@@ -3991,7 +4040,7 @@ function sshKeyscanResolverVerdict(invocation, all) {
     if (!literal) { verdicts.push('UNKNOWN'); continue; }
     if (literal.text === '/dev/null') continue;
     if (literal.text === '-') verdicts.push(requestDataStdinVerdict(invocation, all));
-    else verdicts.push(guard.isSecretPath(literal.text) ? 'FORBIDDEN' : 'UNKNOWN');
+    else verdicts.push(guard.isSecretOperandPath(literal.text, invocation.egressOperandContext) ? 'FORBIDDEN' : 'UNKNOWN');
   }
   const verdict = verdicts.find(value => value === 'FORBIDDEN') || verdicts.find(Boolean);
   return contextualVerdict(invocation, role.unknown ? 'UNKNOWN' : verdict);
@@ -5190,7 +5239,7 @@ function ncatAclDnsVerdict(invocation) {
   const explicit = outboundPayloadVerdict(invocation, specs);
   const files = role.aclFiles.map(word => socketAuthenticationLiteralWord(word));
   // Filenames are not DNS labels. Their contents are selected host specifications; inspect no actual file.
-  const secretFile = files.some(word => word && guard.isSecretPath(word.text));
+  const secretFile = files.some(word => word && guard.isSecretOperandPath(word.text, invocation.egressOperandContext));
   const opaqueFile = files.some(word => !word || word.text !== '/dev/null');
   const uncertain = role.unknown || role.localSocket || !proxyType || !proxyDns || invocation.incomplete;
   if (explicit === 'FORBIDDEN' || secretFile) return uncertain ? 'UNKNOWN' : 'FORBIDDEN';
@@ -5749,7 +5798,7 @@ function pipelineInput(invocation) {
           const value = long ? long[2] === undefined ? invocation.args[++k] : { ...word, text: long[2] } :
             short[0].length < text.length ? { ...word, text: text.slice(short[0].length) } : invocation.args[++k];
           program = true;
-          if (name === 'grep' && option === 'f' && value) refs.push(value);
+          if (name === 'grep' && option === 'f' && value && value.text !== '-') refs.push(value);
           unknown = unknown || !value || Boolean(value?.dynamic) || (name === 'sed' && (option === 'f' || !simpleSedScript(value?.text || '')));
         } else if (name === 'grep' && /^-[ABCm]$/.test(text)) {
           const value = invocation.args[++k];
@@ -5770,6 +5819,7 @@ function pipelineInput(invocation) {
       if (name === 'awk') unknown = unknown || word.dynamic || !/^\s*(?:1|\{\s*print(?:\s+\$0|\s+"[^"\\]*")?\s*;?\s*\})\s*$/.test(text);
       continue;
     }
+    if (text === '-' && ['cat', 'head', 'tail', 'base64', 'xxd', 'sed', 'grep', 'awk'].includes(name)) continue;
     refs.push(word);
   }
   return { refs, unknown: unknown || refs.some((word) => word.dynamic) };
@@ -5779,7 +5829,8 @@ function pipelineInput(invocation) {
 function stdinPayloadVerdict(invocation, all, allFiles = false) {
   const refs = invocation.redirs.filter((redir) => ['<', '<>'].includes(redir.op)).map((redir) => redir.word);
   if (refs.some((word) => word.dynamic)) return 'UNKNOWN';
-  if (allFiles && refs.length || SECRET_FILE_RE.test(withoutTemplateTokens(refs.map((word) => parserLiteral(word.text)).join(' ')))) {
+  if (allFiles && refs.length || refs.some(word => guard.isSecretOperandPath(word.text, invocation.egressOperandContext)) ||
+      SECRET_FILE_RE.test(withoutTemplateTokens(refs.map((word) => parserLiteral(word.text)).join(' ')))) {
     return contextualVerdict(invocation, 'FORBIDDEN');
   }
   if (invocation.redirs.some((redir) => redir.op === '<<<' && redir.word.dynamic) ||
@@ -5790,7 +5841,8 @@ function stdinPayloadVerdict(invocation, all, allFiles = false) {
   for (const producer of producers) {
     const source = pipelineInput(producer);
     if (source.unknown) return 'UNKNOWN';
-    if (allFiles && source.refs.length || SECRET_FILE_RE.test(withoutTemplateTokens(source.refs.map((word) => parserLiteral(word.text)).join(' ')))) {
+    if (allFiles && source.refs.length || source.refs.some(word => guard.isSecretOperandPath(word.text, producer.egressOperandContext)) ||
+        SECRET_FILE_RE.test(withoutTemplateTokens(source.refs.map((word) => parserLiteral(word.text)).join(' ')))) {
       // The boolean guard did not establish cwd across a cd-like operation; classification must not claim it did.
       return knownInvocationContext(producer) && knownInvocationContext(invocation) ? 'FORBIDDEN' : 'UNKNOWN';
     }
@@ -5807,7 +5859,7 @@ function requestDataStdinVerdict(invocation, all, allFiles = false, selection = 
     const value = literal(word);
     if (!value) return 'UNKNOWN';
     if (value.text === '/dev/null') return false;
-    if (guard.isSecretPath(value.text) || allFiles) return contextualVerdict(owner, 'FORBIDDEN');
+    if (guard.isSecretOperandPath(value.text, owner.egressOperandContext) || allFiles) return contextualVerdict(owner, 'FORBIDDEN');
     return 'UNKNOWN'; // An ordinary filename is not a proof of its request-data contents.
   };
   const selectedWordsVerdict = (owner, words) => {
@@ -5923,7 +5975,7 @@ function requestDataStdinVerdict(invocation, all, allFiles = false, selection = 
   if (data.unknown) return 'UNKNOWN';
   if (data.refs.length) {
     if (data.refs.some(word => !literal(word))) return 'UNKNOWN';
-    return allFiles || data.refs.some(word => guard.isSecretPath(literal(word).text))
+    return allFiles || data.refs.some(word => guard.isSecretOperandPath(literal(word).text, producer.egressOperandContext))
       ? contextualVerdict(invocation, 'FORBIDDEN') : 'UNKNOWN';
   }
   return 'UNKNOWN'; // Unobserved input and unproved multi-stage transforms are not literal DATA.
@@ -5968,7 +6020,7 @@ function outboundPayloadVerdict(invocation, words) {
             !producer.redirs.length && !producer.pipelineParticipant && producer.heredocBodies.length === 1 &&
             producer.heredocBodies[0].quoted && producer.heredocBodies[0].fdKnown &&
             [null, '0'].includes(producer.heredocBodies[0].fd))) return 'UNKNOWN';
-      if (input.refs.some(ref => knownWord(ref) && guard.isSecretPath(ref.text))) secret = true;
+      if (input.refs.some(ref => knownWord(ref) && guard.isSecretOperandPath(ref.text, producer.egressOperandContext))) secret = true;
     }
     if (secret) return contextualVerdict(invocation, 'FORBIDDEN');
   }
@@ -6527,9 +6579,16 @@ function collectNetworkInvocations(inspection, depth = 0, transportDescriptor = 
   for (const invocation of inspection.invocations) transportEnvironmentDescriptors.set(invocation, descriptor);
   if (depth > 16) deny('文字列の interpreter が深く入れ子になっていて、egress ガードで検査できません (fail-closed)。' + UNKNOWN_OWNER_GATE);
   for (const problem of inspection.problems) pendingParserProblems.add(problem);
-  for (const invocation of inspection.invocations) invocationSources.set(invocation, inspection.invocations);
-  for (const g of inspection.gits) gitInvocationContexts.set(g,
-    inspection.invocations.find((invocation) => invocation.order === g.invocationOrder));
+  for (const invocation of inspection.invocations) {
+    invocationSources.set(invocation, inspection.invocations);
+    if (descriptor.parent) invocation.egressParentOperandContext = descriptor.parent.egressOperandContext || { cwd: null };
+    invocation.egressOperandContext = operandPathContext(invocation);
+  }
+  for (const g of inspection.gits) {
+    const invocation = inspection.invocations.find((invocation) => invocation.order === g.invocationOrder);
+    gitInvocationContexts.set(g, invocation);
+    g.egressOperandContext = operandPathContext(invocation, g);
+  }
   // Unqualified mediated Git stays pending before every Git consumer. Keep its
   // invocation and other clients, but do not recreate proof from the same DTO.
   const sourceQualifiedGits = inspection.gits.filter(g => {
@@ -6553,7 +6612,7 @@ function collectNetworkInvocations(inspection, depth = 0, transportDescriptor = 
       `Git ${g.sub} の typed object/index input が既存の禁止された secret filename/source policy に当たります。native操作の成立を確認したものではありません。` :
       `Git ${g.sub} の ${g.operationRole.kind} が選ぶ executable/source・child repository・object/ref/input・destination/config 条件を検査できません。literal な callbackやprogram名も本文や当該操作contextの認証にはなりません。同目的・同条件を保てる対応済みquery/source-free形式がなければownerに対象・cwd/env/config/sourceと不明点を確認してください。` + UNKNOWN_OWNER_GATE,
       gitVerdict(g, operation));
-    const decision = guard.gitObjectInputDecision(g);
+    const decision = guard.gitObjectInputDecisionWithContext(g, g.egressOperandContext);
     if (decision) deny(decision.reason, gitVerdict(g, decision.category));
     if (gitExecutableSource(g, gitInvocationContexts.get(g))) {
       deny('当該 Git 操作の config / environment が選ぶ外部 diff・変換・filter・hook・fsmonitor・archive・include・transport proxy/SSH の実行 source を検査できません。commit の有無とは独立に、active helper の本文と副作用は判断不能です。' + UNKNOWN_OWNER_GATE);
@@ -7131,8 +7190,14 @@ const parsedFileRefs = invocations.flatMap((invocation) => {
   const readsFiles = ['cat', 'head', 'tail', 'base64', 'xxd'].includes(invocation.name);
   return (readsFiles ? invocation.args : []).concat(invocation.redirs.filter((redir) => redir.op !== '<<<').map((redir) => redir.word)).map((word) => word.text);
 });
+const selectedSecretEvidence = invocations.some(invocation => networkInvocation(invocation) ||
+  sshClientInvocation(invocation) || invocation.dynamicName || invocation.launcherUnknown) && invocations.some(invocation => {
+  const refs = pipelineInput(invocation).refs;
+  return refs.some(word => knownWord(word) && !guard.isSecretPath(word.text) &&
+    guard.isSecretOperandPath(word.text, invocation.egressOperandContext));
+});
 const secretEvidence = [cmd, ...parsedFileRefs].join('\n');
-if (SECRET_FILE_RE.test(withoutTemplateTokens(secretEvidence)) &&
+if ((selectedSecretEvidence || SECRET_FILE_RE.test(withoutTemplateTokens(secretEvidence))) &&
     invocations.some((invocation) => networkInvocation(invocation) || invocation.dynamicName || invocation.launcherUnknown)) {
   deny('secret filename evidence と network command が同一コマンドにありますが、読取から送信への関係を確認できません (egress guard)。owner に対象・操作・cwd・source と不明点を確認してください。');
 }
@@ -7143,7 +7208,7 @@ const sshReadEvidence = invocations.flatMap((invocation) => {
     .filter((redir) => ['<', '<>'].includes(redir.op)).map((redir) => redir.word))
     .map((word) => word.text.replace(/(^|\/)\.env\.example$/i, '$1'));
 }).join('\n');
-if (SECRET_FILE_RE.test(sshReadEvidence) &&
+if ((selectedSecretEvidence || SECRET_FILE_RE.test(sshReadEvidence)) &&
     invocations.some((invocation) => sshClientInvocation(invocation) &&
       deferSloginUnknown(invocation, sshReadsInput(invocation) ? 'UNKNOWN' : false))) {
   deny('secret filename evidence と stdin を消費し得る SSH セッションが同一コマンドにありますが、送信への関係を確認できません (egress guard)。owner に対象・操作・cwd・source と不明点を確認してください。');
@@ -7159,7 +7224,7 @@ for (const g of inspectedGits) {
       deny('git add / stage の実行時 option が包括追加の -A / --all に解決され、既存の包括追加禁止に当たります。必要な操作は owner に対象・操作を確認してください。', gitVerdict(g, 'FORBIDDEN'));
     }
     if (!added.terminal) {
-      if (added.pathspecs.some((word) => guard.isSecretPath(word.literalPath))) {
+      if (added.pathspecs.some((word) => guard.isSecretOperandPath(word.literalPath, g.egressOperandContext))) {
         deny('git add / stage の literal pathspec が既存の secret filename 禁止に当たります。ファイル内容を確認したものではありません。必要な操作は owner に対象・操作を確認してください。', gitVerdict(g, 'FORBIDDEN'));
       }
       const physicalCwd = g.cdirs.length ? guard.gitFilesystemDir(baseDir, g.cdirs) : null;
@@ -7372,4 +7437,7 @@ for (const g of inspectedGits) {
   if (verdict) deny(verdict.reason + UNKNOWN_OWNER_GATE, 'UNKNOWN');
 }
 
+if (unresolvedOperandPaths.size) {
+  deny('選択された file operand の対象を cwd と filesystem から確定できません。' + UNKNOWN_OWNER_GATE, 'UNKNOWN');
+}
 process.exit(0);
