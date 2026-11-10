@@ -5550,7 +5550,7 @@ function isSecretOperandPath(value, context = undefined) {
 function secretPathVerdict(value, context) {
   if (isSecretPath(value)) return 'FORBIDDEN';
   const selected = normalizeSecretOperand(value, context);
-  if (!selected) return 'UNKNOWN';
+  if (!selected) return missingIntermediateLexicalSelection(value, context) ? false : 'UNKNOWN';
   if (isSecretPath(selected[1])) return 'FORBIDDEN';
   // Compatibility/case aliases are not a filesystem equivalence proof.
   if (selected.some(candidate => isSecretPath(candidate.normalize('NFKC')
@@ -5563,15 +5563,16 @@ function secretPathVerdict(value, context) {
  * later native consumer to these observations. Do not cache this proof.
  */
 function normalizeSecretOperand(value, context) {
+  const cwd = context?.absoluteOperand && typeof value === 'string' && path.isAbsolute(value) ? '/' : context?.cwd;
   if (process.platform === 'win32' || typeof value !== 'string' || !value ||
-      value.includes('\0') || typeof context?.cwd !== 'string' ||
-      !path.isAbsolute(context.cwd) || context.cwd.includes('\0')) return null;
-  let raw = path.isAbsolute(value) ? value : context.cwd + path.sep + value;
+      value.includes('\0') || typeof cwd !== 'string' ||
+      !path.isAbsolute(cwd) || cwd.includes('\0')) return null;
+  let raw = path.isAbsolute(value) ? value : cwd + path.sep + value;
   if (context.gitPathspec) {
     // Git's filename consumer collapses components before inspecting entries.
     // Resolve cwd first; it is an existing directory, not a pathspec prefix.
     try {
-      const directory = fs.realpathSync.native(context.cwd);
+      const directory = fs.realpathSync.native(cwd);
       if (!fs.statSync(directory).isDirectory()) return null;
       raw = path.resolve(directory, value);
     } catch { return null; }
@@ -5633,6 +5634,46 @@ function normalizeSecretOperand(value, context) {
     }
     return [raw, current];
   } catch { return null; }
+}
+
+/** Retain the lexical decision only for a stable, link-free missing intermediate. */
+function missingIntermediateLexicalSelection(value, context) {
+  const cwd = context?.absoluteOperand && typeof value === 'string' && path.isAbsolute(value) ? '/' : context?.cwd;
+  if (process.platform === 'win32' || typeof value !== 'string' || !value || value.includes('\0') ||
+      typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0')) return false;
+  const raw = path.isAbsolute(value) ? value : cwd + path.sep + value;
+  const parts = raw.split('/').filter(Boolean);
+  if (raw.startsWith('//') || parts.length > 256 || parts.includes('..')) return false;
+  const identity = stat => [stat.dev, stat.ino, stat.mode, stat.ctimeNs, stat.mtimeNs].join(':');
+  const observations = [];
+  let missing = null;
+  try {
+    let current = '/';
+    for (let index = 0; index < parts.length; index++) {
+      const directory = fs.lstatSync(current, { bigint: true });
+      if (!directory.isDirectory() || directory.isSymbolicLink() || !(directory.mode & 0o111n)) return false;
+      fs.accessSync(current, fs.constants.X_OK);
+      observations.push({ file: current, identity: identity(directory) });
+      if (parts[index] === '.') continue;
+      const candidate = current + (current === '/' ? '' : '/') + parts[index];
+      try {
+        const entry = fs.lstatSync(candidate, { bigint: true });
+        if (entry.isSymbolicLink()) return false;
+        observations.push({ file: candidate, identity: identity(entry) });
+        current = candidate;
+      } catch (error) {
+        if (error.code !== 'ENOENT' || index === parts.length - 1) return false;
+        missing = candidate;
+        break;
+      }
+    }
+    if (!missing) return false;
+    for (const entry of observations) {
+      if (identity(fs.lstatSync(entry.file, { bigint: true })) !== entry.identity) return false;
+    }
+    try { fs.lstatSync(missing); return false; }
+    catch (error) { return error.code === 'ENOENT'; }
+  } catch { return false; }
 }
 
 const ADD_SHORT_FLAGS = new Set('nvip efuNA'.replace(/ /g, ''));
@@ -6076,7 +6117,7 @@ function gitObjectInputDecisionWithContext(g, context = undefined) {
   if (previous || context === undefined) return previous;
   const parsed = g.sub === 'commit' ? parseCommitArgs(g.args)
     : g.sub === 'merge' ? parseMergeMessageArgs(g.args) : null;
-  if (!parsed || !Array.isArray(parsed.messageFiles)) return null;
+  if (!parsed || parsed.terminal || ['query', 'terminal'].includes(parsed.mode) || !Array.isArray(parsed.messageFiles)) return null;
   const verdicts = parsed.messageFiles.filter(source => !source.unknown && typeof source.word?.text === 'string')
     .map(source => secretPathVerdict(source.word.text, context));
   if (verdicts.includes('FORBIDDEN')) return { category: 'FORBIDDEN', reason: 'Git message の file operand が守る対象に解決されました。' };

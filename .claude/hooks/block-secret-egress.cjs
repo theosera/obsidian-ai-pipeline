@@ -374,12 +374,17 @@ function operandPathContext(invocation, git = null) {
   if (invocation && !invocation.cdLikeHere && !invocation.unknownContextBefore &&
       !invocation.unsafeGroupSetup && !invocation.functionCallName && !invocation.incomplete &&
       !invocation.policyRootUnknown && !invocation.gitSourceContextUnknown) {
-    if (!invocation.cdLikeBefore) cwd = baseDir;
+    if (!invocation.cdLikeBefore) cwd = invocation.egressParentOperandContext
+      ? invocation.egressParentOperandContext.cwd : baseDir;
     else if (operandDirectory && insp.invocations.includes(invocation) &&
         invocation.scope === operandDirectory.scope) cwd = operandDirectory.cwd;
   }
-  if (cwd && git?.cdirs.length) cwd = guard.gitFilesystemDir(cwd, git.cdirs);
-  return { cwd, gitPathspec: !!git && ['add', 'stage', 'update-index'].includes(git.sub),
+  if (git?.cdirs.length) {
+    const first = git.cdirs.find(value => value !== '');
+    if (typeof first === 'string' && path.isAbsolute(first)) cwd = guard.gitFilesystemDir('/', git.cdirs);
+    else if (cwd) cwd = guard.gitFilesystemDir(cwd, git.cdirs);
+  }
+  return { cwd, absoluteOperand: true, gitPathspec: !!git && ['add', 'stage', 'update-index'].includes(git.sub),
     onUnknown: () => unresolvedOperandPaths.add(invocation) };
 }
 
@@ -5628,7 +5633,7 @@ function pipelineInput(invocation) {
           const value = long ? long[2] === undefined ? invocation.args[++k] : { ...word, text: long[2] } :
             short[0].length < text.length ? { ...word, text: text.slice(short[0].length) } : invocation.args[++k];
           program = true;
-          if (name === 'grep' && option === 'f' && value) refs.push(value);
+          if (name === 'grep' && option === 'f' && value && value.text !== '-') refs.push(value);
           unknown = unknown || !value || Boolean(value?.dynamic) || (name === 'sed' && (option === 'f' || !simpleSedScript(value?.text || '')));
         } else if (name === 'grep' && /^-[ABCm]$/.test(text)) {
           const value = invocation.args[++k];
@@ -5649,6 +5654,7 @@ function pipelineInput(invocation) {
       if (name === 'awk') unknown = unknown || word.dynamic || !/^\s*(?:1|\{\s*print(?:\s+\$0|\s+"[^"\\]*")?\s*;?\s*\})\s*$/.test(text);
       continue;
     }
+    if (text === '-' && ['cat', 'head', 'tail', 'base64', 'xxd', 'sed', 'grep', 'awk'].includes(name)) continue;
     refs.push(word);
   }
   return { refs, unknown: unknown || refs.some((word) => word.dynamic) };
@@ -6410,6 +6416,7 @@ function collectNetworkInvocations(inspection, depth = 0, transportDescriptor = 
   for (const problem of inspection.problems) pendingParserProblems.add(problem);
   for (const invocation of inspection.invocations) {
     invocationSources.set(invocation, inspection.invocations);
+    if (descriptor.parent) invocation.egressParentOperandContext = descriptor.parent.egressOperandContext || { cwd: null };
     invocation.egressOperandContext = operandPathContext(invocation);
   }
   for (const g of inspection.gits) {
@@ -7021,7 +7028,8 @@ const parsedFileRefs = invocations.flatMap((invocation) => {
 const selectedSecretEvidence = invocations.some(invocation => networkInvocation(invocation) ||
   sshClientInvocation(invocation) || invocation.dynamicName || invocation.launcherUnknown) && invocations.some(invocation => {
   const refs = pipelineInput(invocation).refs;
-  return refs.some(word => knownWord(word) && guard.isSecretOperandPath(word.text, invocation.egressOperandContext));
+  return refs.some(word => knownWord(word) && !guard.isSecretPath(word.text) &&
+    guard.isSecretOperandPath(word.text, invocation.egressOperandContext));
 });
 const secretEvidence = [cmd, ...parsedFileRefs].join('\n');
 if ((selectedSecretEvidence || SECRET_FILE_RE.test(withoutTemplateTokens(secretEvidence))) &&
