@@ -73,6 +73,7 @@ const gitRe = (tail) => new RegExp(`\\bgit${GIT_OPTS}\\s+${tail}`);
 // SCP's textual copy backstop is checked after argv inspection; only a proven single
 // receive/local operation is exempted. SFTP and every other raw backstop stay independent.
 const SCP_TEXT_COPY_SHAPE = /\bscp\b[^\n]*\s[^\s]+:[^\s]/;
+const RAW_UPLOAD_RE = /\bcurl\b[^\n]*\s(--data-binary|--upload-file|-T|-F|-d|--data)\b[^\n]*@/;
 const EXFIL_SHAPES = [
   /\bgh\s+gist\b/,                                       // gh gist create/...
   /\b(nc|ncat)\b[^\n]*\s-e\b/,                           // reverse shell
@@ -85,15 +86,54 @@ const EXFIL_SHAPES = [
   // (`git push --force <url>` / `git push '<url>'`) ので引数列のどこでも当てる。
   // named remote への push には URL 形のトークンが無いため誤検知しない。
   gitRe('push\\b[^;&|]*\\s[\'"]?(https?://|git@|ssh://|git://)'),
-  /\bcurl\b[^\n]*\s(--data-binary|--upload-file|-T|-F|-d|--data)\b[^\n]*@/,  // ローカルファイル upload
+  { test: rawUploadShape },  // ローカルファイル upload
   /\bsftp\b[^\n]*\s[^\s]+:[^\s]/,
   /\brsync\b[^\n]*\s[^\s]+:[^\s]/,
 ];
+
+/** Keep the raw upload language while visiting each code unit only once. */
+function rawUploadShape(value) {
+  if (typeof value !== 'string') return RAW_UPLOAD_RE.test(value);
+  const option = /^(--data-binary|--upload-file|-T|-F|-d|--data)\b/;
+  const window = '--data-binary'.length + 1;
+  let curl = false, upload = false;
+  for (let i = 0; i < value.length; i++) {
+    const selected = curl && /\s/.test(value[i]) && option.test(value.slice(i + 1, i + 1 + window));
+    if (value[i] === '\n') {
+      // The original whitespace before an option can itself consume this newline.
+      curl = false;
+      upload = selected;
+    } else {
+      if (selected) upload = true;
+      if (value.startsWith('curl', i) && !/[A-Za-z0-9_]/.test(value[i - 1] || '') &&
+          !/[A-Za-z0-9_]/.test(value[i + 'curl'.length] || '')) curl = true;
+      if (upload && value[i] === '@') return true;
+    }
+  }
+  return false;
+}
 
 // (B') 秘密ファイル読取 + ネットワーク送信の組合せ (例: `cat .env | curl ...`)。
 // 対象は block-secret-git.cjs の SECRET_RE / vault-ops の SECRET_ERE と揃える
 // (CLAUDE.md「secret-pattern 4 系統を 1 PR で同時更新」)。
 const SECRET_FILE_RE = /(\.env(\.|\b)|x_tokens\.json|pkce_state\.json|pipeline_config\.json|credentials[^/\s]*\.json|service-account[^/\s]*\.json|[^/\s]*token[^/\s]*\.json|\.pem\b|\.key\b|id_(rsa|ed25519)\b|secrets\.(json|ya?ml)\b|(^|[\s'"/=])secrets\/)/i;
+const SECRET_FILE_LINEAR_RULES = [
+  String.raw`credentials[^/\s]*\.json`,
+  String.raw`service-account[^/\s]*\.json`,
+  String.raw`[^/\s]*token[^/\s]*\.json`,
+];
+const SECRET_FILE_LINEAR_RE = new RegExp(SECRET_FILE_LINEAR_RULES.reduce(
+  (source, rule) => source.replace(rule, '(?!)'), SECRET_FILE_RE.source), SECRET_FILE_RE.flags);
+/** Specialize overlapping branches for strings, as in the canonical path predicate. */
+function rawSecretFileMatches(value) {
+  if (typeof value !== 'string') return SECRET_FILE_RE.test(value);
+  for (const match of value.matchAll(/[^/\s]+/g)) {
+    const component = match[0];
+    const marker = /credentials|service-account|token/i.exec(component);
+    if (marker && /\.json/i.test(component.slice(marker.index + marker[0].length))) return true;
+  }
+  return SECRET_FILE_LINEAR_RE.test(value);
+}
 const NET_VERB_RE = /\b(curl|wget|nc|ncat|scp|sftp|rsync|telnet)\b|\bgh\s+gist\b/i;
 /** Remove exact template basename evidence while retaining every other secret family's markers. */
 function withoutTemplateTokens(evidence, depth = 0) {
@@ -138,7 +178,7 @@ function withoutTemplateTokens(evidence, depth = 0) {
         ['-H', '--header', '--proxy-header'].includes(previous);
       const codeSource = codeSources.get(`${word.start}:${word.raw}`);
       const cleanSource = codeSource === undefined ? null : withoutTemplateTokens(codeSource, depth + 1);
-      const templateDataSource = cleanSource !== null && cleanSource !== codeSource && !SECRET_FILE_RE.test(cleanSource);
+      const templateDataSource = cleanSource !== null && cleanSource !== codeSource && !rawSecretFileMatches(cleanSource);
       if ((word.dynamic && !templateDataSource) || (!templateFilename && !headerData && !templateDataSource)) continue;
       const start = word.start;
       const end = start + word.raw.length;
@@ -193,7 +233,7 @@ if (EXFIL_SHAPES.some((re) => re.test(cmd))) {
 
 // Check the required network shape before the raw filename inventory; long unrelated words
 // must not spend the hook deadline in a filename-only backstop which cannot deny this input.
-if (NET_VERB_RE.test(cmd) && SECRET_FILE_RE.test(withoutTemplateTokens(cmd))) {
+if (NET_VERB_RE.test(cmd) && rawSecretFileMatches(withoutTemplateTokens(cmd))) {
   deny(
     '秘密ファイル名の形 (.env / *token*.json / *.key 等) とネットワーク名が同じ文字列に含まれています。\n' +
     '読取から送信への関係をこの照合だけでは確認できないためブロックしました (egress guard)。owner に対象・操作・cwd・source を確認してください。',
@@ -997,7 +1037,7 @@ function gitDiffModes(g) {
     } else if (text.startsWith('-') && text !== '-') {
       if (/^-[nOSGU]$/.test(text)) { if (!knownWord(word) || !dataBoundary(g.args[++k])) unknown = true; }
       else if (/^-[nOSG].+/.test(text)) { if (!dataBoundary(word)) unknown = true; }
-      else if (!knownWord(word) || !/^-(?:[puwsRabc]|[UMCB][0-9]*|[0-9]+)+$/.test(text)) unknown = true;
+      else if (!knownWord(word) || !/^-[puwsRabcUMCB0-9]+$/.test(text)) unknown = true;
     } else if (!knownWord(word)) unknown = true;
   }
   return { terminal: g.terminal && g.helpKind === 'stdout', external: external || unknown, textconv: textconv || unknown };
@@ -5830,7 +5870,7 @@ function stdinPayloadVerdict(invocation, all, allFiles = false) {
   const refs = invocation.redirs.filter((redir) => ['<', '<>'].includes(redir.op)).map((redir) => redir.word);
   if (refs.some((word) => word.dynamic)) return 'UNKNOWN';
   if (allFiles && refs.length || refs.some(word => guard.isSecretOperandPath(word.text, invocation.egressOperandContext)) ||
-      SECRET_FILE_RE.test(withoutTemplateTokens(refs.map((word) => parserLiteral(word.text)).join(' ')))) {
+      rawSecretFileMatches(withoutTemplateTokens(refs.map((word) => parserLiteral(word.text)).join(' ')))) {
     return contextualVerdict(invocation, 'FORBIDDEN');
   }
   if (invocation.redirs.some((redir) => redir.op === '<<<' && redir.word.dynamic) ||
@@ -5842,7 +5882,7 @@ function stdinPayloadVerdict(invocation, all, allFiles = false) {
     const source = pipelineInput(producer);
     if (source.unknown) return 'UNKNOWN';
     if (allFiles && source.refs.length || source.refs.some(word => guard.isSecretOperandPath(word.text, producer.egressOperandContext)) ||
-        SECRET_FILE_RE.test(withoutTemplateTokens(source.refs.map((word) => parserLiteral(word.text)).join(' ')))) {
+        rawSecretFileMatches(withoutTemplateTokens(source.refs.map((word) => parserLiteral(word.text)).join(' ')))) {
       // The boolean guard did not establish cwd across a cd-like operation; classification must not claim it did.
       return knownInvocationContext(producer) && knownInvocationContext(invocation) ? 'FORBIDDEN' : 'UNKNOWN';
     }
@@ -7197,7 +7237,7 @@ const selectedSecretEvidence = invocations.some(invocation => networkInvocation(
     guard.isSecretOperandPath(word.text, invocation.egressOperandContext));
 });
 const secretEvidence = [cmd, ...parsedFileRefs].join('\n');
-if ((selectedSecretEvidence || SECRET_FILE_RE.test(withoutTemplateTokens(secretEvidence))) &&
+if ((selectedSecretEvidence || rawSecretFileMatches(withoutTemplateTokens(secretEvidence))) &&
     invocations.some((invocation) => networkInvocation(invocation) || invocation.dynamicName || invocation.launcherUnknown)) {
   deny('secret filename evidence と network command が同一コマンドにありますが、読取から送信への関係を確認できません (egress guard)。owner に対象・操作・cwd・source と不明点を確認してください。');
 }
@@ -7208,7 +7248,7 @@ const sshReadEvidence = invocations.flatMap((invocation) => {
     .filter((redir) => ['<', '<>'].includes(redir.op)).map((redir) => redir.word))
     .map((word) => word.text.replace(/(^|\/)\.env\.example$/i, '$1'));
 }).join('\n');
-if ((selectedSecretEvidence || SECRET_FILE_RE.test(sshReadEvidence)) &&
+if ((selectedSecretEvidence || rawSecretFileMatches(sshReadEvidence)) &&
     invocations.some((invocation) => sshClientInvocation(invocation) &&
       deferSloginUnknown(invocation, sshReadsInput(invocation) ? 'UNKNOWN' : false))) {
   deny('secret filename evidence と stdin を消費し得る SSH セッションが同一コマンドにありますが、送信への関係を確認できません (egress guard)。owner に対象・操作・cwd・source と不明点を確認してください。');
