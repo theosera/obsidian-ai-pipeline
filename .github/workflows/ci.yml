@@ -21,7 +21,7 @@ jobs:
   pipeline:
     name: Pipeline (root) - test & typecheck
     runs-on: ubuntu-latest
-    steps: &pipeline_steps
+    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup pnpm
@@ -244,9 +244,3 @@ jobs:
             grep -q "typescript($rule)" <<<"$out" || { echo "::error::type-aware rule $rule did not fire"; exit 1; }
           done
           echo "positive control OK"
-
-  pipeline_ubuntu2404:
-    if: github.event_name == 'pull_request'
-    name: Pipeline (Ubuntu 24.04) - test & typecheck
-    runs-on: ubuntu-24.04
-    steps: *pipeline_steps
