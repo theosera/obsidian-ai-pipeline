@@ -97,6 +97,7 @@ function syntheticMain({ asText = false, fault = null, noExecutableProfile = fal
     require(name) {
       if (name === './executable-profile-qualification.cjs') return tools;
       if (name === './fixtures/r54-selected-executable-profile.json') return JSON.parse(backendBytes);
+      if (name === './fixtures/r39-slogin-executable-profile.json') return fault === 'slogin-policy-overlap' ? [{ id: declared[0].id }] : [];
       if (name === './fixtures/r57-policy-contract.json') return ledger;
       if (name === './r57-policy-contract.cjs') return { createPolicyContract() { return policy; } };
       throw Error('unexpected pure dependency ' + name);
@@ -123,6 +124,10 @@ function syntheticMain({ asText = false, fault = null, noExecutableProfile = fal
 test('explicit policy flag requires executable profile before any fixture or runCase', () => {
   const r = syntheticMain({ noExecutableProfile: true }); assert.match(r.error.message, /requires --executable-profile/);
   assert.equal(r.setup, 0); assert.equal(r.calls, 0);
+});
+
+test('slogin declarations may not overlap the fixed sudo policy declarations', () => {
+  assert.throws(() => syntheticMain({ fault: 'slogin-policy-overlap' }), /R39SLOGIN profile overlaps R57 policy/);
 });
 
 test('pure main preserves original11 FAIL and profile-before-policy11 FAIL separately from adopted contract', () => {

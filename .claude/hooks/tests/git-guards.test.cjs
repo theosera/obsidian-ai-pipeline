@@ -17092,9 +17092,18 @@ function main() {
   // Optional explicit qualification profile. CASES and their original oracle
   // remain unchanged; both original and profile assertion results are reported.
   const profileTools = argv.includes('--executable-profile') ? require('./executable-profile-qualification.cjs') : null;
-  const selectedProfile = profileTools && profileTools.createProfile(CASES, require('./fixtures/r54-selected-executable-profile.json'));
+  const r54Ledger = profileTools && require('./fixtures/r54-selected-executable-profile.json');
+  const sloginEntries = profileTools && require('./fixtures/r39-slogin-executable-profile.json');
+  const policyLedger = usePolicyContract && require('./fixtures/r57-policy-contract.json');
+  if (policyLedger && sloginEntries.some(entry => policyLedger.entries.some(policy => policy.id === entry.id))) {
+    throw new Error('R39SLOGIN profile overlaps R57 policy');
+  }
+  const selectedProfile = profileTools && profileTools.createProfile(CASES, {
+    ...r54Ledger, entries: [...r54Ledger.entries, ...sloginEntries],
+  });
   const policyTools = usePolicyContract ? require('./r57-policy-contract.cjs') : null;
-  const selectedPolicy = policyTools && policyTools.createPolicyContract(CASES, require('./fixtures/r57-policy-contract.json'),
+  // R57 verifies the historical R54 bytes independently of the supplemental profile.
+  const selectedPolicy = policyTools && policyTools.createPolicyContract(CASES, policyLedger,
     fs.readFileSync(path.join(__dirname, 'fixtures/r54-selected-executable-profile.json')));
   const repos = setupRepos();
   let failed = 0, originalFailed = 0, profileAdjusted = 0, operationalReasonFailures = 0;
@@ -17201,7 +17210,7 @@ function main() {
       `explicit profile prerequisites active: ${profileAdjusted}; operational denial failures: ${operationalReasonFailures}`);
   }
   if (selectedPolicy && !asJson) console.log(`R57 policy contract: declared ${selectedPolicy.declaredCount}; ` +
-    `adjusted: ${policyContractAdjusted}; R54 failures before policy: ${profileBeforePolicyFailed}; original assertions retained`);
+    `adjusted: ${policyContractAdjusted}; Executable profile failures before policy: ${profileBeforePolicyFailed}; original assertions retained`);
   process.exitCode = failed ? 1 : 0;
 }
 

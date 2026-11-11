@@ -48,6 +48,7 @@ function runText({ declared = true, presence = 'present', failed = false } = {})
       if (name === './executable-profile-qualification.cjs') return { ...profile,
         createProfile(inputs, declarations) { return profile.createProfile(inputs, declarations, filesystem); } };
       if (name === './fixtures/r54-selected-executable-profile.json') return ledger;
+      if (name === './fixtures/r39-slogin-executable-profile.json') return [];
       throw Error('unexpected synthetic dependency: ' + name);
     },
     setupRepos() { return { env: { PATH: '/DUMMY/profile/bin' }, dirs: { clean: '/DUMMY/project' }, fixtureEnvironmentSets: {} }; },
