@@ -218,6 +218,10 @@ CIは明示的な`--executable-profile`も使う。固定JSONの646 IDと各元C
 
 変更するのは限定したownEGの分類だけで、元ALLOWのSG/AG ALLOWや、別の独立FORBIDDENを保つ。実行前後でFS資格が変わった入力は、停止結果が期待形でもprofile失敗にする。`command -p ... git add -f .env`のSG FORBIDDENは追加で必須にする。部品load失敗や例外を示す理由は、UNKNOWN期待でもprofile成功へ数えない。programが確認できる場合の元semantic assertionは維持し、未資格時のUNKNOWN検証を、そのprogram本来の意味・通信・認証の実証へ読み替えない。profile自体のID/hash/PATH結合と、qualified ordinaryに常時UNKNOWNを返す不正な実装が落ちることは、独立したpure試験で確認する。
 
+この節の646宣言にはR56で8件が加わり、R57は654件のR54台帳を元のバイト列とSHA-256で固定する。CIの同じ `--executable-profile` では、`r39-slogin-executable-profile.json` の20件も元のケースIDと定義のSHA-256に結び付けて評価する。絶対指定の2件は `/usr/bin/slogin`、残り18件は各ケースが継承する絶対パスのみの `PATH` を独立に検査する。実行可能な候補の不在が確定したときだけegressの `deny` / `UNKNOWN` を要求する。候補が存在する場合やI/Oエラー・相対PATHで検索を確定できない場合は元期待を適用する。出力には元期待の結果、プロファイルの適用条件と結果、各フックの判定を記録する。
+
+Ubuntu 24.04 のジョブはいずれ外す。`ssh` への一本化で `slogin` 使用時と遜色ない保護を確認できたら、S7 以降でこのジョブと対応する必須チェックを一緒に外す。
+
 この節は試験契約であり、特定headの全件profile・CI・fresh reviewの成功宣言ではない。元期待の不一致とprofileの結果、未資格の意味論・native動作は区別して記録する。
 
 <!-- PR191:R54:CONTRACT:END -->

@@ -13,6 +13,8 @@ const { CASES } = require(path.join(hooks, 'tests/git-guards.test.cjs'));
 const ledgerFile = path.join(hooks, 'tests/fixtures/r54-selected-executable-profile.json');
 const ledgerBytes = fs.readFileSync(ledgerFile);
 const ledger = JSON.parse(ledgerBytes);
+const sloginBytes = fs.readFileSync(path.join(hooks, 'tests/fixtures/r39-slogin-executable-profile.json'));
+const sloginEntries = JSON.parse(sloginBytes);
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const caseHash = value => sha(JSON.stringify(value));
 const ORIGINAL_DIGEST = '450e94994846d221d3056b1580822b513d6f87c5f086f14b7b95389c85a46b75';
@@ -150,6 +152,7 @@ function syntheticMain(fault = null, asText = false) {
     require(name) {
       if (name === './executable-profile-qualification.cjs') return tools;
       if (name === './fixtures/r54-selected-executable-profile.json') return selectedLedger;
+      if (name === './fixtures/r39-slogin-executable-profile.json') return [];
       throw Error('unexpected synthetic main dependency ' + name);
     },
     setupRepos() { return { env: { ...environment }, dirs: { clean: '/DUMMY/repo' }, fixtureEnvironmentSets: {} }; },
@@ -203,6 +206,53 @@ test('removing only the sudo note and eight appended records reconstructs the ex
   assert.deepEqual(prior.entries.slice(646).map(d => d.id), SUDO_POLICY_CASES.map(c => c.id));
   prior.entries = prior.entries.slice(0, 646);
   assert.equal(caseHash(prior), ORIGINAL_646_STRUCTURAL_DIGEST);
+});
+
+test('slogin declarations use the exact selected path and preserve original expectations when present or unverified', () => {
+  const originals = new Map(CASES.map(c => [c.id, c]));
+  const declarations = sloginEntries;
+  assert.equal(declarations.length, 20);
+  assert.equal(sha(sloginBytes), 'd8765cbac88ee7ceb3cbd115f74d5160ddc5c2a4ec25ff1d009e5ad3e967d09b');
+  assert.ok(declarations.every(d => d.id.startsWith('R39SLOGIN-')));
+  const absolute = new Set(['R39SLOGIN-01-EXACT', 'R39SLOGIN-23-ABS-PATH']);
+  assert.deepEqual(declarations.filter(d => d.stages[0].kind === 'SELECTED_EXPLICIT_PATH_UNAVAILABLE').map(d => d.id),
+    [...absolute]);
+
+  assert.doesNotThrow(() => profile.createProfile(CASES, { ...ledger, entries: [...ledger.entries, ...declarations] }, fakeFilesystem()));
+
+  const inheritedPath = { PATH: '/usr/bin:/bin' };
+  const originalExpectations = new Map();
+  for (const d of declarations) {
+    const c = originals.get(d.id);
+    originalExpectations.set(c.expectedOwnEG, (originalExpectations.get(c.expectedOwnEG) || 0) + 1);
+    const word = absolute.has(c.id) ? '/usr/bin/slogin' : 'slogin';
+    assert.equal(d.stages.length, 1, c.id);
+    assert.equal(d.stages[0].word, word, c.id);
+    assert.equal(d.stages[0].kind,
+      absolute.has(c.id) ? 'SELECTED_EXPLICIT_PATH_UNAVAILABLE' : 'NO_SELECTED_EXECUTABLE_NO_NAMED_INSTALL', c.id);
+    assert.equal(d.rootPriorityDisposition, 'DEPENDENT_SELECTED_SOURCE_ONLY', c.id);
+    const missing = profile.qualification(c, d, inheritedPath, fakeFilesystem());
+    assert.equal(missing.applies, true, c.id);
+    if (!absolute.has(c.id)) {
+      const relativePath = { PATH: '.:/usr/bin' };
+      const unqualified = profile.qualification(c, d, relativePath, fakeFilesystem());
+      assert.equal(unqualified.applies, false, c.id);
+      assert.equal(profile.effectiveCase(c, unqualified, relativePath), c);
+    }
+    const expected = profile.effectiveCase(c, missing, inheritedPath);
+    assert.equal(expected.expect, 'deny', c.id);
+    assert.equal(expected.expectedOwnEG, 'UNKNOWN', c.id);
+    assert.equal(expected.expectedOwnSG, 'ALLOW', c.id);
+    assert.equal(expected.expectedOwnAG, 'ALLOW', c.id);
+    assert.equal(expected.expectReasonPrefixes[EG], '[判断不能] ', c.id);
+    for (const entry of [{}, { statError: 'EIO' }]) {
+      const observed = fakeFilesystem({ '/usr/bin/slogin': entry });
+      const qualified = profile.qualification(c, d, inheritedPath, observed);
+      assert.equal(qualified.applies, false, c.id);
+      assert.equal(profile.effectiveCase(c, qualified, inheritedPath), c);
+    }
+  }
+  assert.deepEqual(originalExpectations, new Map([['FORBIDDEN', 6], ['ALLOW', 14]]));
 });
 
 test('eight policy lookup declarations bind only the reviewed original commands and hashes', () => {
