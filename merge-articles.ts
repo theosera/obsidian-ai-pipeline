@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { loadConfig, applyConfigToEnv, isDryRun, setDryRun, getVaultRoot } from './config.js';
 import { safeRename } from './storage.js';
+import { readAnthropicText, describeAnthropicFailure } from './anthropic_text.js';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -52,14 +53,17 @@ async function callSmartModel(promptText, systemPrompt) {
   // Anthropic
   if (provider === 'anthropic' || provider === 'claude') {
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const model = process.env.ANTHROPIC_SMART_MODEL || 'claude-3-7-sonnet-20250219';
+    const model = process.env.ANTHROPIC_SMART_MODEL || 'claude-sonnet-5-5';
     const response = await anthropic.messages.create({
       model,
       system: systemPrompt,
       max_tokens: 8192,
       messages: [{ role: 'user', content: promptText }]
     });
-    return response.content[0].text;
+    // 応答の頭に thinking ブロックが来うるので、text ブロックを type で読む。refusal は先に扱う。
+    const read = readAnthropicText(response);
+    if (!read.ok) throw new Error(describeAnthropicFailure(read));
+    return read.text;
   }
 
   // Local AI (LM Studio)

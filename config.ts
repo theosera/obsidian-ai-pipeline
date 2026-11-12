@@ -10,7 +10,7 @@ const CONFIG_PATH = path.join(__dirname, 'pipeline_config.json');
 
 const DEFAULTS: Record<string, { fast: string; smart: string }> = {
   local: { fast: 'local-model', smart: 'local-model' },
-  anthropic: { fast: 'claude-haiku-4-5-20251001', smart: 'claude-sonnet-4-6' },
+  anthropic: { fast: 'claude-haiku-5-5', smart: 'claude-sonnet-5-5' },
   openai: { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
   gemini: { fast: 'gemini-2.5-flash', smart: 'gemini-2.5-pro' }
 };
@@ -199,13 +199,13 @@ export async function runConfigWizard(ask?: (q: string) => Promise<string>): Pro
 // classifier (分類フェーズ) とは独立した設定。理由:
 //   - 分類は long context / smart 推論が要るがローカルでも回せる
 //   - X 要約は 1 行 200 字の軽量タスクで、cloud 廉価 fast モデルが品質/速度バランス◎
-// よってデフォルトのデフォルトは **cloud / Anthropic Haiku 4.5** とし、
+// よってデフォルトのデフォルトは **cloud / Anthropic Haiku 5.5** とし、
 // 初回 `--x-bookmarks` 実行時にウィザードで他選択肢へ切り替え可能にする。
 // 永続化先は pipeline_config.json (`xSummary` キー)。
 // ---------------------------------------------------------------------------
 
 export interface XSummaryPreset {
-  /** 1 行表示用ラベル ("cloud / Anthropic Haiku 4.5 (推奨)" 等) */
+  /** 1 行表示用ラベル ("cloud / Anthropic Haiku 5.5 (推奨)" 等) */
   label: string;
   provider: AiProvider;
   model: string;
@@ -213,7 +213,7 @@ export interface XSummaryPreset {
 
 /**
  * 表示順がそのまま CLI の番号選択肢になる。**先頭がデフォルトのデフォルト**
- * (Enter 即時確定 = anthropic + haiku 4.5)。
+ * (Enter 即時確定 = anthropic + haiku 5.5)。
  *
  * モデル ID は `DEFAULTS` (分類用の fast / smart プリセット) と意味的に揃えるが、
  * 「X 要約はあくまで fast 軽量タスク」という設計のため fast 系のみを採用 (Sonnet
@@ -221,9 +221,9 @@ export interface XSummaryPreset {
  */
 export const X_SUMMARY_PRESETS: XSummaryPreset[] = [
   {
-    label: 'cloud / Anthropic Haiku 4.5  (推奨・デフォルト)',
+    label: 'cloud / Anthropic Haiku 5.5  (推奨・デフォルト)',
     provider: 'anthropic',
-    model: 'claude-haiku-4-5-20251001',
+    model: 'claude-haiku-5-5',
   },
   {
     label: 'cloud / OpenAI gpt-4o-mini',
@@ -356,7 +356,7 @@ export interface ThreatRelevancePreset {
  */
 export const THREAT_RELEVANCE_PRESETS: ThreatRelevancePreset[] = [
   {
-    label: 'cloud / Anthropic Sonnet 4.6  (推奨・デフォルト)',
+    label: 'cloud / Anthropic Sonnet 5.5  (推奨・デフォルト)',
     provider: 'anthropic',
     model: DEFAULTS.anthropic.smart,
   },

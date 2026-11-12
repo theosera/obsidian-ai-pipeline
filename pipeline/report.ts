@@ -33,6 +33,9 @@ const PRICING_MILLION_TOKENS: Record<string, { in: number; out: number }> = {
   'claude-sonnet-4-6': { in: 3.0, out: 15.0 },
   'claude-3-7-sonnet-20250219': { in: 3.0, out: 15.0 },
   'claude-opus-4-6': { in: 15.0, out: 75.0 },
+  'claude-sonnet-5-5': { in: 2.0, out: 10.0 },
+  // Haiku 5.5 はプロンプトの長さで 2 つの料金 (100K トークン以下 / 超)。ここは短いプロンプト側の値。
+  'claude-haiku-5-5': { in: 0.1, out: 0.5 },
 };
 
 /**
