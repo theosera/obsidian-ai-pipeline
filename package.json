@@ -18,7 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
+    "@anthropic-ai/sdk": "^1.6.0",
     "@googleapis/gmail": "^22.0.2",
     "@mozilla/readability": "^0.6.0",
     "@napi-rs/keyring": "^2.1.2",

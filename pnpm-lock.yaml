@@ -21,8 +21,8 @@ importers:
   .:
     dependencies:
       '@anthropic-ai/sdk':
-        specifier: ^0.131.0
-        version: 0.131.0
+        specifier: ^1.6.0
+        version: 1.6.0
       '@googleapis/gmail':
         specifier: ^22.0.2
         version: 22.0.2
@@ -84,8 +84,8 @@ importers:
 
 packages:
 
-  '@anthropic-ai/sdk@0.131.0':
-    resolution: {integrity: sha512-9+PepoU7qVMmM70jSahdnfcMHAvAnzhMOLv2W9WjRLO+OG/MAiBETkwKZqv7KIJ1Cj5h8eZ019bHzZaq+Mbepw==}
+  '@anthropic-ai/sdk@1.6.0':
+    resolution: {integrity: sha512-XqiO/46n8S6So8jQ/6/uNCkHntyW6QHHs1gZ+hlwTx1fWDr929g4VmwIXfdMVk7SuBWNdQvAlwyi1G3t6SEIuQ==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -93,8 +93,8 @@ packages:
       zod:
         optional: true
 
-  '@babel/runtime@7.29.7':
-    resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
+  '@babel/runtime@7.29.13':
+    resolution: {integrity: sha512-v+oN26xP4YIlQsbQ/CbTH1WG5m/l/DjKKZNy/Kp3f/AFvbgt7Em/D0FeMM3O2hX0YzeN2M16W8lOpyhIkfCBcQ==}
     engines: {node: '>=6.9.0'}
 
   '@esbuild/aix-ppc64@0.28.2':
@@ -356,6 +356,10 @@ packages:
 
   '@nodable/entities@3.1.0':
     resolution: {integrity: sha512-LsS/DjHr+uDM647Gru/cA8+J3a3HfhttwCKLyuoyN7yXTFCxKBtSgMQBvrW9yNPa2/zDRUNuGPaH5QUFoa4arQ==}
+
+  '@opentelemetry/api@1.10.0':
+    resolution: {integrity: sha512-lMkyes8iHrG+mk6WH7X70MdCLI2RS0FwNBY1PyQ8UemaijE2m5mv5A0Niy3HtbYTFrgkUEQjFMXmSAk2hQDuPQ==}
+    engines: {node: '>=8.0.0'}
 
   '@oxlint-tsgolint/darwin-arm64@7.0.2006':
     resolution: {integrity: sha512-uc0MEHXZUDW23Zmo5X28eSNeSnP17jKnh9GiehpVZqhfy99ks8spyXT5Llar3tjDN7ppnQN0Qd9FK6WNkdD+fQ==}
@@ -988,6 +992,7 @@ packages:
 
   tldts-core@7.4.20:
     resolution: {integrity: sha512-C630TWXZCZmLq0F2bW4QqwnaaxCQ/svpAqvJwnC4JvgEM5ohhBnGsEzTLSOXcN+xjz+kEaHS5uoWIw2klnqd0A==}
+    deprecated: Partial release, see https://github.com/remusao/tldts/issues/2735. Use >=7.4.22.
 
   tldts@7.4.19:
     resolution: {integrity: sha512-48dH6aSpQnpbzDUc4vIQZ1VjB8tkK+e8c1yx05/SZK+rkssgjEOlxDd/yU8/a4vGYQ9vRgJr9dwMq9TJ0b3X2Q==}
@@ -1064,12 +1069,13 @@ packages:
 
 snapshots:
 
-  '@anthropic-ai/sdk@0.131.0':
+  '@anthropic-ai/sdk@1.6.0':
     dependencies:
+      '@opentelemetry/api': 1.10.0
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.1.1
 
-  '@babel/runtime@7.29.7': {}
+  '@babel/runtime@7.29.13': {}
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true
@@ -1213,6 +1219,8 @@ snapshots:
       '@napi-rs/keyring-win32-x64-msvc': 2.1.2
 
   '@nodable/entities@3.1.0': {}
+
+  '@opentelemetry/api@1.10.0': {}
 
   '@oxlint-tsgolint/darwin-arm64@7.0.2006':
     optional: true
@@ -1623,7 +1631,7 @@ snapshots:
 
   json-schema-to-ts@3.1.1:
     dependencies:
-      '@babel/runtime': 7.29.7
+      '@babel/runtime': 7.29.13
       ts-algebra: 2.0.0
 
   jwa@2.0.1:
