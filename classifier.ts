@@ -7,6 +7,7 @@ import { getVaultFolders, ensureSafePath } from './storage';
 import { XMLParser } from 'fast-xml-parser';
 import { ClassificationResult } from './types';
 import { getVaultRoot } from './config';
+import { readAnthropicText, describeAnthropicFailure, lowEffortFor, THINKING_HEADROOM_TOKENS } from './anthropic_text';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || ''
@@ -313,11 +314,12 @@ async function askAI(prompt: string, systemContext: string = 'Respond exactly wi
 
     if ((provider === 'anthropic' || provider === 'claude') && anthropic.apiKey) {
       const model = taskType === 'smart'
-        ? (process.env.ANTHROPIC_SMART_MODEL || 'claude-sonnet-4-6')
-        : (process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5-20251001');
+        ? (process.env.ANTHROPIC_SMART_MODEL || 'claude-sonnet-5-5')
+        : (process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-5-5');
       const response = await anthropic.messages.create({
         model: model,
-        max_tokens: 300,
+        max_tokens: 300 + THINKING_HEADROOM_TOKENS,
+        ...lowEffortFor(model),
         system: [
           {
             type: 'text',
@@ -328,9 +330,11 @@ async function askAI(prompt: string, systemContext: string = 'Respond exactly wi
         messages: [{ role: 'user', content: prompt }]
       });
       if (response.usage) addTokenUsage(model, response.usage.input_tokens, response.usage.output_tokens);
-      if (response.content[0].type === 'text') {
-         return extractJson(response.content[0].text.trim());
-      }
+      const read = readAnthropicText(response);
+      // 答えの文字が無い (refusal / thinking だけで上限) ときは、下の local 経路へ落とさず失敗にする
+      // (落とすと、指定していない local AI へ分類の材料が流れる)。
+      if (!read.ok) throw new Error(describeAnthropicFailure(read));
+      return extractJson(read.text);
     }
 
     // Default: 'local'
@@ -359,10 +363,11 @@ async function askAI(prompt: string, systemContext: string = 'Respond exactly wi
   if (provider !== 'anthropic' && anthropic.apiKey) {
     try {
       console.log(`[Classifier] Falling back to Anthropic API (${taskType})...`);
-      const fallbackModel = taskType === 'smart' ? 'claude-sonnet-4-6' : 'claude-haiku-4-5-20251001';
+      const fallbackModel = taskType === 'smart' ? 'claude-sonnet-5-5' : 'claude-haiku-5-5';
       const response = await anthropic.messages.create({
         model: fallbackModel,
-        max_tokens: 300,
+        max_tokens: 300 + THINKING_HEADROOM_TOKENS,
+        ...lowEffortFor(fallbackModel),
         system: [
           {
             type: 'text',
@@ -373,9 +378,11 @@ async function askAI(prompt: string, systemContext: string = 'Respond exactly wi
         messages: [{ role: 'user', content: prompt }]
       });
       if (response.usage) addTokenUsage(fallbackModel, response.usage.input_tokens, response.usage.output_tokens);
-      if (response.content[0].type === 'text') {
-         return extractJson(response.content[0].text.trim());
+      const read = readAnthropicText(response);
+      if (read.ok) {
+         return extractJson(read.text);
       }
+      console.error(`[Classifier] Fallback Anthropic API: ${describeAnthropicFailure(read)}`);
     } catch (error: any) {
        console.error(`[Classifier] Fallback Anthropic API failed:`, error.message);
     }
@@ -474,19 +481,23 @@ export async function askAIText(
 
     if ((provider === 'anthropic' || provider === 'claude') && anthropic.apiKey) {
       const model = override.model ?? (taskType === 'smart'
-        ? (process.env.ANTHROPIC_SMART_MODEL || 'claude-sonnet-4-6')
-        : (process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-4-5-20251001'));
+        ? (process.env.ANTHROPIC_SMART_MODEL || 'claude-sonnet-5-5')
+        : (process.env.ANTHROPIC_FAST_MODEL || 'claude-haiku-5-5'));
       const response = await anthropic.messages.create({
         model,
-        max_tokens: maxTokens,
+        // maxTokens は答えの予算。thinking も max_tokens に数えられるので、その分を上乗せする。
+        max_tokens: maxTokens + THINKING_HEADROOM_TOKENS,
+        ...lowEffortFor(model),
         system: [{ type: 'text', text: systemContext, cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: prompt }],
       });
       if (response.usage) addTokenUsage(model, response.usage.input_tokens, response.usage.output_tokens);
-      if (response.content[0]?.type === 'text') {
-        return response.content[0].text.trim();
+      const read = readAnthropicText(response);
+      if (!read.ok) {
+        console.warn(`[askAIText] ${describeAnthropicFailure(read)}`);
+        return null;
       }
-      return null;
+      return read.text;
     }
 
     // Default: explicit local provider only (未知の provider 名で local に流すと

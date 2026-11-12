@@ -1,6 +1,6 @@
 'use strict';
-// Concrete synthetic values and their numbered correspondence live only in
-// the companion map. Proposed commands are DATA; only Hook processes run.
+// Synthetic inputs are generated at runtime. Proposed commands are DATA;
+// only Hook processes run.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -9,8 +9,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
 const hooks = path.resolve(process.argv[2] || path.join(__dirname, '..'));
-const map = JSON.parse(fs.readFileSync(path.join(__dirname, 'cx-1106-3-map.txt'), 'utf8'));
 const guard = require(path.join(hooks, 'lib/git-guard-common.cjs'));
+const map = require('./cx-1106-3-map.txt')(guard,
+  fs.readFileSync(path.join(hooks, 'lib/git-guard-common.cjs'), 'utf8'));
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), map.fixture.prefix)));
 const q = value => "'" + value.replace(/'/g, "'\\''") + "'";
 const owned = value => root + path.sep + value;
@@ -50,11 +51,8 @@ test.after(() => {
   fs.chmodSync(owned(map.fixture.blockedDir), 0o700);
   fs.rmSync(root, { recursive: true, force: true });
 });
-function fill(value, group) { return value.replaceAll('{group}', group).replaceAll('{policy}', map.policies[group]); }
 function data(row, group) {
-  const cwd = owned(fill(row.cwd, group));
-  const operand = row.absolute ? owned(fill(row.operand, group)) : fill(row.operand, group);
-  return { cwd, operand, canonical: owned(fill(row.canonical, group)) };
+  return map.project(row, group, root);
 }
 function command(role, value, cwd, cd) {
   const source = map.commands[role].replace('{operand}', q(value));

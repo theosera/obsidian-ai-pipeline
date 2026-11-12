@@ -40,7 +40,8 @@ export interface AgentResult {
   finalText: string;
   turns: number;
   toolCalls: ToolCallTrace[];
-  stoppedReason: 'end_turn' | 'max_turns' | 'other';
+  /** `refusal` = 安全分類器が断った (HTTP 200 + stop_reason: 'refusal')。 */
+  stoppedReason: 'end_turn' | 'max_turns' | 'refusal' | 'other';
 }
 
 /**
@@ -74,7 +75,9 @@ function collectText(content: Anthropic.ContentBlock[]): string {
  */
 export async function runToolUseAgent(userMessage: string, deps: AgentDeps): Promise<AgentResult> {
   const maxTurns = deps.maxTurns ?? 8;
-  const maxTokens = deps.maxTokens ?? 2048;
+  // Claude 5 系は既定で thinking が走り、thinking も max_tokens に数えられる。
+  // 非 streaming のまま SDK の長時間要求の警告に届かない大きさにしている。
+  const maxTokens = deps.maxTokens ?? 16000;
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userMessage }];
   const toolCalls: ToolCallTrace[] = [];
   let finalText = '';
@@ -88,11 +91,15 @@ export async function runToolUseAgent(userMessage: string, deps: AgentDeps): Pro
       messages,
     });
 
-    // モデルの応答 (text + tool_use) をそのまま会話履歴へ積む。
+    // モデルの応答 (thinking + text + tool_use) を替えずにそのまま会話履歴へ積む
+    // (thinking ブロックは署名ごと返す必要がある・会話は追記だけにする)。
     messages.push({ role: 'assistant', content: response.content });
     const text = collectText(response.content);
     if (text) finalText = text;
 
+    if (response.stop_reason === 'refusal') {
+      return { finalText, turns: turn, toolCalls, stoppedReason: 'refusal' };
+    }
     if (response.stop_reason !== 'tool_use') {
       return { finalText, turns: turn, toolCalls, stoppedReason: response.stop_reason === 'end_turn' ? 'end_turn' : 'other' };
     }

@@ -24,6 +24,7 @@ import { run as runLlmSecWeeklyDeliveryEdges } from './test/llm_sec_weekly_deliv
 import { run as runLlmSecWeeklyDeliveryAuth } from './test/llm_sec_weekly_delivery_auth';
 import { run as runLlmSecWeeklyPublish } from './test/llm_sec_weekly_publish';
 import { run as runToolUse } from './test/tool_use';
+import { run as runAnthropicText } from './test/anthropic_text';
 
 interface Suite {
   name: string;
@@ -51,6 +52,7 @@ const suites: Suite[] = [
   { name: 'LlmSecWeeklyDeliveryAuth', run: runLlmSecWeeklyDeliveryAuth },
   { name: 'LlmSecWeeklyPublish', run: runLlmSecWeeklyPublish },
   { name: 'ToolUse', run: runToolUse },
+  { name: 'AnthropicText', run: runAnthropicText },
 ];
 
 let totalPassed = 0;
