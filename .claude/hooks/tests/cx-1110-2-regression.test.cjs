@@ -63,8 +63,8 @@ test('CX-1110-2 01', () => {
   assert.equal(guard.secretPathVerdict(value, { cwd: ordinaryDir }), false);
   assert.equal(observe(source('write', value), ordinaryDir), 'ALLOW');
   const relative = ['absent-a', 'absent-b', leaf].join(path.sep);
-  assert.equal(guard.secretPathVerdict(relative, { cwd: protectedDir }), false);
-  assert.equal(observe(source('write', relative), protectedDir), 'ALLOW');
+  assert.equal(guard.secretPathVerdict(relative, { cwd: protectedDir }), 'FORBIDDEN');
+  assert.equal(observe(source('write', relative), protectedDir), 'FORBIDDEN');
 });
 test('CX-1110-2 02', () => {
   const alias = owned('alias-a');

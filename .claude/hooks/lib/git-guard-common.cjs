@@ -5550,7 +5550,13 @@ function isSecretOperandPath(value, context = undefined) {
 function secretPathVerdict(value, context) {
   if (isSecretPath(value)) return 'FORBIDDEN';
   const selected = normalizeSecretOperand(value, context);
-  if (!selected) return missingIntermediateLexicalSelection(value, context) ? false : 'UNKNOWN';
+  if (!selected) {
+    if (!missingIntermediateLexicalSelection(value, context)) return 'UNKNOWN';
+    const lexical = path.isAbsolute(value) ? value : context.cwd + path.sep + value;
+    if (isSecretPath(lexical)) return 'FORBIDDEN';
+    return isSecretPath(lexical.normalize('NFKC').toLowerCase().replace(/\u017f/g, 's'))
+      ? 'UNKNOWN' : false;
+  }
   if (isSecretPath(selected[1])) return 'FORBIDDEN';
   // Compatibility/case aliases are not a filesystem equivalence proof.
   if (selected.some(candidate => isSecretPath(candidate.normalize('NFKC')
