@@ -51,15 +51,40 @@ jobs:
           git_build="$(mktemp -d "$RUNNER_TEMP/git-guard-build.XXXXXX")"
           trap 'rm -rf "$git_build"' EXIT
           archive="$git_build/git-2.54.0.tar.xz"
-          curl --disable --fail --silent --show-error --location --proto '=https' \
+          # Retry only external acquisition; integrity/build failures remain fatal.
+          # Three attempts, a per-attempt wall clock cap (including sudo), and two
+          # 10s waits bound curl/update/install to at most 690s including kill grace.
+          retry_acquisition() {
+            local attempt_timeout="$1"
+            shift
+            local attempt status
+            for attempt in 1 2 3; do
+              if timeout --kill-after=5s "${attempt_timeout}s" "$@"; then
+                return 0
+              else
+                status=$?
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                printf 'Acquisition failed after 3 attempts (exit %s): %s\n' "$status" "$*" >&2
+                return "$status"
+              fi
+              printf 'Acquisition attempt %s/3 failed (exit %s); retrying in 10s: %s\n' \
+                "$attempt" "$status" "$*" >&2
+              sleep 10
+            done
+          }
+          retry_acquisition 45 curl --disable --fail --silent --show-error --location --proto '=https' \
             https://www.kernel.org/pub/software/scm/git/git-2.54.0.tar.xz \
             --output "$archive"
           printf '%s  %s\n' \
             f689162364c10de79ef89aa8dbf48731eb057e34edbbd20aca510ce0154681a3 \
             "$archive" | sha256sum --check --strict
           tar -xJf "$archive" -C "$git_build"
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          # update can otherwise return 0 after failed index downloads (W:).
+          # Disable nested retries; the wrapper owns both attempt and time limits.
+          apt_acquire_args=(-o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          retry_acquisition 60 sudo apt-get "${apt_acquire_args[@]}" -o APT::Update::Error-Mode=any update
+          retry_acquisition 90 sudo apt-get "${apt_acquire_args[@]}" install --yes --no-install-recommends \
             build-essential libcurl4-openssl-dev libexpat1-dev libssl-dev \
             zlib1g-dev perl python3
           # The same prefix/features apply to compilation and installation.
