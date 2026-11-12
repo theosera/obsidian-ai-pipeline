@@ -1,5 +1,5 @@
 'use strict';
-// Synthetic fixtures reuse the existing numbered inventory. Commands are Hook input DATA.
+// Synthetic fixtures are generated at runtime. Commands are Hook input DATA.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -8,15 +8,15 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const hooks = path.resolve(__dirname, '..');
 const guard = require(path.join(hooks, 'lib/git-guard-common.cjs'));
-const map = JSON.parse(fs.readFileSync(path.join(__dirname, 'cx-1106-3-map.txt'), 'utf8'));
+const map = require('./cx-1106-3-map.txt')(guard,
+  fs.readFileSync(path.join(hooks, 'lib/git-guard-common.cjs'), 'utf8'));
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'cx11102-')));
 const owned = value => path.join(root, value);
 const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
-const fill = (value, group) => value.replaceAll('{group}', group).replaceAll('{policy}', map.policies[group]);
 for (const name of map.fixture.dirs.concat(map.fixture.homes)) fs.mkdirSync(owned(name), { recursive: true });
 for (const [name, body] of Object.entries(map.fixture.files)) fs.writeFileSync(owned(name), body);
 for (const [name, target] of Object.entries(map.fixture.links)) fs.symlinkSync(target, owned(name));
-const item = group => owned(fill(map.cases[1].canonical, group));
+const item = group => map.project(map.cases[1], group, root).canonical;
 const protectedFile = item(map.fixture.groups[0]);
 const ordinaryFile = item(map.fixture.groups[1]);
 const protectedDir = path.dirname(protectedFile);
