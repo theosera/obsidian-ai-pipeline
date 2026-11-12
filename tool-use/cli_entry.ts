@@ -26,7 +26,7 @@ export async function runAgentCli(opts: {
   const anthropic = new Anthropic({ apiKey });
   // tool use は anthropic 経路で実行。provider=anthropic ならその smartModel を、
   // それ以外の provider 設定でも tool 対応モデルへフォールバックする。
-  const model = opts.config.provider === 'anthropic' ? opts.config.smartModel : 'claude-sonnet-4-6';
+  const model = opts.config.provider === 'anthropic' ? opts.config.smartModel : 'claude-sonnet-5-5';
 
   console.log('\n🤖 Tool Use エージェント (Vault サンドボックス / 各操作に人間承認)');
   console.log(`   model: ${model}`);

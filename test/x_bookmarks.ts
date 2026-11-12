@@ -3245,9 +3245,9 @@ body
       const { runXSummaryWizard, X_SUMMARY_PRESETS, DEFAULT_X_SUMMARY, getXSummaryConfig } =
         await import('../config');
 
-      runner.test('X_SUMMARY_PRESETS: 先頭は cloud Anthropic Haiku 4.5 (default-default)', () => {
+      runner.test('X_SUMMARY_PRESETS: 先頭は cloud Anthropic Haiku 5.5 (default-default)', () => {
         assert.strictEqual(X_SUMMARY_PRESETS[0].provider, 'anthropic');
-        assert.strictEqual(X_SUMMARY_PRESETS[0].model, 'claude-haiku-4-5-20251001');
+        assert.strictEqual(X_SUMMARY_PRESETS[0].model, 'claude-haiku-5-5');
       });
 
       runner.test('DEFAULT_X_SUMMARY: 先頭プリセットと一致', () => {
@@ -3291,10 +3291,10 @@ body
         };
       };
 
-      await runner.testAsync('runXSummaryWizard: 空 Enter で先頭プリセット (= anthropic + haiku4.5)', async () => {
+      await runner.testAsync('runXSummaryWizard: 空 Enter で先頭プリセット (= anthropic + haiku5.5)', async () => {
         const out = await runXSummaryWizard(scriptAsker(['', '']));
         assert.strictEqual(out.provider, 'anthropic');
-        assert.strictEqual(out.model, 'claude-haiku-4-5-20251001');
+        assert.strictEqual(out.model, 'claude-haiku-5-5');
       });
 
       await runner.testAsync('runXSummaryWizard: "4" で local プリセット選択', async () => {

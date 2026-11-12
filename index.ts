@@ -410,7 +410,7 @@ async function main(): Promise<void> {
   // X 要約 dedicated provider / model の初回セットアップ
   //
   // 分類フェーズの AI_PROVIDER とは独立した設定 (X 要約はあくまで 1 行 200 字の
-  // 軽量タスクで cloud Haiku 4.5 が推奨)。
+  // 軽量タスクで cloud Haiku 5.5 が推奨)。
   //   - `--x-bookmarks` 系で xSummary 未保存 → 初回ウィザード
   //   - `--x-summary-reconfig` 明示時 → 強制再選択
   // ------------------------------------------------------------------
