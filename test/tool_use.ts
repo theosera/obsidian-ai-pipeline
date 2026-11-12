@@ -291,6 +291,50 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(fs.existsSync(target), false, '拒否されたのでファイルは作られない');
     });
 
+    // --- Claude 5 系: 応答の頭に thinking ブロックが来る / refusal / thinking の分の上限 ---
+    await runner.testAsync('thinking が先に来ても最終テキストを取り、thinking ブロックを替えずに次の要求へ返す', async () => {
+      const thinking = { type: 'thinking', thinking: '', signature: 'sig-loop' };
+      const first = {
+        id: 'm_think_tool', type: 'message', role: 'assistant', model: 'test',
+        content: [thinking, { type: 'tool_use', id: 'tu_t', name: 'create_obsidian_note', input: { filename: 'loop/think.md', content: 'x' } }],
+        stop_reason: 'tool_use', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 },
+      } as unknown as Anthropic.Message;
+      const second = {
+        id: 'm_think_text', type: 'message', role: 'assistant', model: 'test',
+        content: [thinking, { type: 'text', text: 'made it', citations: null }],
+        stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 },
+      } as unknown as Anthropic.Message;
+      const { client, bodies } = mockClient([first, second]);
+      const result = await runToolUseAgent('make a note', {
+        client, approve: async () => true, model: 'test', maxTurns: 5,
+      });
+      assert.strictEqual(result.stoppedReason, 'end_turn');
+      assert.strictEqual(result.finalText, 'made it');
+      // 2 回目の要求の assistant の手番は、1 回目の応答の content そのもの (thinking ブロックを署名ごと保つ)
+      const replayed = bodies[1].messages[1];
+      assert.strictEqual(replayed.role, 'assistant');
+      assert.deepStrictEqual(replayed.content, first.content);
+    });
+
+    await runner.testAsync('refusal で止まり、停止理由は refusal', async () => {
+      const refused = {
+        id: 'm_refusal', type: 'message', role: 'assistant', model: 'test',
+        content: [], stop_reason: 'refusal', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 },
+      } as unknown as Anthropic.Message;
+      const { client } = mockClient([refused]);
+      const result = await runToolUseAgent('anything', {
+        client, approve: async () => true, model: 'test', maxTurns: 5,
+      });
+      assert.strictEqual(result.stoppedReason, 'refusal');
+      assert.strictEqual(result.toolCalls.length, 0);
+    });
+
+    await runner.testAsync('max_tokens の既定は thinking の分を見込んだ 16000', async () => {
+      const { client, bodies } = mockClient([msgText('ok')]);
+      await runToolUseAgent('hi', { client, approve: async () => true, model: 'test', maxTurns: 1 });
+      assert.strictEqual(bodies[0].max_tokens, 16000);
+    });
+
     await runner.testAsync('サンドボックス違反は承認を求めずに拒否される', async () => {
       let approveCalls = 0;
       const { client } = mockClient([

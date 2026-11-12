@@ -176,7 +176,7 @@ export async function regenerateXBookmarkArtifacts(
   options: { xSummary?: XSummaryConfig; resummarizeAll?: boolean } = {}
 ): Promise<void> {
   // xSummary は通常 `runXSummaryWizard` 経由で必ず埋まっているが、テストや
-  // 直叩きで未指定の場合は DEFAULT_X_SUMMARY (= cloud Anthropic Haiku 4.5)
+  // 直叩きで未指定の場合は DEFAULT_X_SUMMARY (= cloud Anthropic Haiku 5.5)
   // にフォールバックして classifier 側の AI_PROVIDER とは独立した動作を保つ。
   const xSummary = options.xSummary ?? DEFAULT_X_SUMMARY;
 
