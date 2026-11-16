@@ -2195,19 +2195,39 @@ const WRAPPERS = {
   unshare: unshareArgs,
   doas: (rest, info) => shortValueWrapperArgs(rest, info, 'doas'),
   env: (rest, info) => {
-    const longNames = ['ignore-environment', 'null', 'unset', 'chdir', 'split-string', 'argv0', 'debug',
-      'default-signal', 'ignore-signal', 'block-signal', 'list-signal-handling', 'help', 'version'];
+    // GNU long options and BSD -P have explicit inspection dispositions.
+    // "irrelevant" means no utility-selection, environment or source effect;
+    // terminal queries return before selecting a utility. This is not a claim
+    // that the host env supports every option from both backends.
+    const optionEffects = {
+      'ignore-environment': 'clear', null: 'irrelevant', unset: 'unset',
+      chdir: 'chdir', 'split-string': 'split-string', argv0: 'argv0', debug: 'irrelevant',
+      'default-signal': 'irrelevant', 'ignore-signal': 'irrelevant',
+      'block-signal': 'irrelevant', 'list-signal-handling': 'irrelevant',
+      help: 'terminal', version: 'terminal', path: 'unknown',
+    };
+    // path is the BSD short -P only; do not introduce a GNU --path option.
+    const longNames = Object.keys(optionEffects).filter(name => name !== 'path');
     const required = new Set(['unset', 'chdir', 'split-string', 'argv0']);
     const apply = (name, value, carrier = value, offset = 0) => {
-      if (name === 'ignore-environment') info.envOps.push({ clear: true });
-      if (name === 'chdir') info.cdLike = true;
-      if (name === 'argv0') info.childArgv0 = { word: value, login: false, carrier, offset };
-      if (name === 'split-string') {
-        info.splitString = true;
-        if (value) info.splitWords.push(value);
+      switch (optionEffects[name]) {
+        case 'clear': info.envOps.push({ clear: true }); break;
+        case 'chdir': info.cdLike = true; break;
+        case 'argv0': info.childArgv0 = { word: value, login: false, carrier, offset }; break;
+        case 'split-string':
+          info.splitString = true;
+          if (value) info.splitWords.push(value);
+          break;
+        case 'unset':
+          if (value && !value.dynamic) info.envOps.push({ unset: value.text });
+          break;
+        case 'irrelevant': case 'terminal': break;
+        // BSD -P selects the immediate utility. It does not assign child PATH.
+        // Keep that unsupported selection UNKNOWN, including literal values.
+        case 'unknown': info.envUnknown = true; break;
+        default: info.envUnknown = true; break;
       }
       if (value && value.dynamicMaySplit) info.envUnknown = true;
-      if (name === 'unset' && value && !value.dynamic) info.envOps.push({ unset: value.text });
     };
     let k = 0;
     while (k < rest.length) {
@@ -2221,7 +2241,7 @@ const WRAPPERS = {
         const matches = longNames.includes(name) ? [name] : longNames.filter((n) => n.startsWith(name));
         if (matches.length !== 1) { info.envUnknown = true; k++; continue; }
         const full = matches[0];
-        if (full === 'help' || full === 'version') return -1;
+        if (optionEffects[full] === 'terminal') return -1;
         let value;
         if (eq >= 0) value = { ...w, text: t.slice(eq + 1) };
         else if (required.has(full)) value = rest[++k];
@@ -2234,7 +2254,7 @@ const WRAPPERS = {
         for (let p = 1; p < t.length; p++) {
           const ch = t[p];
           if (ch === 'i') { apply('ignore-environment'); continue; }
-          if ('0v'.includes(ch)) continue;
+          if ('0v'.includes(ch)) { apply(ch === '0' ? 'null' : 'debug'); continue; }
           if ('SCuaP'.includes(ch)) {
             const name = { S: 'split-string', C: 'chdir', u: 'unset', a: 'argv0', P: 'path' }[ch];
             const value = p + 1 < t.length ? { ...w, text: t.slice(p + 1) } : rest[++k];
