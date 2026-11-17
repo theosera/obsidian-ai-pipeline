@@ -42,8 +42,8 @@ X ブックマーク AI 要約 (`x-bookmarks/summarizer`) は分類フェーズ 
 
 | # | Preset | Provider | Model |
 |---|---|---|---|
-| 1 | cloud / Anthropic Haiku 4.5  (推奨デフォルト) | `anthropic` | `claude-haiku-4-5-20251001` |
-| 2 | cloud / OpenAI gpt-4o-mini | `openai` | `gpt-4o-mini` |
+| 1 | cloud / Anthropic Haiku 5.5  (推奨デフォルト) | `anthropic` | `claude-haiku-5-5` |
+| 2 | cloud / OpenAI gpt-6-luna | `openai` | `gpt-6-luna` |
 | 3 | cloud / Gemini 2.5 Flash | `gemini` | `gemini-2.5-flash` |
 | 4 | local / LM Studio | `local` | `local-model` |
 

@@ -7,6 +7,7 @@ import OpenAI from 'openai';
 import { loadConfig, applyConfigToEnv, isDryRun, setDryRun, getVaultRoot } from './config.js';
 import { safeRename } from './storage.js';
 import { readAnthropicText, describeAnthropicFailure } from './anthropic_text.js';
+import { noReasoningFor } from './openai_params.js';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -20,9 +21,11 @@ async function callSmartModel(promptText, systemPrompt) {
   // OpenAI
   if (provider === 'openai') {
     const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const model = process.env.OPENAI_SMART_MODEL || 'gpt-4o';
+    const model = process.env.OPENAI_SMART_MODEL || 'gpt-6.1-terra';
     const response = await openaiClient.chat.completions.create({
       model,
+      // 既定の gpt-6.1-terra は推論の深さを none にすると temperature を受ける。none にして下の 0.3 を保つ。
+      ...noReasoningFor(model),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: promptText }

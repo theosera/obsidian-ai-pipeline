@@ -26,6 +26,9 @@ import { ProcessingResult } from '../types';
 const PRICING_MILLION_TOKENS: Record<string, { in: number; out: number }> = {
   'gpt-4o': { in: 5.0, out: 15.0 },
   'gpt-4o-mini': { in: 0.15, out: 0.6 },
+  // OpenAI の公式の料金表 (Standard) の値。2026-11-17 に取得した。
+  'gpt-6-luna': { in: 0.1, out: 0.5 },
+  'gpt-6.1-terra': { in: 1.0, out: 5.0 },
   'gemini-2.5-flash': { in: 0.075, out: 0.3 },
   'gemini-2.5-pro': { in: 1.25, out: 5.0 },
   'claude-haiku-4-5-20251001': { in: 0.25, out: 1.25 },
