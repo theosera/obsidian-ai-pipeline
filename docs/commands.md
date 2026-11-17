@@ -45,6 +45,8 @@ pnpm start ../context/_分析コンテキスト/OneTab_20260414.txt --config
 | X 要約の provider / モデル (`xSummary`) | `pnpm start -- --x-bookmarks --x-summary-reconfig` |
 | 脅威レポートの該当性判定の provider / モデル (`threatRelevance`) | `pnpm start -- --analyze-threat-relevance --threat-relevance-reconfig` |
 
+※ X 要約と該当性判定の口は、選び直しの後にそのまま同期・判定も走ります (API の呼び出しと Vault への記入を伴います)。分類の `--config` は、入力ファイルや `--x-bookmarks` を付けなければ、設定を保存して終わります。
+
 ### X 要約モデルの選択（`--x-summary-reconfig`）
 X ブックマーク AI 要約 (`x-bookmarks/summarizer`) は分類フェーズ (`--config` で設定する AI Provider) **とは独立** した設定を持ちます。`pipeline_config.json::xSummary` に保存され、CLI 番号選択で切り替え可能:
 
