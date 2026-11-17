@@ -25,6 +25,7 @@ import { run as runLlmSecWeeklyDeliveryAuth } from './test/llm_sec_weekly_delive
 import { run as runLlmSecWeeklyPublish } from './test/llm_sec_weekly_publish';
 import { run as runToolUse } from './test/tool_use';
 import { run as runAnthropicText } from './test/anthropic_text';
+import { run as runOpenAIParams } from './test/openai_params';
 
 interface Suite {
   name: string;
@@ -53,6 +54,7 @@ const suites: Suite[] = [
   { name: 'LlmSecWeeklyPublish', run: runLlmSecWeeklyPublish },
   { name: 'ToolUse', run: runToolUse },
   { name: 'AnthropicText', run: runAnthropicText },
+  { name: 'OpenAIParams', run: runOpenAIParams },
 ];
 
 let totalPassed = 0;

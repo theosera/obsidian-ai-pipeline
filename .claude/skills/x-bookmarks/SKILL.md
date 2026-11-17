@@ -54,10 +54,10 @@ Key facts to remember:
   X summary picker is **separate** from the classifier provider. Stored
   at `pipeline_config.json::xSummary` (`{ provider, model }`). First
   `--x-bookmarks` run auto-launches `runXSummaryWizard` which lists
-  presets (1=Anthropic Haiku 4.5 default, 2=OpenAI gpt-4o-mini,
+  presets (1=Anthropic Haiku 5.5 default, 2=OpenAI gpt-6-luna,
   3=Gemini 2.5 Flash, 4=local LM Studio). Re-select with
   `--x-summary-reconfig`. Default-default (= empty Enter on the wizard)
-  is **cloud / Anthropic Haiku 4.5** because 200-grapheme summaries are
+  is **cloud / Anthropic Haiku 5.5** because 200-grapheme summaries are
   a fast-tier task and cloud Haiku gives a better quality/cost balance
   than local for this specific workload.
 - **Execution mode auto-switches by `xSummary.provider`** (no extra CLI

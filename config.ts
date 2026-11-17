@@ -11,7 +11,7 @@ const CONFIG_PATH = path.join(__dirname, 'pipeline_config.json');
 const DEFAULTS: Record<string, { fast: string; smart: string }> = {
   local: { fast: 'local-model', smart: 'local-model' },
   anthropic: { fast: 'claude-haiku-5-5', smart: 'claude-sonnet-5-5' },
-  openai: { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
+  openai: { fast: 'gpt-6-luna', smart: 'gpt-6.1-terra' },
   gemini: { fast: 'gemini-2.5-flash', smart: 'gemini-2.5-pro' }
 };
 
@@ -226,9 +226,9 @@ export const X_SUMMARY_PRESETS: XSummaryPreset[] = [
     model: 'claude-haiku-5-5',
   },
   {
-    label: 'cloud / OpenAI gpt-4o-mini',
+    label: 'cloud / OpenAI gpt-6-luna',
     provider: 'openai',
-    model: 'gpt-4o-mini',
+    model: 'gpt-6-luna',
   },
   {
     label: 'cloud / Gemini 2.5 Flash',
@@ -361,7 +361,7 @@ export const THREAT_RELEVANCE_PRESETS: ThreatRelevancePreset[] = [
     model: DEFAULTS.anthropic.smart,
   },
   {
-    label: 'cloud / OpenAI gpt-4o',
+    label: 'cloud / OpenAI gpt-6.1-terra',
     provider: 'openai',
     model: DEFAULTS.openai.smart,
   },
