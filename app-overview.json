@@ -221,7 +221,7 @@
     },
     {
       "name": "2 段階 AI 分類",
-      "description": "Fast Pass (Haiku / local LLM) で既存フォルダへ高速分類 → confidence < 0.7 で Smart Pass (Sonnet / GPT-4o) にエスカレーション"
+      "description": "Fast Pass (Haiku / local LLM) で既存フォルダへ高速分類 → confidence < 0.7 で Smart Pass (Sonnet / gpt-6.1-terra) にエスカレーション"
     },
     {
       "name": "Dataview group page",

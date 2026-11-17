@@ -230,11 +230,7 @@ export const X_SUMMARY_PRESETS: XSummaryPreset[] = [
     provider: 'openai',
     model: 'gpt-6-luna',
   },
-  {
-    label: 'cloud / Gemini 2.5 Flash',
-    provider: 'gemini',
-    model: 'gemini-2.5-flash',
-  },
+  // Gemini は選択肢に出さない。提供元のコード (AI_PROVIDER=gemini) と保存済みの設定はそのまま動く。
   {
     label: 'local / LM Studio (LOCAL_AI_URL)',
     provider: 'local',
@@ -365,11 +361,7 @@ export const THREAT_RELEVANCE_PRESETS: ThreatRelevancePreset[] = [
     provider: 'openai',
     model: DEFAULTS.openai.smart,
   },
-  {
-    label: 'cloud / Gemini 2.5 Pro',
-    provider: 'gemini',
-    model: DEFAULTS.gemini.smart,
-  },
+  // Gemini は選択肢に出さない。提供元のコード (AI_PROVIDER=gemini) と保存済みの設定はそのまま動く。
   {
     label: 'local / OSS 推論モデル (LOCAL_AI_URL — model ID は上書き入力)',
     provider: 'local',
