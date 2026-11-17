@@ -17089,6 +17089,16 @@ function main() {
   const asJson = argv.includes('--json');
   const usePolicyContract = argv.includes('--r57-policy-contract');
   if (usePolicyContract && !argv.includes('--executable-profile')) throw new Error('--r57-policy-contract requires --executable-profile');
+  // R39 slogin compatibility name. The caller prepares one explicit filesystem
+  // state; only the declared R39SLOGIN cases run, and each must observe that
+  // state independently. The runner platform is never evidence for the state.
+  const sloginStateArgs = argv.filter(arg => arg === '--slogin-state' || arg.startsWith('--slogin-state='));
+  const sloginState = sloginStateArgs.length ? sloginStateArgs[0].slice('--slogin-state='.length) : null;
+  if (sloginStateArgs.length > 1 || sloginStateArgs.length && !['present', 'absent'].includes(sloginState)) {
+    throw new Error('--slogin-state needs exactly one of present or absent');
+  }
+  if (sloginState && !argv.includes('--executable-profile')) throw new Error('--slogin-state requires --executable-profile');
+  if (sloginState && usePolicyContract) throw new Error('--slogin-state runs only the R39SLOGIN declarations; omit --r57-policy-contract');
   // Optional explicit qualification profile. CASES and their original oracle
   // remain unchanged; both original and profile assertion results are reported.
   const profileTools = argv.includes('--executable-profile') ? require('./executable-profile-qualification.cjs') : null;
@@ -17105,12 +17115,18 @@ function main() {
   // R57 verifies the historical R54 bytes independently of the supplemental profile.
   const selectedPolicy = policyTools && policyTools.createPolicyContract(CASES, policyLedger,
     fs.readFileSync(path.join(__dirname, 'fixtures/r54-selected-executable-profile.json')));
+  const sloginDeclarations = sloginState ? new Map(sloginEntries.map(entry => [entry.id, entry])) : null;
+  const selectedCases = sloginState ? CASES.filter(c => sloginDeclarations.has(c.id)) : CASES;
+  if (sloginState && (!sloginDeclarations.size || sloginDeclarations.size !== sloginEntries.length ||
+      selectedCases.length !== sloginDeclarations.size)) {
+    throw new Error('--slogin-state needs every R39SLOGIN declaration bound to exactly one original case');
+  }
   const repos = setupRepos();
   let failed = 0, originalFailed = 0, profileAdjusted = 0, operationalReasonFailures = 0;
-  let profileBeforePolicyFailed = 0, policyContractAdjusted = 0;
+  let profileBeforePolicyFailed = 0, policyContractAdjusted = 0, sloginStateFailed = 0;
   const results = [];
   try {
-    for (const c of CASES) {
+    for (const c of selectedCases) {
       const environment = selectedProfile && { ...repos.env,
         ...(c.fixtureEnvironment === undefined ? {} : repos.fixtureEnvironmentSets[c.fixtureEnvironment]),
         ...(c.env || {}), CLAUDE_PROJECT_DIR: repos.dirs[c.project || 'clean'] };
@@ -17149,6 +17165,19 @@ function main() {
         r.profileOK = r.profileQualificationStable && profileTools.matchesCase(r, expected, HOOKS) && !r.operationalReasonFailure;
         if (qualified.applies) profileAdjusted++;
         r.ok = r.profileOK;
+        if (sloginState) {
+          // Observe the prepared state with the independent test helper, never a guard verdict.
+          const observed = sloginDeclarations.get(c.id).stages.map(stage =>
+            profileTools.independentlyAbsent(stage.word, environment).reason);
+          const accepted = sloginState === 'present' ? ['explicit-present', 'first-executable-present']
+            : ['explicit-absent', 'no-executable-in-explicit-actual-path'];
+          r.sloginState = { requested: sloginState, observed };
+          r.sloginStateOK = observed.length > 0 && observed.every(reason => accepted.includes(reason)) &&
+            qualified.applies === (sloginState === 'absent');
+          if (!r.sloginStateOK) sloginStateFailed++;
+          r.profileOK = r.profileOK && r.sloginStateOK;
+          r.ok = r.profileOK;
+        }
       }
       if (selectedPolicy) {
         r.profileBeforePolicyOK = r.profileOK;
@@ -17179,6 +17208,7 @@ function main() {
     process.stdout.write(JSON.stringify({ hooksDir, total: results.length, failed,
       ...(selectedProfile ? { profile: 'R54 selected executable prerequisites', originalFailed, profileAdjusted,
         operationalReasonFailures, originalDefinitionsUnchanged: true } : {}),
+      ...(sloginState ? { sloginState, sloginStateFailed } : {}),
       ...(selectedPolicy ? { policyContract: selectedPolicy.contractID, policyContractDeclared: selectedPolicy.declaredCount,
         profileBeforePolicyFailed, policyContractAdjusted, policyDefinitionsUnchanged: true } : {}), results }, null, 1) + '\n');
   } else {
@@ -17196,6 +17226,8 @@ function main() {
           qualification: r.profileQualification, qualificationStable: r.profileQualificationStable,
           operationalReasonFailure: r.operationalReasonFailure }));
       }
+      if (sloginState) console.log('R39 slogin state evidence: ' + JSON.stringify({ id: r.id,
+        ...r.sloginState, stateOK: r.sloginStateOK, profileOK: r.profileOK, ownEG: r.ownEG }));
       if (selectedPolicy && r.policyContractQualification.applies) {
         console.log('R57 policy contract evidence: ' + JSON.stringify({ id: r.id, originalExpect: r.expect,
           originalOK: r.originalOK, profileBeforePolicyOK: r.profileBeforePolicyOK, profileOK: r.profileOK,
@@ -17208,6 +17240,8 @@ function main() {
     console.log(`${results.length - failed}/${results.length} ok`);
     if (selectedProfile) console.log(`Original oracle: ${results.length - originalFailed}/${results.length} pass; ` +
       `explicit profile prerequisites active: ${profileAdjusted}; operational denial failures: ${operationalReasonFailures}`);
+    if (sloginState) console.log(`R39 slogin state ${sloginState}: ${results.length - sloginStateFailed}/${results.length} ` +
+      'cases observed the prepared state');
   }
   if (selectedPolicy && !asJson) console.log(`R57 policy contract: declared ${selectedPolicy.declaredCount}; ` +
     `adjusted: ${policyContractAdjusted}; Executable profile failures before policy: ${profileBeforePolicyFailed}; original assertions retained`);

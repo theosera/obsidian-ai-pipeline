@@ -149,6 +149,49 @@ jobs:
           node .claude/hooks/tests/git-guards.test.cjs --executable-profile --r57-policy-contract
           GUARD_TESTS
 
+      - name: Run the slogin compatibility cases with slogin absent and present
+        timeout-minutes: 10
+        # Runner images differ in whether they install the compatibility name
+        # `slogin` (Ubuntu 24.04's openssh-client installs /usr/bin/slogin -> ssh).
+        # Prepare both filesystem states here instead of relying on the image. Each run evaluates only the declared
+        # R39SLOGIN cases and independently confirms the prepared state; the
+        # guard's slogin handling itself is unchanged. Files are moved, never
+        # deleted, and every original is moved back on exit.
+        run: |
+          hold="$(mktemp -d "$RUNNER_TEMP/slogin-hold.XXXXXX")"
+          guard_home="$(mktemp -d "$RUNNER_TEMP/slogin-state-home.XXXXXX")"
+          node_bin="$(dirname "$(command -v node)")"
+          : > "$hold/manifest"
+          created=0
+          restore() {
+            if [ "$created" = 1 ]; then sudo mv -- /usr/bin/slogin "$hold/created-slogin"; fi
+            while IFS=$'\t' read -r held original; do sudo mv -- "$held" "$original"; done < "$hold/manifest"
+          }
+          trap restore EXIT
+          run_state() {
+            env -i PATH="$node_bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin" HOME="$guard_home" TMPDIR="$RUNNER_TEMP" \
+              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null LC_ALL=C \
+              node .claude/hooks/tests/git-guards.test.cjs --executable-profile --slogin-state="$1"
+          }
+          # Absent: move every slogin out of the installation directories the
+          # guard trusts. Merged-/usr aliases resolve to one physical file.
+          for directory in /usr/bin /bin /usr/sbin /sbin /usr/local/bin /opt/homebrew/bin; do
+            [ -d "$directory" ] || continue
+            candidate="$(cd -P "$directory" && pwd)/slogin"
+            if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+              held="$hold/held$(printf '%s' "$candidate" | tr '/' '_')"
+              sudo mv -- "$candidate" "$held"
+              printf '%s\t%s\n' "$held" "$candidate" >> "$hold/manifest"
+            fi
+          done
+          run_state absent
+          # Present: the same relative symlink to ssh that Ubuntu 24.04 installs.
+          test -x /usr/bin/ssh
+          ln -s ssh "$hold/created-slogin"
+          sudo mv -- "$hold/created-slogin" /usr/bin/slogin
+          created=1
+          run_state present
+
       - name: Run injection-gate tests (python, deterministic)
         # L1 (scan-threat-report.py) + L3 (gate_decision.py) の決定論回帰。
         # stdlib のみで pnpm install 不要のため依存インストールより先に走らせる。
@@ -270,7 +313,7 @@ jobs:
           done
           echo "positive control OK"
 
-  # Ubuntu 24.04 のジョブはいずれ外す。`ssh` への一本化で `slogin` 使用時と遜色ない保護を確認できたら、S7 以降でこのジョブと対応する必須チェックを一緒に外す。
+  # Ubuntu 24.04 のジョブはいずれ外す。`slogin` の有無は、どのジョブでも上の slogin の step が両方の状態を作って確かめる。`ssh` への一本化で `slogin` 使用時と遜色ない保護を確認できたら、S7 以降で owner がこのジョブと対応する必須チェックを一緒に外す。
   pipeline_ubuntu2404:
     if: github.event_name == 'pull_request'
     name: Pipeline (Ubuntu 24.04) - test & typecheck
