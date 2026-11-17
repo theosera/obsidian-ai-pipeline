@@ -153,8 +153,9 @@ jobs:
         timeout-minutes: 10
         # Runner images differ in whether they install the compatibility name
         # `slogin` (Ubuntu 24.04's openssh-client installs /usr/bin/slogin -> ssh).
-        # Prepare both filesystem states here instead of relying on the image. Each run evaluates only the declared
-        # R39SLOGIN cases and independently confirms the prepared state; the
+        # Prepare both filesystem states here instead of relying on the image.
+        # Each run evaluates only the declared R39SLOGIN cases and
+        # independently confirms the prepared state; the
         # guard's slogin handling itself is unchanged. Files are moved, never
         # deleted, and every original is moved back on exit.
         run: |
