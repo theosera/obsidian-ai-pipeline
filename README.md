@@ -341,7 +341,7 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
     ├─ classifier.ts         2段階 AI 分類
     │   ├─ snippets参照       _分析コンテキスト/snippets_YYYYMMDD.xml（最新版自動解決）
     │   ├─ Fast Pass         軽量モデル（Haiku / ローカル LLM）
-    │   └─ Smart Pass        高性能モデル（Sonnet / GPT-4o）エスカレーション
+    │   └─ Smart Pass        高性能モデル（Sonnet / gpt-6.1-terra）エスカレーション
     │
     ├─ router.ts             公開日付 + 記事数閾値による動的フォルダルーティング
     │   └─ folder_rules.json  sync-rules.ts で snippets から自動同期可能
@@ -359,7 +359,7 @@ OneTab.txt（URL一覧） または X ブックマーク (Playwright)
 - **2段階ユーザー確認**: 実行前（件数・出力先の表示）と分類完了後（レポート確認）の 2 回、承認を求める
 - **2段階 AI 分類 (Fast / Smart Pass)**:
   - Fast Pass: 軽量モデル（Haiku、ローカル LLM）で既存フォルダへ高速分類（コスト最小）
-  - Smart Pass: confidence < 0.7 のとき高性能モデル（Sonnet、GPT-4o）へ自動エスカレーション
+  - Smart Pass: confidence < 0.7 のとき高性能モデル（Sonnet、gpt-6.1-terra）へ自動エスカレーション
   - snippets 参照: `_分析コンテキスト/snippets_YYYYMMDD.xml`（最新版を自動解決）を `historical_rules` としてプロンプトへ注入
 - **動的フォルダルーティング**: 記事数の閾値に応じてフラット → 四半期 → 月別へ自動昇格、既存ファイルも引越し
 - **snippets→folder_rules 自動同期** (`pnpm run sync-rules`): snippets の日付パターンからルールを推定し `folder_rules.json` へマージ

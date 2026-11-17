@@ -3242,7 +3242,7 @@ body
     runner.section('runXSummaryWizard');
 
     {
-      const { runXSummaryWizard, X_SUMMARY_PRESETS, DEFAULT_X_SUMMARY, getXSummaryConfig } =
+      const { runXSummaryWizard, X_SUMMARY_PRESETS, THREAT_RELEVANCE_PRESETS, DEFAULT_X_SUMMARY, getXSummaryConfig } =
         await import('../config');
 
       runner.test('X_SUMMARY_PRESETS: 先頭は cloud Anthropic Haiku 5.5 (default-default)', () => {
@@ -3253,6 +3253,12 @@ body
       runner.test('DEFAULT_X_SUMMARY: 先頭プリセットと一致', () => {
         assert.strictEqual(DEFAULT_X_SUMMARY.provider, X_SUMMARY_PRESETS[0].provider);
         assert.strictEqual(DEFAULT_X_SUMMARY.model, X_SUMMARY_PRESETS[0].model);
+      });
+
+      runner.test('X 要約・該当性判定のプリセット: Gemini は出さず 1=anthropic / 2=openai / 3=local', () => {
+        // 文書 (docs/commands.md・docs/cli-reference.md・x-bookmarks skill) の番号と揃える
+        assert.deepStrictEqual(X_SUMMARY_PRESETS.map(p => p.provider), ['anthropic', 'openai', 'local']);
+        assert.deepStrictEqual(THREAT_RELEVANCE_PRESETS.map(p => p.provider), ['anthropic', 'openai', 'local']);
       });
 
       runner.test('getXSummaryConfig: 未設定 config は null', () => {
@@ -3297,8 +3303,8 @@ body
         assert.strictEqual(out.model, 'claude-haiku-5-5');
       });
 
-      await runner.testAsync('runXSummaryWizard: "4" で local プリセット選択', async () => {
-        // preset 配列の 4 番目が local (順序を変える場合は X_SUMMARY_PRESETS と同期)
+      await runner.testAsync('runXSummaryWizard: "3" で local プリセット選択', async () => {
+        // preset 配列の 3 番目が local (順序を変える場合は X_SUMMARY_PRESETS と同期)
         const localIdx = X_SUMMARY_PRESETS.findIndex(p => p.provider === 'local');
         assert.ok(localIdx >= 0, 'local プリセットが存在する');
         const choice = String(localIdx + 1);
@@ -3336,10 +3342,10 @@ body
         }
       });
 
-      await runner.testAsync('runXSummaryWizard: ターミナル二重入力 "44" は "4" として扱う', async () => {
+      await runner.testAsync('runXSummaryWizard: ターミナル二重入力 "33" は "3" として扱う', async () => {
         // config wizard と同じ挙動 (一部端末でエコーが二重に乗る対策)
         const localIdx = X_SUMMARY_PRESETS.findIndex(p => p.provider === 'local');
-        const doubled = String(localIdx + 1).repeat(2); // 例: "44"
+        const doubled = String(localIdx + 1).repeat(2); // 例: "33"
         const out = await runXSummaryWizard(scriptAsker([doubled, '']));
         assert.strictEqual(out.provider, 'local');
       });
