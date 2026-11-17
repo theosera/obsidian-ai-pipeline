@@ -8,6 +8,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { ClassificationResult } from './types';
 import { getVaultRoot } from './config';
 import { readAnthropicText, describeAnthropicFailure, lowEffortFor, THINKING_HEADROOM_TOKENS } from './anthropic_text';
+import { noReasoningFor } from './openai_params';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || ''
@@ -273,12 +274,13 @@ async function askAI(prompt: string, systemContext: string = 'Respond exactly wi
 
   try {
     if (provider === 'openai' && openaiClient) {
-      const model = taskType === 'smart' 
-        ? (process.env.OPENAI_SMART_MODEL || 'gpt-4o')
-        : (process.env.OPENAI_FAST_MODEL || 'gpt-4o-mini');
+      const model = taskType === 'smart'
+        ? (process.env.OPENAI_SMART_MODEL || 'gpt-6.1-terra')
+        : (process.env.OPENAI_FAST_MODEL || 'gpt-6-luna');
       const response = await openaiClient.chat.completions.create({
         model: model,
-        max_tokens: 300,
+        max_completion_tokens: 300,
+        ...noReasoningFor(model),
         temperature: 0.1,
         response_format: { type: "json_object" },
         messages: [
@@ -447,11 +449,12 @@ export async function askAIText(
   try {
     if (provider === 'openai' && openaiClient) {
       const model = override.model ?? (taskType === 'smart'
-        ? (process.env.OPENAI_SMART_MODEL || 'gpt-4o')
-        : (process.env.OPENAI_FAST_MODEL || 'gpt-4o-mini'));
+        ? (process.env.OPENAI_SMART_MODEL || 'gpt-6.1-terra')
+        : (process.env.OPENAI_FAST_MODEL || 'gpt-6-luna'));
       const response = await openaiClient.chat.completions.create({
         model,
-        max_tokens: maxTokens,
+        max_completion_tokens: maxTokens,
+        ...noReasoningFor(model),
         temperature: 0.2,
         messages: [
           { role: 'system', content: systemContext },

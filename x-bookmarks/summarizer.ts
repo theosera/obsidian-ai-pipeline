@@ -15,7 +15,7 @@
  * プロバイダと実行モード:
  *   `classifier.ts::askAIText` を経由。Local / Anthropic / OpenAI / Gemini の
  *   どれかが `AI_PROVIDER` で選ばれ、各プロバイダの fast モデル
- *   (Haiku 5.5 / GPT-5.4 mini / Gemini 3.1 Flash-Lite 等) が使われる。
+ *   (Haiku 5.5 / gpt-6-luna / Gemini 3.1 Flash-Lite 等) が使われる。
  *
  *   実行モードは provider で自動切替:
  *     - `local`            → **batch** モード (10 件ずつ 1 プロンプトに詰めて 1 回呼出 / 順次)
