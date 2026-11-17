@@ -37,15 +37,22 @@ AIプロバイダー（Local, Anthropic, OpenAI, Gemini 等）や、Step1(軽量
 pnpm start ../context/_分析コンテキスト/OneTab_20260414.txt --config
 ```
 
+※ 保存済みの設定 (`pipeline_config.json`) は、コードの既定のモデルが替わっても書き換わりません。たとえば以前に OpenAI を選んで保存した場合は、保存したときのモデル (例: `gpt-4o-mini` / `gpt-4o`) のまま動きます。新しい既定にするには、それぞれ選び直してください。
+
+| 設定 | 選び直しの口 |
+|---|---|
+| 分類の provider / モデル | `pnpm start -- --config` |
+| X 要約の provider / モデル (`xSummary`) | `pnpm start -- --x-bookmarks --x-summary-reconfig` |
+| 脅威レポートの該当性判定の provider / モデル (`threatRelevance`) | `pnpm start -- --analyze-threat-relevance --threat-relevance-reconfig` |
+
 ### X 要約モデルの選択（`--x-summary-reconfig`）
 X ブックマーク AI 要約 (`x-bookmarks/summarizer`) は分類フェーズ (`--config` で設定する AI Provider) **とは独立** した設定を持ちます。`pipeline_config.json::xSummary` に保存され、CLI 番号選択で切り替え可能:
 
 | # | Preset | Provider | Model |
 |---|---|---|---|
-| 1 | cloud / Anthropic Haiku 5.5  (推奨デフォルト) | `anthropic` | `claude-haiku-5-5` |
+| 1 | cloud / Anthropic Haiku 5.5  (推奨・デフォルト) | `anthropic` | `claude-haiku-5-5` |
 | 2 | cloud / OpenAI gpt-6-luna | `openai` | `gpt-6-luna` |
-| 3 | cloud / Gemini 2.5 Flash | `gemini` | `gemini-2.5-flash` |
-| 4 | local / LM Studio | `local` | `local-model` |
+| 3 | local / LM Studio (LOCAL_AI_URL) | `local` | `local-model` |
 
 初回 `--x-bookmarks` 実行時に自動でウィザードが起動 (空 Enter で 1 = 推奨デフォルトを即時確定)。保存済みの選択を変更したい場合:
 
