@@ -428,7 +428,7 @@ async function main(): Promise<void> {
   console.log(`🔹 Step 1 Model (Fast): ${config.fastModel}`);
   console.log(`🔸 Step 2 Model (Smart): ${config.smartModel}`);
   if (config.xSummary) {
-    console.log(`🧵 X 要約: ${config.xSummary.provider} / ${config.xSummary.model}  (--x-summary-reconfig で変更)`);
+    console.log(`🧵 X 要約: ${config.xSummary.provider} / ${config.xSummary.model}  (--x-bookmarks --x-summary-reconfig で変更)`);
   }
   console.log('💡 Run with `--config` anytime to change these settings.');
   console.log('======================================================\n');
