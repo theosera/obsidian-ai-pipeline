@@ -434,15 +434,15 @@ export async function askAIText(
   // ここで黙って local 経由にすると、ユーザーが意図したプロバイダと別経路に
   // データが流れる事故が起きるため、設定不備は呼出側で検知できるよう null を返す。
   if (provider === 'openai' && !openaiClient) {
-    console.warn('[askAIText] OPENAI_API_KEY が未設定です。pnpm start -- --x-summary-reconfig で別 provider に切替できます。');
+    console.warn('[askAIText] OPENAI_API_KEY が未設定です。pnpm start -- --x-bookmarks --x-summary-reconfig で別 provider に切替できます。');
     return null;
   }
   if (provider === 'gemini' && !geminiClient) {
-    console.warn('[askAIText] GEMINI_API_KEY が未設定です。pnpm start -- --x-summary-reconfig で別 provider に切替できます。');
+    console.warn('[askAIText] GEMINI_API_KEY が未設定です。pnpm start -- --x-bookmarks --x-summary-reconfig で別 provider に切替できます。');
     return null;
   }
   if ((provider === 'anthropic' || provider === 'claude') && !anthropic.apiKey) {
-    console.warn('[askAIText] ANTHROPIC_API_KEY が未設定です。pnpm start -- --x-summary-reconfig で別 provider に切替できます。');
+    console.warn('[askAIText] ANTHROPIC_API_KEY が未設定です。pnpm start -- --x-bookmarks --x-summary-reconfig で別 provider に切替できます。');
     return null;
   }
 
