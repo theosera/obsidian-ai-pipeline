@@ -48,7 +48,7 @@ export type AiProvider = 'local' | 'openai' | 'anthropic' | 'gemini';
  * 分類フェーズの classifier とは独立した設定。デフォルトのデフォルトは
  * cloud=Anthropic + Haiku 5.5 で、初回 `--x-bookmarks` 実行時に対話ウィザード
  * (`runXSummaryWizard`) が presets から選ばせて pipeline_config.json に永続化する。
- * 再選択は `--x-summary-reconfig` を付けて起動する。
+ * 再選択は `--x-bookmarks --x-summary-reconfig` を付けて起動する。
  */
 export interface XSummaryConfig {
   provider: AiProvider;
