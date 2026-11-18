@@ -222,7 +222,7 @@ CIは明示的な`--executable-profile`も使う。固定JSONの646 IDと各元C
 
 `--slogin-state=absent|present` は、この20件だけを、呼び出し側が用意したファイルシステムの状態で評価する。各ケースは試験側の独立した確認で、`absent` なら不在の確定を、`present` なら実行可能な候補の存在を観測しなければ失敗する。`absent` では宣言どおりの `UNKNOWN` を、`present` では元期待（FORBIDDEN 6件・ALLOW 14件）を要求する。runner の種類から状態を推さない。CI はどのジョブでも、フックが信頼する導入先の `slogin` を一時的に退避した不在の状態と、`/usr/bin/slogin -> ssh`（Ubuntu 24.04 の openssh-client と同じ相対 symlink）を置いた存在の状態の両方を作って評価し、終了時に元へ戻す。フックの `slogin` の判定は変えない。指定した状態と食い違うファイルシステムでは全件が失敗することを、`r39-slogin-state.test.cjs` の pure 試験で確認する。
 
-Ubuntu 24.04 のジョブはいずれ外す。`slogin` の有無は、どのジョブでも上の手順で両方の状態を作って確かめる。`ssh` への一本化で `slogin` 使用時と遜色ない保護を確認できたら、S7 以降で owner がこのジョブと対応する必須チェックを一緒に外す。
+Ubuntu 24.04 の専用ジョブは外した（owner の決め）。`slogin` の有無は、どのジョブでも上の手順で両方の状態を作って確かめる。対応する必須チェックは owner が外す。
 
 この節は試験契約であり、特定headの全件profile・CI・fresh reviewの成功宣言ではない。元期待の不一致とprofileの結果、未資格の意味論・native動作は区別して記録する。
 
