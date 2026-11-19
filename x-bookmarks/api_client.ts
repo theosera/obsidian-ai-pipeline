@@ -521,22 +521,21 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
 
   console.log(`🔖 [X API] 合計 ${all.length} 件を取得しました。`);
 
-  // 動画フレーム抽出 (X_VIDEO_FRAMES=true のときだけ動作)
-  if (isVideoFramesEnabled()) {
-    await enrichBookmarksWithFrames(all);
-  }
-
+  // 動画のキーフレームはここでは取らない。取得の段で取ると、重複で外れる投稿・
+  // 実行確認や保存承認の取消・dry-run でも動画の DL と添付の作成が走るため。
+  // 保存を承認した後に pipeline/interactive.ts が enrichBookmarksWithFrames を呼ぶ。
   return all;
 }
 
 /**
- * 取得済み bookmark 群に対して、動画があるツイートはフレームを抽出して
- * `## キーフレーム` セクションを `content` 末尾に追記する。
+ * 保存を承認した bookmark 群のうち、動画があるツイートはフレームを抽出して
+ * `## キーフレーム` セクションを `content` 末尾に追記する (X_VIDEO_FRAMES=true のときだけ)。
  *
  * 失敗 (DL 失敗 / size 超過 / ffmpeg 不在等) しても本文保存は妨げない。
  * 個々のツイートの失敗は警告ログのみ。
  */
-async function enrichBookmarksWithFrames(bookmarks: ApiBookmark[]): Promise<void> {
+export async function enrichBookmarksWithFrames(bookmarks: ApiBookmark[]): Promise<void> {
+  if (!isVideoFramesEnabled()) return;
   // duration_ms 不在の動画も拾う (extractFramesFromTweetVideo 側で `no_duration`
   // skip が出て本文に「取得失敗」セクションが出る → silently 落ちることがない)
   const targets = bookmarks.filter(b => b.xVideoUrl);

@@ -3472,6 +3472,138 @@ body
       );
     });
 
+    // =====================================================
+    // 動画のキーフレームは保存の承認の後にだけ取る (重複・取消・dry-run では DL も添付も 0)
+    // =====================================================
+    runner.section('x_video_frames: キーフレームは保存の承認の後にだけ取る');
+
+    // 動画の DL は global fetch を通る (X API の呼び出しは fetchFn)。数えるだけで外へは出さない。
+    const withVideoFrames = async (fn: (mediaFetches: string[]) => Promise<void>): Promise<void> => {
+      const prevFrames = process.env.X_VIDEO_FRAMES;
+      const origFetch = globalThis.fetch;
+      const mediaFetches: string[] = [];
+      process.env.X_VIDEO_FRAMES = 'true';
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        mediaFetches.push(String(input));
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+      try {
+        await fn(mediaFetches);
+      } finally {
+        globalThis.fetch = origFetch;
+        if (prevFrames === undefined) delete process.env.X_VIDEO_FRAMES;
+        else process.env.X_VIDEO_FRAMES = prevFrames;
+      }
+    };
+    const VIDEO_URL = 'https://video.twimg.com/ext_tw_video/1/pu/vid/v.mp4';
+    const attachDirOf = (tweetId: string) => path.join(tmpDir, '_attachments', 'x-bookmarks', tweetId);
+    const videoXResult = (tweetId: string): any => ({
+      id: 1,
+      status: 'success',
+      url: `https://x.com/foo/status/${tweetId}`,
+      policy: 'x_bookmark',
+      classification: { proposedPath: 'X_Bookmarks/Test', confidence: 1, isNewFolder: false, reasoning: 'test' },
+      articleContext: {
+        url: `https://x.com/foo/status/${tweetId}`,
+        title: 't',
+        content: 'c',
+        textContent: 'c',
+        xTweetId: tweetId,
+        xFolderName: 'Test',
+        xVideoUrl: VIDEO_URL,
+        xVideoDurationMs: 10_000,
+      },
+    });
+
+    await runner.testAsync('取得の段では動画を DL せず、添付も作らない (重複除外・実行確認・承認の前)', async () => {
+      saveTokens({
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh',
+        expires_in: 7200,
+        obtained_at: new Date().toISOString(),
+      });
+      const prevClientId = process.env.X_CLIENT_ID;
+      process.env.X_CLIENT_ID = 'test-client';
+      const apiFetch: typeof fetch = (async (input: any) => {
+        const url = typeof input === 'string' ? input : input.url;
+        const respond = (body: unknown) => new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+        if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 'tester' } });
+        if (url.includes('/bookmarks/folders')) return respond({ data: [] });
+        if (url.includes('/bookmarks')) {
+          return respond({
+            data: [{ id: 'V1', text: 'video post', author_id: 'u1', attachments: { media_keys: ['m1'] } }],
+            includes: {
+              users: [{ id: 'u1', name: 'A', username: 'a' }],
+              media: [{
+                media_key: 'm1',
+                type: 'video',
+                duration_ms: 10_000,
+                variants: [{ bit_rate: 1000, content_type: 'video/mp4', url: VIDEO_URL }],
+              }],
+            },
+          });
+        }
+        throw new Error(`unexpected fetch url: ${url}`);
+      }) as any;
+      try {
+        await withVideoFrames(async (mediaFetches) => {
+          const [bm] = await fetchBookmarksViaApi({ selectedFolders: [], includeUnfiled: true, fetchFn: apiFetch });
+          assert.strictEqual(bm?.xVideoUrl, VIDEO_URL, '動画は見つけている');
+          assert.ok(!(bm.content ?? '').includes('キーフレーム'), '取得の段ではキーフレームを付けない');
+          assert.deepStrictEqual(mediaFetches, [], '取得の段では動画を DL しない');
+          assert.ok(!fs.existsSync(attachDirOf('V1')), '取得の段では添付のフォルダを作らない');
+        });
+      } finally {
+        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prevClientId;
+      }
+    });
+
+    await runner.testAsync('dry-run の保存では動画を DL せず、添付も作らない', async () => {
+      const { __test: interactiveInternals } = await import('../pipeline/interactive');
+      const { setDryRun, isDryRun } = await import('../config');
+      const result = videoXResult('V2');
+      const prev = isDryRun();
+      setDryRun(true);
+      try {
+        await withVideoFrames(async (mediaFetches) => {
+          await interactiveInternals.saveApprovedResults([result]);
+          assert.deepStrictEqual(mediaFetches, []);
+        });
+      } finally {
+        setDryRun(prev);
+      }
+      assert.ok(!fs.existsSync(attachDirOf('V2')), 'dry-run で添付のフォルダが作られた');
+      assert.strictEqual(result.articleContext.content, 'c');
+    });
+
+    await runner.testAsync('承認の後: 抽出済みのフレームを使い回し、X 以外の結果には触らない', async () => {
+      const { __test: interactiveInternals } = await import('../pipeline/interactive');
+      fs.mkdirSync(attachDirOf('V3'), { recursive: true });
+      for (let i = 1; i <= 4; i++) fs.writeFileSync(path.join(attachDirOf('V3'), `frame-0${i}.webp`), '');
+      const approved = videoXResult('V3');
+      const notX = { ...videoXResult('V4'), policy: 'hatena' };
+      await withVideoFrames(async (mediaFetches) => {
+        await interactiveInternals.addKeyFramesToApprovedXBookmarks([approved, notX]);
+        assert.deepStrictEqual(mediaFetches, [], '抽出済みなら DL しない');
+      });
+      assert.ok(approved.articleContext.content.includes('![[_attachments/x-bookmarks/V3/frame-01.webp|360]]'));
+      assert.strictEqual(notX.articleContext.content, 'c');
+      assert.ok(!fs.existsSync(attachDirOf('V4')));
+    });
+
+    await runner.testAsync('承認の後: 動画の取得に失敗しても throw せず、失敗の見出しだけを付ける', async () => {
+      const { __test: interactiveInternals } = await import('../pipeline/interactive');
+      const approved = videoXResult('V5');
+      await withVideoFrames(async () => {
+        await interactiveInternals.addKeyFramesToApprovedXBookmarks([approved]);
+      });
+      assert.match(approved.articleContext.content, /## キーフレーム.*取得失敗/);
+    });
+
     // Codex #113 P2 回帰: --hands-on の DB リーダ (hands_on_generator) が sync 側
     // (db.ts) と同じ PIPELINE_DB_DIR を経由することを保証する。vault root は DB の
     // 無い一時ディレクトリに、PIPELINE_DB_DIR は DB のある別ディレクトリに向け、

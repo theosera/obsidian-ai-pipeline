@@ -7,6 +7,7 @@ import { ApiBookmark } from '../x-bookmarks/types';
 import { getDb, closeDb } from '../x-bookmarks/db';
 import { exportAndWriteAllGroupPages } from '../x-bookmarks/group_page_writer';
 import { summarizePendingBookmarks } from '../x-bookmarks/summarizer';
+import { enrichBookmarksWithFrames } from '../x-bookmarks/api_client';
 import { askQuestion, isPromptClosed } from './prompt';
 import { generateReport } from './report';
 
@@ -83,6 +84,7 @@ async function saveApprovedResults(
     console.log('\n🧪 dry-run: Vault 書き込み・DB upsert・group ページ再生成はスキップします (計画のみログ出力)');
   } else {
     console.log('\n🚀 Approved! Proceeding to save files to Vault...');
+    await addKeyFramesToApprovedXBookmarks(results);
   }
   let xBookmarkCount = 0;
 
@@ -158,6 +160,19 @@ async function saveApprovedResults(
     updateVaultTreeSnapshot(); // 新規作成フォルダをスナップショットに反映
   }
   closeDb();
+}
+
+/**
+ * 保存を承認した X ブックマークに動画のキーフレームを付ける (X_VIDEO_FRAMES=true のときだけ)。
+ * 承認の後 (dry-run でないとき) にだけ呼ぶ。重複で外れた投稿・実行確認や承認の取消・
+ * dry-run では、動画の DL も添付の作成もしない。抽出に失敗しても投稿の保存は続ける。
+ */
+async function addKeyFramesToApprovedXBookmarks(results: ProcessingResult[]): Promise<void> {
+  const bookmarks = results
+    .filter((r) => r.status === 'success' && r.classification && r.policy === 'x_bookmark')
+    .map((r) => r.articleContext as ApiBookmark | undefined)
+    .filter((ax): ax is ApiBookmark => !!ax?.xTweetId);
+  await enrichBookmarksWithFrames(bookmarks);
 }
 
 /**
@@ -240,4 +255,5 @@ async function editOneClassification(
 // テスト用 export (dry-run ガードの回帰防止)
 export const __test = {
   saveApprovedResults,
+  addKeyFramesToApprovedXBookmarks,
 };
