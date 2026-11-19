@@ -56,7 +56,7 @@ Key facts to remember:
   `--x-bookmarks` run auto-launches `runXSummaryWizard` which lists
   presets (1=Anthropic Haiku 5.5 default, 2=OpenAI gpt-6-luna,
   3=local LM Studio; Gemini is not listed). Re-select with
-  `--x-summary-reconfig`. Default-default (= empty Enter on the wizard)
+  `--x-bookmarks --x-summary-reconfig`. Default-default (= empty Enter on the wizard)
   is **cloud / Anthropic Haiku 5.5** because 200-grapheme summaries are
   a fast-tier task and cloud Haiku gives a better quality/cost balance
   than local for this specific workload.

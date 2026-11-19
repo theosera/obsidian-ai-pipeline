@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { fileURLToPath } from 'url';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { loadConfig, applyConfigToEnv, isDryRun, setDryRun, getVaultRoot } from './config.js';
@@ -9,13 +10,11 @@ import { safeRename } from './storage.js';
 import { readAnthropicText, describeAnthropicFailure } from './anthropic_text.js';
 import { noReasoningFor } from './openai_params.js';
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+// 対話は main() の中でだけ開く。試験が callSmartModel だけを読み込んでも stdin を掴まない。
+let rl = null;
 const askQuestion = (q) => new Promise(resolve => rl.question(q, resolve));
 
-async function callSmartModel(promptText, systemPrompt) {
+export async function callSmartModel(promptText, systemPrompt) {
   const provider = process.env.AI_PROVIDER || 'local';
 
   // OpenAI
@@ -84,6 +83,10 @@ async function callSmartModel(promptText, systemPrompt) {
 }
 
 async function main() {
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
   const args = process.argv.slice(2);
   const targetDir = args.find(a => !a.startsWith('--'));
 
@@ -254,7 +257,20 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// `pnpm exec tsx merge-articles.ts <dir>` で直接走らせたときだけ本処理を始める。
+// 読み込んだだけ (試験) では main() を走らせない。
+function invokedDirectly() {
+  try {
+    return !!process.argv[1] &&
+      fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

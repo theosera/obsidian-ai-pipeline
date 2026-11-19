@@ -52,7 +52,7 @@
 - [ ] **前提**: 選んだ provider の API キー（cloud）または LM Studio 起動（local）
 - [ ] 初回 `--x-bookmarks` で要約ウィザードが起動し、選択が
       `pipeline_config.json::xSummary` に永続化される
-- [ ] `--x-summary-reconfig` で再選択できる
+- [ ] `--x-bookmarks --x-summary-reconfig` で再選択できる
 - [ ] `--x-resummarize-all` で全要約クリア＆再生成（0 件でも実行、
       `--dry-run` 併用時はスキップ）
 - [ ] 出力が日本語・200 グラフェム以内・改行なし
