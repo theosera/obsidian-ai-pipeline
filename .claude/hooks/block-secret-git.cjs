@@ -40,6 +40,16 @@ const isSecret = guard.isSecretPath;
 const { cmd, baseDir } = guard.readInput('secret ガード');
 if (!cmd) process.exit(0);
 
+// obs#202: one wall-clock budget bounds every Git child this decision starts
+// (alias lookup, inspection version/config queries and staged/pathspec reads).
+// Each child also has its own cap and SIGKILL. The readers' other probes keep
+// their fixed caps outside this budget (2 s each, transport 2 s in total), so
+// the guard still answers well before the hook's 30 s timeout.
+const GIT_DECISION_BUDGET_MS = 8000;
+const gitDeadline = guard.createGitDeadline(GIT_DECISION_BUDGET_MS);
+/** A timed-out inspection did not finish; it is not reported as a Git failure. */
+const inspectionUnfinished = error => error?.code === 'ETIMEDOUT';
+
 const insp = guard.inspect(cmd, { trackExecutableSearch: true,
   initialExecutableSearchPathPresent: typeof process.env.PATH === 'string' });
 // Keep parser uncertainty pending while independently confirmed policy forms are checked.
@@ -192,7 +202,7 @@ function writesViaRedirection(redirection) {
 
 // builtin でない subcommand が alias なら拒む（alias の中身は検査できない）。
 for (const g of gits) {
-  const p = guard.aliasProblem(g, baseDir);
+  const p = guard.aliasProblem(g, baseDir, { deadline: gitDeadline });
   if (p) deny(`${p}。alias を使わず、git の subcommand をそのまま書いてください (fail-closed)。`);
 }
 
@@ -496,6 +506,7 @@ for (const g of commits) {
     // can reintroduce an untracked local secret; --only can reuse the HEAD tree.
     staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', ...(!ca.pathspecs.length && !ca.only ? ['--diff-filter=d'] : []), '-z'], {
       ...context,
+      deadline: gitDeadline,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -503,10 +514,10 @@ for (const g of commits) {
         (!staged.endsWith('\0') || staged.slice(0, -1).split('\0').some(name => name === '')))) {
       throw new Error('incomplete staged filename inspection');
     }
-  } catch {
+  } catch (error) {
     // 検査できないときは通さない（存在しない `-C` 先などで検査を無効化させない）。
     deny(
-      `staged ファイルの検査に失敗しました (対象: ${inspectCwd})。\n` +
+      `staged ファイルの検査に失敗しました${inspectionUnfinished(error) ? '（時間内に終わりませんでした）' : ''} (対象: ${inspectCwd})。\n` +
       '検査できない状態で commit を通すと staged secret を見逃すためブロックしました (fail-closed)。',
       'UNKNOWN',
     );
@@ -537,11 +548,12 @@ for (const g of commits) {
     try {
       listed = preCommitReaders.readInspectionGit(['ls-files', '-z', '--', ...ca.pathspecs], {
         ...context,
+        deadline: gitDeadline,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
       });
-    } catch {
-      deny(`pathspec が当たるファイルの検査に失敗しました (対象: ${inspectCwd})。検査できないためブロックしました (fail-closed)。`);
+    } catch (error) {
+      deny(`pathspec が当たるファイルの検査に失敗しました${inspectionUnfinished(error) ? '（時間内に終わりませんでした）' : ''} (対象: ${inspectCwd})。検査できないためブロックしました (fail-closed)。`);
     }
     const badListed = listed.split('\0').filter(isSecret);
     if (badListed.length) {
@@ -639,6 +651,7 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
     // Keep the legacy backstop consistent without skipping any later checks.
     staged = preCommitReaders.readInspectionGit(['diff', '--cached', '--name-only', ...(!ca.pathspecs.length && !ca.only ? ['--diff-filter=d'] : []), '-z'], {
       ...context,
+      deadline: gitDeadline,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -646,11 +659,11 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
         (!staged.endsWith('\0') || staged.slice(0, -1).split('\0').some(name => name === '')))) {
       throw new Error('incomplete staged filename inspection');
     }
-  } catch {
+  } catch (error) {
     // 従来は staged='' として素通ししていた（fail-open）。存在しない `-C` 先を指すだけで
     // 検査を無効化できてしまうため、検査できないときは通さない。
     deny(
-      `staged ファイルの検査に失敗しました (対象: ${inspectCwd})。\n` +
+      `staged ファイルの検査に失敗しました${inspectionUnfinished(error) ? '（時間内に終わりませんでした）' : ''} (対象: ${inspectCwd})。\n` +
       '検査できない状態で commit を通すと staged secret を見逃すためブロックしました (fail-closed)。',
       'UNKNOWN',
     );
