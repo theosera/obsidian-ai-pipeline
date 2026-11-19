@@ -495,6 +495,7 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
     let token: string | undefined;
     let consecutiveKnown = 0;
     let unfiledCount = 0;
+    let stoppedOnKnown = false; // 既知 3 連続で打ち切ったか (ページのカーソルとは分けて持つ)
     do {
       if (all.length >= maxItems) break;
       const page = await xGet<BookmarksResponse>(buildBookmarksUrl(userId, token), ctx);
@@ -504,7 +505,7 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
         if (skipKnownIds.has(bm.xTweetId)) {
           consecutiveKnown += 1;
           if (consecutiveKnown >= 3) {
-            token = undefined;
+            stoppedOnKnown = true;
             break;
           }
           continue;
@@ -514,7 +515,7 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
         unfiledCount += 1;
         if (all.length >= maxItems) break;
       }
-      if (token !== undefined) token = page.meta?.next_token;
+      token = stoppedOnKnown ? undefined : page.meta?.next_token;
     } while (token);
     console.log(`🔖 [X API]   _Unfiled: ${unfiledCount} 件 (新規)`);
   }
