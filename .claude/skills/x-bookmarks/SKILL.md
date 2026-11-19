@@ -99,8 +99,8 @@ namespace. Layered + pure/impure split (2026-06 reorg):
 
 - **L1 外部I/O**: `x-bookmarks/types.ts` (X API 共有型) / `x-bookmarks/tokens.ts`
   (OAuth トークン永続化 + refresh) / `x-bookmarks/api_client.ts` (fetch / 変換 /
-  endpoint builders) / `x-bookmarks/auth_server.ts` (PKCE 認可サーバ) /
-  `x-bookmarks/video_frames.ts` (動画キーフレーム抽出)
+  endpoint builders) / `x-bookmarks/auth_server.ts` (PKCE 認可サーバ)
+  (動画キーフレーム抽出 `video_frames.ts` は 2026-11 に機能ごと削除)
 - **L2 永続化**: `x-bookmarks/db.ts` (SQLite コア) /
   `x-bookmarks/session_registry.ts` (session_id レジストリ)
 - **L3 ドメイン**: `x-bookmarks/folder_mapper.ts` / `x-bookmarks/folder_tree.ts` /
