@@ -648,6 +648,69 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(u.searchParams.get('max_results'), '100');
     });
 
+    await runner.testAsync('X_VIDEO_FRAMES=true でも取得は動画を DL せず、添付も本文の節も作らない (機能を外した)', async () => {
+      saveTokens({
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh',
+        expires_in: 7200,
+        obtained_at: new Date().toISOString(),
+      });
+      const prevClientId = process.env.X_CLIENT_ID;
+      const prevFrames = process.env.X_VIDEO_FRAMES;
+      const origFetch = globalThis.fetch;
+      process.env.X_CLIENT_ID = 'test-client';
+      process.env.X_VIDEO_FRAMES = 'true';
+      // 動画の DL は global fetch を通っていた (X API の呼び出しは fetchFn)。数えるだけで外へは出さない。
+      const mediaFetches: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        mediaFetches.push(String(input));
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+      const apiCalls: string[] = [];
+      const apiFetch: typeof fetch = (async (input: any) => {
+        const url = typeof input === 'string' ? input : input.url;
+        apiCalls.push(url);
+        const respond = (body: unknown) => new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+        if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 'tester' } });
+        if (url.includes('/bookmarks/folders')) return respond({ data: [] });
+        if (url.includes('/bookmarks')) {
+          // 以前の形の応答 (添付メディアつき) が来ても、何も DL しないことを見る
+          return respond({
+            data: [{ id: 'V1', text: 'video post', author_id: 'u1', attachments: { media_keys: ['m1'] } }],
+            includes: {
+              users: [{ id: 'u1', name: 'A', username: 'a' }],
+              media: [{
+                media_key: 'm1',
+                type: 'video',
+                duration_ms: 10_000,
+                variants: [{ bit_rate: 1000, content_type: 'video/mp4', url: 'https://video.twimg.com/v.mp4' }],
+              }],
+            },
+          });
+        }
+        throw new Error(`unexpected fetch url: ${url}`);
+      }) as any;
+      try {
+        const [bm] = await fetchBookmarksViaApi({ selectedFolders: [], includeUnfiled: true, fetchFn: apiFetch });
+        assert.strictEqual(bm?.xTweetId, 'V1');
+        assert.ok(!(bm.content ?? '').includes('キーフレーム'), '本文にキーフレームの節を足さない');
+        assert.deepStrictEqual(mediaFetches, [], '動画を DL しない');
+        assert.ok(!fs.existsSync(path.join(tmpDir, '_attachments')), '添付のフォルダを作らない');
+        const bookmarksCall = apiCalls.find((u) => u.includes('/users/u1/bookmarks?'));
+        assert.ok(bookmarksCall, `bookmarks を取得していない: ${apiCalls.join(', ')}`);
+        assert.strictEqual(new URL(bookmarksCall).searchParams.get('media.fields'), null, '添付メディアを要求しない');
+      } finally {
+        globalThis.fetch = origFetch;
+        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prevClientId;
+        if (prevFrames === undefined) delete process.env.X_VIDEO_FRAMES;
+        else process.env.X_VIDEO_FRAMES = prevFrames;
+      }
+    });
+
     // =====================================================
     // x_auth_server: PKCE
     // =====================================================
@@ -1132,69 +1195,6 @@ export async function run(): Promise<TestSuiteResult> {
       } finally {
         if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
         else process.env.X_CLIENT_ID = prevClientId;
-      }
-    });
-
-    await runner.testAsync('X_VIDEO_FRAMES=true でも取得は動画を DL せず、添付も本文の節も作らない (機能を外した)', async () => {
-      saveTokens({
-        access_token: 'fake-token',
-        refresh_token: 'fake-refresh',
-        expires_in: 7200,
-        obtained_at: new Date().toISOString(),
-      });
-      const prevClientId = process.env.X_CLIENT_ID;
-      const prevFrames = process.env.X_VIDEO_FRAMES;
-      const origFetch = globalThis.fetch;
-      process.env.X_CLIENT_ID = 'test-client';
-      process.env.X_VIDEO_FRAMES = 'true';
-      // 動画の DL は global fetch を通っていた (X API の呼び出しは fetchFn)。数えるだけで外へは出さない。
-      const mediaFetches: string[] = [];
-      globalThis.fetch = (async (input: RequestInfo | URL) => {
-        mediaFetches.push(String(input));
-        return new Response(null, { status: 404 });
-      }) as typeof fetch;
-      const apiCalls: string[] = [];
-      const apiFetch: typeof fetch = (async (input: any) => {
-        const url = typeof input === 'string' ? input : input.url;
-        apiCalls.push(url);
-        const respond = (body: unknown) => new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
-        if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 'tester' } });
-        if (url.includes('/bookmarks/folders')) return respond({ data: [] });
-        if (url.includes('/bookmarks')) {
-          // 以前の形の応答 (添付メディアつき) が来ても、何も DL しないことを見る
-          return respond({
-            data: [{ id: 'V1', text: 'video post', author_id: 'u1', attachments: { media_keys: ['m1'] } }],
-            includes: {
-              users: [{ id: 'u1', name: 'A', username: 'a' }],
-              media: [{
-                media_key: 'm1',
-                type: 'video',
-                duration_ms: 10_000,
-                variants: [{ bit_rate: 1000, content_type: 'video/mp4', url: 'https://video.twimg.com/v.mp4' }],
-              }],
-            },
-          });
-        }
-        throw new Error(`unexpected fetch url: ${url}`);
-      }) as any;
-      try {
-        const [bm] = await fetchBookmarksViaApi({ selectedFolders: [], includeUnfiled: true, fetchFn: apiFetch });
-        assert.strictEqual(bm?.xTweetId, 'V1');
-        assert.ok(!(bm.content ?? '').includes('キーフレーム'), '本文にキーフレームの節を足さない');
-        assert.deepStrictEqual(mediaFetches, [], '動画を DL しない');
-        assert.ok(!fs.existsSync(path.join(tmpDir, '_attachments')), '添付のフォルダを作らない');
-        const bookmarksCall = apiCalls.find((u) => u.includes('/users/u1/bookmarks?'));
-        assert.ok(bookmarksCall, `bookmarks を取得していない: ${apiCalls.join(', ')}`);
-        assert.strictEqual(new URL(bookmarksCall).searchParams.get('media.fields'), null, '添付メディアを要求しない');
-      } finally {
-        globalThis.fetch = origFetch;
-        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
-        else process.env.X_CLIENT_ID = prevClientId;
-        if (prevFrames === undefined) delete process.env.X_VIDEO_FRAMES;
-        else process.env.X_VIDEO_FRAMES = prevFrames;
       }
     });
 
