@@ -5130,8 +5130,21 @@ function problemMessage(problems, guardLabel) {
     'git は `git <subcommand> …` の形でそのまま書き、変数・置換・文字列のシェルを通さずに実行してください。';
 }
 
+/**
+ * One decision's wall-clock budget for the guard's own Git child processes.
+ * `remaining(cap)` is the time one child may still use; 0 means start none.
+ * Create it once per decision (one hook run), not at module load.
+ */
+function createGitDeadline(budgetMs, now = Date.now) {
+  const end = now() + budgetMs;
+  return { remaining: capMs => Math.max(0, Math.min(capMs, end - now())) };
+}
+/** execFileSync waits until the child exits, so a child that ignores SIGTERM needs SIGKILL. */
+const GIT_CHILD_KILL_SIGNAL = 'SIGKILL';
+const ALIAS_PROBE_CAP_MS = 2000;
+
 /** Reject configured aliases because their executable body is outside the inspected command. */
-function aliasProblem(g, baseDir) {
+function aliasProblem(g, baseDir, options = {}) {
   if (!g.sub || g.directHelper || BUILTIN_SUBS.has(g.sub)) return null;
   if (g.gitNamespaceUnknown) return `未登録の git subcommand（${g.sub}）の実行 source と設定対象を確認できない`;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(g.sub)) return `git の subcommand の形を読めない（${g.sub}）`;
@@ -5143,11 +5156,16 @@ function aliasProblem(g, baseDir) {
   for (const name of Object.keys(env)) if (/^GIT_TRACE/.test(name)) env[name] = '0';
   const executable = resolveTrustedGitExecutable({ text: 'git' }, env, dir);
   if (!executable) return `git の alias 検査に使う実行先を独立に確認できない（${g.sub}）`;
+  const timeout = options.deadline ? options.deadline.remaining(ALIAS_PROBE_CAP_MS) : ALIAS_PROBE_CAP_MS;
+  if (timeout <= 0) return `git の alias かどうかを確かめられない（時間内に終わらなかった・${g.sub}・${dir}）`;
   try {
-    execFileSync(executable, ['--no-pager', 'config', '--get', `alias.${g.sub}`], { cwd: dir, env, stdio: ['ignore', 'ignore', 'ignore'] });
+    execFileSync(executable, ['--no-pager', 'config', '--get', `alias.${g.sub}`], {
+      cwd: dir, env, stdio: ['ignore', 'ignore', 'ignore'], timeout, killSignal: GIT_CHILD_KILL_SIGNAL,
+    });
     return `git の alias（${g.sub}）は、中身を検査できない`;
   } catch (e) {
     if (e && e.status === 1) return null;
+    if (e && e.code === 'ETIMEDOUT') return `git の alias かどうかを確かめられない（時間内に終わらなかった・${g.sub}・${dir}）`;
     return `git の alias かどうかを確かめられない（${g.sub}・${dir}）`;
   }
 }
@@ -6159,6 +6177,8 @@ module.exports = {
   inspect,
   inspectMediatedSource,
   problemMessage,
+  createGitDeadline,
+  GIT_CHILD_KILL_SIGNAL,
   aliasProblem,
   resolveDir,
   filesystemPath,

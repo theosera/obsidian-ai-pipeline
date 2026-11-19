@@ -177,6 +177,14 @@ function inspectionArgs(args, cdirs = []) {
   return [...globals, '--no-pager', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...args.slice(0, 1),
     ...(args[0] === 'diff' ? ['--no-ext-diff', '--no-textconv'] : []), ...args.slice(1)];
 }
+const INSPECTION_QUERY_CAP_MS = 2000;
+const INSPECTION_READ_CAP_MS = 4000;
+/** Bound one inspection child by its cap and by the decision's remaining time (obs#202). */
+function inspectionTimeout(options, capMs) {
+  const timeout = options?.deadline ? options.deadline.remaining(capMs) : capMs;
+  if (timeout <= 0) throw Object.assign(new Error('inspection Git deadline exceeded'), { code: 'ETIMEDOUT' });
+  return timeout;
+}
 function readInspectionGit(args, options) {
   const executable = options?.executable;
   if (!executable || !guard.trustedGitExecutable({ text: executable })) throw new Error('trusted inspection Git unavailable');
@@ -193,7 +201,8 @@ function readInspectionGit(args, options) {
     // The real option query qualifies this trusted backend's CLI capability;
     // the separate version floor below concerns fsmonitor boolean semantics.
     const banner = execFileSync(executable, [...globals, '--no-lazy-fetch', '--version'], {
-      cwd: ownCwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 1024,
+      cwd: ownCwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: inspectionTimeout(options, INSPECTION_QUERY_CAP_MS), killSignal: guard.GIT_CHILD_KILL_SIGNAL, maxBuffer: 1024,
     });
     if (!supportsInspectionHardening(banner)) throw new Error('Git fsmonitor boolean hardening needs Git >= 2.36');
     inspectionVersions.set(contextKey, banner.trim());
@@ -203,9 +212,11 @@ function readInspectionGit(args, options) {
   if (!ownHookConfigByCwd.has(contextKey)) {
   try {
     configured = execFileSync(executable, [...globals, '--no-pager', '--no-lazy-fetch', 'config', '--show-scope', '--null', '--get-regexp', '^hook\\..*\\.(event|enabled)$'], {
-      cwd: options?.cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 65536,
+      cwd: options?.cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: inspectionTimeout(options, INSPECTION_QUERY_CAP_MS), killSignal: guard.GIT_CHILD_KILL_SIGNAL, maxBuffer: 65536,
     });
   } catch (error) {
+    if (error.code === 'ETIMEDOUT') throw error;
     if (error.status !== 1 || error.stdout?.length) throw new Error('inspection hook source unavailable');
     configured = '';
   }
@@ -213,8 +224,10 @@ function readInspectionGit(args, options) {
   if (!ownConfig || configuredPostIndex(ownConfig)) throw new Error('inspection post-index-change source uninspected');
   ownHookConfigByCwd.set(contextKey, true);
   }
-  const childOptions = { ...options, env };
+  const childOptions = { ...options, env,
+    timeout: inspectionTimeout(options, INSPECTION_READ_CAP_MS), killSignal: guard.GIT_CHILD_KILL_SIGNAL };
   delete childOptions.cdirs;
+  delete childOptions.deadline;
   return execFileSync(executable, inspectionArgs(args, cdirs), childOptions);
 }
 /** Older Git can interpret core.fsmonitor=false as a hook pathname. */
@@ -550,7 +563,8 @@ function parseConfigOutput(output) {
 
 function probeConfig(context, spawn = spawnSync) {
   const r = spawn(context.executable, [...context.globals, '--no-pager', '--no-lazy-fetch', 'config', '--show-scope', '--null', '--get-regexp', CONFIG_PATTERN], {
-    cwd: context.cwd, env: context.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 65536,
+    cwd: context.cwd, env: context.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000,
+    killSignal: guard.GIT_CHILD_KILL_SIGNAL, maxBuffer: 65536,
   });
   if (r.error || r.signal || ![0, 1].includes(r.status)) return null;
   if (r.status === 1) return !r.stdout || r.stdout.length === 0 ? new Map() : null;
@@ -567,7 +581,8 @@ function configuredPostIndex(config) {
 function indexHookSource(context, spawn = spawnSync, access = fs.accessSync) {
   if (process.platform === 'win32') return null; // executable suffix selection is not certified here
   const r = spawn(context.executable, [...context.globals, '--no-pager', '--no-lazy-fetch', 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/post-index-change'], {
-    cwd: context.cwd, env: context.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 4096,
+    cwd: context.cwd, env: context.env, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000,
+    killSignal: guard.GIT_CHILD_KILL_SIGNAL, maxBuffer: 4096,
   });
   if (r.error || r.signal || r.status !== 0) return null;
   const text = Buffer.isBuffer(r.stdout) ? r.stdout.toString('utf8') : r.stdout;
@@ -952,7 +967,7 @@ function createTransportInspector(deps = {}) {
     const start = now(); queries++;
     const result = spawn(context.executable, [...context.globals, '--no-pager', '--no-lazy-fetch', ...args], {
       cwd: context.cwd, env: { ...context.env, GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: Math.max(1, Math.min(1000, 2000 - elapsed)), maxBuffer: 65536,
+      timeout: Math.max(1, Math.min(1000, 2000 - elapsed)), killSignal: guard.GIT_CHILD_KILL_SIGNAL, maxBuffer: 65536,
     });
     elapsed += Math.max(0, now() - start);
     if (result.error || result.signal || !allowed.includes(result.status)) return null;
