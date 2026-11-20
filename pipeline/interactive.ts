@@ -8,7 +8,7 @@ import { getDb, closeDb } from '../x-bookmarks/db';
 import { exportAndWriteAllGroupPages } from '../x-bookmarks/group_page_writer';
 import { summarizePendingBookmarks } from '../x-bookmarks/summarizer';
 import { askQuestion, isPromptClosed } from './prompt';
-import { generateReport } from './report';
+import { generateReport, reportLabelFor } from './report';
 
 /**
  * 分類結果に対する人間レビュー + 保存確定ループ。
@@ -43,7 +43,7 @@ export async function interactiveReviewLoop(
       await saveApprovedResults(results, options);
       reviewing = false;
     } else if (cmd === 'e') {
-      await editOneClassification(results, reportMdPath);
+      await editOneClassification(results, reportMdPath, reportLabelFor(options.isXBookmarks));
     } else if (cmd === 'q') {
       console.log('Aborted execution.');
       reviewing = false;
@@ -209,7 +209,8 @@ export async function regenerateXBookmarkArtifacts(
 
 async function editOneClassification(
   results: ProcessingResult[],
-  reportMdPath: string
+  reportMdPath: string,
+  reportLabel: string
 ): Promise<void> {
   const idStr = await askQuestion('Enter the item ID (e.g., 1): ');
   const itemId = parseInt(idStr, 10);
@@ -232,8 +233,9 @@ async function editOneClassification(
   target.classification.isNewFolder = false;
   console.log('Updated!');
 
-  // 修正を反映したレポート .md を再書き出し
-  const newReportMd = generateReport(results, tokenUsageMetrics);
+  // 修正を反映したレポート .md を再書き出し。見出しのラベルは初回と同じにする
+  // (X レポートが OneTab の見出しになると --rescue が X と見分けられない)。
+  const newReportMd = generateReport(results, tokenUsageMetrics, reportLabel);
   fs.writeFileSync(reportMdPath, newReportMd, 'utf8');
 }
 

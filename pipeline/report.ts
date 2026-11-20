@@ -53,6 +53,14 @@ function isGenuinelyNewFolder(proposedPath: string, vaultFolders: string[]): boo
   return !vaultFolders.includes(base);
 }
 
+/**
+ * レポートの見出しとファイル名に使うラベル。初回の発行と編集後の再生成で同じ値を使う
+ * (rescue-from-report.ts の isXBookmarksReport は見出しで X レポートかを見分ける)。
+ */
+export function reportLabelFor(isXBookmarks?: boolean): 'X-Bookmarks' | 'OneTab' {
+  return isXBookmarks ? 'X-Bookmarks' : 'OneTab';
+}
+
 export function generateReport(
   results: ProcessingResult[],
   usageData: Record<string, { input: number; output: number }> = {},

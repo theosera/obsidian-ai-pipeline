@@ -11,6 +11,8 @@
  *           `rescue-from-report.ts` は import しても main を実行しない (main-guard)。
  */
 import assert from 'node:assert';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -18,6 +20,84 @@ import { setVaultRoot, peekVaultRoot } from '../config';
 import { parseArgs } from '../cli';
 import { parseReportItems, isXBookmarksReport, runRescueFromReport } from '../rescue-from-report';
 import { TestRunner, type TestSuiteResult } from './helpers';
+
+// 子プロセスで本物の interactiveReviewLoop を走らせる。runner と同じく発行時のラベルで
+// レポートを書き、対話で 1 件の分類を直させる (直したレポートの書き直しが試験の対象)。
+const CHILD_EDIT_REPORT = `
+  const fs = await import('node:fs');
+  const [interactiveUrl, reportUrl, reportPath, kind] = process.argv.slice(1);
+  const { interactiveReviewLoop } = await import(interactiveUrl);
+  const { generateReport, reportLabelFor } = await import(reportUrl);
+  const isXBookmarks = kind === 'x';
+  const url = isXBookmarks ? 'https://x.com/i/web/status/123' : 'https://example.com/a';
+  const results = [{
+    id: 1, status: 'success', url, title: 't',
+    classification: { proposedPath: 'Before/Folder', isNewFolder: false, reasoning: 'r' },
+  }];
+  fs.writeFileSync(reportPath, generateReport(results, {}, reportLabelFor(isXBookmarks)), 'utf8');
+  await interactiveReviewLoop(results, reportPath, { isXBookmarks });
+`;
+
+/** 対話に e → 1 → newFolder → q と答え、子プロセスが正常に終わるのを待つ。 */
+async function editReportInChild(
+  reportPath: string,
+  kind: 'x' | 'onetab',
+  vaultRoot: string,
+  newFolder: string
+): Promise<void> {
+  const answers: Array<[prompt: string, answer: string]> = [
+    ['Command [y/e/q]: ', 'e'],
+    ['Enter the item ID', '1'],
+    ['Enter new folder path', newFolder],
+    ['Command [y/e/q]: ', 'q'],
+  ];
+  const child = spawn(
+    process.execPath,
+    [
+      '--import', 'tsx', '--input-type=module', '-e', CHILD_EDIT_REPORT,
+      new URL('../pipeline/interactive.ts', import.meta.url).href,
+      new URL('../pipeline/report.ts', import.meta.url).href,
+      reportPath, kind,
+    ],
+    {
+      cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+      env: { ...process.env, VAULT_ROOT: vaultRoot },
+    }
+  );
+  let output = '';
+  let errors = '';
+  let consumed = 0;
+  child.stdin.on('error', () => undefined); // 子が先に落ちた場合は下の終了コードで失敗させる
+  child.stdout.on('data', (chunk) => {
+    output += String(chunk);
+    // プロンプトが出てから 1 行ずつ答える (まとめて流すと readline が質問の無い行を捨てる)
+    while (answers.length > 0) {
+      const [prompt, answer] = answers[0];
+      const at = output.indexOf(prompt, consumed);
+      if (at < 0) break;
+      consumed = at + prompt.length;
+      answers.shift();
+      child.stdin.write(`${answer}\n`);
+      if (answers.length === 0) child.stdin.end();
+    }
+  });
+  child.stderr.on('data', (chunk) => {
+    errors += String(chunk);
+  });
+  const code = await new Promise<number | null>((resolve, reject) => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('close', (exitCode) => {
+      clearTimeout(timer);
+      resolve(exitCode);
+    });
+  });
+  assert.strictEqual(code, 0, `子プロセスが失敗した: ${errors}`);
+  assert.strictEqual(answers.length, 0, `プロンプトに答え切れていない: ${output}`);
+}
 
 export async function run(): Promise<TestSuiteResult> {
   const runner = new TestRunner();
@@ -155,6 +235,33 @@ export async function run(): Promise<TestSuiteResult> {
         () => runRescueFromReport({ reportPath: xReportPath }),
         /X ブックマーク/,
         'X レポートは拒否されるべき (throw)'
+      );
+    });
+
+    // =====================================================
+    // P0-3: 対話の [e] で直した後も、レポートの見出しは発行時のラベルのまま
+    // =====================================================
+    runner.section('P0-3: 対話で分類を直した後のレポートも発行時の見出しを保つ');
+
+    await runner.testAsync('X: 直した後も X の見出しで、rescue は取得せずに拒否する', async () => {
+      const reportPath = path.join(parseVault, 'X-Bookmarks分類結果レポート-edited.md');
+      await editReportInChild(reportPath, 'x', parseVault, 'Edited/Folder');
+      const content = fs.readFileSync(reportPath, 'utf8');
+      assert.match(content, /^### Edited\/Folder\s*$/m, '直した分類がレポートに書き戻されている');
+      // 見出しが OneTab に戻ると下の rescue が Web 取得へ進むため、先に見出しで止める
+      assert.strictEqual(isXBookmarksReport(content), true, '直した後も X-Bookmarks の見出し');
+      await assert.rejects(() => runRescueFromReport({ reportPath }), /X ブックマーク/);
+    });
+
+    await runner.testAsync('OneTab: 直した後も OneTab の見出しで、rescue の対象を読める', async () => {
+      const reportPath = path.join(parseVault, 'OneTab分類結果レポート-edited.md');
+      await editReportInChild(reportPath, 'onetab', parseVault, 'Edited/Folder');
+      const content = fs.readFileSync(reportPath, 'utf8');
+      assert.ok(content.startsWith('# OneTab分類結果レポート\n'), 'OneTab の見出し');
+      assert.strictEqual(isXBookmarksReport(content), false);
+      assert.deepStrictEqual(
+        parseReportItems(content).map((item) => [item.folder, item.url]),
+        [['Edited/Folder', 'https://example.com/a']]
       );
     });
   } finally {

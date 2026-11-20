@@ -1198,6 +1198,80 @@ export async function run(): Promise<TestSuiteResult> {
       }
     });
 
+    // _Unfiled のページ送り: 固定の 2 ページ (1 ページ目は next_token=p2) を返し、
+    // 結果の順と /bookmarks の GET の回数・2 回目の pagination_token を見る。
+    const runUnfiledPages = async (
+      page1: string[], page2: string[],
+      opts: { skipKnownIds?: Set<string>; maxItems?: number; includeUnfiled?: boolean } = {},
+    ) => {
+      saveTokens({
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh',
+        expires_in: 7200,
+        obtained_at: new Date().toISOString(),
+      });
+      const prevClientId = process.env.X_CLIENT_ID;
+      process.env.X_CLIENT_ID = 'test-client';
+      const bookmarkCalls: string[] = [];
+      const mockFetch: typeof fetch = (async (input: any) => {
+        const url = typeof input === 'string' ? input : input.url;
+        const respond = (body: any) => new Response(JSON.stringify(body), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+        if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 'tester' } });
+        // _Unfiled 判定のための他フォルダ列挙 (フォルダは無い)
+        if (url.includes('/users/u1/bookmarks/folders?')) return respond({ data: [] });
+        if (url.includes('/users/u1/bookmarks?')) {
+          bookmarkCalls.push(url);
+          const second = new URL(url).searchParams.get('pagination_token') === 'p2';
+          return respond({
+            data: (second ? page2 : page1).map(id => ({ id, text: `text ${id}`, author_id: 'u1' })),
+            includes: { users: [{ id: 'u1', name: 'A', username: 'a' }] },
+            ...(second ? {} : { meta: { next_token: 'p2' } }),
+          });
+        }
+        throw new Error(`unexpected fetch url: ${url}`);
+      }) as any;
+      try {
+        const results = await fetchBookmarksViaApi({
+          selectedFolders: [],
+          includeUnfiled: opts.includeUnfiled ?? true,
+          skipKnownIds: opts.skipKnownIds,
+          maxItems: opts.maxItems,
+          fetchFn: mockFetch,
+        });
+        return { ids: results.map(r => r.xTweetId), bookmarkCalls };
+      } finally {
+        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prevClientId;
+      }
+    };
+
+    await runner.testAsync('_Unfiled: 2 ページ目だけに新規があれば next_token で 2 ページ目を取る', async () => {
+      const r = await runUnfiledPages(['K1', 'K2'], ['N1', 'N2'], { skipKnownIds: new Set(['K1', 'K2']) });
+      assert.deepStrictEqual(r.ids, ['N1', 'N2']);
+      assert.strictEqual(r.bookmarkCalls.length, 2);
+      assert.strictEqual(new URL(r.bookmarkCalls[1]).searchParams.get('pagination_token'), 'p2');
+    });
+
+    await runner.testAsync('_Unfiled: 既知が 3 件続いたら次のページを取らない', async () => {
+      const r = await runUnfiledPages(['K1', 'K2', 'K3', 'N1'], ['N2'], { skipKnownIds: new Set(['K1', 'K2', 'K3']) });
+      assert.deepStrictEqual(r.ids, []);
+      assert.strictEqual(r.bookmarkCalls.length, 1);
+    });
+
+    await runner.testAsync('_Unfiled: 件数の上限に達したら次のページを取らない', async () => {
+      const r = await runUnfiledPages(['N1', 'N2', 'N3'], ['N4'], { maxItems: 2 });
+      assert.deepStrictEqual(r.ids, ['N1', 'N2']);
+      assert.strictEqual(r.bookmarkCalls.length, 1);
+    });
+
+    await runner.testAsync('_Unfiled: 選ばれていなければ /bookmarks を 1 回も取らない', async () => {
+      const r = await runUnfiledPages(['N1'], ['N2'], { includeUnfiled: false });
+      assert.deepStrictEqual(r.ids, []);
+      assert.strictEqual(r.bookmarkCalls.length, 0);
+    });
+
     // =====================================================
     // x_folder_mapper: prioritizeForcedParents (occurrence-frequency)
     // =====================================================
