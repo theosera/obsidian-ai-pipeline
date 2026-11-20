@@ -639,7 +639,11 @@ if (commitMatch && (!gits.some((g) => g.sub === 'commit') || commits.length)) {
     );
   }
   // A raw DATA match has no proposed commit to bind an index probe to.
-  // Unsupported executable forms already stop through inspect().problems.
+  // inspect().problems covers only the forms its parser reads, including other
+  // programs whose own argv carries a literal `git` word. It does not parse
+  // source text that another interpreter receives as a single argument, so a
+  // raw match there gets only the argument backstops above and no index probe
+  // (obs#205; this hook is also configured with `if: "Bash(git *)"`).
   // Preserve the legacy argument backstops above, but query an index only for
   // an actual parsed commit using its validated selected context.
   if (commits.length) {
