@@ -179,10 +179,22 @@ if (!reverse) {
   test('I204-D04: secret deletion plus ordinary addition is allowed', t => {
     const f = fixture(t);
     f.git('rm', '--cached', '--', '.env');
-    f.write('new public.txt');
+    // Contents that differ from the deleted file keep Git from pairing the two as a
+    // rename, so the staged reads see a real deletion beside the addition.
+    f.write('new public.txt', 'DUMMY new public contents\n');
     f.git('add', '--', 'new public.txt');
+    assert.equal(f.git('diff', '--cached', '--name-status', '-z'), 'D\0.env\0A\0new public.txt\0');
     expect(f, 'ALLOW');
   });
+
+  for (const joiner of [' && ', '; ']) {
+    test('I204-C: staging a deletion and committing in one command stays refused:' + joiner.trim(), t => {
+      const f = fixture(t);
+      const result = expect(f, 'UNKNOWN', "git rm --cached -- .env" + joiner + command);
+      assert.match(result.reason, /同一コマンド内で staging/);
+      assert.equal(f.git('diff', '--cached', '--name-only', '-z'), '', 'the hook does not run the command');
+    });
+  }
 
   for (const kind of ['addition', 'modification', 'rename', 'copy', 'type-change', 'delete-and-readd']) {
     test('I204-N: secret ' + kind + ' remains FORBIDDEN', t => {
@@ -347,6 +359,12 @@ if (!reverse) {
       f.write('.env.local', 'DUMMY different\n');
       f.git('add', '--', '.env.local');
       expectStagedSecret(f, '.env.local', { hooks: copy });
+      // The D04 shape reaches the corrected read: without that filter it is refused again.
+      const d04 = fixture(t);
+      d04.git('rm', '--cached', '--', '.env');
+      d04.write('new public.txt', 'DUMMY new public contents\n');
+      d04.git('add', '--', 'new public.txt');
+      expectStagedSecret(d04, '.env', { hooks: copy });
       assert.equal(fs.readFileSync(filename, 'utf8'), source, 'selected source is never mutated');
     });
   }
