@@ -58,7 +58,6 @@ pipeline/
 │   ├── group_page_writer.ts group MD の sentinel-bounded 書き換え (idempotent)
 │   ├── group_page_template.ts dataviewjs テーブル付き group MD テンプレ
 │   ├── migrate_legacy.ts   旧パス Clippings/X-Bookmarks/ → _Archived/ 移行
-│   ├── video_frames.ts     動画キーフレーム抽出 (ffmpeg + opt-in)
 │   └── db.ts               SQLite メタデータキャッシュ（差分同期用）+ folder_sessions
 ├── prompts/hands_on.md     ハンズオン生成プロンプトテンプレート
 ├── classifier.ts         AI 分類エンジン（Fast / Smart Pass）

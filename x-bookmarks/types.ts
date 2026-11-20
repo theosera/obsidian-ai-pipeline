@@ -1,9 +1,8 @@
 /**
  * X API v2 ブックマーク取得まわりの共有型定義。
  *
- * `api_client.ts` (フェッチ/変換) と `tokens.ts` (OAuth) の双方、および
- * `video_frames.ts` (メディア型) が参照する。低レベルの型をここに集約することで
- * api_client ↔ video_frames の循環依存を避ける (型の所有権を中立な層に置く)。
+ * `api_client.ts` (フェッチ/変換) と `tokens.ts` (OAuth) の双方が参照する。
+ * 低レベルの型をここに集約し、型の所有権を中立な層に置く。
  */
 import { ArticleData } from '../types';
 
@@ -16,13 +15,6 @@ export interface ApiBookmark extends ArticleData {
    * full text を保存するため interactive.ts で参照される。
    */
   xNoteTweetText?: string;
-  /**
-   * 主動画の最高 bitrate ストリーミング URL (video / animated_gif があれば)。
-   * 動画フレーム抽出 (X_VIDEO_FRAMES=true 時の opt-in パイプライン) で参照する。
-   */
-  xVideoUrl?: string;
-  /** 主動画の長さ (ミリ秒)。フレーム抽出時の等間隔サンプル計算に使う。 */
-  xVideoDurationMs?: number;
   /**
    * 当ブックマークが属する X folder の session_id。
    * sync phase で folder→session を解決した後に input_x_bookmarks.ts が
@@ -103,31 +95,11 @@ export interface XPost {
    * `note_tweet.text` を優先して使う。
    */
   note_tweet?: { text: string };
-  /**
-   * 添付メディアの media_key 一覧。実体は `BookmarksResponse.includes.media[]`
-   * に展開されている (expansions=attachments.media_keys 指定時)。
-   */
-  attachments?: { media_keys?: string[] };
-}
-
-export interface XMediaVariant {
-  bit_rate?: number;
-  url: string;
-  content_type?: string;
-}
-
-export interface XMediaResponse {
-  media_key: string;
-  type: string;
-  duration_ms?: number;
-  preview_image_url?: string;
-  variants?: XMediaVariant[];
-  alt_text?: string;
 }
 
 export interface BookmarksResponse {
   data?: XPost[];
-  includes?: { users?: XUser[]; media?: XMediaResponse[] };
+  includes?: { users?: XUser[] };
   meta?: { result_count?: number; next_token?: string };
 }
 

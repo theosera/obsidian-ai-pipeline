@@ -30,7 +30,6 @@ import {
   FolderListing,
   XUser,
   XPost,
-  XMediaResponse,
   BookmarksResponse,
   BookmarkFoldersResponse,
 } from './types';
@@ -41,13 +40,6 @@ import {
   getValidAccessToken,
   isTokenExpired,
 } from './tokens';
-import {
-  extractFramesFromTweetVideo,
-  isVideoFramesEnabled,
-  pickBestVariantUrl,
-  pickVideoMedia,
-  renderKeyFramesSection,
-} from './video_frames';
 
 const API_BASE = 'https://api.x.com/2';
 
@@ -120,12 +112,6 @@ export function tweetToApiBookmark(
   post: XPost,
   author: XUser | undefined,
   folderName: string,
-  /**
-   * media_key → XMediaResponse の解決関数。
-   * `expandBookmarksPage` が `includes.media[]` から map を作って渡す。
-   * 省略時は media 抽出をスキップ (テスト互換)。
-   */
-  mediaResolver?: (mediaKey: string) => XMediaResponse | undefined,
 ): ApiBookmark {
   const username = author?.username ?? 'unknown';
   const displayName = author?.name ?? username;
@@ -202,24 +188,6 @@ export function tweetToApiBookmark(
     result.xNoteTweetText = post.note_tweet.text;
   }
 
-  // 動画 (video / animated_gif) があれば最高 bitrate URL と duration を ApiBookmark に転記。
-  // 実フレーム抽出は async 後処理 (enrichBookmarksWithFrames) に委ねる。
-  // `pickVideoMedia` / `pickBestVariantUrl` の選別ロジックを共有して、
-  // 「何が主動画か」「どの variant を選ぶか」のルールを一箇所に保つ。
-  if (mediaResolver && post.attachments?.media_keys?.length) {
-    const resolved = post.attachments.media_keys
-      .map(k => mediaResolver(k))
-      .filter((m): m is XMediaResponse => !!m);
-    const video = pickVideoMedia(resolved);
-    const best = video ? pickBestVariantUrl(video) : undefined;
-    if (video && best) {
-      result.xVideoUrl = best;
-      if (typeof video.duration_ms === 'number') {
-        result.xVideoDurationMs = video.duration_ms;
-      }
-    }
-  }
-
   return result;
 }
 
@@ -236,14 +204,10 @@ export function expandBookmarksPage(
   folderId?: string
 ): ApiBookmark[] {
   const userMap = new Map<string, XUser>((page.includes?.users ?? []).map(u => [u.id, u]));
-  const mediaMap = new Map<string, XMediaResponse>(
-    (page.includes?.media ?? []).map(m => [m.media_key, m])
-  );
-  const resolver = (key: string) => mediaMap.get(key);
   const out: ApiBookmark[] = [];
   for (const post of page.data ?? []) {
     const author = post.author_id ? userMap.get(post.author_id) : undefined;
-    const bm = tweetToApiBookmark(post, author, folderName, resolver);
+    const bm = tweetToApiBookmark(post, author, folderName);
     if (folderId) bm.xFolderId = folderId;
     out.push(bm);
   }
@@ -256,17 +220,16 @@ export function expandBookmarksPage(
 function buildBookmarksUrl(userId: string, paginationToken?: string): string {
   const url = new URL(`${API_BASE}/users/${userId}/bookmarks`);
   url.searchParams.set('max_results', '100');
-  url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities,note_tweet,attachments');
-  url.searchParams.set('expansions', 'author_id,attachments.media_keys');
+  url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities,note_tweet');
+  url.searchParams.set('expansions', 'author_id');
   url.searchParams.set('user.fields', 'username,name');
-  url.searchParams.set('media.fields', 'type,duration_ms,preview_image_url,variants,alt_text');
   if (paginationToken) url.searchParams.set('pagination_token', paginationToken);
   return url.toString();
 }
 
 // 索引専用エンドポイント。X API はクエリパラメータを一切受け付けず
 // `{ data: [{ id }, ...] }` (ツイートID列のみ) を返す。
-// 本文・著者・メディアは buildTweetsLookupUrl 経由でハイドレートする。
+// 本文・著者は buildTweetsLookupUrl 経由でハイドレートする。
 // 参考: docs/x_bookmarks_api_research.md
 function buildFolderBookmarksUrl(userId: string, folderId: string): string {
   return `${API_BASE}/users/${userId}/bookmarks/folders/${folderId}`;
@@ -277,10 +240,9 @@ function buildFolderBookmarksUrl(userId: string, folderId: string): string {
 function buildTweetsLookupUrl(ids: string[]): string {
   const url = new URL(`${API_BASE}/tweets`);
   url.searchParams.set('ids', ids.join(','));
-  url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities,note_tweet,attachments');
-  url.searchParams.set('expansions', 'author_id,attachments.media_keys');
+  url.searchParams.set('tweet.fields', 'created_at,author_id,public_metrics,entities,note_tweet');
+  url.searchParams.set('expansions', 'author_id');
   url.searchParams.set('user.fields', 'username,name');
-  url.searchParams.set('media.fields', 'type,duration_ms,preview_image_url,variants,alt_text');
   return url.toString();
 }
 
@@ -292,19 +254,15 @@ async function hydrateTweetsByIds(
   ids: string[],
   ctx: { accessToken: string; clientId: string; clientSecret: string; fetchFn: typeof fetch; onRefreshed?: (t: string) => void }
 ): Promise<BookmarksResponse> {
-  if (ids.length === 0) return { data: [], includes: { users: [], media: [] } };
-  const merged: BookmarksResponse = { data: [], includes: { users: [], media: [] } };
+  if (ids.length === 0) return { data: [], includes: { users: [] } };
+  const merged: BookmarksResponse = { data: [], includes: { users: [] } };
   const seenUsers = new Set<string>();
-  const seenMedia = new Set<string>();
   for (let i = 0; i < ids.length; i += TWEETS_LOOKUP_CHUNK) {
     const chunk = ids.slice(i, i + TWEETS_LOOKUP_CHUNK);
     const page = await xGet<BookmarksResponse>(buildTweetsLookupUrl(chunk), ctx);
     if (page.data) merged.data!.push(...page.data);
     for (const u of page.includes?.users ?? []) {
       if (!seenUsers.has(u.id)) { seenUsers.add(u.id); merged.includes!.users!.push(u); }
-    }
-    for (const m of page.includes?.media ?? []) {
-      if (!seenMedia.has(m.media_key)) { seenMedia.add(m.media_key); merged.includes!.media!.push(m); }
     }
   }
   return merged;
@@ -522,58 +480,7 @@ export async function fetchBookmarksViaApi(options: FetchOptions = {}): Promise<
 
   console.log(`🔖 [X API] 合計 ${all.length} 件を取得しました。`);
 
-  // 動画フレーム抽出 (X_VIDEO_FRAMES=true のときだけ動作)
-  if (isVideoFramesEnabled()) {
-    await enrichBookmarksWithFrames(all);
-  }
-
   return all;
-}
-
-/**
- * 取得済み bookmark 群に対して、動画があるツイートはフレームを抽出して
- * `## キーフレーム` セクションを `content` 末尾に追記する。
- *
- * 失敗 (DL 失敗 / size 超過 / ffmpeg 不在等) しても本文保存は妨げない。
- * 個々のツイートの失敗は警告ログのみ。
- */
-async function enrichBookmarksWithFrames(bookmarks: ApiBookmark[]): Promise<void> {
-  // duration_ms 不在の動画も拾う (extractFramesFromTweetVideo 側で `no_duration`
-  // skip が出て本文に「取得失敗」セクションが出る → silently 落ちることがない)
-  const targets = bookmarks.filter(b => b.xVideoUrl);
-  if (targets.length === 0) return;
-  console.log(`🎞️  [X API] 動画 ${targets.length} 件のキーフレーム抽出を開始`);
-  let success = 0;
-  let failed = 0;
-  const skipReasons: Record<string, number> = {};
-  for (const bm of targets) {
-    try {
-      const result = await extractFramesFromTweetVideo(
-        bm.xTweetId,
-        bm.xVideoUrl!,
-        bm.xVideoDurationMs ?? 0,
-        { logger: (m) => console.log(m) },
-      );
-      const section = renderKeyFramesSection(result);
-      if (section) {
-        bm.content = (bm.content ?? '') + section;
-      }
-      if (result.skipped) {
-        skipReasons[result.skipped] = (skipReasons[result.skipped] ?? 0) + 1;
-      } else {
-        success += 1;
-      }
-    } catch (e: any) {
-      console.warn(`   ⚠️  frame extraction failed for ${bm.xTweetId}: ${e.message}`);
-      failed += 1;
-    }
-  }
-  const skipSummary = Object.keys(skipReasons).length === 0
-    ? ''
-    : ' / skipped: ' + Object.entries(skipReasons).map(([k, v]) => `${k}=${v}`).join(', ');
-  console.log(
-    `🎞️  [X API] キーフレーム抽出完了: success=${success} failed=${failed}${skipSummary}`
-  );
 }
 
 // テスト用 export。isTokenExpired は tokens.ts に移ったが、既存テスト
