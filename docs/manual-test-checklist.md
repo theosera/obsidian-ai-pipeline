@@ -72,23 +72,14 @@
 - [ ] 一度きりで `_Archived/` へ退避される
 - [ ] 再実行で二重移動しない
 
-## 8. 動画キーフレーム抽出（opt-in）
-
-- [ ] **前提**: `ffmpeg -version` が通る
-- [ ] `X_VIDEO_FRAMES=true pnpm start -- --x-bookmarks --x-limit=5` を実行
-- [ ] 動画付きツイートで `_attachments/x-bookmarks/<post_id>/frame-NN.webp` が
-      4 枚生成され `## キーフレーム` セクションが埋め込まれる
-- [ ] 60 秒超 / 30MB 超の動画は skip される
-- [ ] ffmpeg 不在時は警告のみで本文保存は継続する
-
-## 9. Dataview テーブルビュー（Obsidian 上）
+## 8. Dataview テーブルビュー（Obsidian 上）
 
 - [ ] グループ `<group>.md` を Obsidian で開き HTML `<table>` が描画される
 - [ ] 列ヘッダクリックで昇順 / 降順ソートが切り替わる
 - [ ] デフォルトソートが `added_at` desc
 - [ ] sentinel 外のユーザー文章が再生成で保持される
 
-## 10. ハンズオン生成（`--hands-on`）
+## 9. ハンズオン生成（`--hands-on`）
 
 - [ ] **前提**: Claude Code CLI が OAuth 認証済み（`claude --version`）、
       対象フォルダが取り込み済み
@@ -98,7 +89,7 @@
       が生成される
 - [ ] `--since` で期間絞り込みが効く
 
-## 11. その他の対話 / 補助コマンド
+## 10. その他の対話 / 補助コマンド
 
 - [ ] `pnpm run sync-rules` で `folder_rules.json` に昇格マージ（降格なし）
 - [ ] `pnpm start -- --rescue "<レポート>"` で API コスト 0 で再開できる

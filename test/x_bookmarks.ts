@@ -40,8 +40,6 @@ import { __test as aiInternals, createInteractiveOrphanResolver } from '../x-boo
 import { XBookmarksDb, getDb } from '../x-bookmarks/db';
 import Database from 'better-sqlite3';
 import { __test as authInternals } from '../x-bookmarks/auth_server';
-import { __test as videoInternals } from '../x-bookmarks/video_frames';
-import { isAllowedMediaUrl } from '../x-bookmarks/url_policy';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
 export async function run(): Promise<TestSuiteResult> {
@@ -549,73 +547,6 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(bm.xNoteTweetText, undefined);
     });
 
-    runner.test('media resolver で動画があれば xVideoUrl / xVideoDurationMs をセット', () => {
-      const post = {
-        id: 'v1', text: '動画ツイート', author_id: 'u1',
-        attachments: { media_keys: ['mk1'] },
-      };
-      const author = { id: 'u1', username: 'a', name: 'A' };
-      const resolver = (key: string) => key === 'mk1' ? {
-        media_key: 'mk1', type: 'video',
-        duration_ms: 28500,
-        variants: [
-          { url: 'low.mp4', bit_rate: 320000 },
-          { url: 'hi.mp4', bit_rate: 2176000 },
-        ],
-      } : undefined;
-      const bm = apiInternals.tweetToApiBookmark(post, author, 'Misc', resolver);
-      assert.strictEqual(bm.xVideoUrl, 'hi.mp4');
-      assert.strictEqual(bm.xVideoDurationMs, 28500);
-    });
-
-    runner.test('media resolver で video が無ければ xVideoUrl 未設定', () => {
-      const post = {
-        id: 'p1', text: '画像のみ', author_id: 'u1',
-        attachments: { media_keys: ['mk1'] },
-      };
-      const resolver = (_key: string) => ({
-        media_key: 'mk1', type: 'photo',
-      });
-      const bm = apiInternals.tweetToApiBookmark(
-        post, { id: 'u1', username: 'a', name: 'A' }, 'Misc', resolver
-      );
-      assert.strictEqual(bm.xVideoUrl, undefined);
-      assert.strictEqual(bm.xVideoDurationMs, undefined);
-    });
-
-    runner.test('media resolver 未指定なら従来通り xVideoUrl 未設定', () => {
-      const post = {
-        id: 'v2', text: '動画あるが resolver 無し', author_id: 'u1',
-        attachments: { media_keys: ['mk1'] },
-      };
-      const bm = apiInternals.tweetToApiBookmark(
-        post, { id: 'u1', username: 'a', name: 'A' }, 'Misc'
-      );
-      assert.strictEqual(bm.xVideoUrl, undefined);
-    });
-
-    runner.test('expandBookmarksPage が includes.media を解決して xVideoUrl をセット', () => {
-      const page = {
-        data: [
-          { id: 'v1', text: '動画', author_id: 'u1', attachments: { media_keys: ['mk1'] } },
-          { id: 'p1', text: '画像', author_id: 'u1', attachments: { media_keys: ['mk2'] } },
-        ],
-        includes: {
-          users: [{ id: 'u1', name: 'A', username: 'a' }],
-          media: [
-            { media_key: 'mk1', type: 'video', duration_ms: 5000, variants: [
-              { url: 'a.mp4', bit_rate: 1000 }, { url: 'b.mp4', bit_rate: 2000 },
-            ]},
-            { media_key: 'mk2', type: 'photo' },
-          ],
-        },
-      };
-      const out = apiInternals.expandBookmarksPage(page, 'Folder');
-      assert.strictEqual(out[0].xVideoUrl, 'b.mp4');
-      assert.strictEqual(out[0].xVideoDurationMs, 5000);
-      assert.strictEqual(out[1].xVideoUrl, undefined);
-    });
-
     runner.test('expandBookmarksPage が includes.users を解決して複数件返す', () => {
       const page = {
         data: [
@@ -684,10 +615,11 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(u.searchParams.get('max_results'), '100');
       assert.ok(u.searchParams.get('tweet.fields')?.includes('created_at'));
       assert.ok(u.searchParams.get('tweet.fields')?.includes('note_tweet'));
-      assert.ok(u.searchParams.get('tweet.fields')?.includes('attachments'));
       assert.ok(u.searchParams.get('expansions')?.includes('author_id'));
-      assert.ok(u.searchParams.get('expansions')?.includes('attachments.media_keys'));
-      assert.ok(u.searchParams.get('media.fields')?.includes('variants'));
+      // 動画のキーフレーム (X_VIDEO_FRAMES) を外したので、添付メディアは要求しない
+      assert.ok(!u.searchParams.get('tweet.fields')?.includes('attachments'));
+      assert.ok(!u.searchParams.get('expansions')?.includes('attachments.media_keys'));
+      assert.strictEqual(u.searchParams.get('media.fields'), null);
     });
 
     runner.test('folder bookmarks URL は索引専用でクエリパラメータを持たない', () => {
@@ -698,20 +630,85 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(u.search, '');
     });
 
-    runner.test('tweets lookup URL は ids と本文系 expansions を持つ', () => {
+    runner.test('tweets lookup URL は ids と本文系の fields を持ち、添付メディアは要求しない', () => {
       const u = new URL(apiInternals.buildTweetsLookupUrl(['111', '222']));
       assert.strictEqual(u.pathname, '/2/tweets');
       assert.strictEqual(u.searchParams.get('ids'), '111,222');
       assert.ok(u.searchParams.get('tweet.fields')?.includes('note_tweet'));
-      assert.ok(u.searchParams.get('expansions')?.includes('attachments.media_keys'));
-      assert.ok(u.searchParams.get('media.fields')?.includes('variants'));
+      assert.ok(u.searchParams.get('expansions')?.includes('author_id'));
       assert.ok(u.searchParams.get('user.fields')?.includes('username'));
+      assert.ok(!u.searchParams.get('tweet.fields')?.includes('attachments'));
+      assert.ok(!u.searchParams.get('expansions')?.includes('attachments.media_keys'));
+      assert.strictEqual(u.searchParams.get('media.fields'), null);
     });
 
     runner.test('folders URL は max_results のみ', () => {
       const u = new URL(apiInternals.buildFoldersUrl('12345'));
       assert.strictEqual(u.pathname, '/2/users/12345/bookmarks/folders');
       assert.strictEqual(u.searchParams.get('max_results'), '100');
+    });
+
+    await runner.testAsync('X_VIDEO_FRAMES=true でも取得は動画を DL せず、添付も本文の節も作らない (機能を外した)', async () => {
+      saveTokens({
+        access_token: 'fake-token',
+        refresh_token: 'fake-refresh',
+        expires_in: 7200,
+        obtained_at: new Date().toISOString(),
+      });
+      const prevClientId = process.env.X_CLIENT_ID;
+      const prevFrames = process.env.X_VIDEO_FRAMES;
+      const origFetch = globalThis.fetch;
+      process.env.X_CLIENT_ID = 'test-client';
+      process.env.X_VIDEO_FRAMES = 'true';
+      // 動画の DL は global fetch を通っていた (X API の呼び出しは fetchFn)。数えるだけで外へは出さない。
+      const mediaFetches: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        mediaFetches.push(String(input));
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+      const apiCalls: string[] = [];
+      const apiFetch: typeof fetch = (async (input: any) => {
+        const url = typeof input === 'string' ? input : input.url;
+        apiCalls.push(url);
+        const respond = (body: unknown) => new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+        if (url.includes('/users/me')) return respond({ data: { id: 'u1', username: 'tester' } });
+        if (url.includes('/bookmarks/folders')) return respond({ data: [] });
+        if (url.includes('/bookmarks')) {
+          // 以前の形の応答 (添付メディアつき) が来ても、何も DL しないことを見る
+          return respond({
+            data: [{ id: 'V1', text: 'video post', author_id: 'u1', attachments: { media_keys: ['m1'] } }],
+            includes: {
+              users: [{ id: 'u1', name: 'A', username: 'a' }],
+              media: [{
+                media_key: 'm1',
+                type: 'video',
+                duration_ms: 10_000,
+                variants: [{ bit_rate: 1000, content_type: 'video/mp4', url: 'https://video.twimg.com/v.mp4' }],
+              }],
+            },
+          });
+        }
+        throw new Error(`unexpected fetch url: ${url}`);
+      }) as any;
+      try {
+        const [bm] = await fetchBookmarksViaApi({ selectedFolders: [], includeUnfiled: true, fetchFn: apiFetch });
+        assert.strictEqual(bm?.xTweetId, 'V1');
+        assert.ok(!(bm.content ?? '').includes('キーフレーム'), '本文にキーフレームの節を足さない');
+        assert.deepStrictEqual(mediaFetches, [], '動画を DL しない');
+        assert.ok(!fs.existsSync(path.join(tmpDir, '_attachments')), '添付のフォルダを作らない');
+        const bookmarksCall = apiCalls.find((u) => u.includes('/users/u1/bookmarks?'));
+        assert.ok(bookmarksCall, `bookmarks を取得していない: ${apiCalls.join(', ')}`);
+        assert.strictEqual(new URL(bookmarksCall).searchParams.get('media.fields'), null, '添付メディアを要求しない');
+      } finally {
+        globalThis.fetch = origFetch;
+        if (prevClientId === undefined) delete process.env.X_CLIENT_ID;
+        else process.env.X_CLIENT_ID = prevClientId;
+        if (prevFrames === undefined) delete process.env.X_VIDEO_FRAMES;
+        else process.env.X_VIDEO_FRAMES = prevFrames;
+      }
     });
 
     // =====================================================
@@ -752,253 +749,6 @@ export async function run(): Promise<TestSuiteResult> {
       assert.strictEqual(u.searchParams.get('code_challenge_method'), 'S256');
       assert.ok(u.searchParams.get('scope')?.includes('bookmark.read'));
       assert.ok(u.searchParams.get('scope')?.includes('offline.access'));
-    });
-
-    // =====================================================
-    // x_video_frames: pure helpers
-    // =====================================================
-    runner.section('x_video_frames: computeSampleTimestamps');
-
-    runner.test('frameCount=4, duration=20s → [4, 8, 12, 16]', () => {
-      const ts = videoInternals.computeSampleTimestamps(20, 4);
-      assert.deepStrictEqual(ts, [4, 8, 12, 16]);
-    });
-
-    runner.test('frameCount=3, duration=12s → [3, 6, 9]', () => {
-      const ts = videoInternals.computeSampleTimestamps(12, 3);
-      assert.deepStrictEqual(ts, [3, 6, 9]);
-    });
-
-    runner.test('duration=0 / frameCount=0 → []', () => {
-      assert.deepStrictEqual(videoInternals.computeSampleTimestamps(0, 4), []);
-      assert.deepStrictEqual(videoInternals.computeSampleTimestamps(20, 0), []);
-    });
-
-    runner.section('x_video_frames: pickVideoMedia / pickBestVariantUrl');
-
-    runner.test('pickVideoMedia は最初の video を返す', () => {
-      const media = [
-        { media_key: 'a', type: 'photo' as const },
-        { media_key: 'b', type: 'video' as const, duration_ms: 5000 },
-        { media_key: 'c', type: 'video' as const, duration_ms: 10000 },
-      ];
-      const v = videoInternals.pickVideoMedia(media);
-      assert.strictEqual(v?.media_key, 'b');
-    });
-
-    runner.test('pickVideoMedia は animated_gif も拾う', () => {
-      const v = videoInternals.pickVideoMedia([
-        { media_key: 'g', type: 'animated_gif' as const, duration_ms: 3000 },
-      ]);
-      assert.strictEqual(v?.media_key, 'g');
-    });
-
-    runner.test('pickVideoMedia は video が無ければ undefined', () => {
-      const v = videoInternals.pickVideoMedia([
-        { media_key: 'a', type: 'photo' as const },
-      ]);
-      assert.strictEqual(v, undefined);
-    });
-
-    runner.test('pickBestVariantUrl は最高 bit_rate を選ぶ', () => {
-      const url = videoInternals.pickBestVariantUrl({
-        media_key: 'k', type: 'video',
-        variants: [
-          { url: 'low.mp4', bit_rate: 320000 },
-          { url: 'hi.mp4', bit_rate: 2176000 },
-          { url: 'mid.mp4', bit_rate: 832000 },
-        ],
-      });
-      assert.strictEqual(url, 'hi.mp4');
-    });
-
-    runner.test('pickBestVariantUrl は variants 無しなら undefined', () => {
-      const url = videoInternals.pickBestVariantUrl({ media_key: 'k', type: 'video' });
-      assert.strictEqual(url, undefined);
-    });
-
-    runner.section('x_video_frames: isAllowedMediaUrl (SSRF guard)');
-
-    runner.test('https の twimg.com / サブドメインは許可', () => {
-      assert.strictEqual(isAllowedMediaUrl('https://video.twimg.com/ext_tw_video/1/pu/vid/720x1280/a.mp4'), true);
-      assert.strictEqual(isAllowedMediaUrl('https://pbs.twimg.com/x.jpg'), true);
-      assert.strictEqual(isAllowedMediaUrl('https://twimg.com/x'), true);
-    });
-
-    runner.test('http (平文) は拒否', () => {
-      assert.strictEqual(isAllowedMediaUrl('http://video.twimg.com/a.mp4'), false);
-    });
-
-    runner.test('内部ホスト / metadata IP / 任意ホストは拒否', () => {
-      assert.strictEqual(isAllowedMediaUrl('http://169.254.169.254/latest/meta-data/'), false);
-      assert.strictEqual(isAllowedMediaUrl('https://169.254.169.254/'), false);
-      assert.strictEqual(isAllowedMediaUrl('http://127.0.0.1:8080/'), false);
-      assert.strictEqual(isAllowedMediaUrl('https://evil.example.com/a.mp4'), false);
-    });
-
-    runner.test('twimg.com を装う look-alike は拒否', () => {
-      assert.strictEqual(isAllowedMediaUrl('https://evil-twimg.com/a.mp4'), false);
-      assert.strictEqual(isAllowedMediaUrl('https://video.twimg.com.attacker.tld/a.mp4'), false);
-    });
-
-    runner.test('不正な URL 文字列は拒否', () => {
-      assert.strictEqual(isAllowedMediaUrl('not a url'), false);
-      assert.strictEqual(isAllowedMediaUrl(''), false);
-    });
-
-    runner.section('x_video_frames: fetchAllowlisted (redirect SSRF)');
-
-    await runner.testAsync('内部ホストへの redirect を拒否し、その host へは fetch しない', async () => {
-      const calls: string[] = [];
-      const orig = globalThis.fetch;
-      globalThis.fetch = (async (input: RequestInfo | URL) => {
-        const u = String(input);
-        calls.push(u);
-        // allowlist 済み twimg から metadata エンドポイントへ open-redirect させる
-        return new Response(null, {
-          status: 302,
-          headers: { location: 'http://169.254.169.254/latest/meta-data/' },
-        });
-      }) as typeof fetch;
-      try {
-        await assert.rejects(
-          videoInternals.fetchAllowlisted('https://video.twimg.com/a.mp4', {}),
-          /disallowed media host/
-        );
-        assert.ok(!calls.some(u => u.includes('169.254')), '内部ホストへ fetch してはいけない');
-      } finally {
-        globalThis.fetch = orig;
-      }
-    });
-
-    await runner.testAsync('allowlist 内の redirect は追従する', async () => {
-      const orig = globalThis.fetch;
-      let hop = 0;
-      globalThis.fetch = (async (input: RequestInfo | URL) => {
-        const u = String(input);
-        if (hop++ === 0 && u === 'https://video.twimg.com/a.mp4') {
-          return new Response(null, {
-            status: 302,
-            headers: { location: 'https://video.twimg.com/cdn/a.mp4' },
-          });
-        }
-        return new Response('ok', { status: 200 });
-      }) as typeof fetch;
-      try {
-        const res = await videoInternals.fetchAllowlisted('https://video.twimg.com/a.mp4', {});
-        assert.strictEqual(res.status, 200);
-      } finally {
-        globalThis.fetch = orig;
-      }
-    });
-
-    runner.section('x_video_frames: isVideoFramesEnabled');
-
-    runner.test('X_VIDEO_FRAMES=true で有効', () => {
-      // try/finally + delete-on-undefined パターン:
-      // 1) `process.env.X = undefined` は文字列 "undefined" を保存してしまう
-      // 2) 途中で assert が throw すると env が残ったままになり後続テストに漏れる
-      const prev = process.env.X_VIDEO_FRAMES;
-      try {
-        process.env.X_VIDEO_FRAMES = 'true';
-        assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
-        process.env.X_VIDEO_FRAMES = '1';
-        assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
-        process.env.X_VIDEO_FRAMES = 'TRUE';
-        assert.strictEqual(videoInternals.isVideoFramesEnabled(), true);
-      } finally {
-        if (prev === undefined) delete process.env.X_VIDEO_FRAMES;
-        else process.env.X_VIDEO_FRAMES = prev;
-      }
-    });
-
-    runner.test('X_VIDEO_FRAMES 未設定 / false で無効', () => {
-      const prev = process.env.X_VIDEO_FRAMES;
-      try {
-        delete process.env.X_VIDEO_FRAMES;
-        assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
-        process.env.X_VIDEO_FRAMES = 'false';
-        assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
-        process.env.X_VIDEO_FRAMES = '0';
-        assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
-        process.env.X_VIDEO_FRAMES = '';
-        assert.strictEqual(videoInternals.isVideoFramesEnabled(), false);
-      } finally {
-        if (prev === undefined) delete process.env.X_VIDEO_FRAMES;
-        else process.env.X_VIDEO_FRAMES = prev;
-      }
-    });
-
-    runner.section('x_video_frames: renderKeyFramesSection');
-
-    runner.test('feature_disabled は空文字 (本文に何も追記しない)', () => {
-      const md = videoInternals.renderKeyFramesSection({ frames: [], skipped: 'feature_disabled' });
-      assert.strictEqual(md, '');
-    });
-
-    runner.test('成功時は ## キーフレーム 見出しと wikilink 付き', () => {
-      const md = videoInternals.renderKeyFramesSection({
-        frames: [
-          { absolutePath: '/v/_attachments/x-bookmarks/123/frame-01.webp',
-            vaultRelative: '_attachments/x-bookmarks/123/frame-01.webp', timestampSec: 4 },
-          { absolutePath: '/v/_attachments/x-bookmarks/123/frame-02.webp',
-            vaultRelative: '_attachments/x-bookmarks/123/frame-02.webp', timestampSec: 8 },
-        ],
-        durationSec: 20,
-      });
-      assert.ok(md.includes('## キーフレーム (動画 0:20)'));
-      assert.ok(md.includes('![[_attachments/x-bookmarks/123/frame-01.webp|360]]'));
-      assert.ok(md.includes('_0:04_'));
-      assert.ok(md.includes('_0:08_'));
-    });
-
-    runner.test('skip 時は理由付き見出しを出す', () => {
-      const md = videoInternals.renderKeyFramesSection({
-        frames: [], durationSec: 90, skipped: 'too_long', message: '90.0s > 60s cap'
-      });
-      assert.ok(md.includes('## キーフレーム'));
-      assert.ok(md.includes('取得失敗'));
-      assert.ok(md.includes('too_long'));
-      assert.ok(md.includes('90.0s > 60s cap'));
-    });
-
-    runner.test('ffmpeg_failed は必ず取得失敗見出しを出す (frames が空配列であること前提)', () => {
-      // x_video_frames.ts:315 で partial frames を返さないようになっているため
-      // 失敗時は必ず frames=[] となる。renderKeyFramesSection は frames.length===0
-      // を取得失敗判定に使うので、ffmpeg_failed の場合は確実に 取得失敗 見出しが出る
-      const md = videoInternals.renderKeyFramesSection({
-        frames: [], durationSec: 20, skipped: 'ffmpeg_failed',
-        message: 'frame 3 extraction failed (exit=1)',
-      });
-      assert.ok(md.includes('取得失敗'));
-      assert.ok(md.includes('ffmpeg_failed'));
-    });
-
-    runner.section('x_video_frames: alreadyExtracted');
-
-    runner.test('全フレーム揃っていれば true', () => {
-      const dir = path.join(tmpDir, 'frames-test-1');
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'frame-01.webp'), 'x');
-      fs.writeFileSync(path.join(dir, 'frame-02.webp'), 'x');
-      fs.writeFileSync(path.join(dir, 'frame-03.webp'), 'x');
-      assert.strictEqual(videoInternals.alreadyExtracted(dir, 3), true);
-    });
-
-    runner.test('1 枚でも欠ければ false', () => {
-      const dir = path.join(tmpDir, 'frames-test-2');
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'frame-01.webp'), 'x');
-      // frame-02 は無い
-      fs.writeFileSync(path.join(dir, 'frame-03.webp'), 'x');
-      assert.strictEqual(videoInternals.alreadyExtracted(dir, 3), false);
-    });
-
-    runner.test('formatTimestamp は分:秒形式', () => {
-      assert.strictEqual(videoInternals.formatTimestamp(0), '0:00');
-      assert.strictEqual(videoInternals.formatTimestamp(8.7), '0:08');
-      assert.strictEqual(videoInternals.formatTimestamp(65), '1:05');
-      assert.strictEqual(videoInternals.formatTimestamp(125.4), '2:05');
     });
 
     // =====================================================

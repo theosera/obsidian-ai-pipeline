@@ -85,7 +85,7 @@
     { "path": "sync-rules.ts", "group": "ai", "role": "snippets → folder_rules 自動同期" },
     { "path": "storage.ts", "group": "io", "role": "Vault 保存 (7 段階パストラバーサル防御 + dry-run 対応 + getKnownUrls)", "key": true },
 
-    { "path": "x-bookmarks/types.ts", "group": "x-bookmarks", "role": "X API v2 共有型 (ApiBookmark / XPost / XMedia* 等)。api_client↔video_frames 循環を断つ集約点" },
+    { "path": "x-bookmarks/types.ts", "group": "x-bookmarks", "role": "X API v2 共有型 (ApiBookmark / XPost 等)。api_client と tokens が参照する集約点" },
     { "path": "x-bookmarks/tokens.ts", "group": "x-bookmarks", "role": "OAuth トークン永続化 (x_tokens.json) + 期限判定 + refresh" },
     { "path": "x-bookmarks/api_client.ts", "group": "x-bookmarks", "role": "X API v2 ラッパ (OAuth + folders index → tweets hydrate 2 段)", "key": true },
     { "path": "x-bookmarks/auth_server.ts", "group": "x-bookmarks", "role": "OAuth 2.0 PKCE 認可サーバ (--x-auth)" },
@@ -103,7 +103,6 @@
     { "path": "x-bookmarks/session_ai.ts", "group": "x-bookmarks", "role": "orphan_on_x の AI 判定ループ (Claude / local LLM)" },
     { "path": "x-bookmarks/session_registry.ts", "group": "x-bookmarks", "role": "UUID session_id レジストリ (DB + _session.json marker)" },
     { "path": "x-bookmarks/session_sync.ts", "group": "x-bookmarks", "role": "Sync Phase 本体 (4 軸 drift 検出)", "key": true },
-    { "path": "x-bookmarks/video_frames.ts", "group": "x-bookmarks", "role": "動画キーフレーム抽出 (ffmpeg + X_VIDEO_FRAMES=true opt-in)" },
 
     { "path": "x-bookmarks/hands_on_generator.ts", "group": "post-process", "role": "X ブックマーク DB → Claude CLI でハンズオン .md 生成" },
     { "path": "merge-articles.ts", "group": "post-process", "role": "記事マージユーティリティ" },
@@ -204,7 +203,6 @@
     { "name": "X_REDIRECT_URI", "scope": "x-bookmarks", "description": "OAuth redirect URI (デフォルト http://localhost:3737/auth/callback)" },
     { "name": "X_AUTH_PORT", "scope": "x-bookmarks", "description": "OAuth 認可サーバのポート (デフォルト 3737)" },
     { "name": "X_BOOKMARKS_FOLDER", "scope": "x-bookmarks", "description": "X bookmark の出力ベースフォルダ (デフォルト X_Bookmarks)" },
-    { "name": "X_VIDEO_FRAMES", "scope": "x-bookmarks", "description": "true で動画キーフレーム抽出を有効化 (要 ffmpeg)" },
     { "name": "X_SESSION_AI_BIN", "scope": "x-bookmarks", "description": "orphan 判定 AI のバイナリ (デフォルト claude)" },
     { "name": "X_SESSION_AI_DISABLE", "scope": "x-bookmarks", "description": "true で AI 判定を無効化し常に keep 推奨" },
     { "name": "X_SESSION_AI_TIMEOUT_MS", "scope": "x-bookmarks", "description": "AI 応答待ち上限 (デフォルト 60000)" }
