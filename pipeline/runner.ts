@@ -12,7 +12,7 @@ import { ParsedEntry, FailureRecord } from './types';
 import { readOneTabFile } from './input_onetab';
 import { prepareXBookmarks } from './input_x_bookmarks';
 import { processEntries } from './processor';
-import { generateReport } from './report';
+import { generateReport, reportLabelFor } from './report';
 import { interactiveReviewLoop, regenerateXBookmarkArtifacts } from './interactive';
 import { closeDb } from '../x-bookmarks/db';
 import { askQuestion } from './prompt';
@@ -174,7 +174,7 @@ export async function runPipeline(args: ParsedCliArgs, config?: PipelineConfig):
   applyRouterPhase(results);
 
   // === 6. レポート生成 + 対話レビュー ===
-  const reportLabel = args.xBookmarks ? 'X-Bookmarks' : 'OneTab';
+  const reportLabel = reportLabelFor(args.xBookmarks);
   const reportPath = path.join(REPORTS_DIR, `${reportLabel}分類結果レポート-${dateStr}.md`);
   fs.writeFileSync(reportPath, generateReport(results, tokenUsageMetrics, reportLabel), 'utf8');
   await interactiveReviewLoop(results, reportPath, {

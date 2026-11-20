@@ -11,6 +11,11 @@ import { ParsedEntry, FailureRecord } from './types';
  *   - 空行 / パイプ区切りが無い行は黙って読み飛ばし
  *   - knownUrls に含まれる URL は重複スキップ (Vault 内既存記事を二重保存しない)
  *   - evaluatePolicy が manual_skip を返した URL はスキップ
+ *   - 同じ入力に同じ URL (末尾スラッシュ違いを含む) が何行あっても、最初に処理対象に
+ *     なった 1 行だけを渡し、残りは入力内重複としてスキップ (抽出・分類・保存を 1 回にする)
+ *
+ * knownUrls はここでは変えない。保存に成功したときだけ storage の addKnownUrl が足す
+ * (読んだだけで足すと、取消の後に同じ入力を読み直したとき保存済みと誤る)。
  *
  * ログ副作用: 読み込み/スキップの進捗を console.log で逐次出す。
  * 純粋関数ではないが、大量 URL の進捗可視化が UX として必須なので許容する。
@@ -24,6 +29,7 @@ export function readOneTabFile(
 
   const content = fs.readFileSync(filePath, 'utf-8');
   const allLines = content.split('\n').filter((l) => l.trim() !== '');
+  const queuedUrls = new Set<string>();
 
   for (let i = 0; i < allLines.length; i++) {
     const line = allLines[i];
@@ -47,7 +53,13 @@ export function readOneTabFile(
     if (policy === 'manual_skip') {
       console.log(`[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (manual_skip)`);
       failures.push({ url, title, reason: 'Site Policy: manual_skip' });
+    } else if (queuedUrls.has(checkUrl)) {
+      console.log(
+        `[${i + 1}/${allLines.length}] ${title.substring(0, 30)}... Skipped (Duplicate in input)`
+      );
+      failures.push({ url, title, reason: 'Duplicate: Repeated in this input' });
     } else {
+      queuedUrls.add(checkUrl);
       entries.push({ url, title, policy });
     }
   }
