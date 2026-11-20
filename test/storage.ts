@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { setVaultRoot } from '../config';
 import { escapeFrontmatter, saveMarkdown, getKnownUrls, resetKnownUrlsCache, addKnownUrl } from '../storage';
+import { readOneTabFile } from '../pipeline/input_onetab';
 import type { ArticleData } from '../types';
 import { TestRunner, type TestSuiteResult } from './helpers';
 
@@ -388,6 +389,89 @@ export function run(): TestSuiteResult {
           !urls.has('https://added-before-scan.example.com'),
           '走査前の add は無視され、部分集合のまま固定化しない'
         );
+      } finally {
+        fs.rmSync(sub, { recursive: true, force: true });
+        setVaultRoot(tmpDir);
+        resetKnownUrlsCache();
+      }
+    });
+
+    // =====================================================
+    // readOneTabFile: 同じ入力の中の重複 (抽出・分類・保存を 1 URL 1 回にする)
+    // =====================================================
+    runner.section('readOneTabFile - 同じ入力の中の重複');
+
+    let oneTabSeq = 0;
+    const writeOneTab = (lines: string[]): string => {
+      oneTabSeq += 1;
+      const file = path.join(tmpDir, `onetab-${oneTabSeq}.txt`);
+      fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+      return file;
+    };
+    const IN_INPUT = 'Duplicate: Repeated in this input';
+    const IN_VAULT = 'Duplicate: Already exists in Vault';
+
+    runner.test('同じ URL が何行あっても最初の 1 行だけを渡し、残りは入力内重複にする', () => {
+      const file = writeOneTab([
+        'https://dup.example.com/a | First',
+        'https://other.example.com/b | Other',
+        'https://dup.example.com/a/ | Second',
+        'https://dup.example.com/a | Third',
+      ]);
+      const { entries, failures } = readOneTabFile(file, new Set());
+      assert.deepStrictEqual(
+        entries.map((e) => [e.url, e.title]),
+        [
+          ['https://dup.example.com/a', 'First'],
+          ['https://other.example.com/b', 'Other'],
+        ]
+      );
+      assert.deepStrictEqual(
+        failures.map((f) => [f.url, f.reason]),
+        [
+          ['https://dup.example.com/a/', IN_INPUT],
+          ['https://dup.example.com/a', IN_INPUT],
+        ]
+      );
+    });
+
+    runner.test('同じタイトルでも URL が違えば両方を渡す', () => {
+      const file = writeOneTab(['https://t.example.com/x | Same', 'https://t.example.com/y | Same']);
+      const { entries, failures } = readOneTabFile(file, new Set());
+      assert.deepStrictEqual(
+        entries.map((e) => e.url),
+        ['https://t.example.com/x', 'https://t.example.com/y']
+      );
+      assert.strictEqual(failures.length, 0);
+    });
+
+    runner.test('読むだけでは保存済み集合を変えず、取消の後に読み直すと再び処理対象になる', () => {
+      const sub = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-onetab-dedup-'));
+      setVaultRoot(sub);
+      resetKnownUrlsCache();
+      try {
+        makeMd(path.join(sub, 'saved.md'), 'source: "https://saved.example.com"');
+        const known = getKnownUrls();
+        const file = writeOneTab([
+          'https://saved.example.com/ | Saved',
+          'https://new.example.com/p | New',
+          'https://new.example.com/p | New again',
+        ]);
+
+        const first = readOneTabFile(file, known);
+        assert.deepStrictEqual(first.entries.map((e) => e.url), ['https://new.example.com/p']);
+        assert.deepStrictEqual(first.failures.map((f) => f.reason), [IN_VAULT, IN_INPUT]);
+        assert.strictEqual(known.size, 1, '読んだだけでは保存済み集合に足さない');
+
+        // 実行確認や保存承認で取り消した後、同じ入力を読み直す
+        const again = readOneTabFile(file, known);
+        assert.deepStrictEqual(again.entries.map((e) => e.url), ['https://new.example.com/p']);
+
+        // 保存に成功したときの更新口 (saveMarkdown が呼ぶ) を通った後は保存済みとして飛ばす
+        addKnownUrl('https://new.example.com/p');
+        const afterSave = readOneTabFile(file, known);
+        assert.strictEqual(afterSave.entries.length, 0);
+        assert.deepStrictEqual(afterSave.failures.map((f) => f.reason), [IN_VAULT, IN_VAULT, IN_VAULT]);
       } finally {
         fs.rmSync(sub, { recursive: true, force: true });
         setVaultRoot(tmpDir);
