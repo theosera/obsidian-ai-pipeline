@@ -200,6 +200,12 @@ jobs:
           python3 .claude/skills/scan-threat-report/tests/run_l1_tests.py
           python3 .claude/skills/scan-threat-report/tests/run_gate_tests.py
 
+      - name: Run weekly report reading-copy tests (python, deterministic)
+        # 週次取込の workflow が --write で回す scripts/threat_report_views.py の回帰
+        # (raw/<date>-view.md の fence・印の書き替え・冪等・symlink・一時ファイル)。
+        # stdlib のみで一時ディレクトリだけを使うので、依存インストールより先に走らせる。
+        run: python3 -I scripts/tests/run_threat_report_views_tests.py
+
       - name: Run vault-ops acceptance tests (bash, sandboxed git)
         # vault-ops skill (pre-push hook / safe push wrapper / installer) の
         # 決定論回帰。tmp 配下に bare origin + clone を作るだけで network /

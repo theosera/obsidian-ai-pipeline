@@ -37,6 +37,7 @@
                           │      pending-labels.json に書く          │
                           │                                          │
                           │ Gate invariant re-check (belt&braces)    │
+                          │ Reading copy: raw/<date>-view.md         │
                           │ Vault push:                              │
                           │   7. add/commit → fetch+rebase+push ×4   │
                           │      (_gate/ の trace/queue/state 含む)  │
@@ -52,6 +53,7 @@
                                   │ Vault repo (private)        │
                                   │   raw/<YYYY-MM-DD>.md.txt   │
                                   │   (原文内容不変 / 非Markdown)│
+                                  │   raw/<YYYY-MM-DD>-view.md  │
                                   │   .threat_reports.json      │
                                   │   _index.md                 │
                                   │   _gate/decisions.jsonl     │
@@ -78,6 +80,17 @@
 > Markdown として実行しないための拡張子境界で、必要なら `.txt` を外せば原文を
 > byte-for-byte で復元できる。legacy `.md` は本番 ingest 開始時に自動 migration
 > され、内容が異なる `.md` / `.md.txt` が併存した場合は fail-closed で停止する。
+> 📖 **読む用の写し (`raw/<YYYY-MM-DD>-view.md`)**: workflow は Gate invariant
+> re-check の後・Vault push の前に `scripts/threat_report_views.py --write` を回し、
+> `raw/<date>.md.txt` ごとに Obsidian で読むための写しを隣に作って、取込と同じ
+> commit で push する (人間の `vault-push-perm` は 1 回で足りる)。本文は器具が決める
+> 1 つの code fence (本文のどの backtick 列より長い・info string は付けない) に閉じ込め、
+> 他の plugin が動く印は書き替える。`.md.txt` は替えず、migration
+> (`^\d{4}-\d{2}-\d{2}\.md$` だけ) にも rebuild (`*.md.txt` だけ) にも当たらない。
+> 器具は本リポの stdlib のみのコードで、vault (bot が書ける場所) には置かない。
+> 一時ファイルは乱数の名で排他的に作る (vault の checkout に置かれた symlink を
+> 辿らない)。写しは派生物なので、失敗しても取込の commit/push は止めず
+> (`continue-on-error`)、annotation と job の要約に残す。
 > 🛡️ **2-phase 設計の意義 (self-healing)**: Gmail の `processed` ラベルは
 > **vault push が成功した後にしか付かない**。push が失敗 (deploy key 障害 /
 > network / conflict 等) すると Phase 2 step は GitHub Actions の

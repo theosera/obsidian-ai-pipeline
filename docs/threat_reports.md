@@ -21,6 +21,9 @@ SQLite: <vault>/__skills/pipeline/threat_reports.db
   ↓ JSON エクスポート + index 再生成
 Vault: <base>/.threat_reports.json (Dataview source)
 Vault: <base>/_index.md (sortable table view)
+  ↓ (CI のみ) scripts/threat_report_views.py --write
+Vault: <base>/raw/YYYY-MM-DD-view.md (読む用の写し: 本文を 1 つの code fence に閉じ込め、
+       他の plugin が動く印を書き替えた派生物。原文は .md.txt のまま)
 ```
 
 - 既定 base: `Permanent Note/10_Threat_Reports`
