@@ -273,6 +273,41 @@ jobs:
           fi
           echo "✅ gate invariant re-check: 全 raw レポート clean"
 
+      # ----------------------------------------------------------------
+      # 読む用の写し (raw/<YYYY-MM-DD>-view.md)
+      #
+      # ゲートの再確認を通った raw/<date>.md.txt ごとに、Obsidian で読むための
+      # 写しを隣に作る。原文 .md.txt は替えない。本文は 1 つの code fence に
+      # 閉じ込め (fence は本文のどの backtick 列より長く、info string は器具が
+      # 決めるので本文から言語の札を足せない)、他の plugin が動く印は書き替える。
+      # 写しは取込と同じ commit で vault に入るので、人間の vault-push-perm は
+      # 1 回で済む。
+      # 動かすのは本リポ (pipeline の checkout) の trusted な器具 (stdlib のみ) で、
+      # vault の checkout (bot が書ける場所) にある物は動かさない。
+      # 写しは読みやすさのための派生物なので、失敗しても取込の commit/push は
+      # 止めない (continue-on-error)。失敗は annotation と job の要約に残す。
+      # 途中で止まった一時ファイルは、commit の段 (raw/ を -f で add) に拾わせない。
+      # ----------------------------------------------------------------
+      - name: Build reading copies (raw/<date>-view.md)
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true
+        working-directory: pipeline
+        env:
+          VAULT_ROOT: ${{ github.workspace }}/vault
+          TR_DIR: 10_Threat_Reports
+        run: |
+          set -uo pipefail
+          tool="${GITHUB_WORKSPACE}/pipeline/scripts/threat_report_views.py"
+          raw_dir="${VAULT_ROOT}/${TR_DIR}/raw"
+          status=0
+          python3 -I "${tool}" "${raw_dir}" --write || status=$?
+          find "${raw_dir}" -maxdepth 1 -type f -name '.*-view.md.*.tmp' -delete
+          if [ "${status}" -ne 0 ]; then
+            echo "::warning::読む用の写し (-view.md) の作成に失敗 (exit=${status})。取込の commit/push は続ける。"
+            echo "⚠️ 読む用の写し (-view.md) の作成に失敗 (exit=${status})。取込の commit/push は続けた。" >> "${GITHUB_STEP_SUMMARY}"
+            exit "${status}"
+          fi
+
       - name: Commit & push vault changes
         if: ${{ github.event.inputs.dry_run != 'true' }}
         working-directory: vault
