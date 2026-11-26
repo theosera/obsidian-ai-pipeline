@@ -196,13 +196,14 @@
 ## #14 — X bookmarks リンク先 host allowlist (obsidian)
 
 - **対象リポ**: `obsidian-ai-pipeline`
-- **対象ファイル**: `x-bookmarks/api_client.ts` / `x-bookmarks/video_frames.ts` /
-  `x-bookmarks/hands_on_generator.ts` (外部 URL を fetch / 展開する箇所)
+- **対象ファイル**: `x-bookmarks/api_client.ts` /
+  `x-bookmarks/hands_on_generator.ts` (外部 URL を fetch / 展開する箇所)。
+  `x-bookmarks/video_frames.ts` は #247 で機能ごと削除済みのため対象外
 - **リスク (低〜中)**: ブックマークに含まれる任意 URL を展開 / fetch する経路があると、
   内部ホストや metadata エンドポイントへの **SSRF**、あるいは取得本文経由の
   二次 injection の入口になり得る。
 - **手順**:
-  1. x-bookmarks 内で外部 URL を fetch している箇所を洗い出す (api_client / video_frames)。
+  1. x-bookmarks 内で外部 URL を fetch している箇所を洗い出す (api_client)。
   2. fetch 前に host allowlist (x.com / twimg.com / 既知 CDN 等) で検証し、
      プライベート IP レンジ / metadata IP を拒否。
   3. 取得した本文を LLM に渡す場合は #9 と同じデリミタ無害化を通す。
